@@ -580,6 +580,8 @@ app.post("/matters/:id/drafting-runs/start", async (c) => {
     profile?: unknown
     // An upgraded quick draft: an unverified working draft, never request text.
     workingDraft?: unknown
+    // The lawyer's earlier messages in the chat, as kept at Start.
+    chatInstructions?: unknown
   } = await c.req.json().catch(() => ({}))
   const profile = draftingStartProfile(input.profile)
   if (!profile) return c.json({ error: "Drafting profile must be \"lean\".", code: "invalid_drafting_profile" }, 400)
@@ -597,12 +599,14 @@ app.post("/matters/:id/drafting-runs/start", async (c) => {
     return c.json({ error: "Drafting start requires a resolved assistant and request." }, 400)
   if (input.workingDraft !== undefined && typeof input.workingDraft !== "string")
     return c.json({ error: "A working draft must be text." }, 400)
+  if (input.chatInstructions !== undefined && (typeof input.chatInstructions !== "string" || input.chatInstructions.replace(/\r\n/g, "\n").trim().length > 20_000))
+    return c.json({ error: "Instructions from the chat must be text of at most 20,000 characters." }, 400)
   const model = {
     providerID: input.model.providerID,
     modelID: input.model.modelID,
   }
   try {
-    return c.json(await startLeanDraftingRun(matterDir(c.req.param("id")), { request: input.request, agent: input.agent, model, workingDraft: input.workingDraft }))
+    return c.json(await startLeanDraftingRun(matterDir(c.req.param("id")), { request: input.request, agent: input.agent, model, workingDraft: input.workingDraft, chatInstructions: input.chatInstructions }))
   } catch (error) {
     if (error instanceof LeanDraftingConflictError) return c.json({ error: error.message, code: error.code }, 409)
     throw error

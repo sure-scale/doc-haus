@@ -84,8 +84,8 @@ describe("whom the lawyer acts for", () => {
     const plan = readLeanPlan(directory)!
     expect(plan.acting_for).toEqual(client)
     // The coverage record is keyed on the side the plan saves.
-    expect(readLeanCoverage(directory)?.plan).toBe(coveragePlanHash(plan.documents, client))
-    expect(readLeanCoverage(directory)?.plan).not.toBe(coveragePlanHash(plan.documents, NOT_STATED))
+    expect(readLeanCoverage(directory)?.plan).toBe(coveragePlanHash(directory, plan.documents, client))
+    expect(readLeanCoverage(directory)?.plan).not.toBe(coveragePlanHash(directory, plan.documents, NOT_STATED))
     expect(planCoverageCurrent(directory)).toBe(true)
     const [outline, firstPart] = promptsOf(model, AGENT.draft)
     expect(outline).toContain('"Acting for: not stated"')

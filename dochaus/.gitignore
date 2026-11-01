@@ -25,6 +25,7 @@ agent/*.md
 !agent/dashboard-chart.md
 !agent/document-reviewer.md
 !agent/extract.md
+!agent/lean-act-record.md
 !agent/lean-advise.md
 !agent/lean-answer.md
 !agent/lean-answer-reconcile.md
@@ -35,11 +36,11 @@ agent/*.md
 !agent/lean-checklist-extract.md
 !agent/lean-checklist-check.md
 !agent/lean-coverage.md
-!agent/lean-coverage-acts.md
 !agent/lean-discrepancy.md
 !agent/lean-draft.md
 !agent/lean-drafting-notes.md
 !agent/lean-files.md
+!agent/lean-instructions.md
 !agent/lean-intake.md
 !agent/lean-package-review.md
 !agent/lean-research.md

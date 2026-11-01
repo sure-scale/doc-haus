@@ -39,6 +39,12 @@ export type LeanEventName =
    * carried, and the page breaks carried with them, as `outcome`; "failed",
    * with the reason, when the carry could not run. */
   | "paragraphs"
+  /** The act-record step's record (act-record.ts): its status ("listed",
+   * "none" or "unchecked") as `outcome`, how many acts and deliverables it
+   * records, how many WHAT samples passed, how many candidates their union held
+   * and how many VERIFY excluded or merged, and how many acts record a conflict
+   * as `counts`, and whether each job passed its check as `jobs`. */
+  | "act_record"
 
 export type LeanEvent = {
   stage: StageID | "run"
@@ -62,6 +68,11 @@ export type LeanEvent = {
   /** Milliseconds of deterministic work: on checker events the reply's check, on
    * started and skipped events keying the step and deciding whether to skip it. */
   check_ms?: number
+  /** Act-record events: the record's counts. */
+  counts?: Record<string, number>
+  /** Act-record events: each job's check, "passed", "failed" or, for WHO and
+   * HOW with no listed act, "not_asked". */
+  jobs?: Record<string, "passed" | "failed" | "not_asked">
 }
 
 // The latest event time per matter in this process, so status can report when

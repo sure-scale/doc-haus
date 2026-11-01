@@ -1,4 +1,5 @@
 import { adviseQuestions } from "./advise"
+import { acceptInstructionsReply, confirmationQuestions, instructionsPrompt, settleByInstructions } from "./instructions"
 import { proposedFactQuestions, questionReviewKey, reviewProposedQuestion, sourceFactsFeedback, type QuestionReview } from "./question-review"
 import { parallel } from "./checklist-flow"
 import { classifyAnswers } from "./answer-class"
@@ -20,10 +21,12 @@ import { changePlanPrompt, changeReviewPrompt, readChangeReview, runChangePrepar
 import { packageReviewPrompt, readPackageReview } from "./package-review"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, repairedChecklistItems, startRepairRound } from "./repairs"
 import { acceptEvidenceReply, evidencePrompt } from "./evidence"
+import { checkAdoptedAgainstResearch } from "./research-check"
 import { researchPermissions, acceptResearchReply, researchPrompt, startResearchGapRound } from "./research"
-import { runApply } from "./apply-stage"
+import { runApply, writeProjectedNumbers } from "./apply-stage"
 import { DELIVERED_NOTES, forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
 import { runDraftStage } from "./draft-sections"
+import { runActRecordStage } from "./act-record"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { checklistFindingLabel, deliveredNotes, finalGate, notesCoverageReport } from "./gate"
 import { issueRegister } from "./register"
@@ -100,7 +103,8 @@ import {
 // answers, approvals and repair allowances are left exactly as they were, so a
 // later Continue resumes from the first unfinished step.
 
-type StageRun =
+/** What one run of a step settles as. */
+export type StageRun =
   | { status: "restart" }
   | { status: "done" | "blocked"; outputs: string[]; openItems: OpenItem[]; questions?: Question[]; reason?: string }
   | { status: "failed"; reason: string }
@@ -273,6 +277,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     // original as it is when the plan is keyed: deciding their changes
     // rewrites it, during a run as at any other time.
     if (stage === "change-plan" && document) await writeCounterpartyItems(directory, document, revisionOriginal(directory, document))
+    // Change review reads the projected body with the numbers apply will give it.
+    if (stage === "change-review" && document) await writeProjectedNumbers(directory, document)
     // The first draft can write the plan its own key reads; its key is then
     // taken again once the plan is saved.
     const keyed = performance.now()
@@ -378,8 +384,14 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       state = updateLeanStage(directory, state, step, { status: "failed", finished_at: now() })
       return { state: writeLeanState(directory, { ...state, status: "failed", stop_reason: result.reason }) }
     }
-    // Every question the step asks is advised before anything from the step is recorded.
-    const questions = result.questions && await adviseQuestions(directory, state, step, deps, result.questions.map(question => document ? { ...question, document } : question), questionReviews, recorded?.input_sha === inputSha)
+    // Intake asks whether to follow each document of directions awaiting the
+    // lawyer's confirmation, with its own questions or alone once it is ready.
+    const confirmations = step === "intake" ? confirmationQuestions(directory) : []
+    const asked = result.questions || confirmations.length ? [...confirmations, ...result.questions ?? []] : undefined
+    // Every question the step asks is advised before anything from the step is
+    // recorded; one a current instruction decides is settled by it, not asked.
+    const advisedQuestions = asked && await adviseQuestions(directory, state, step, deps, asked.map(question => document ? { ...question, document } : question), questionReviews, recorded?.input_sha === inputSha)
+    const questions = advisedQuestions && settleByInstructions(directory, advisedQuestions)
     if (paused()) return { state: settlePause(directory, state), paused: true }
     if (preferencesChanged()) {
       state = updateLeanStage(directory, state, step, { status: "pending", ...unkeyed(step), outputs: [], finished_at: null })
@@ -387,10 +399,17 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     }
     replaceStageOpenItems(directory, stage, document ?? null, document ? result.openItems.map(item => inDocument(item, document)) : result.openItems)
     if (questions) replaceStageQuestions(directory, stage, document ?? null, questions)
+    // A step blocked only by questions its instructions settled runs again,
+    // reading the settled answers; a confirmation blocks a ready intake.
+    if (questions && !questions.some(question => question.status === "open") && result.status === "blocked" && result.questions?.length) {
+      state = updateLeanStage(directory, state, step, { status: "pending", ...unkeyed(step), outputs: [], finished_at: null })
+      return { state, restart: true }
+    }
+    const status = confirmations.length ? "blocked" : result.status
     snapshotStage(directory, state.revision, step, result.outputs)
     // These steps write some of their own inputs (the gate its question); their key is taken again.
     // A draft row already holds the key its accepted draft was drafted from (runDraftStage).
-    state = updateLeanStage(directory, state, step, { status: result.status, input_sha: step === "checklist-check" || step === "gate" ? stageInputSha(directory, step) : stage === "draft" ? state.stages[step]?.input_sha ?? null : inputSha, outputs: result.outputs, finished_at: now() })
+    state = updateLeanStage(directory, state, step, { status, input_sha: step === "checklist-check" || step === "gate" ? stageInputSha(directory, step) : stage === "draft" ? state.stages[step]?.input_sha ?? null : inputSha, outputs: result.outputs, finished_at: now() })
     // Researchable gaps from the first review of this research go back to it once.
     if (step === "research-review" && result.status === "done" && startResearchGapRound(directory, researchBasis(directory))) return { state, restart: true }
     if (stage === "change-review" && document && readChangeReview(directory, document)?.status === "changes-required") {
@@ -405,10 +424,10 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       const repair = await reconcilePackageReview(directory, state, deps)
       if (repair) return repair
     }
-    if (result.status === "blocked") {
+    if (status === "blocked") {
       await recordLeanDocuments(directory, deps, false)
       if (preferencesChanged()) return { state, restart: true }
-      return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: result.reason ?? null }) }
+      return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: result.reason ?? "Waiting for your answers before legal research and drafting." }) }
     }
   }
   if (preferencesChanged()) return { state, restart: true }
@@ -632,12 +651,14 @@ function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDe
   if (stage === "apply" && document) return runApply(directory, state, document)
   if (stage === "gate") return runGate(directory)
   if (stage === "checklist-check") return runChecklistStage(directory, state, deps, reinspectChecklist)
+  if (stage === "acts") return runActRecordStage(directory, state, deps, progress)
   // A review that re-ran since the plan has findings only a full plan sees.
   if (stage === "change-plan" && document && !roundPlanned(directory, state, recorded) && focusedChecklistRepairs(directory, document) && !unadjudicatedFindings(directory, document).length) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
   if (stage === "change-review" && document && focusedChecklistRepairs(directory, document)) return runFocusedChangeReview(directory, state, deps, document, progress)
   if (stage === "changes" && document && focusedChecklistRepairs(directory, document)) return runChangeReconciliation(directory, state, deps, document, progress)
   if (stage === "change-prepare" && document) return runChangePreparation(directory, state, deps, document, progress)
   if (stage === "draft" && document) return runDraftStage(directory, state, deps, progress, document, planned)
+  if (stage === "spine") return checkAdoptedAgainstResearch(directory, state, deps).then(() => runModelStage(directory, state, step, deps, progress, prepared))
   return runModelStage(directory, state, step, deps, progress, prepared)
 }
 
@@ -704,7 +725,9 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
     const asked = performance.now()
     const reply = await (index === 0 && prepared ? prepared.reply : deps.sessions.prompt({ directory, sessionID, agent, text }))
     const answered = performance.now()
-    const accepted = stage === "discrepancy" || stage === "spine"
+    const accepted = stage === "instructions"
+      ? acceptInstructionsReply(directory, reply)
+      : stage === "discrepancy" || stage === "spine"
       ? acceptEvidenceReply(directory, stage, reply)
       : stage === "intake" || stage === "research" || stage === "research-review"
       ? acceptResearchReply(directory, stage, reply, { final: index >= LEAN_MAX_RETRIES })
@@ -719,7 +742,7 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
       return { status: "failed", reason: `${step}: checker failed after ${LEAN_MAX_RETRIES} retries: ${accepted.issues.join(" ")}` }
     return attempt(index + 1, retryPrompt(stage, accepted.issues))
   }
-  return attempt(0, stage === "change-plan" && document ? changePlanPrompt(directory, document) : stage === "change-review" && document ? changeReviewPrompt(directory, document) : stage === "package-review" ? `${packageReviewPrompt(directory)}\n\nFocused checklist findings are saved at .dochaus/lean/checklist/report.md and checklist/checks.json; use targeted read-record lookup when relevant. Open findings remain unresolved, not satisfied. In that report, a "Disclosed, not satisfied" line is an unresolved finding: it is disclosed with the review draft, is not a blocker for this review to clear, and is never treated as satisfied. Do not re-run every checklist item in this package review.` : stage === "discrepancy" || stage === "spine" ? evidencePrompt(directory, stage) : stage === "intake" || stage === "research" || stage === "research-review" ? researchPrompt(directory, stage, researchBasis(directory)) : stagePrompt(directory, step))
+  return attempt(0, stage === "change-plan" && document ? changePlanPrompt(directory, document) : stage === "change-review" && document ? changeReviewPrompt(directory, document) : stage === "package-review" ? `${packageReviewPrompt(directory)}\n\nFocused checklist findings are saved at .dochaus/lean/checklist/report.md and checklist/checks.json; use targeted read-record lookup when relevant. Open findings remain unresolved, not satisfied. In that report, a "Disclosed, not satisfied" line is an unresolved finding: it is disclosed with the review draft, is not a blocker for this review to clear, and is never treated as satisfied. Do not re-run every checklist item in this package review.` : stage === "instructions" ? instructionsPrompt(directory) : stage === "discrepancy" || stage === "spine" ? evidencePrompt(directory, stage) : stage === "intake" || stage === "research" || stage === "research-review" ? researchPrompt(directory, stage, researchBasis(directory)) : stagePrompt(directory, step))
 }
 
 /** The state's step rows follow the plan, whether the first draft wrote it or

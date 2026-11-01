@@ -8,6 +8,7 @@ import { acceptChangePlan, acceptChangeReview, preparationOutputValid, readChang
 import { comparisonBasis } from "./comparison"
 import { checkPackageReview, isWithheldDeliveryItem, readPackageReview, withholdUngroundedDelivery } from "./package-review"
 import { coverageItems, planCoverageCurrent } from "./package-coverage"
+import { readActRecord } from "./act-record"
 import { requestedFilesItems } from "./requested-files"
 import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
@@ -40,6 +41,7 @@ import {
 import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type PlannedDocument, type StepID } from "./plan"
 import { acceptReviewReply, forwardedFindings, readReviewRecord } from "./review-findings"
 import { templateSource } from "./template-contract"
+import { INSTRUCTIONS_FILE, instructionsOutputValid } from "./instructions"
 import { completedDocumentsText, delegatedDecisionsText, packageCompositionBlock } from "./prompts"
 import { matterSourceBasis, matterSourceIDs } from "./quotes"
 import { documentRepairs, readRepairRound } from "./repairs"
@@ -83,9 +85,12 @@ const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
  * notes, re-runs a done gate, so an open question it asked takes the current
  * form and the delivered notes are written again. */
 const GATE_CONTRACT = "checklist-open-delivery-6"
+/** Keys the act-record step: a change to its jobs, prompts or checks re-runs it. */
+const ACT_RECORD_CONTRACT = "act-record-7"
 export const LEAN_MAX_RETRIES = 3
 
 export const LEAN_STAGE_AGENTS = {
+  instructions: "lean-instructions",
   discrepancy: "lean-discrepancy",
   spine: "lean-spine",
   "review-independent": "lean-review-independent",
@@ -96,6 +101,9 @@ export const LEAN_STAGE_AGENTS = {
   intake: "lean-intake",
   research: "lean-research",
   "research-review": "lean-research-review",
+  // The one agent of every act-record job, so the jobs share a system prompt: act-record.ts's
+  // ACT_RECORD_AGENT, written out because that module imports this one and is not loaded yet here.
+  acts: "lean-act-record",
   draft: "lean-draft",
   review: "lean-review",
   "change-plan": "lean-change-plan",
@@ -103,9 +111,7 @@ export const LEAN_STAGE_AGENTS = {
   "change-review": "lean-change-review",
   changes: "lean-changes",
   finalize: "lean-drafting-notes",
-  // A job of the outline, not a stage: it lists the acts the instructions direct, blind to the plan.
-  coverageActs: "lean-coverage-acts",
-  // A job of the outline, not a stage: it places each listed act in the planned document that carries it.
+  // A job of the outline, not a stage: it places each act the act record lists in the planned document that carries it.
   coverage: "lean-coverage",
   // A job of the outline, not a stage: it reads the files the lawyer asks to receive.
   files: "lean-files",
@@ -184,9 +190,11 @@ export const OPTIONAL_OUTPUTS = ["coverage.json", "requested-files.json"]
 export function stepOutputs(step: StepID): string[] {
   if (step === "discrepancy" || step === "spine" || step === "package-review") return [`${step}.json`]
   if (step === "checklist-check") return ["checklist/extraction.json", "checklist/refinements.json", "checklist/checks.json", "checklist/report.md"]
+  if (step === "instructions") return ["instructions.json", INSTRUCTIONS_FILE]
   if (step === "intake") return ["intake.json"]
   if (step === "research") return ["research.json", "research-context.txt"]
   if (step === "research-review") return ["research-review.json"]
+  if (step === "acts") return ["acts.json"]
   const document = stepDocument(step)
   const at = (names: string[]) => names.map(name => `${document}/${name}`)
   const stage = stepStage(step)
@@ -235,8 +243,8 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     ...(["finalize", "package-review", "gate"].includes(step) ? [{ name: "review-dispositions", bytes: JSON.stringify((readLeanPlan(directory)?.documents ?? []).map(row => reviewDispositionText(directory, row.id))) }] : []),
     ...(["finalize", "package-review"].includes(step) ? [{ name: "delivery-review-contract", bytes: DELIVERY_REVIEW_CONTRACT }] : []),
     ...(step === "gate" ? [{ name: "gate-contract", bytes: GATE_CONTRACT }] : []),
-    ...(!["discrepancy", "intake", "research", "research-review"].includes(step) ? ["research.json", "research-review.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
-    ...(!["discrepancy", "intake", "research", "research-review", "spine"].includes(step) ? ["discrepancy.json", "spine.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
+    ...(!["instructions", "discrepancy", "intake", "research", "research-review", "acts"].includes(step) ? ["research.json", "research-review.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
+    ...(!["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine"].includes(step) ? ["discrepancy.json", "spine.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
     ...(clarifications.length && ["checklist-check", "package-review", "gate"].includes(step) ? [{ name: "inspection-clarifications", bytes: JSON.stringify(clarifications) }] : []),
     { name: "source-content", bytes: matterSourceBasis(directory) },
     ...(!inputs.some(part => part.name === "answers") ? [{ name: "answers", bytes: answeredQuestionsText(directory) }] : []),
@@ -266,13 +274,18 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   const sources = { name: "sources", bytes: matterSourceIDs(directory).join("\n") }
   const planned = readLeanPlan(directory)?.documents.map(row => row.id) ?? []
   if (step === "checklist-check") return [{ name: "checklist-refinement-contract", bytes: "source-unit-refinement-1" }, { name: "checklist-refinement-selection", bytes: JSON.stringify(checklistRefinementSelections(directory)) }, file("checklist/refinements.json"), file("request.md"), file("plan.json"), file("checklist/extraction.json"), file("drafting-notes.docx"), file("research-context.txt"), ...planned.flatMap(id => [file(`${id}/body.docx`), file(`${id}/body-applied.docx`), file(`${id}/redline.docx`), file(`${id}/review-independent.json`), file(`${id}/changes.json`), file(`${id}/apply.json`)])]
+  // What an instruction settled is not an input of the list it was settled by.
+  if (step === "instructions") return outlineInputs(directory, { settled: false })
   if (step === "discrepancy") return outlineInputs(directory)
   if (step === "intake") {
     // Only with a client recorded on the matter, so a matter without one keeps its key.
     const client = matterClient(directory)
-    return [...outlineInputs(directory), file("discrepancy.json"), ...(client ? [{ name: "matter-client", bytes: client }] : [])]
+    return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), file("discrepancy.json"), ...(client ? [{ name: "matter-client", bytes: client }] : [])]
   }
-  if (step === "spine") return [...outlineInputs(directory), file("discrepancy.json"), file("intake.json"), file("research.json"), file("research-review.json")]
+  // The act record reads the instructions, the sources and the approved research; it runs before the spine and reads no discrepancy record.
+  if (step === "acts") return [...outlineInputs(directory), file("intake.json"), file("research.json"), file("research-review.json"), { name: "act-record-contract", bytes: ACT_RECORD_CONTRACT }]
+  // The spine is shown the act record when it plans documents, parties and signatories.
+  if (step === "spine") return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), file("discrepancy.json"), file("intake.json"), file("research.json"), file("research-review.json"), file("acts.json")]
   // Applied deletion evidence includes the original paragraph's exact wording.
   if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(plannedDocument(directory, id)?.playbook_review?.sources.length ? [file(`${id}/review-playbook.json`)] : [])]), file("open-items.json")]
   if (step === "research") {
@@ -307,7 +320,7 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   const counterparty = existsSync(leanFile(directory, `${document}/counterparty.json`)) ? [at("counterparty.json")] : []
   if (isReviewStage(stage)) return [{ name: "playbook-selection", bytes: JSON.stringify(plannedDocument(directory, document)?.playbook_review ?? null) }, file("request.md"), at("paragraphs.json"), sources, finished, acting, scope, ...composed]
   if (stage === "change-prepare") return [file("request.md"), entry, at("paragraphs.json"), at("change-plan.json"), answers, sources, finished, acting, scope, ...composed, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
-  if (stage === "change-review") return [...(repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-review-contract", bytes: "prepared-dependency-component-review-2-proposed-body" }] : []), { name: "review-contract", bytes: "phase-aware-owned-body-review-2" }, file("request.md"), entry, at("paragraphs.json"), at("changes.json"), at("change-plan.json"), at("change-preparation.json"), ...reviewStages(directory, document).map(stage => at(`${stage}.json`)), ...counterparty, answers, sources, finished, acting, scope, ...composed, { name: "questions", bytes: keyedQuestions(directory) }, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
+  if (stage === "change-review") return [...(repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-review-contract", bytes: "prepared-dependency-component-review-2-proposed-body" }] : []), { name: "review-contract", bytes: "phase-aware-owned-body-review-2" }, file("request.md"), entry, at("paragraphs.json"), at("changes.json"), at("paragraphs-projected.json"), at("change-plan.json"), at("change-preparation.json"), ...reviewStages(directory, document).map(stage => at(`${stage}.json`)), ...counterparty, answers, sources, finished, acting, scope, ...composed, { name: "questions", bytes: keyedQuestions(directory) }, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
   if (stage === "changes" || stage === "change-plan") {
     return [...(stage === "changes" && repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-reconciliation-contract", bytes: "prepared-operation-components-1" }] : []), ...(stage === "change-plan" && repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-repair-contract", bytes: "one-assessment-source-adjudication-2" }] : []), file("request.md"), entry, ...(stage === "changes" ? [at("change-plan.json"), at("change-preparation.json")] : []), ...reviewStages(directory, document).map(stage => at(`${stage}.json`)), ...counterparty,
       // Earlier documents' findings about this one; a later document's never key it.
@@ -335,12 +348,12 @@ export function stageDraftingPreferences(directory: string) {
   return areas ? `${preferences}\n${areas}` : preferences
 }
 
-function outlineInputs(directory: string) {
+function outlineInputs(directory: string, options: { settled?: false } = {}) {
   const request = leanFile(directory, "request.md")
   const updates = readLeanText(directory, "updated-notes.md")
   // Only with a working draft, so a run without one keeps its keys.
   const working = readLeanText(directory, WORKING_DRAFT)
-  return [{ name: "drafting-preferences", bytes: stageDraftingPreferences(directory) }, { name: "source-content", bytes: matterSourceBasis(directory) }, { name: "answers", bytes: answeredQuestionsText(directory) }, ...(updates ? [{ name: "updated-notes.md", bytes: updates }] : []), { name: "request.md", bytes: existsSync(request) ? readFileSync(request) : "" }, { name: "sources", bytes: matterSourceIDs(directory).join("\n") }, ...(working ? [{ name: WORKING_DRAFT, bytes: working }] : [])]
+  return [{ name: "drafting-preferences", bytes: stageDraftingPreferences(directory) }, { name: "source-content", bytes: matterSourceBasis(directory) }, { name: "answers", bytes: answeredQuestionsText(directory, options) }, ...(updates ? [{ name: "updated-notes.md", bytes: updates }] : []), { name: "request.md", bytes: existsSync(request) ? readFileSync(request) : "" }, { name: "sources", bytes: matterSourceIDs(directory).join("\n") }, ...(working ? [{ name: WORKING_DRAFT, bytes: working }] : [])]
 }
 
 /** Checks a model reply and, when it passes, writes the step's output files. */
@@ -530,8 +543,10 @@ export function draftOutputValid(directory: string, step: StepID) {
 export function stageOutputValid(directory: string, step: StepID) {
   if (step === "checklist-check") return checklistOutputState(directory).valid
   if (step === "package-review") return Boolean(readPackageReview(directory))
+  if (step === "instructions") return instructionsOutputValid(directory)
   if (step === "discrepancy" || step === "spine") return evidenceOutputValid(directory, step)
   if (step === "intake" || step === "research" || step === "research-review") return researchOutputValid(directory, step)
+  if (step === "acts") return Boolean(readActRecord(directory))
   const stage = stepStage(step)
   const document = stepDocument(step) ?? FIRST_DOCUMENT
   // The first document's draft step also settles the plan's coverage: a missing,

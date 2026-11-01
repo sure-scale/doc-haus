@@ -26,6 +26,9 @@ export async function startDraftingRun(
     model: { providerID: string; modelID: string }
     // An upgraded quick draft, carried as an unverified working draft.
     workingDraft?: string
+    // The lawyer's earlier messages in this chat, as kept at Start; ingest
+    // adds them to the request under their own heading.
+    chatInstructions?: string
   },
 ): Promise<LeanDraftingStart> {
   const res = await fetch(`${INGEST_URL}/matters/${matterId}/drafting-runs/start`, {

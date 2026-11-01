@@ -700,6 +700,90 @@ try {
     console.log("PASS asking about a review answer keeps unsent composer text, and seats the question in an empty composer without sending")
     await context.close()
   }
+  {
+    // Instructions from this chat (#364): a full run asked for after earlier
+    // messages waits for Start with only the lawyer's own messages pre-filled
+    // and included; what they keep, as edited, rides along with the request.
+    const before = counts()
+    config.offer = "off"
+    config.router = JSON.stringify({ route: "qa" })
+    const { context, page, send } = await open()
+    await send("Which invoices are unpaid?")
+    await page.locator(".msg.assistant", { hasText: "Answered." }).waitFor()
+    await page.getByRole("button", { name: "Edit message" }).first().waitFor()
+    await send("No cover memo, please.")
+    await until(() => prompts.length === before.prompts + 2, "both questions are answered in chat")
+    await page.locator(".msg.assistant", { hasText: "Answered." }).nth(1).waitFor()
+    await page.getByRole("button", { name: "Edit message" }).nth(1).waitFor()
+    config.router = scope({ legal_effect: "yes" })
+    const request = "Draft the demand letter for the two invoices."
+    await send(request)
+    const card = page.getByRole("region", { name: "Start the drafting run" })
+    await card.waitFor()
+    await settle()
+    assert.equal(starts.length, before.starts, "the run waits for Start")
+    const include = card.getByLabel("Include your 2 earlier messages in this run")
+    assert.equal(await include.isChecked(), true, "included by default")
+    const text = card.getByRole("textbox", { name: "Instructions from this chat" })
+    assert.equal(await text.isVisible(), false, "the text sits behind Review or edit")
+    if (shots) await page.screenshot({ path: path.join(shots, "chat-instructions-1-start.png") })
+    await card.getByText("Review or edit", { exact: true }).click()
+    assert.equal(await text.inputValue(), "Which invoices are unpaid?\n\nNo cover memo, please.", "only the lawyer's turns, oldest first")
+    if (shots) await page.screenshot({ path: path.join(shots, "chat-instructions-2-review.png") })
+    if (shots) {
+      await page.setViewportSize({ width: 400, height: 860 })
+      await card.scrollIntoViewIfNeeded()
+      await page.screenshot({ path: path.join(shots, "chat-instructions-3-review-400.png") })
+      await page.setViewportSize({ width: 1100, height: 900 })
+    }
+
+    // Cancel: nothing ran, and the request is back in the composer.
+    await card.getByRole("button", { name: "Cancel", exact: true }).click()
+    await card.waitFor({ state: "detached" })
+    assert.equal(await page.getByRole("textbox").inputValue(), request)
+    assert.equal(starts.length, before.starts)
+
+    await page.getByRole("button", { name: "Send message", exact: true }).click()
+    await card.waitFor()
+    await card.getByText("Review or edit", { exact: true }).click()
+    const edited = "No cover memo, please.\n\nAddress it to the finance director."
+    await text.fill(edited)
+    await card.getByRole("button", { name: "Start drafting", exact: true }).click()
+    await until(() => starts.length === before.starts + 1, "Start drafting starts the run")
+    assert.deepEqual(starts.at(-1), { request, agent: "draft", model: { providerID: "test", modelID: "model" }, chatInstructions: edited })
+    console.log("PASS a full run after earlier messages waits for Start with the lawyer's own messages pre-filled; Cancel runs nothing; the edited text rides along")
+    await context.close()
+    config.offer = "ask"
+  }
+  {
+    // On the quick-draft offer the block shows under Full only; left out, the
+    // run gets the request alone.
+    const before = counts()
+    config.router = JSON.stringify({ route: "qa" })
+    const { context, page, send, card } = await open("?view=chat", "full")
+    await send("Which invoices are unpaid?")
+    await page.locator(".msg.assistant", { hasText: "Answered." }).waitFor()
+    await page.getByRole("button", { name: "Edit message" }).first().waitFor()
+    config.router = scope()
+    const request = "Draft a short update to the client on the invoices."
+    await send(request)
+    await card.waitFor()
+    const include = card.getByLabel("Include your earlier message in this run")
+    assert.equal(await include.isChecked(), true)
+    if (shots) {
+      await card.getByRole("button", { name: "Start", exact: true }).scrollIntoViewIfNeeded()
+      await page.screenshot({ path: path.join(shots, "chat-instructions-4-offer-full.png") })
+    }
+    await card.getByLabel(/Quick draft here in chat/).check()
+    assert.equal(await card.locator(".chat-instructions").count(), 0, "a quick draft answers in this chat, so no block")
+    await card.getByLabel(/Full drafting run/).check()
+    await include.uncheck()
+    await card.getByRole("button", { name: "Start", exact: true }).click()
+    await until(() => starts.length === before.starts + 1, "Full starts the drafting run")
+    assert.deepEqual(starts.at(-1), { request, agent: "draft", model: { providerID: "test", modelID: "model" } })
+    console.log("PASS the offer shows the block under Full only; left out, the run gets the request alone")
+    await context.close()
+  }
 } finally {
   await browser.close()
   server.stop(true)

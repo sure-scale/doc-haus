@@ -1,6 +1,6 @@
 import { useAnswerDrafts } from "../../use-answer-drafts"
 import AnswerDraftStatus from "../AnswerDraftStatus"
-import { useEffect, useRef, useState, type MutableRefObject } from "react"
+import { useEffect, useRef, useState, type MutableRefObject, type ReactNode } from "react"
 import { boundedRequest, type Client } from "../../api/opencode/client"
 import QuestionDockShell from "./QuestionDockShell"
 import { ModalClose } from "../ModalHeader"
@@ -44,6 +44,7 @@ export default function SessionQuestions({
   onRoute,
   onRouteDismissed,
   onRoutePending,
+  routeExtra,
 }: {
   client: Client
   sessionRef: MutableRefObject<string>
@@ -57,6 +58,8 @@ export default function SessionQuestions({
   onRoute?: (request: string, choice: DraftChoice) => void
   onRouteDismissed?: (request: string) => void
   onRoutePending?: (request: string | undefined) => void
+  // Shown under a route form's choices, for the choice now selected.
+  routeExtra?: (choice: DraftChoice | undefined) => ReactNode
 }) {
   const [forms, setForms] = useState<PendingForm[]>([])
   const [error, setError] = useState("")
@@ -204,6 +207,7 @@ export default function SessionQuestions({
             </label>
           ))}
         </div>
+        {field && routeExtra?.(routeChoice(answer))}
         {(replyError || error) && (
           <div className="msg-error" role="alert">
             {replyError || error}

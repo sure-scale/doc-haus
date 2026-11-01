@@ -4,7 +4,7 @@ import { finalGate, type GateResult } from "./gate"
 import { openItem } from "./quotes"
 import { enqueueLeanRequest, queuedAnswerIDs, type StoredLeanRequest } from "./requests"
 import { runLean } from "./runner"
-import { answeredQuestionsText, delegable, readLeanJson, readOpenItems, readQuestions, writeOpenItems } from "./state"
+import { ADOPTED_ANSWER, answeredQuestionsText, delegable, readLeanJson, readOpenItems, readQuestions, writeOpenItems } from "./state"
 import { AGENT, cleanupMatters, happyPath, matter, NO_FINDINGS, noChanges, scriptedModel, SUPPORT } from "./test-support"
 
 // "Decide for me" through the real coordinator, end to end: a run blocks on an
@@ -61,10 +61,10 @@ test("an adopted recommendation runs through the queue as the lawyer's answer, r
   expect((await run()).status).toBe("completed")
   expect(outcome(directory, adopted)).toEqual({ status: "answered" })
   expect(asked(QUESTION)).toMatchObject({ status: "answered", answer: CHOSEN, answer_kind: "adopted", option_id: "o1" })
-  const line = `- [${late.id}] Q: ${QUESTION}\n  A (delegated by the lawyer; the recommended option was adopted): ${CHOSEN}`
+  const line = `- [${late.id}] Q: ${QUESTION}\n  A (${ADOPTED_ANSWER}): ${CHOSEN}`
   expect(answeredQuestionsText(directory)).toContain(line)
   const prompts = model.prompts.slice(start)
-  for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.spine, AGENT.draft, AGENT.coverageActs,
+  for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.acts, AGENT.spine, AGENT.draft,
     AGENT.review, AGENT["review-independent"], AGENT["review-wording"], AGENT["review-client-disadvantage"], AGENT["change-plan"], AGENT.changes, AGENT["package-review"]])
     expect([agent, prompts.some(prompt => prompt.agent === agent && prompt.text.includes(line))]).toEqual([agent, true])
   const notes = prompts.find(prompt => prompt.agent === AGENT.finalize)!.text

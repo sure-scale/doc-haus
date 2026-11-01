@@ -11,6 +11,7 @@ import { Bus } from "@opencode/core/bus"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
 import { Image } from "@opencode/core/image"
+import { InstructionDiscovery } from "@opencode/core/instruction-discovery"
 import { Location } from "@opencode/core/location"
 import { FileAccess } from "@opencode/core/file-access"
 import { Model } from "@opencode/core/model"
@@ -29,7 +30,9 @@ import { Session } from "@opencode/core/session"
 import { toLLMMessages } from "@opencode/core/session/runner/to-llm-message"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Tool } from "@opencode/core/tool"
-import { tempLocationLayer } from "./fixture/location"
+import { location as fixtureLocation, tempLocationLayer } from "./fixture/location"
+import { tmpdir } from "./fixture/tmpdir"
+import { AbsolutePath } from "@opencode/core/schema"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { testEffect } from "./lib/effect"
 import { permissionLayer } from "./lib/permission"
@@ -46,6 +49,7 @@ const readToolNode = makeLocationNode({
     Image.node,
     Permission.node,
     SessionInstructions.node,
+    InstructionDiscovery.node,
     FSUtil.node,
     Location.node,
   ],
@@ -55,35 +59,67 @@ const permission = permissionLayer({ assert: () => Effect.void })
 const config = Config.testLayer()
 const imageLayer = AppNodeBuilder.build(Image.node, [Config.node.replace(config)])
 
-const testLayer = AppNodeBuilder.build(
-  LayerNode.group([
-    Database.node,
-    Bus.node,
-    SessionProjector.node,
-    SessionStore.node,
-    Session.node,
-    Location.node,
-    FSUtil.node,
-    FileAccess.node,
-    ReadToolFileSystem.node,
-    readToolNode,
-    Tool.node,
-    PluginHooks.node,
-    SessionInstructions.node,
-    Global.node,
-    Image.node,
-  ]),
-  [
-    Project.node.replace(globalProjectNode),
-    SessionExecution.node.replace(SessionExecution.noopLayer),
-    Location.node.replace(tempLocationLayer),
-    Permission.node.replace(permission),
-    Config.node.replace(config),
-    Image.node.replace(imageLayer),
-  ],
+const buildTestLayer = (input: {
+  location?: Layer.Layer<Location.Service>
+  replacements?: LayerNode.Replacements
+} = {}) =>
+  AppNodeBuilder.build(
+    LayerNode.group([
+      Database.node,
+      Bus.node,
+      SessionProjector.node,
+      SessionStore.node,
+      Session.node,
+      Location.node,
+      FSUtil.node,
+      FileAccess.node,
+      ReadToolFileSystem.node,
+      readToolNode,
+      Tool.node,
+      PluginHooks.node,
+      SessionInstructions.node,
+      InstructionDiscovery.node,
+      Global.node,
+      Image.node,
+    ]),
+    [
+      Project.node.replace(globalProjectNode),
+      SessionExecution.node.replace(SessionExecution.noopLayer),
+      Location.node.replace(input.location ?? tempLocationLayer),
+      Permission.node.replace(permission),
+      Config.node.replace(config),
+      Image.node.replace(imageLayer),
+      ...(input.replacements ?? []),
+    ],
+  )
+
+// A matter folder nested inside a VCS root: the Location is <tmp>/matter while the
+// project directory (nearest .git ancestor) is <tmp>, so sibling paths count as internal.
+const nestedLocationLayer = Layer.unwrap(
+  Effect.acquireRelease(
+    Effect.promise(() => tmpdir()),
+    (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+  ).pipe(
+    Effect.tap((tmp) => Effect.promise(() => fs.mkdir(path.join(tmp.path, "matter")))),
+    Effect.map((tmp) => {
+      const ref = Location.Ref.make({ directory: AbsolutePath.make(path.join(tmp.path, "matter")) })
+      return Layer.succeed(
+        Location.Service,
+        Location.Service.of(fixtureLocation(ref, { projectDirectory: AbsolutePath.make(tmp.path) })),
+      )
+    }),
+  ),
 )
 
-const it = testEffect(testLayer)
+const it = testEffect(buildTestLayer())
+const itNested = testEffect(buildTestLayer({ location: nestedLocationLayer }))
+const itDiscoveryDisabled = testEffect(
+  buildTestLayer({
+    replacements: [
+      InstructionDiscovery.node.replace(InstructionDiscovery.configured({ project: false, global: false })),
+    ],
+  }),
+)
 
 const identity = {
   agent: Agent.ID.make("build"),
@@ -279,6 +315,47 @@ describe("SessionInstructions", () => {
       // The walk starts and stops at the Location root: the root AGENTS.md is searched but
       // dropped by the dirname filter, and up() only walks upward so nested dirs are unseen.
       yield* executeTool(registry, readCall(sessionID, "call-root-list", "."))
+
+      expect(yield* synthetics(sessionID)).toHaveLength(0)
+    }),
+  )
+
+  itNested.live("does not walk above the Location for a read outside it but inside the project", () =>
+    Effect.gen(function* () {
+      const location = yield* Location.Service
+      const dir = location.directory
+      const projectRoot = location.project.directory
+      yield* mkdir(path.resolve(projectRoot, "other"))
+      yield* writeAgents(path.resolve(projectRoot, "AGENTS.md"), "project-instructions")
+      yield* writeAgents(path.resolve(projectRoot, "other", "AGENTS.md"), "other-instructions")
+      yield* Effect.promise(() => fs.writeFile(path.resolve(projectRoot, "other", "file.txt"), "content"))
+
+      const session = yield* Session.Service
+      const registry = yield* Tool.Service
+      const sessionID = (yield* session.create({ location: Location.Ref.make({ directory: dir }) })).id
+
+      // The read succeeds as an internal project path, but its directory is not under the
+      // Location, so no ancestor walk runs and nothing above the matter is injected.
+      yield* executeTool(registry, readCall(sessionID, "call-outside-file", "../other/file.txt"))
+      yield* executeTool(registry, readCall(sessionID, "call-outside-list", "../other"))
+
+      expect(yield* synthetics(sessionID)).toHaveLength(0)
+    }),
+  )
+
+  itDiscoveryDisabled.live("injects no AGENTS.md when project instruction discovery is disabled", () =>
+    Effect.gen(function* () {
+      const location = yield* Location.Service
+      const dir = location.directory
+      yield* mkdir(path.resolve(dir, "sub"))
+      yield* writeAgents(path.resolve(dir, "sub", "AGENTS.md"), "sub-instructions")
+      yield* Effect.promise(() => fs.writeFile(path.resolve(dir, "sub", "file.txt"), "content"))
+
+      const session = yield* Session.Service
+      const registry = yield* Tool.Service
+      const sessionID = (yield* session.create({ location: Location.Ref.make({ directory: dir }) })).id
+
+      yield* executeTool(registry, readCall(sessionID, "call-sub", "sub/file.txt"))
 
       expect(yield* synthetics(sessionID)).toHaveLength(0)
     }),

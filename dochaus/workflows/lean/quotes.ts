@@ -5,6 +5,7 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearestGap, normalize, quotePlaces, verifyQuote } from "../../lib/quote-verify"
 import type { DocID } from "./plan"
+import { INSTRUCTIONS_FILE } from "./instructions"
 import { leanUserUpdates } from "./requests"
 import { readLeanText, readQuestions, shortHash, type OpenItem, type StageID } from "./state"
 import { scanSourceQuotes, type SourceQuote, type SourceQuoteScanOptions } from "./source-quote-scan"
@@ -25,6 +26,27 @@ export type { SourceQuote } from "./source-quote-scan"
 /** The source name under which the lawyer's own words are quoted: the request
  * and the lawyer's answers. A matter document of the same name takes precedence. */
 export const REQUEST_SOURCE = "request"
+
+/** The source name of one lawyer's answer: "answer:" and its question's id. */
+export function answerSource(questionID: string) { return `answer:${questionID}` }
+const ANSWER_SOURCE = /^answer:\S+$/
+export function isAnswerSource(source_id: string) { return ANSWER_SOURCE.test(source_id) }
+
+/** The source name of the recommendation adopted for a question the lawyer
+ * delegated: "adopted:" and its question's id. Its words are the drafter's
+ * judgment, never the lawyer's, so "request" and answerSource never hold them. */
+export function adoptedSource(questionID: string) { return `adopted:${questionID}` }
+const ADOPTED_SOURCE = /^adopted:\S+$/
+
+/** The source names of the run's adopted recommendations, ordered by question id. */
+export function adoptedSources(directory: string) {
+  return adoptedQuestions(directory).map(question => adoptedSource(question.id))
+}
+
+function adoptedQuestions(directory: string) {
+  return readQuestions(directory).filter(question => question.status === "answered" && question.answer_kind === "adopted" && question.answer)
+    .toSorted((a, b) => a.id.localeCompare(b.id))
+}
 
 export function openItem(stage: StageID, kind: OpenItem["kind"], detail: string, ref: OpenItem["ref"]): OpenItem {
   return { id: `${stage}:${kind}:${shortHash(`${detail}\0${JSON.stringify(ref)}`)}`, stage, kind, detail, ref, status: "open" }
@@ -140,6 +162,8 @@ export function quoteFound(directory: string, quote: SourceQuote) {
   if (quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)) {
     return instructionFound(directory, quote.quote)
   }
+  const answer = answerTexts(directory, quote.source_id) ?? adoptedTexts(directory, quote.source_id)
+  if (answer) return lawyerWordsHold(answer, quote.quote)
   return verifyQuote({ directory, quote: quote.quote, document: quote.source_id }).found
 }
 
@@ -148,8 +172,36 @@ export function quoteFound(directory: string, quote: SourceQuote) {
  * words are matched in lower case, with a quotation's bracketed change of case
  * (quotePlaces). */
 export function instructionFound(directory: string, quote: string) {
+  return lawyerWordsHold(lawyerWords(directory), quote)
+}
+
+function lawyerWordsHold(texts: string[], quote: string) {
   const words = normalize(quote).toLowerCase()
-  return words.length > 0 && lawyerWords(directory).some(text => quotePlaces(normalize(text).toLowerCase(), words, { first: true }).places.length > 0)
+  return words.length > 0 && texts.some(text => quotePlaces(normalize(text).toLowerCase(), words, { first: true }).places.length > 0)
+}
+
+/** Where the lawyer wrote `quote`: "request" when the request or an included
+ * update holds it, otherwise the first answer that does (answerSource), or
+ * undefined when none does. */
+export function lawyerQuoteSource(directory: string, quote: string) {
+  const passages = lawyerPassages(directory)
+  const holds = (source_id: string) => lawyerWordsHold(passages.filter(row => row.source_id === source_id).map(row => row.text), quote)
+  return [REQUEST_SOURCE, ...new Set(passages.map(row => row.source_id))].find(holds)
+}
+
+/** The lawyer's words of the answer `source_id` names, or undefined when it
+ * names no answer (or a matter source has that name). */
+function answerTexts(directory: string, source_id: string) {
+  if (!isAnswerSource(source_id) || matterSourceIDs(directory).includes(source_id)) return
+  return lawyerPassages(directory).filter(row => row.source_id === source_id).map(row => row.text)
+}
+
+/** The adopted option's words of the question `source_id` names ([] when it
+ * names no adopted question), or undefined when it is not an adopted source
+ * name (or a matter source has that name). */
+function adoptedTexts(directory: string, source_id: string) {
+  if (!ADOPTED_SOURCE.test(source_id) || matterSourceIDs(directory).includes(source_id)) return
+  return adoptedQuestions(directory).filter(question => adoptedSource(question.id) === source_id).map(question => question.answer!)
 }
 
 /** A quotation in prose ('"words" [source: id]') passes when quoteFound does,
@@ -194,6 +246,8 @@ function elision(directory: string, quote: SourceQuote) {
     .map(row => elisionGap(researchSource(directory, row.snapshot)?.text ?? "", parts))) }
   if (quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE))
     return { parts, gap: nearestGap(lawyerWords(directory).map(text => elisionGap(text, parts, { ignoreCase: true }))) }
+  const answer = answerTexts(directory, quote.source_id) ?? adoptedTexts(directory, quote.source_id)
+  if (answer) return { parts, gap: nearestGap(answer.map(text => elisionGap(text, parts, { ignoreCase: true }))) }
   return { parts, gap: locateElidedQuote({ directory, parts, document: quote.source_id }) }
 }
 
@@ -202,8 +256,37 @@ function elision(directory: string, quote: SourceQuote) {
  * delegating answer recorded as an adoption. The questions are the model's
  * words and are not included. */
 export function lawyerWords(directory: string) {
-  return [readLeanText(directory, "request.md") ?? "", ...leanUserUpdates(directory).filter(update => update.status === "included").map(update => update.text), ...readQuestions(directory).flatMap(question =>
-    question.status === "answered" && question.answer ? [question.answer, ...(question.lawyer_words ? [question.lawyer_words] : [])] : [])]
+  return lawyerPassages(directory).map(row => row.text)
+}
+
+/** lawyerWords, each with its source: "request" for the request and the
+ * updates, answerSource for an answer. */
+function lawyerPassages(directory: string): { source_id: string; text: string }[] {
+  return [readLeanText(directory, "request.md") ?? "", ...leanUserUpdates(directory).filter(update => update.status === "included").map(update => update.text)]
+    .map(text => ({ source_id: REQUEST_SOURCE, text })).concat(readQuestions(directory).flatMap(question =>
+      question.status === "answered" && question.answer && question.answer_kind !== "instruction"
+        // An adopted recommendation's words are the run's, not the lawyer's.
+        ? [...question.answer_kind === "adopted" ? [] : [question.answer], ...(question.lawyer_words ? [question.lawyer_words] : [])].map(text => ({ source_id: answerSource(question.id), text }))
+        : []))
+}
+
+/** When words quoted as the lawyer's are the run's own record (the instructions
+ * list, a question an instruction settled, or an adopted recommendation),
+ * where the lawyer's words are. An adopted recommendation's words are pointed
+ * to their own source name (adoptedSource) where the check accepts it
+ * (`adopted`), otherwise to the request or the matter sources. */
+export function derivedRecordNote(directory: string, quote: string, { adopted: quotable = false } = {}) {
+  const settled = readQuestions(directory).find(question => question.answer_kind === "instruction" && question.decided_by &&
+    lawyerWordsHold([question.question, question.answer ?? "", question.decided_by.text], quote))
+  if (settled?.decided_by)
+    return `Those words are the run's own record of question ${settled.id}, which an instruction settled; they are not the lawyer's words. The lawyer's words behind it are "${excerpt(settled.decided_by.quote)}" in "${settled.decided_by.source_id}".`
+  const adopted = readQuestions(directory).find(question => question.status === "answered" && question.answer_kind === "adopted" && lawyerWordsHold([question.answer ?? ""], quote))
+  if (adopted)
+    return `Those words are the recommendation adopted for question ${adopted.id}, which the lawyer delegated; they are not the lawyer's words. ` +
+      (quotable ? `Quote them under the source name "${adoptedSource(adopted.id)}".` : "Quote the lawyer's request or the matter sources that support the point instead.")
+  return lawyerWordsHold([readLeanText(directory, INSTRUCTIONS_FILE) ?? ""], quote)
+    ? "Those words are the run's list of the lawyer's instructions, not the lawyer's words; quote the words the list shows from its named source, under that source's name."
+    : ""
 }
 
 /** Actionable retry feedback for one unverified quote. When the words are in a
@@ -211,14 +294,18 @@ export function lawyerWords(directory: string) {
  * middle joins passages of the named source, the feedback says so and shows
  * the words it leaves out (or the source's own ellipsis, written differently),
  * or that the passages are apart. A passage beside an ellipsis that is too
- * short to locate (SHORT_QUOTE) is reported as such, not as missing. */
-export function quoteMissIssue(directory: string, where: string, quote: SourceQuote, format: "prose" | "json" = "prose") {
+ * short to locate (SHORT_QUOTE) is reported as such, not as missing. Words
+ * quoted as the lawyer's that are an adopted recommendation are pointed to its
+ * source name when the caller accepts it (`adopted`; derivedRecordNote). */
+export function quoteMissIssue(directory: string, where: string, quote: SourceQuote, format: "prose" | "json" = "prose", options: { adopted?: boolean } = {}) {
   const request = quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)
+  const answer = answerTexts(directory, quote.source_id) !== undefined
+  const adopted = adoptedTexts(directory, quote.source_id) !== undefined
   const elided = elision(directory, quote)
   const gap = elided && elided.parts.length > 1 ? elided.gap : null
   if (gap) {
     const quoted = `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}".`
-    const there = request ? "the request, a user update or one of the lawyer's answers" : "that document"
+    const there = request ? "the request, a user update or one of the lawyer's answers" : answer ? "that answer" : adopted ? "that adopted recommendation" : "that document"
     if (gap.kind === "apart")
       return `${quoted} The quoted parts are in ${there}, but in separate passages. Quote each passage as its own quotation, without an ellipsis.`
     if (!gap.omitted)
@@ -235,7 +322,11 @@ export function quoteMissIssue(directory: string, where: string, quote: SourceQu
     short
       ? `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}". A passage around the "…" is too short to locate on its own.`
       : request
-        ? `${where} quotes "${excerpt(quote.quote)}" as from "${REQUEST_SOURCE}", but those words are not in the request, user updates or any one of the lawyer's answers.`
+        ? [`${where} quotes "${excerpt(quote.quote)}" as from "${REQUEST_SOURCE}", but those words are not in the request, user updates or any one of the lawyer's answers.`, derivedRecordNote(directory, quote.quote, options)].filter(Boolean).join(" ")
+        : answer
+        ? [`${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in the lawyer's answer to that question.`, derivedRecordNote(directory, quote.quote, options)].filter(Boolean).join(" ")
+        : adopted
+        ? `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in the recommendation adopted for that question.`
         : `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in that document.`,
     elsewhere.length
       ? `They do appear in ${elsewhere.map(doc => `"${doc}"`).join(", ")}; cite that document if it is the source you meant.`

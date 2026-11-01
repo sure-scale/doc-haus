@@ -5,7 +5,7 @@ import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
 import { readWorkingDocx } from "../../lib/working-docx"
 import { combinedDelivery, combinedFileItems, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, present, readLeanDocuments, redlineOfBody, requestedMemo } from "./deliverables"
 import { OTHER_FORMAT, formatStem, spelledNames } from "./delivery-selection"
-import { plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
+import { nameKey, normalizedHeading, plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { REQUEST_SOURCE, excerpt, instructionFound, lawyerWords, matterSourceIDs, openItem, quoteMissIssue } from "./quotes"
 import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, shortHash, writeLeanText, type OpenItem, type Question } from "./state"
@@ -25,8 +25,14 @@ import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, short
 // revision. Once the lawyer has answered a requested-files question, no
 // revision is asked for (requestedFilesRevision), and only files no answered
 // question listed are asked about. A file name is no planning judgement, so
-// withRequestedNames gives grounded names to the plan. A shape the run cannot build (several documents
-// in one file, or the memo after its document) is no revision issue; like any
+// withRequestedNames gives grounded names to the plan. Several planned
+// documents the lawyer's words put in one file are held as one document, the
+// others its separate instruments (foldRequestedFiles), before any of this
+// reads the plan. When the lawyer's words ask for one file only, each planned
+// document it leaves out is asked about in a focused job of its own
+// (unheldDocumentPrompt), and those the words do not ask for go in that file
+// (withUnaskedDocuments). A shape the run cannot build (several documents in one file
+// that cannot be held so, or the memo after its document) is no revision issue; like any
 // file the final plan does not deliver as asked, it reaches the lawyer as an
 // open item derived from the record (requestedFilesItems), never stored. A job
 // whose reply never passed its check is recorded as unchecked, and disclosed
@@ -74,16 +80,23 @@ export function requestedFilesWords(directory: string) {
   return shortHash(JSON.stringify([readLeanText(directory, "request.md") ?? "", readLeanText(directory, "updated-notes.md")?.trim() ?? "", answeredQuestionsText(directory)]))
 }
 
-/** The job's one question, over the lawyer's words and the planned documents and memo. */
-export function requestedFilesPrompt(directory: string, documents: PlannedDocument[], memo: string | undefined) {
+/** The lawyer's words the files jobs read: the request, the later instructions and the answers. */
+function wordsBlocks(directory: string) {
   const updates = readLeanText(directory, "updated-notes.md")?.trim()
   const answers = answeredQuestionsText(directory)
+  return [
+    tagged("request", readLeanText(directory, "request.md") ?? ""),
+    updates ? tagged("user_updates", `Later instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n${updates}`) : "",
+    answers ? tagged("answers", `The lawyer's own answers remain controlling; an adopted recommendation is the drafter's judgment, as its label says:\n${answers}`) : "",
+  ]
+}
+
+/** The job's one question, over the lawyer's words and the planned documents and memo. */
+export function requestedFilesPrompt(directory: string, documents: PlannedDocument[], memo: string | undefined) {
   const contents = memo ? "the planned documents and the memo" : "the planned documents"
   return [
     `This is a lean drafting run. Read the lawyer's words for one question: which files the lawyer asks to receive, and which of ${contents} go in each.`,
-    tagged("request", readLeanText(directory, "request.md") ?? ""),
-    updates ? tagged("user_updates", `Later instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n${updates}`) : "",
-    answers ? tagged("answers", `The lawyer's answers; they remain controlling:\n${answers}`) : "",
+    ...wordsBlocks(directory),
     tagged("planned_documents", "The documents the run drafts, by id. Their titles are the plan's own choices, not the lawyer's words.\n" +
       JSON.stringify(documents.map(document => ({ id: document.id, title: document.title })), null, 2)),
     memo ? tagged("planned_memo", `The run also writes the memo the lawyer asks for, planned as "${memo}". In "holds", write it as "memo".`) : "",
@@ -95,7 +108,7 @@ export function requestedFilesPrompt(directory: string, documents: PlannedDocume
       "\"name\": the file name exactly as the lawyer writes it, or null when the lawyer gives no name; " +
       "\"quote\": the lawyer's exact words that ask for this file, copied verbatim, including the words that give its name.",
       `- Put each planned document${memo ? " and the memo" : ""} in one file at most. List only the files the lawyer's words ask for, and in each only what those words put in it.`,
-      "- A file the lawyer's words name as the output of the whole request holds everything the request asks for; a file they name for one document holds only that document. " +
+      "- A file the lawyer's words name as the output of the whole request holds everything the run drafts for it, including each planned document the plan adds to carry the request out; a file they name for one document holds only that document. " +
       `Put a planned document${memo ? " or the memo" : ""} in a file only where the lawyer's words place it.`,
       `- ${filesShape(Boolean(memo))}`,
       "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply.",
@@ -291,6 +304,56 @@ export function requestedFilesRevision(directory: string, issues: FilesIssue[]) 
   return { feedback: [FILES_REVISION_SCOPE, ...revisable.map(row => row.issue)], documents: new Set(revisable.flatMap(row => row.documents)) }
 }
 
+/** The planned documents no file holds when the lawyer's words ask for one
+ * file only, the file they might go in (unheldDocumentPrompt); none otherwise. */
+export function unheldDocuments(requested: RequestedFiles, documents: PlannedDocument[]) {
+  const [only, ...others] = requested.files
+  if (!requested.stated || !only || others.length) return []
+  return documents.filter(document => !only.holds.includes(document.id))
+}
+
+/** One focused question per planned document the one requested file leaves
+ * out: whether the lawyer's words ask for that document themselves. A document
+ * the plan adds to carry the request out is not asked for, so it goes in the
+ * one file the lawyer asks to receive (withUnaskedDocuments). */
+export function unheldDocumentPrompt(directory: string, document: PlannedDocument, file: RequestedFile) {
+  return [
+    "This is a lean drafting run. Read the lawyer's words for one question: whether they ask for one planned document themselves.",
+    ...wordsBlocks(directory),
+    tagged("planned_document", `The plan drafts this document. Its title and purpose are the plan's own choices, not the lawyer's words.\n${JSON.stringify({ title: document.title, purpose: document.purpose })}`),
+    tagged("requested_file", `The lawyer asks for one file${file.name ? `, ${file.name}` : ""}, in these words: "${file.quote}"`),
+    tagged("output_contract", [
+      "- Answer from the request, the lawyer's updates and answers only.",
+      "- The plan may add a document the lawyer's words do not ask for, to carry out what they ask. Such a document is not asked for, though it carries out an act or term the words ask for.",
+      '- When the words ask for this document themselves, by its name or its kind, reply {"asked":true,"quote":"..."}, with the lawyer\'s exact words that ask for it, copied verbatim. When they do not, reply {"asked":false}.',
+      "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply.",
+    ].join("\n")),
+  ].filter(Boolean).join("\n\n")
+}
+
+const ASKED_SHAPE = 'Reply with the JSON object only: {"asked":true,"quote":"..."} or {"asked":false}.'
+
+/** Reads the reply to unheldDocumentPrompt: true with a quote that is the
+ * lawyer's words (instructionFound), or false. Every other reply is retried. */
+export function parseUnheldDocument(reply: string, directory: string): Checked<boolean> {
+  if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
+  let value: unknown
+  try { value = JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {}
+  if (!record(value) || typeof value.asked !== "boolean") return { issues: [ASKED_SHAPE] }
+  if (!value.asked) return { issues: [], value: false }
+  if (typeof value.quote !== "string" || !value.quote.trim()) return { issues: [`"asked" is true, but "quote" is missing. ${ASKED_SHAPE}`] }
+  if (!instructionFound(directory, value.quote)) return { issues: [quoteMissIssue(directory, "quote", { quote: value.quote.trim(), source_id: REQUEST_SOURCE }, "json")] }
+  return { issues: [], value: true }
+}
+
+/** `requested` with each document in `unasked` (by id) added to the lawyer's
+ * one file: the lawyer asks for that file only, and not for the document
+ * apart. */
+export function withUnaskedDocuments(requested: RequestedFiles, unasked: string[]): RequestedFiles {
+  const [only] = requested.files
+  return only && unasked.length ? { ...requested, files: [{ ...only, holds: [...only.holds, ...unasked] }] } : requested
+}
+
 /** The plan's file names with each grounded name the record gives: a file of
  * one document, alone or after the memo, names that document's file; a file of
  * the memo alone names the notes file. Names are compared as registration
@@ -347,6 +410,64 @@ export function withRequestedNames<T extends { title: string; file?: string; del
       }),
     ]
     return { documents: named, notes_file: memo ? notes : undefined, applied }
+  }
+}
+
+/** The outline with each file the lawyer's words fill with several planned
+ * documents (RequestedFiles) held as one document, so the run delivers the one
+ * file asked for: the first of them in drafting order keeps its place, title,
+ * form and furniture, and each other one follows as a separate instrument, its
+ * parts after the host's, the first marked with its title, purpose, form and
+ * parties (PlannedPart.instrument). The document is executed by the parties of
+ * each. A part label another part of the document already uses is suffixed
+ * with its instrument's title; a label printed as the heading keeps its text as
+ * its display heading. The records' files hold the ids the documents then have.
+ * Only new documents drafted without a template, comparison, left-out parts or
+ * playbook to review against fold, none delivered as a redline and only the host combined
+ * with the memo; a file holding any other stays as recorded, a shape the run
+ * cannot build (requestedFilesItems). With `separate` (the lawyer chose a file
+ * of its own for an instrument: separateFileChosen) nothing folds. `at` gives,
+ * for each outline document, the index of the document now holding it; `from`,
+ * for each document of the result, its outline index. */
+export function foldRequestedFiles<T extends Omit<PlannedDocument, "id">>(documents: T[], requested: RequestedFiles, separate = false) {
+  const at = documents.map((_, index) => index)
+  const foldable = (document: T, host: boolean) => (document.mode ?? "new") === "new" && !document.template && !document.comparison && !document.playbook_review?.sources.length &&
+    !document.left_out?.length && document.deliverable !== "redline" && (host || document.deliverable !== "combined") && !document.parts.some(part => part.instrument)
+  if (requested.stated && !separate) for (const file of requested.files) {
+    const held = [...new Set(file.holds.filter(id => id !== MEMO).map(id => Number(id.slice(1)) - 1))].filter(index => documents[index]).toSorted((a, b) => a - b)
+    const [host, ...rest] = held
+    if (host === undefined || !rest.length || held.some(index => at[index] !== index) || !foldable(documents[host]!, true) || rest.some(index => !foldable(documents[index]!, false))) continue
+    for (const index of rest) at[index] = host
+  }
+  const hosts = documents.flatMap((_, index) => at[index] === index ? [index] : [])
+  const applied: string[] = []
+  const folded = hosts.map(host => {
+    const instruments = documents.flatMap((document, index) => index !== host && at[index] === host ? [document] : [])
+    if (!instruments.length) return documents[host]!
+    const document = documents[host]!
+    const used = new Set(document.parts.map(part => normalizedHeading(part.heading)))
+    const parts = [...document.parts, ...instruments.flatMap(instrument => instrument.parts.map((part, index) => {
+      const clash = used.has(normalizedHeading(part.heading))
+      const heading = clash ? `${part.heading} (${instrument.title})` : part.heading
+      used.add(normalizedHeading(heading))
+      return {
+        ...part, heading, ...(clash && part.display_heading === undefined ? { display_heading: part.heading } : {}),
+        ...(index ? {} : { instrument: {
+          title: instrument.title, ...(instrument.purpose ? { purpose: instrument.purpose } : {}),
+          ...(instrument.executed_by ? { executed_by: instrument.executed_by } : {}), ...(instrument.form ? { form: instrument.form } : {}),
+        } }),
+      }
+    }))]
+    const parties = [document, ...instruments].flatMap(row => row.executed_by ?? [])
+    const executing = [document, ...instruments].some(row => row.executed_by) ? [...new Map(parties.map(party => [nameKey(party), party])).values()] : undefined
+    applied.push(`${titles(instruments)} drafted as ${instruments.length > 1 ? "separate instruments" : "a separate instrument"} in "${document.title}", in one file as the lawyer's words ask`)
+    return { ...document, parts, ...(executing ? { executed_by: executing } : {}) }
+  })
+  const position = at.map(host => hosts.indexOf(host))
+  const holds = (file: RequestedFile) => [...new Set(file.holds.map(id => id === MEMO ? id : `d${position[Number(id.slice(1)) - 1]! + 1}`))]
+  return {
+    documents: folded, at: position, from: hosts, applied,
+    requested: applied.length ? { ...requested, files: requested.files.map(file => ({ ...file, holds: holds(file) })) } : requested,
   }
 }
 
@@ -618,7 +739,7 @@ function requestedFilesRaised(directory: string, told?: OpenItem[]): { item: Ope
     }
     const phrases = [...[...files.values()].map(describe), ...(file.holds.includes(MEMO) && !memo ? ["no memo"] : [])]
     const delivers = phrases.length ? serialList(phrases) : "none of them"
-    const reason = !shape ? file.holds.filter(held => held !== MEMO).length > 1 ? " The run cannot put more than one document in one file."
+    const reason = !shape ? file.holds.filter(held => held !== MEMO).length > 1 ? " The run puts several documents in one file only when it drafts each as a new document, with no template, comparison or playbook review, and none as a redline."
       : " The run can join the memo and a document in one file only with the memo first."
       : !check.unsupported && check.issue?.ask ? " The run cannot join the memo with a redline." : ""
     const refused = file.name === null ? file.refused_name : undefined

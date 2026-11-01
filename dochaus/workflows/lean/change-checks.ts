@@ -174,7 +174,7 @@ function amendmentQuoteIssues(directory: string, amendment: Amendment, index: nu
   const at = `amendments[${index}] ([${amendment.pid}])`
   return [
     ...amendment.sources.filter(source => !quoteFound(directory, source))
-      .map(source => quoteMissIssue(directory, `${at}.sources`, source)),
+      .map(source => quoteMissIssue(directory, `${at}.sources`, source, "json")),
     ...proseQuoteIssues(directory, `${at}.updated`, amendmentText(amendment), { format: "plain" }),
   ]
 }

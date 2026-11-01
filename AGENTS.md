@@ -34,6 +34,12 @@ architectural requirement for product model jobs and development agents alike.
 - Supply only the instruction, source evidence, target passages and material
   qualifications or dependencies. Do not send the whole matter; allow targeted
   retrieval when more evidence is needed.
+- Keep context concise. Send a job only what its question needs, unless there
+  is a stated reason for more; extra material dilutes attention and causes
+  context rot.
+- Separate each kind of context clearly in the prompt, preferably in XML-style
+  tags (`<request>`, `<source>`, `<question>`), so the model never confuses
+  instructions, evidence and the question it must answer.
 - Keep extraction, drafting, linking, verification and reconciliation in
   separate jobs, not in one drafting prompt or one final reviewer.
 - Decompose an oversized job before raising its prompt, context window,

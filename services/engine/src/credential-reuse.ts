@@ -118,14 +118,16 @@ export function credentialReuse(options: {
 function legacyCredential(integrationID: string, input: unknown): Stored {
   if (!input || typeof input !== "object" || !("type" in input)) throw new Error("Invalid legacy credential")
   const value = input as Record<string, unknown>
-  const converted = value.type === "api" ? { type: "key", key: value.key, metadata: value.metadata }
+  // A legacy key usually has no metadata; send the field only when it exists,
+  // since Credential.Value rejects an explicit undefined.
+  const converted = value.type === "api" ? { type: "key", key: value.key, ...(value.metadata === undefined ? {} : { metadata: value.metadata }) }
     : value.type === "oauth" ? {
       type: "oauth", refresh: value.refresh, access: value.access, expires: value.expires,
       methodID: integrationID === "openai" ? "chatgpt-browser" : ["github-copilot", "opencode", "xai"].includes(integrationID) ? "device" : "oauth",
-      metadata: value.accountId || value.enterpriseUrl ? {
+      ...(value.accountId || value.enterpriseUrl ? { metadata: {
         ...(typeof value.accountId === "string" ? { accountID: value.accountId } : {}),
         ...(typeof value.enterpriseUrl === "string" ? { enterpriseUrl: value.enterpriseUrl } : {}),
-      } : undefined,
+      } } : {}),
     } : undefined
   return { integrationID: Integration.ID.make(integrationID), label: value.type === "oauth" ? "OAuth" : "API key", value: decode(converted) }
 }

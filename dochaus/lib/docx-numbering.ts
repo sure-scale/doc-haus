@@ -161,7 +161,15 @@ export function numberDocxClauses(bytes: Uint8Array, options: { house?: false; s
     if (kind === "strip") continue
     let style = paragraph.style
     const bound = levelStyles.get(level)
-    if (bound && bound !== style && !(paragraph.heading && !catalog.headingLike(bound))) {
+    // A paragraph a change numbers into a settled list reads as one more of its
+    // items: it takes the style (or none) of the nearest item at its level.
+    const at = paragraphs.indexOf(paragraph)
+    const item = (row: Paragraph) => row !== paragraph && !row.table && !row.split && row.member?.abstract === list.abstract && row.member.level === level
+    const sibling = options.house === false ? paragraphs.slice(0, at).findLast(item) ?? paragraphs.slice(at + 1).find(item) : undefined
+    if (sibling) {
+      copyParagraphStyle(paragraph.node, sibling.node)
+      style = sibling.style
+    } else if (bound && bound !== style && !(paragraph.heading && !catalog.headingLike(bound))) {
       setParagraphStyle(paragraph.node, bound)
       style = bound
     }
@@ -210,6 +218,60 @@ export function numberedList(bytes: Uint8Array): { numId: string; styles: Map<nu
   const styles = new Map<number, string>()
   for (const row of rows) if (!styles.has(row.member!.level)) styles.set(row.member!.level, row.style)
   return { numId: rows[0]!.member!.numId, styles, numbered: numbered.length, typed: body.filter(row => !row.member && row.literal).length }
+}
+
+/** Keeps counting on the list instances that counted on in `drafted`: a run
+ * of items on an instance of its own that starts at the number after the
+ * list's last one ("6." after a heading that follows "5."), as a Markdown
+ * render numbers each run of a list. In `revised`, the same body after
+ * changes added or removed items of the list, each such instance starts at
+ * the number after the list's last one there, as one list renumbers. An
+ * instance that starts afresh keeps its start. The package is untouched when
+ * nothing changes. */
+export function continueListStarts(drafted: Uint8Array, revised: Uint8Array): Uint8Array {
+  const going = new Set<string>()
+  listStarts(drafted, (numId, start, previous) => {
+    if (previous !== undefined && start === previous + 1) going.add(numId)
+    return undefined
+  })
+  if (!going.size) return revised
+  return listStarts(revised, (numId, start, previous) =>
+    going.has(numId) && previous !== undefined && start !== previous + 1 ? previous + 1 : undefined)
+}
+
+// Visits, in body order, each list instance that sets its first level's
+// start, with the number its list last showed at that level before it; a
+// number `visit` returns becomes the instance's start.
+function listStarts(bytes: Uint8Array, visit: (numId: string, start: number, previous: number | undefined) => number | undefined): Uint8Array {
+  const parts = unzipSync(bytes)
+  if (!parts[BODY] || !parts[STYLES] || !parts[NUMBERING]) return bytes
+  const numbering = parse(strFromU8(parts[NUMBERING]))
+  const catalog = readStyles(parse(strFromU8(parts[STYLES])))
+  const lists = readNumbering(numbering, catalog)
+  const counters = new Map<string, Counters>()
+  let changed = false
+  for (const { member, table } of bodyParagraphs(parse(strFromU8(parts[BODY])), catalog, lists)) {
+    const levels = member && lists.abstracts.get(member.abstract)?.levels
+    if (table || !member || !levels?.[0]?.format) continue
+    const count = counters.get(member.abstract) ?? new Counters(levels, lists.overrides)
+    counters.set(member.abstract, count)
+    const start = lists.overrides.get(member.numId)?.get(0)
+    if (start !== undefined && !count.seen.has(member.numId)) {
+      const moved = visit(member.numId, start, count.values[0])
+      if (moved !== undefined) {
+        lists.overrides.get(member.numId)!.set(0, moved)
+        const num = children(numbering.documentElement, "num").find(row => row.getAttributeNS(W, "numId") === member.numId)!
+        const override = children(num, "lvlOverride").find(row => (row.getAttributeNS(W, "ilvl") ?? "0") === "0")!
+        child(override, "startOverride")!.setAttributeNS(W, "w:val", String(moved))
+        changed = true
+      }
+    }
+    count.enter(member.numId)
+    count.advance(member.level, member.numId)
+  }
+  if (!changed) return bytes
+  parts[NUMBERING] = strToU8(new XMLSerializer().serializeToString(numbering))
+  return zipSync(parts, { mtime: new Date(1980, 0, 1) })
 }
 
 /** A numbered list each of whose items opens with a bracketed number of its
@@ -493,6 +555,13 @@ function removeEmptyRun(node: Element) {
 
 function setParagraphStyle(paragraph: Element, style: string) {
   place(properties(paragraph), element(paragraph.ownerDocument!, "pStyle", { val: style }), PPR_ORDER)
+}
+
+function copyParagraphStyle(paragraph: Element, from: Element) {
+  const style = child(child(from, "pPr"), "pStyle")
+  if (style) return place(properties(paragraph), style.cloneNode(true) as Element, PPR_ORDER)
+  const own = child(child(paragraph, "pPr"), "pStyle")
+  if (own) own.parentNode!.removeChild(own)
 }
 
 function setParagraphNumbering(paragraph: Element, level: number, numId: string) {

@@ -1,7 +1,11 @@
 // Run from dochaus/: bun test workflows/lean/apply-numbering.test.ts
 import { afterEach, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
+import { DOMParser } from "@xmldom/xmldom"
+import { strFromU8, unzipSync } from "fflate"
 import { renderMarkdownToDocx } from "../../lib/render"
-import { runApply } from "./apply-stage"
+import { runApply, writeProjectedNumbers } from "./apply-stage"
+import { projectedChangeParagraphs } from "./change-pipeline"
 import { readParagraphs, shownText, withoutListLabel, type ParagraphRow } from "./checks"
 import { writeLeanPlan } from "./plan"
 import { paragraphRows } from "./stages"
@@ -51,4 +55,84 @@ test("a later part of a split clause with the next number at its own level becom
   expect(sibling.applied.find(row => row.text === "Late payment carries interest.")).toMatchObject({ label: "2.3", clause: true })
   const limbs = await applySplit("# Supply Agreement\n\n## 1. Supply\n\n1.1 Payment is due:\n\n(a) on delivery; or\n\n(b) on invoice.\n\n1.2 Interest runs daily.\n", "on delivery", ["(a) on delivery;", "(b) on acceptance; or"])
   expect(limbs.applied.map(shownText).slice(2)).toEqual(["1.1 Payment is due:", "(a) on delivery;", "(b) on acceptance; or", "(c) on invoice.", "1.2 Interest runs daily."])
+}, 60_000)
+
+// A Markdown render numbers each run of a list on an instance of its own that
+// starts where the run's first item counts on (resolution 3 after the
+// heading). The changes renumber the runs after them as one list would.
+const RESOLUTIONS = "# Board Consent\n\n1. Bylaws. RESOLVED, that the Bylaws are adopted.\n\n2. Officers. RESOLVED, that the officers are elected.\n\n## Further Matters\n\n3. Ratification. RESOLVED, that the earlier actions are ratified.\n\n4. Fiscal Year. RESOLVED, that the fiscal year ends on December 31.\n\n## Signatures\n\nIN WITNESS WHEREOF, the directors sign.\n"
+
+async function draftResolutions(amendments: (rows: ParagraphRow[]) => Record<string, unknown>[]) {
+  const directory = matter()
+  writeLeanPlan(directory, [{ title: "Board Consent", purpose: "", parts: [{ heading: "Resolutions", scope: "" }] }])
+  writeLeanBytes(directory, "d1/body.docx", (await renderMarkdownToDocx(RESOLUTIONS)).bytes)
+  const rows = await paragraphRows(leanFile(directory, "d1/body.docx"))
+  writeLeanText(directory, "d1/paragraphs.json", `${JSON.stringify(rows, null, 2)}\n`)
+  const sources = [{ source_id: "instructions.txt", quote: "RESOLVED" }]
+  writeLeanText(directory, "d1/changes.json", JSON.stringify({
+    amendments: amendments(rows).map((row, index) => ({ id: `a${index + 1}`, existing_sha256: rows.find(entry => entry.pid === row.pid)!.sha256, reason: "Revise the resolutions.", sources, ...row })),
+    explanations: [], questions: [],
+  }))
+  return directory
+}
+
+async function applyResolutions(amendments: (rows: ParagraphRow[]) => Record<string, unknown>[]) {
+  const directory = await draftResolutions(amendments)
+  expect(await runApply(directory, readLeanState(directory)!, "d1")).toMatchObject({ status: "done" })
+  return { directory, numbered: (readLeanJson(directory, "d1/paragraphs-applied.json") as ParagraphRow[]).filter(row => row.label).map(shownText) }
+}
+
+const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+// The w:pStyle of the applied body's paragraph whose text starts with `starts`.
+function appliedStyle(directory: string, starts: string) {
+  const doc = new DOMParser().parseFromString(strFromU8(unzipSync(readFileSync(leanFile(directory, "d1/body-applied.docx")))["word/document.xml"]!), "application/xml")
+  const paragraph = Array.from(doc.getElementsByTagNameNS(W, "p")).find(node => (node.textContent ?? "").startsWith(starts))!
+  return paragraph.getElementsByTagNameNS(W, "pStyle")[0]?.getAttributeNS(W, "val") ?? undefined
+}
+
+const at = (rows: ParagraphRow[], starts: string) => rows.find(row => row.text.startsWith(starts))!.pid
+
+test("resolutions after a deleted one renumber across the runs of the list", async () => {
+  expect((await applyResolutions(rows => [{ pid: at(rows, "Bylaws"), operation: "delete", updated: "" }])).numbered).toEqual([
+    "1. Officers. RESOLVED, that the officers are elected.",
+    "2. Ratification. RESOLVED, that the earlier actions are ratified.",
+    "3. Fiscal Year. RESOLVED, that the fiscal year ends on December 31.",
+  ])
+}, 60_000)
+
+// A heading rewritten as a resolution with the list's next number joins the
+// list (the body's list is Word's default numbering, which no style binds); a
+// split resolution's later part without a number leaves it. The joined
+// paragraph takes its list siblings' style, not the heading's.
+test("a resolution a change numbers joins the list and a split part leaves it", async () => {
+  const { directory, numbered } = await applyResolutions(rows => [
+    { pid: at(rows, "Further Matters"), updated: "3. Confirmation. RESOLVED, that the bank account is confirmed." },
+    { pid: at(rows, "Ratification"), operation: "split", updated: ["Ratification. RESOLVED, that the earlier actions are ratified.", "Effect. These resolutions take effect today."] },
+  ])
+  expect(appliedStyle(directory, "Confirmation")).toBe(appliedStyle(directory, "Officers"))
+  expect(appliedStyle(directory, "Signatures")).toBe("Heading2")
+  expect(numbered).toEqual([
+    "1. Bylaws. RESOLVED, that the Bylaws are adopted.",
+    "2. Officers. RESOLVED, that the officers are elected.",
+    "3. Confirmation. RESOLVED, that the bank account is confirmed.",
+    "4. Ratification. RESOLVED, that the earlier actions are ratified.",
+    "5. Fiscal Year. RESOLVED, that the fiscal year ends on December 31.",
+  ])
+}, 60_000)
+
+// Change review reads the projected body with the numbers apply will give it,
+// not the drafted ones, which repeat a number after an added resolution.
+test("the projected body change review reads carries the numbers after apply", async () => {
+  const directory = await draftResolutions(rows => [
+    { pid: at(rows, "Further Matters"), updated: "3. Confirmation. RESOLVED, that the bank account is confirmed." },
+  ])
+  await writeProjectedNumbers(directory, "d1")
+  expect(projectedChangeParagraphs(directory, "d1").filter(row => row.label).map(shownText)).toEqual([
+    "1. Bylaws. RESOLVED, that the Bylaws are adopted.",
+    "2. Officers. RESOLVED, that the officers are elected.",
+    "3. Confirmation. RESOLVED, that the bank account is confirmed.",
+    "4. Ratification. RESOLVED, that the earlier actions are ratified.",
+    "5. Fiscal Year. RESOLVED, that the fiscal year ends on December 31.",
+  ])
 }, 60_000)

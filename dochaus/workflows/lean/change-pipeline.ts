@@ -5,11 +5,12 @@ import { existsSync, readFileSync } from "node:fs"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { amendmentParagraphs } from "../../lib/drafting-amendment"
 import { askedQuestions, checkChanges, parseJsonObject, questionIssues } from "./change-checks"
-import { finalBodyParagraphs, readChangeList, readParagraphs, record, type ChangeList, shownText } from "./checks"
+import { finalBodyParagraphs, readChangeList, readParagraphs, record, type ChangeList, shownText, withoutListLabel } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { reviewStages, earlierDocuments, readLeanPlan, type DocID } from "./plan"
 import { packageCompositionBlock, revisionPreferenceScope, stagePrompt, retryPrompt } from "./prompts"
-import { matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
+import { excerpt, matterSourceIDs, openItem, quoteFound, quoteMissIssue, sourceQuotes } from "./quotes"
+import { normalize, normalizeWithMap, quotePlaces, sourceReadings, verifyQuote } from "../../lib/quote-verify"
 import { changesRepairSections, documentRepairs } from "./repairs"
 import { drainLeanRequests } from "./requests"
 import { approvedResearch } from "./research"
@@ -224,11 +225,71 @@ function unadjudicatedFindingItems(directory: string, document: DocID) {
   return unadjudicatedFindings(directory, document).map(row => findingItem(row, document))
 }
 
+/** One cited passage's stored text is shown up to PASSAGE_CHARS (about one
+ * ingest chunk); a longer region is cut to a window around the quotation. All
+ * passages together stay within SOURCE_PASSAGE_CHARS; the rest are named for
+ * retrieval. */
+const PASSAGE_CHARS = 2400
+const SOURCE_PASSAGE_CHARS = 12_000
+
+/** The stored canonical text around each matter-document passage the group and
+ * shared decisions already cite, found with the same verifyQuote the
+ * verify-quote tool and the checker use, so the job need not search for it.
+ * The request, answers and approved research are already in the prompt. */
+export function groupSourcePassages(directory: string, plan: ChangePlan, group: ChangeGroup) {
+  // verifyQuote finds only matter documents and the bound playbook.
+  const cited = [...group.sources, ...[...plan.shared_decisions, group.goal, ...group.limitations].flatMap(text => sourceQuotes(text))]
+  const shown: { doc: string; text: string; block: string }[] = []
+  const omitted: string[] = []
+  let used = 0
+  for (const quote of cited) {
+    const hit = verifyQuote({ directory, quote: quote.quote, document: quote.source_id }).hits[0]
+    // A passage already shown that holds these words is not repeated.
+    if (!hit || shown.some(row => row.doc === hit.doc && normalize(row.text).includes(normalize(quote.quote)))) continue
+    const text = hit.verbatim.length <= PASSAGE_CHARS ? hit.verbatim.trim() : passageWindow(hit.doc, hit.verbatim, quote.quote)
+    if (shown.some(row => row.doc === hit.doc && row.text === text)) continue
+    if (!text || used + text.length > SOURCE_PASSAGE_CHARS) {
+      omitted.push(`"${excerpt(quote.quote, 80)}" [source: ${hit.doc}]`)
+      continue
+    }
+    used += text.length
+    shown.push({ doc: hit.doc, text, block: `[${hit.doc} — ${hit.section}${text.length < hit.verbatim.trim().length ? ", excerpt" : ""}]\n${text}` })
+  }
+  if (!shown.length && !omitted.length) return ""
+  return [
+    "<cited_source_passages>",
+    "Stored canonical text containing the passages this group and the shared decisions cite. Quote supporting words exactly from it or from other canonical text. Every quotation in your reply is verified against the canonical source after you reply and any miss is returned to you for correction, so verify-quote is not needed for words copied from here.",
+    ...shown.map(row => row.block),
+    ...(omitted.length ? [`Not shown for length; retrieve with read-document or search-document if needed: ${omitted.join("; ")}`] : []),
+    "</cited_source_passages>",
+  ].join("\n\n")
+}
+
+/** About PASSAGE_CHARS of `raw` around `quote`, at word boundaries, or "" when
+ * the quotation cannot be located in any reading of the source. */
+function passageWindow(document: string, raw: string, quote: string) {
+  const needle = normalize(quote)
+  for (const reading of sourceReadings(document)) {
+    const view = normalizeWithMap(raw, reading)
+    const { places: [at], length } = quotePlaces(view.text, needle, { first: true })
+    if (at === undefined) continue
+    const start = view.map[at], end = view.end[at + length - 1]
+    if (start === undefined || end === undefined) continue
+    const pad = Math.max(0, Math.floor((PASSAGE_CHARS - (end - start)) / 2))
+    const from = Math.max(0, start - pad), to = Math.min(raw.length, end + pad)
+    const left = from ? raw.slice(from, start).search(/\s/) : 0
+    const right = to < raw.length ? raw.slice(end, to).search(/\s\S*$/) : -1
+    return raw.slice(from + Math.max(0, left), right >= 0 ? end + right : to).trim()
+  }
+  return ""
+}
+
 export function changePreparationPrompt(directory: string, document: DocID, plan: ChangePlan, group: ChangeGroup) {
   const pids = new Set(group.pids)
   const prior = readChangeList(directory, document)
   const composition = packageCompositionBlock(directory, document)
   const preferenceScope = revisionPreferenceScope(directory, document)
+  const passages = groupSourcePassages(directory, plan, group)
   return [
     ...(documentRepairs(directory, document)?.items.every(item => item.stage === "checklist-check") ? [
       "Prepare ONE accepted repair group using only its goals, source passages, listed initial paragraphs and related prior changes below. Original instructions and actual human answers determine scope; generated plans/research limits are not client waivers. Flagging, proposing and adopting are different actions. Preserve genuine uncertainty and do not invent approval or authority.",
@@ -240,10 +301,11 @@ export function changePreparationPrompt(directory: string, document: DocID, plan
     `<adjudicated_dependencies_not_independent_authority>\n${plan.shared_decisions.join("\n")}\n</adjudicated_dependencies_not_independent_authority>`,
     "These generated dependencies summarize prior source adjudication. They do not themselves establish a human decision, override original source instructions or waive unresolved work. Actual source instructions and human answers govern; disclose a conflict rather than silently adopting a generated scope limit.",
     `<group_goal_and_evidence>\n${JSON.stringify(writerGroup(group), null, 2)}\n</group_goal_and_evidence>`,
+    ...(passages ? [passages] : []),
     `<draft_paragraphs>\n${readParagraphs(directory, document).filter(row => pids.has(row.pid)).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</draft_paragraphs>`,
     `<previous_group_changes>\n${JSON.stringify([...(prior?.amendments ?? []), ...(prior?.withheld ?? []).map(row => row.amendment)].filter(row => pids.has(row.pid)), null, 2)}\n</previous_group_changes>`,
     "Amend the listed initial draft paragraphs, not paragraphs reconstructed from the supplied original: the original is evidence and the comparison baseline, while the listed draft is the amendment target. Use the listed group pids exactly. A scope mismatch is a preparation limitation for the reconciler, not a question for the human about internal identifiers. Ask only a genuinely indispensable human decision; never request paragraph bookkeeping from the user.",
-    "Prepare this adjudicated group only. Retain unaffected wording and every supported goal; reconcile dependent paragraphs together. Supporting excerpts and the spine are retrieval guides, not authority: inspect underlying canonical passages and qualifications on demand. Other groups cannot be amended here. If the supplied scope misses a material dependency or decision, do not guess: explain the problem and ask an indispensable question when only the lawyer can decide. A final reconciler independently considers the whole body.",
+    "Prepare this adjudicated group only. Retain unaffected wording and every supported goal; reconcile dependent paragraphs together. Supporting excerpts and the spine are retrieval guides, not authority: check each against its canonical passage and qualifications; cited source passages, when shown, are that canonical text, so retrieve further only for a definition, condition, exception or other evidence they do not contain. Other groups cannot be amended here. If the supplied scope misses a material dependency or decision, do not guess: explain the problem and ask an indispensable question when only the lawyer can decide. A final reconciler independently considers the whole body.",
     'Reply exactly {"amendments":[{"pid":"a listed group pid","updated":"full replacement paragraph without line breaks","reason":"why and intended effect","sources":[{"source_id":"canonical source or request","quote":"exact supporting words"}]}],"questions":[]}. One explicit operation per initial pid: omit operation for one replacement string; use operation delete and updated "" to remove the paragraph only with source or settled-instruction support; use operation split and updated as an array of at least two complete nonempty paragraphs to split it. Each resulting paragraph stays one paragraph without line breaks. Never encode a deletion as a blank replacement or collapse a split to its first paragraph. Unsupported deletion retains the original wording with a new confirmation marker instead. Unsupported substantive judgment requires a new visible [open item: confirm ...] marker; sources may then be empty. A newly discovered essential unanswered question may instead be included with pid/question/kind/context and existing id when repeating, with a visible open-item amendment to its paragraph. ' + QUESTION_KIND_CONTRACT + ' Never assume an answer. No files or redlines.',
   ].join("\n\n")
 }
@@ -316,6 +378,13 @@ export function uniqueReplacementIssues(changes: ChangeList) {
 }
 
 export function projectedChangeParagraphs(directory: string, document: DocID) {
+  const projected = amendedParagraphs(directory, document)
+  // The numbers apply gives them, while saved for this very text.
+  const numbered = projectedNumbers(directory, document, projected)
+  return numbered ? projected.map((row, at) => numbered[at]!.label ? { ...row, label: numbered[at]!.label, text: withoutListLabel(row.text, numbered[at]!.label) } : { ...row, label: undefined }) : projected
+}
+
+function amendedParagraphs(directory: string, document: DocID) {
   const changes = readChangeList(directory, document)
   if (!changes || uniqueReplacementIssues(changes).length) throw new Error("A reconciled change list with one replacement per paragraph is required before semantic review.")
   const amendments = new Map(changes.amendments.map(row => [row.pid, amendmentParagraphs(row)]))
@@ -323,6 +392,14 @@ export function projectedChangeParagraphs(directory: string, document: DocID) {
   if (changes.amendments.some(row => !paragraphs.some(paragraph => paragraph.pid === row.pid))) throw new Error("Changes address an unknown initial paragraph.")
   // A split's later paragraphs take numbers the list assigns once applied.
   return paragraphs.flatMap(row => (amendments.get(row.pid) ?? [row.text]).map((text, at) => at ? { ...row, text, label: undefined } : { ...row, text }))
+}
+
+function projectedNumbers(directory: string, document: DocID, projected: { pid: string; text: string }[]) {
+  const saved = readLeanJson(directory, `${document}/paragraphs-projected.json`)
+  if (!Array.isArray(saved) || saved.length !== projected.length) return
+  const rows = saved as { pid?: unknown; text?: unknown; label?: unknown }[]
+  if (!rows.every((row, at) => row.pid === projected[at]!.pid && row.text === projected[at]!.text && (row.label === undefined || typeof row.label === "string"))) return
+  return rows as { label?: string }[]
 }
 
 /** The body a semantic repair refers to: for a checklist repair, focused
@@ -365,7 +442,8 @@ export function changeReviewPrompt(directory: string, document: DocID) {
     '<artifact_phase>before-apply</artifact_phase>',
     "This review precedes application of the current projected revision. Review the proposed explanations in reconciled_changes reason/source records, their evidence and consistency with the projected wording. Native redlines and anchored Word comments for this revision are generated by the apply step and checked against actual exported records in package review afterwards. Earlier exports may exist on disk but do not verify this revision. Absence of the current export is not a pre-apply defect or proof of missing final delivery. Do not claim it already exists or ask the read-only correction agents to create or verify an artifact before apply. The explanations array records source-to-initial-draft revisions separately from later amendments and is exported at apply without changing body text. Verify material coverage against the supplied original, and that each reason describes the actual change and its final effect. Missing or inaccurate proposed explanations remain material findings.",
     `<initial_draft>\n${readParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</initial_draft>`,
-    "List numbers in projected_full_body are those before apply: when the changes are applied, the list renumbers the paragraphs after a deleted or split one, and a split's later paragraphs show the numbers the list then gives them.",
+    projectedNumbers(directory, document, amendedParagraphs(directory, document)) ? "List numbers in projected_full_body are those the list shows once the changes are applied."
+      : "List numbers in projected_full_body are those before apply: when the changes are applied, the list renumbers the paragraphs after a deleted or split one, and a split's later paragraphs show the numbers the list then gives them.",
     `<projected_full_body>\n${projectedChangeParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</projected_full_body>`,
     ...earlierDocuments(directory, document).map(row => `<earlier_body document="${row.id}">\n${finalBodyParagraphs(directory, row.id).map(paragraph => `[${paragraph.pid}] ${shownText(paragraph)}`).join("\n\n")}\n</earlier_body>`),
     `<reconciled_changes>\n${readLeanText(directory, `${document}/changes.json`)}\n</reconciled_changes>`,

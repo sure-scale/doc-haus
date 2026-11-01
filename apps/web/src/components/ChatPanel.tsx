@@ -47,6 +47,7 @@ import { useChatState } from "./chat/use-chat-state"
 import { useTurnSettlement } from "./chat/use-turn-settlement"
 import { useSessionEvents } from "./chat/use-session-events"
 import { useChatActions } from "./chat/use-chat-actions"
+import ChatInstructions from "./chat/ChatInstructions"
 import { useStickToBottom } from "./chat/use-stick-to-bottom"
 import DraftingNarration from "./narration/DraftingNarration"
 import { useDraftingNarration } from "./narration/use-drafting-narration"
@@ -257,6 +258,11 @@ export default function ChatPanel({
     quickLimit,
     dismissQuickLimit,
     runFullInstead,
+    pendingStart,
+    confirmStart,
+    cancelStart,
+    instructions,
+    changeInstructions,
   } = useChatActions({
     state,
     settlement,
@@ -273,6 +279,7 @@ export default function ChatPanel({
       if (request) clearSentReferences(request.references)
     },
     sourceCount: documents?.filter((document) => document.role !== "deliverable").length,
+    pendingRoute,
   })
   const {
     turns,
@@ -564,7 +571,7 @@ export default function ChatPanel({
   // Only the latest quick draft can be upgraded, and only while no drafting
   // run is taking updates on this matter.
   const latestQuick = turns.findLastIndex((t) => t.role === "assistant" && t.agent === QUICK_DRAFT)
-  const canUpgrade = Boolean(matterId) && !busy && !updatingRun && !pendingRoute
+  const canUpgrade = Boolean(matterId) && !busy && !updatingRun && !pendingRoute && !pendingStart
   const quickBanner = (index?: number) => (
     <p className="quick-draft-banner" role="note">
       {QUICK_BANNER}
@@ -746,6 +753,7 @@ export default function ChatPanel({
         attaching ||
         checkingReferences ||
         pendingRoute !== undefined ||
+        pendingStart !== undefined ||
         (updatingRun && (actions.busy || updateTooLate))
       }
     />
@@ -1001,13 +1009,32 @@ export default function ChatPanel({
         onRoute={(request, choice) => void chooseDraft(request, choice)}
         onRouteDismissed={dismissDraftOffer}
         onRoutePending={setPendingRoute}
+        routeExtra={(choice) =>
+          choice === "full" && instructions ? (
+            <ChatInstructions value={instructions} onChange={changeInstructions} disabled={busy} />
+          ) : null
+        }
       />
+      {pendingStart && instructions && (
+        <section className="question-card route-offer" aria-label="Start the drafting run">
+          <ChatInstructions value={instructions} onChange={changeInstructions} disabled={busy} />
+          <div className="question-actions">
+            <button type="button" className="icon-btn" disabled={busy} onClick={cancelStart}>
+              Cancel
+            </button>
+            <button type="button" className="primary" disabled={busy} onClick={() => void confirmStart()}>
+              {busy ? "Starting…" : "Start drafting"}
+            </button>
+          </div>
+        </section>
+      )}
       {quickLimit && (
         <div className="question-card route-offer" role="status">
           <p className="question-text">
             {quickLimit.reason} A quick draft covers one short document from a few of the matter's documents, with no
             outside law, firm template or legal effect.
           </p>
+          {instructions && <ChatInstructions value={instructions} onChange={changeInstructions} disabled={busy} />}
           <div className="question-actions">
             <button type="button" className="icon-btn" onClick={dismissQuickLimit}>
               Dismiss

@@ -11,7 +11,7 @@ import { restoreLeanStage } from "./restore-stage"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, runLean, stageInputSha } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS, stageOutputValid } from "./stages"
 import { answerQuestion, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText } from "./state"
-import { AGENT, DRAFT, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
+import { AGENT, DRAFT, SOURCE, SOURCE_TEXT, SUPPORT, changes, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
 
 afterEach(cleanupMatters)
 const BODY = DRAFT.replace("Payment is due on delivery.", "Payment timing remains to be agreed.")
@@ -219,6 +219,30 @@ test("a repaired intermediate withheld proposal is not falsely described as unap
   expect(model.count(AGENT["change-prepare"])).toBe(8)
   expect(readOpenItems(directory).filter(row => row.stage === "change-prepare" && row.kind === "unapplied_amendment")).toHaveLength(0)
   expect(finalGate(directory).delivery).toBe("execution_ready")
+}, 120_000)
+
+test("a preparation job is shown its cited canonical passages, yet a quote outside the source is still refused and never kept", async () => {
+  const directory = matter()
+  const model = scriptedModel({ ...replies(), [AGENT["change-prepare"]]: preparing(true) })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  const prepare = model.prompts.filter(row => row.agent === AGENT["change-prepare"])
+  const first = prepare.filter(row => row.text.includes("<group_goal_and_evidence>"))
+  expect(first).toHaveLength(2)
+  for (const row of first) {
+    const passages = /<cited_source_passages>\n\n([\s\S]*?)\n\n<\/cited_source_passages>/.exec(row.text)?.[1] ?? ""
+    expect(passages).toContain(`[${SOURCE} — `)
+    expect(passages).toContain(SOURCE_TEXT)
+    // Shared blocks come first; the group's own evidence follows them.
+    expect(row.text.indexOf("<adjudicated_dependencies_not_independent_authority>")).toBeLessThan(row.text.indexOf("<cited_source_passages>"))
+  }
+  const retries = prepare.filter(row => row.text.startsWith("Your reply did not pass the change-prepare checks"))
+  expect(retries.length).toBeGreaterThan(0)
+  for (const row of retries) {
+    expect(row.text).toContain('quotes "not present in the canonical source" as from')
+    expect(row.text).toContain("The JSON quote field requires verbatim source words.")
+  }
+  const preparation = readLeanJson(directory, "d1/change-preparation.json") as { groups: { changes: { amendments: { sources: { quote: string }[] }[] } }[] }
+  expect(preparation.groups.flatMap(row => row.changes.amendments).flatMap(row => row.sources).map(row => row.quote)).not.toContain("not present in the canonical source")
 }, 120_000)
 
 test("initial-draft projection requires one replacement/pid while legacy checker preserves overlaps", async () => {

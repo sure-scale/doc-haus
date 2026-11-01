@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import path from "node:path"
+import { LEAN_ACTS_SCHEMA, type ActRecord } from "./act-record"
 import { checkDraftingNotes } from "./checks"
 import { selectedDeliveryPlan } from "./delivery-selection"
 import { PLAN_COVERAGE_REVISIONS } from "./draft-sections"
@@ -16,7 +17,7 @@ import {
   currentOpenItems, readLeanJson, readLeanState, readOpenItems, readQuestions, replaceStageOpenItems, updateLeanStage, writeLeanText, writeOpenItems, writeQuestions,
   type OpenItem,
 } from "./state"
-import { AGENT, NO_FINDINGS, SOURCE, cleanupMatters, coverageJobs, draftingNotes, matter, noChanges, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, SOURCE, actRecordOf, cleanupMatters, draftingNotes, matter, noChanges, placementJob, scriptedModel, type Reply } from "./test-support"
 
 // Plan coverage left open after the plan step reaches the lawyer: the open
 // items are derived from the current coverage.json, never stored, so the
@@ -47,8 +48,15 @@ function prepared() {
   return directory
 }
 
+/** Writes the run's act record, as its acts step leaves it. */
+const recordActs = (directory: string, status: ActRecord["status"], acts: ActRecord["acts"] = []) =>
+  writeLeanText(directory, "acts.json", JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status, acts, verify: null, deliverables: [], issues: [] }))
+/** `act` as the act record lists it, taken under its parties' authority. */
+const recorded = ({ act: name, source, quote, parties }: CoverageAct): ActRecord["acts"][number] =>
+  ({ act: name, source, quote, who: { authorised_by: parties, performed_by: [], basis: [], reason: null }, how: null })
+
 function recordCoverage(directory: string, plan: LeanPlan, status: LeanCoverage["status"], acts: CoverageAct[], issues: string[]) {
-  const coverage: LeanCoverage = { schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(plan.documents, plan.acting_for), status, acts, issues }
+  const coverage: LeanCoverage = { schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(directory, plan.documents, plan.acting_for), status, acts, issues }
   writeLeanText(directory, "coverage.json", `${JSON.stringify(coverage, null, 2)}\n`)
 }
 
@@ -266,6 +274,137 @@ describe("plan coverage open items", () => {
     expect(gate(directory, notesNaming(items))).toMatchObject({ status: "pass", delivery: "review_draft", disclosed: [expect.objectContaining({ id: items[0]!.id })] })
   })
 
+  test("an act record that found no act is recorded as no_acts and raises no item, so the gate can deliver an execution-ready package", () => {
+    const directory = prepared()
+    recordActs(directory, "none")
+    const plan = writeLeanPlan(directory, [RELEASE], "0".repeat(64))
+    recordCoverage(directory, plan, "no_acts", [], [])
+    expect(readLeanCoverage(directory)).toMatchObject({ status: "no_acts", acts: [] })
+    expect(coverageItems(directory)).toEqual([])
+  })
+
+  test("an instrument the act record finds not executed by a party whose authority its act needs yields one item to confirm it; a signer spelt with another legal form raises none", () => {
+    const directory = prepared()
+    const consent = { ...recorded({ ...act, parties: ["the Orchard Committee"] }),
+      how: { instrument: "Schedule consent", executed_by: ["Kestrel Works"], requires: [], basis: [], reason: null, conflict: null } }
+    const release = { ...recorded({ act: "release the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works, L.L.C."], document: "d1" }),
+      how: { instrument: "Release letter", executed_by: ["Kestrel Works LLC"], requires: [], basis: [], reason: null, conflict: null } }
+    recordActs(directory, "listed", [consent, release])
+    const plan = writeLeanPlan(directory, [RELEASE], "0".repeat(64))
+    recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
+    const items = coverageItems(directory)
+    expect(items).toEqual([expect.objectContaining({ stage: "finalize", kind: "omission", status: "open", ref: { repair_target: "memo" } })])
+    expect(items[0]!.detail).toBe(`Act record: the instrument "Schedule consent" that effects "approve the revised schedule", directed by "${APPROVE}" [source: request], ` +
+      'is not executed by "the Orchard Committee", whose authority the act needs; confirm the instrument.')
+    // Disclosed for the lawyer to confirm, never a checklist item or a block once the notes name it.
+    const passed = gate(directory, notesNaming(items))
+    expect(passed).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [], disclosed: [expect.objectContaining({ id: items[0]!.id, status: "disclosed" })] })
+    expect(passed.items.filter(item => item.kind.startsWith("checklist"))).toEqual([])
+    // With the consent executed by the committee too, nothing is left to confirm.
+    recordActs(directory, "listed", [{ ...consent, how: { ...consent.how, executed_by: ["Kestrel Works", "The Orchard Committee"] } }, release])
+    recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
+    expect(coverageItems(directory)).toEqual([])
+  })
+
+  test("a named instrument the act record gives no signatory for yields one item for that instrument, naming every act it effects", () => {
+    const directory = prepared()
+    const how = { instrument: "Deposit deed", executed_by: [], requires: [], basis: [], reason: null, conflict: null }
+    const hold = { ...recorded({ act: "hold the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works"], document: "d1" }), how }
+    const release = { ...recorded({ act: "release the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works", "the Orchard Committee"], document: "d1" }),
+      how: { ...how, instrument: "deposit  deed" } }
+    recordActs(directory, "listed", [hold, release])
+    const plan = writeLeanPlan(directory, [RELEASE], "0".repeat(64))
+    recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
+    const items = coverageItems(directory)
+    expect(items.map(item => item.detail)).toEqual(['Act record: the instrument "Deposit deed", which effects "hold the deposit" and "release the deposit", names no signatory in the matter\'s sources; ' +
+      'confirm it is executed by "Kestrel Works" and "the Orchard Committee", whose authority those acts need.'])
+    expect(gate(directory, notesNaming(items))).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [], disclosed: [expect.objectContaining({ id: items[0]!.id, status: "disclosed" })] })
+  })
+
+  test("a conflict the act record states between the instructions and a source yields one item quoting both sides, in place of the act's signer item, disclosed by the notes", () => {
+    const directory = prepared()
+    const conflict = {
+      instruction: { source: "request", quote: "Kestrel Works then releases the deposit" },
+      authority: { source: SOURCE, quote: "Kestrel Works shall release the deposit once the Orchard Committee approves the revised schedule" },
+      difference: "The instructions have Kestrel Works release the deposit; the source makes the release wait for the committee's approval.",
+    }
+    // The committee must authorise the release, but the instructed letter is Kestrel Works' alone: a signer flag the conflict states.
+    const release = { ...recorded({ act: "release the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["the Orchard Committee"], document: "d1" }),
+      how: { instrument: "Release letter", executed_by: ["Kestrel Works"], requires: [], basis: [], reason: null, conflict } }
+    recordActs(directory, "listed", [release])
+    const plan = writeLeanPlan(directory, [RELEASE], "0".repeat(64))
+    recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
+    const items = coverageItems(directory)
+    expect(items).toEqual([expect.objectContaining({ stage: "finalize", kind: "omission", status: "open", ref: { repair_target: "memo" } })])
+    expect(items[0]!.detail).toBe('Act record: for "release the deposit", the instructions direct "Kestrel Works then releases the deposit" [source: request], ' +
+      `but "${conflict.authority.quote}" [source: ${SOURCE}] requires otherwise: ${conflict.difference} The lawyer should decide which governs.`)
+    expect(gate(directory, notesNaming(items))).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [], disclosed: [expect.objectContaining({ id: items[0]!.id, status: "disclosed" })] })
+    // Without the conflict, the record raises no conflict item; only the signer flag is left to confirm.
+    recordActs(directory, "listed", [{ ...release, how: { ...release.how, conflict: null } }])
+    recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
+    expect(coverageItems(directory).map(item => item.detail)).toEqual([expect.stringContaining('Act record: the instrument "Release letter" that effects "release the deposit"')])
+  })
+
+  test("conflicts on the same instruction and authority words yield one item naming every act they affect", () => {
+    const directory = prepared()
+    const conflict = {
+      instruction: { source: "request", quote: "Kestrel Works then releases the deposit" },
+      authority: { source: SOURCE, quote: "Kestrel Works shall release the deposit once the Orchard Committee approves the revised schedule" },
+      difference: "The instructions have Kestrel Works release the deposit; the source makes the release wait for the committee's approval.",
+    }
+    const how = { instrument: "Release letter", executed_by: ["Kestrel Works"], requires: [], basis: [], reason: null, conflict }
+    const release = { ...recorded({ act: "release the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["the Orchard Committee"], document: "d1" }), how }
+    // The same step listed twice, the second time with its words spaced differently on both sides.
+    const again = { ...release, act: "pay the deposit back", how: { ...how, conflict: { ...conflict, instruction: { ...conflict.instruction, quote: `  ${conflict.instruction.quote}` },
+      authority: { ...conflict.authority, quote: conflict.authority.quote.replace(" once ", "  once ") }, difference: "Worded another way." } } }
+    const other = { ...recorded({ ...act, parties: ["the Orchard Committee"] }), how: { ...how, instrument: "Schedule consent", conflict: { ...conflict, authority: { source: SOURCE, quote: "Kestrel Works shall release the deposit" } } } }
+    recordActs(directory, "listed", [release, other, again])
+    const plan = writeLeanPlan(directory, [RELEASE], "0".repeat(64))
+    recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
+    expect(coverageItems(directory).map(item => item.detail)).toEqual([
+      'Act record: for "release the deposit" and "pay the deposit back", the instructions direct "Kestrel Works then releases the deposit" [source: request], ' +
+      `but "${conflict.authority.quote}" [source: ${SOURCE}] requires otherwise: ${conflict.difference} The lawyer should decide which governs.`,
+      `Act record: for "${act.act}", the instructions direct "Kestrel Works then releases the deposit" [source: request], ` +
+      `but "Kestrel Works shall release the deposit" [source: ${SOURCE}] requires otherwise: ${conflict.difference} The lawyer should decide which governs.`,
+    ])
+  })
+
+  test("an act record whose HOW or WHO job never passed yields one item saying the instrument and signatory check did not run; one that passed yields none", () => {
+    const directory = prepared()
+    const release = recorded({ act: "release the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works"], document: "d1" })
+    const failed = (job: "who" | "how", acts: ActRecord["acts"]) => writeLeanText(directory, "acts.json", JSON.stringify({
+      schema: LEAN_ACTS_SCHEMA, status: "listed", acts, verify: null, deliverables: [], issues: [{ job, issues: ['Reply with the JSON object only: {"acts":[]}.'] }],
+    }))
+    const plan = writeLeanPlan(directory, [RELEASE], "0".repeat(64))
+    const check = () => {
+      recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
+      return coverageItems(directory)
+    }
+    const confirm = " The lawyer should confirm that each instructed act's instrument is executed by every party whose authority it needs."
+    failed("how", [recorded(act), release])
+    const items = check()
+    expect(items).toEqual([expect.objectContaining({ stage: "finalize", kind: "omission", status: "open", ref: { repair_target: "memo" } })])
+    expect(items[0]!.detail).toBe("Act record: the check of each instructed act's instrument and signatories, and of any conflict between the instructions and the authority, did not run." + confirm)
+    expect(gate(directory, notesNaming(items))).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [], disclosed: [expect.objectContaining({ id: items[0]!.id, status: "disclosed" })] })
+    // WHO never passed: HOW ran, so any conflict it states stands, but no signatory was checked against the authorising parties.
+    failed("who", [{ ...recorded(act), who: null, how: { instrument: "Schedule consent", executed_by: ["Kestrel Works"], requires: [], basis: [], reason: null, conflict: null } }])
+    expect(check().map(item => item.detail)).toEqual(["Act record: the check of the parties whose authority each instructed act needs did not run, so no instrument's signatories were checked against them." + confirm])
+    // The jobs passed: nothing is left to confirm.
+    recordActs(directory, "listed", [{ ...recorded(act), how: { instrument: "Schedule consent", executed_by: ["the Orchard Committee"], requires: [], basis: [], reason: null, conflict: null } }])
+    expect(check()).toEqual([])
+  })
+
+  test("a changed act record leaves the saved plan's coverage stale, so the plan is checked again", () => {
+    const directory = prepared()
+    recordActs(directory, "listed", [recorded(act)])
+    const plan = writeLeanPlan(directory, [RELEASE], "0".repeat(64))
+    recordCoverage(directory, plan, "uncovered", [act], planCoverageIssues([act], plan.documents, directory))
+    expect(planCoverageCurrent(directory)).toBe(true)
+    recordActs(directory, "listed", [recorded(act), recorded({ ...act, act: "release the deposit", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works"] })])
+    expect(planCoverageCurrent(directory)).toBe(false)
+    expect(coverageItems(directory)).toEqual(notCheckedItems())
+  })
+
   test("a stale record (the plan changed since it was checked) yields the one not-checked item, never none", () => {
     const directory = prepared()
     uncovered(directory)
@@ -285,7 +424,7 @@ describe("plan coverage open items", () => {
     recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
     expect(planCoverageCurrent(directory)).toBe(true)
     const acting = { party: "Kestrel Works", stated: true }
-    expect(coveragePlanHash(plan.documents, acting)).not.toBe(coveragePlanHash(plan.documents, plan.acting_for))
+    expect(coveragePlanHash(directory, plan.documents, acting)).not.toBe(coveragePlanHash(directory, plan.documents, plan.acting_for))
     writeLeanPlan(directory, [RELEASE], plan.basis, acting)
     expect(planCoverageCurrent(directory)).toBe(false)
     expect(coverageItems(directory)).toEqual(notCheckedItems())
@@ -316,7 +455,7 @@ describe("plan coverage open items", () => {
     const directory = prepared()
     const plan = uncovered(directory)
     const notChecked = notCheckedItems()
-    const good: LeanCoverage = { schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(plan.documents, plan.acting_for), status: "uncovered", acts: [act], issues: [] }
+    const good: LeanCoverage = { schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(directory, plan.documents, plan.acting_for), status: "uncovered", acts: [act], issues: [] }
     for (const bad of [
       { ...good, schema: "dochaus.lean.coverage/0" },
       { ...good, acts: [{ act: act.act, quote: act.quote }] },
@@ -365,23 +504,25 @@ describe("plan coverage open items", () => {
 const ONE = "Acting for: not stated\n# Release letter\nExecuted by: Kestrel Works\n## Terms\nThe release."
 /** The outline keeps one document, revised or not; each part gets one plain paragraph. */
 const outliner: Reply = text => /^Draft part \d+ of \d+ of "/m.test(text) ? "The terms are recorded." : ONE
-const replies: Record<string, Reply> = {
+/** A whole run's replies, for one scripted model: the act record lists the act. */
+const replies = (): Record<string, Reply> => ({
+  [AGENT.acts]: actRecordOf([act]),
   [AGENT.draft]: outliner,
-  ...coverageJobs(() => JSON.stringify({ acts: [act] })),
+  ...placementJob(() => JSON.stringify({ acts: [act] })),
   [AGENT.review]: () => NO_FINDINGS,
   [AGENT.changes]: noChanges,
   [AGENT.finalize]: draftingNotes,
-}
+})
 
 describe("plan coverage open items through the run", () => {
   test("after the answered scope question the drafting notes are asked to name the act's item and the passed gate delivers it", async () => {
     const directory = prepared()
-    await runLean(directory, { sessions: scriptedModel(replies).port })
+    await runLean(directory, { sessions: scriptedModel(replies()).port })
     const [question] = readQuestions(directory)
     expect(question?.id.startsWith(PACKAGE_SCOPE_QUESTION)).toBe(true)
     enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: ANSWER })
 
-    const model = scriptedModel(replies)
+    const model = scriptedModel(replies())
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
     const items = coverageItems(directory)
     expect(items).toEqual([expect.objectContaining({ detail: expect.stringContaining(question!.id) })])
@@ -397,12 +538,12 @@ describe("plan coverage open items through the run", () => {
     const directory = matter(SOURCE_TEXT)
     writeLeanText(directory, "request.md", `${REQUEST} ${naming}`)
     const delivery = [{ document: "d1", role: "body", file: "release-letter.docx", instruction_quote: naming }]
-    const named = { ...replies, [AGENT["package-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [], delivery }) }
-    await runLean(directory, { sessions: scriptedModel(named).port })
+    const named = () => ({ ...replies(), [AGENT["package-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [], delivery }) })
+    await runLean(directory, { sessions: scriptedModel(named()).port })
     const [question] = readQuestions(directory)
     enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: ANSWER })
 
-    const model = scriptedModel(named)
+    const model = scriptedModel(named())
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
     expect(readLeanPlan(directory)!.documents[0]).toMatchObject({ file: "release-letter.docx", deliverable: "body" })
     // The answer re-plans once (an outline and its revisions); the renaming asks for no further check.

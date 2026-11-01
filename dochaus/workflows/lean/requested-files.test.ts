@@ -13,7 +13,7 @@ import { tagged } from "./prompts"
 import { REQUEST_SOURCE, openItem, quoteMissIssue } from "./quotes"
 import {
   FILES_REVISION_SCOPE, LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, readRequestedFiles, requestedFilesIssues, requestedFilesItems, requestedFilesPrompt, requestedFilesQuestion,
-  requestedFilesRevision, withRequestedNames, writeRequestedFiles, type LeanRequestedFiles, type RequestedFile, type RequestedFiles,
+  requestedFilesRevision, parseUnheldDocument, unheldDocuments, withRequestedNames, withUnaskedDocuments, writeRequestedFiles, type LeanRequestedFiles, type RequestedFile, type RequestedFiles,
 } from "./requested-files"
 import { writeLeanText, writeQuestions, type Question } from "./state"
 import { cleanupMatters, matter } from "./test-support"
@@ -77,7 +77,7 @@ describe("requested files prompt", () => {
 
   test("a file named for the whole request holds everything it asks for, a file named for one document only that document", () => {
     const directory = prepared()
-    const rule = (contents: string) => "- A file the lawyer's words name as the output of the whole request holds everything the request asks for; " +
+    const rule = (contents: string) => "- A file the lawyer's words name as the output of the whole request holds everything the run drafts for it, including each planned document the plan adds to carry the request out; " +
       `a file they name for one document holds only that document. Put ${contents} in a file only where the lawyer's words place it.`
     const prompt = requestedFilesPrompt(directory, DOCUMENTS, MEMO)
     expect(prompt).toContain(rule("a planned document or the memo"))
@@ -396,6 +396,26 @@ describe("requested files issues", () => {
     const { issues } = requestedFilesIssues([planned("d1", "Share transfer form", { deliverable: "combined" }), planned("d2", "Board minute")], MEMO, ASKED)
     expect(issues).toHaveLength(2)
     expect(issues.map(row => row.issue).join(" ")).not.toMatch(/\bd[12]\b/)
+  })
+})
+
+describe("unheld documents", () => {
+  test("only the one file the lawyer asks for has documents left out to ask about; a document not asked for joins it", () => {
+    expect(unheldDocuments(stated(file(["memo", "d2"], PACK, "Kestrel Board Pack.docx")), DOCUMENTS)).toEqual([DOCUMENTS[0]])
+    expect(unheldDocuments(ASKED, DOCUMENTS)).toEqual([])
+    expect(unheldDocuments({ stated: false, files: [] }, DOCUMENTS)).toEqual([])
+    expect(withUnaskedDocuments(stated(file(["memo", "d2"], PACK)), ["d1"])).toEqual(stated(file(["memo", "d2", "d1"], PACK)))
+    expect(withUnaskedDocuments(stated(file(["memo", "d2"], PACK)), [])).toEqual(stated(file(["memo", "d2"], PACK)))
+  })
+
+  test("a document is asked for only with the lawyer's own words that ask for it", () => {
+    const directory = prepared()
+    expect(parseUnheldDocument('{"asked":false}', directory)).toEqual({ issues: [], value: false })
+    expect(parseUnheldDocument(JSON.stringify({ asked: true, quote: TRANSFER }), directory)).toEqual({ issues: [], value: true })
+    expect(parseUnheldDocument(JSON.stringify({ asked: true, quote: "Deliver the deposit notice apart." }), directory).issues).toEqual([
+      quoteMissIssue(directory, "quote", { quote: "Deliver the deposit notice apart.", source_id: REQUEST_SOURCE }, "json")])
+    expect(parseUnheldDocument('{"asked":true}', directory).value).toBeUndefined()
+    expect(parseUnheldDocument("It is not asked for.", directory).value).toBeUndefined()
   })
 })
 
@@ -950,7 +970,7 @@ describe("requested files items", () => {
 
   test("a shape the run cannot build always gives an item", () => {
     expect(requestedFilesItems(saved(AS_ASKED, record(file(["d1", "d2"], BOTH))))).toEqual([item(["Kestrel Transfer.docx", "Kestrel Board Pack.docx"], `the lawyer's words "${BOTH}" [source: request] ask for "Share transfer form" and "Board minute" in one file, ` +
-      'but the run delivers "Share transfer form" in "Kestrel Transfer.docx" and the memo and "Board minute" in one file named "Kestrel Board Pack.docx". The run cannot put more than one document in one file.')])
+      'but the run delivers "Share transfer form" in "Kestrel Transfer.docx" and the memo and "Board minute" in one file named "Kestrel Board Pack.docx". The run puts several documents in one file only when it drafts each as a new document, with no template, comparison or playbook review, and none as a redline.')])
     expect(requestedFilesItems(saved(AS_ASKED, record(file(["d2", "memo"], PACK, "Kestrel Board Pack.docx"))))).toEqual([item(["Kestrel Board Pack.docx"], `the lawyer's words "${PACK}" [source: request] ask for "Board minute" and the memo in one file named "Kestrel Board Pack.docx", ` +
       'but the run delivers the memo and "Board minute" in one file named "Kestrel Board Pack.docx". The run can join the memo and a document in one file only with the memo first.')])
   })

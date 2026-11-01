@@ -45,6 +45,8 @@ export function requestMemo(directory: string) {
 export function scriptedModel(replies: Record<string, Reply>) {
   const prompts: { agent: string; sessionID: string; text: string }[] = []
   const sessions: Parameters<StageSessionPort["createSession"]>[0][] = []
+  // Kept across prompts, so a retry answers as the job its session asked.
+  const actRecord = actRecordJobs({})
   const port: StageSessionPort = {
     async createSession(input) {
       sessions.push(input)
@@ -56,9 +58,10 @@ export function scriptedModel(replies: Record<string, Reply>) {
         // Ordinary drafting regression fixtures assert no source-derived items.
         // Dedicated checklist lifecycle fixtures provide positive items/checks.
         "lean-checklist-extract": () => JSON.stringify({ items: [] }),
-        // The outline's coverage job lists no act the lawyer's instructions
-        // direct, so no act is placed.
-        [AGENT.coverageActs]: () => JSON.stringify({ acts: [] }),
+        // The act record lists no act and no deliverable; its WHO and HOW jobs,
+        // asked only of listed acts, leave each act's parties and instrument
+        // unsettled with a reason.
+        [AGENT.acts]: actRecord,
         // The outline's files job finds no lawyer instruction on the files to deliver.
         [AGENT.files]: () => JSON.stringify({ stated: false, files: [] }),
         // The plan rejects every listed review finding: the scripted changes
@@ -72,6 +75,8 @@ export function scriptedModel(replies: Record<string, Reply>) {
         },
         [AGENT["change-prepare"]]: () => JSON.stringify({ amendments: [], questions: [] }),
         [AGENT["change-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [] }),
+        // Ordinary fixtures list no instruction, so no question is settled.
+        [AGENT.instructions]: () => JSON.stringify({ items: [], documents: [] }),
         [AGENT.discrepancy]: () => JSON.stringify({ entries: [], limitations: [] }),
         [AGENT.spine]: () => JSON.stringify({ entries: [], limitations: [] }),
         [AGENT["review-independent"]]: () => NO_FINDINGS,
@@ -97,37 +102,91 @@ export function scriptedModel(replies: Record<string, Reply>) {
   return { port, prompts, sessions, count, counts: () => [AGENT.draft, AGENT.review, AGENT.changes, AGENT.finalize].map(count) }
 }
 
-/** The acts a coverage placement prompt lists, by index. */
+export type ActRecordJob = "what" | "verify" | "deliverables" | "who" | "how"
+
+/** Which act-record job a first prompt asks, by the reply shape its contract gives. */
+export function actRecordJob(prompt: string): ActRecordJob {
+  return prompt.includes('{"index":0,"how":{') ? "how" : prompt.includes('{"index":0,"who":{') ? "who" : prompt.includes('{"index":0,"verify":{') ? "verify"
+    : prompt.includes('{"deliverables":[') ? "deliverables" : "what"
+}
+
+/** The act-record agent scripted per job: each job's session is told apart by
+ * its first prompt, and a retry in the same session answers as that job. A
+ * job without its own reply gets the default: WHAT lists no act, VERIFY keeps
+ * every candidate as a distinct act, DELIVERABLES none, and WHO and HOW leave
+ * every act they are shown unsettled. */
+export function actRecordJobs(replies: Partial<Record<ActRecordJob, Reply>>): Reply {
+  const jobs = new Map<string | undefined, ActRecordJob>()
+  const unsettled = (prompt: string, field: "who" | "how") => JSON.stringify({ acts: listedActs(prompt).map(({ index }) => ({ index, [field]: field === "who"
+    ? { authorised_by: [], performed_by: [], basis: [], reason: "The scripted record does not settle the parties." }
+    : { instrument: null, executed_by: [], requires: [], basis: [], reason: "The scripted record does not settle the instrument." } })) })
+  const defaults: Record<ActRecordJob, Reply> = {
+    what: () => JSON.stringify({ acts: [] }),
+    verify: prompt => JSON.stringify({ acts: listedActs(prompt).map(({ index }) => ({ index, verify: { decision: "act", same_as: null, kind: null, reason: null } })) }),
+    deliverables: () => JSON.stringify({ deliverables: [] }),
+    who: prompt => unsettled(prompt, "who"),
+    how: prompt => unsettled(prompt, "how"),
+  }
+  return (prompt, index, sessionID) => {
+    if (!jobs.has(sessionID)) jobs.set(sessionID, actRecordJob(prompt))
+    const job = jobs.get(sessionID)!
+    return (replies[job] ?? defaults[job])(prompt, index, sessionID)
+  }
+}
+
+/** The acts a coverage placement or act-record VERIFY, WHO or HOW prompt lists, by index. */
 export function listedActs(prompt: string) {
   const json = /<acts>\n([\s\S]*?)\n<\/acts>/.exec(prompt)?.[1]
-  if (!json) throw new Error("The placement prompt lists no acts.")
+  if (!json) throw new Error("The prompt lists no acts.")
   return JSON.parse(json) as { index: number; act: string; source: string; quote: string; parties: string[] }[]
 }
 
-/** The two coverage jobs scripted from one reply that gives each instructed act
- * with its document: the listing job lists the acts without their documents,
- * and the placement job places each act it is shown where that reply put it.
- * A reply that is not such a list goes to both jobs unchanged. The reply reads
- * each job's own prompt and count, so one that reads the planned documents
- * belongs to the placement job only. A retry arrives in the same session
- * without the acts, which the session already holds. */
-export function coverageJobs(reply: Reply): Record<string, Reply> {
+/** One act the scripted act record lists: what is to be done, the words that
+ * direct it, their source (the request when not given) and the parties whose
+ * approval authorises it ([] when the record does not settle them). */
+export type ScriptedAct = { act: string; quote: string; source?: string; parties: string[] }
+
+/** The act-record agent listing `acts` in every WHAT sample, with DELIVERABLES
+ * listing none. WHO names each act's parties as those whose approval authorises
+ * it, on the act's own words, and HOW has them execute the instrument it leaves
+ * unsettled, so no signer is flagged; an act with no parties is left unsettled
+ * by both. Given a function, each job reads the acts from its own prompt, as an
+ * answer the instructions now hold can change them. Its jobs are told apart by
+ * session, so each scripted model needs its own. */
+export function actRecordOf(acts: ScriptedAct[] | ((prompt: string) => ScriptedAct[])): Reply {
+  const listing = (prompt: string) => (typeof acts === "function" ? acts(prompt) : acts).map(({ act, quote, source = "request", parties }) => ({ act, source, quote, parties }))
+  const described = (prompt: string, field: "who" | "how") => JSON.stringify({ acts: listedActs(prompt).map(listed => {
+    const parties = listing(prompt).find(act => act.act === listed.act && act.source === listed.source && act.quote === listed.quote)?.parties ?? []
+    const basis = [{ source: listed.source, quote: listed.quote }]
+    return { index: listed.index, [field]: field === "who"
+      ? parties.length ? { authorised_by: parties, performed_by: [], basis, reason: "The scripted record does not settle who carries the act out." }
+        : { authorised_by: [], performed_by: [], basis: [], reason: "The scripted record does not settle the parties." }
+      : { instrument: null, executed_by: parties, requires: [], basis: parties.length ? basis : [], reason: "The scripted record does not settle the instrument." } }
+  }) })
+  return actRecordJobs({
+    what: prompt => JSON.stringify({ acts: listing(prompt).map(({ parties, ...act }) => act) }),
+    who: prompt => described(prompt, "who"),
+    how: prompt => described(prompt, "how"),
+  })
+}
+
+/** The coverage placement job scripted from one reply that gives each act with
+ * its document: it places each act it is shown where that reply put it. A reply
+ * that is not such a list is returned unchanged. The reply reads the job's own
+ * prompt and count. A retry arrives in the same session without the acts, which
+ * the session already holds. */
+export function placementJob(reply: Reply): Record<string, Reply> {
   const shown = new Map<string | undefined, ReturnType<typeof listedActs>>()
-  const combined = (text: string) => {
+  const placed = (text: string) => {
     try {
       const value = JSON.parse(text)
       if (value && Array.isArray(value.acts)) return value.acts as Record<string, unknown>[]
     } catch {}
   }
   return {
-    [AGENT.coverageActs]: (prompt, index, sessionID) => {
-      const text = reply(prompt, index, sessionID)
-      const acts = combined(text)
-      return acts ? JSON.stringify({ acts: acts.map(({ document, excluded_by, ...act }) => act) }) : text
-    },
     [AGENT.coverage]: (prompt, index, sessionID) => {
       const text = reply(prompt, index, sessionID)
-      const acts = combined(text)
+      const acts = placed(text)
       if (!acts) return text
       const listing = prompt.includes("<acts>\n") ? listedActs(prompt) : shown.get(sessionID)
       if (!listing) throw new Error("The placement session was shown no acts.")

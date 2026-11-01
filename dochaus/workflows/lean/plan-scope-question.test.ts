@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { normalize } from "../../lib/quote-verify"
+import { LEAN_ACTS_SCHEMA } from "./act-record"
 import type { ChecklistCheckerInput, ChecklistProducerInput } from "./checklist-contract"
 import { CHECKLIST_JOB_AGENTS } from "./checklist-job"
 import { PLAN_COVERAGE_REVISIONS, runDraftStage } from "./draft-sections"
@@ -13,7 +14,7 @@ import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES, outlineBasis } from "./stages"
 import { leanFile, readLeanJson, readLeanState, readQuestions, shortHash, updateLeanStage, writeLeanText, writeQuestions, type LeanState, type Question } from "./state"
-import { AGENT, NO_FINDINGS, cleanupMatters, coverageJobs, draftingNotes, matter, noChanges, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, actRecordOf, cleanupMatters, draftingNotes, matter, noChanges, placementJob, scriptedModel, type Reply } from "./test-support"
 
 // The plan step's package-scope question: when the outline's coverage check
 // still leaves an instructed act without a document executed by the parties
@@ -27,8 +28,10 @@ import { AGENT, NO_FINDINGS, cleanupMatters, coverageJobs, draftingNotes, matter
 // quoting the sentence around a clause it showed does, since that clause's
 // line may have shown another act. While the gate's scope question is
 // open the plan step asks none of its own: the act is disclosed and the open
-// question stays the one to answer. Synthetic parties and acts only; only the
-// model is scripted, and answers go through the request queue.
+// question stays the one to answer. Synthetic parties and acts only: the model
+// is scripted, the act record's jobs included, and answers go through the
+// request queue. A test of the step alone writes the act record (acts.json) as
+// the run's acts step leaves it.
 
 afterEach(cleanupMatters)
 
@@ -76,20 +79,35 @@ const openChecklist: Record<string, Reply> = {
 const outliner = (first: string, revised = first): Reply => text =>
   /^Draft part \d+ of \d+ of "/m.test(text) ? "The terms are recorded." : text.startsWith(REVISE) ? revised : first
 
-/** A whole run: the outline keeps one document whatever the coverage job
- * reports, and the later steps find nothing to change. */
+/** A whole run: the act record lists the act, the outline keeps one document
+ * whatever the coverage job reports, and the later steps find nothing to change. */
 const replies = (extra: Record<string, Reply> = {}): Record<string, Reply> => ({
+  [AGENT.acts]: actRecordOf([act]),
   [AGENT.draft]: outliner(ONE),
-  ...coverageJobs(() => ACTS),
+  ...placementJob(() => ACTS),
   [AGENT.review]: () => NO_FINDINGS,
   [AGENT.changes]: noChanges,
   [AGENT.finalize]: draftingNotes,
   ...extra,
 })
 
+/** Writes the run's act record listing `acts`, each taken under its parties'
+ * authority; an empty list is a record that found none. */
+const recordActs = (directory: string, acts: CoverageAct[]) => writeLeanText(directory, "acts.json", JSON.stringify({
+  schema: LEAN_ACTS_SCHEMA, status: acts.length ? "listed" : "none", verify: null, deliverables: [], issues: [],
+  acts: acts.map(({ act, source, quote, parties }) => ({ act, source, quote, who: { authorised_by: parties, performed_by: [], basis: [], reason: null }, how: null })),
+}))
+/** The act record lists `acts`, written for a test of the step alone and
+ * scripted for a run, and the placement job places each as given. */
+const covering = (directory: string, acts: CoverageAct[]): Record<string, Reply> => {
+  recordActs(directory, acts)
+  return { [AGENT.acts]: actRecordOf(acts), ...placementJob(() => JSON.stringify({ acts })) }
+}
+
 function prepared() {
   const directory = matter(SOURCE_TEXT)
   writeLeanText(directory, "request.md", REQUEST)
+  recordActs(directory, [act])
   return directory
 }
 
@@ -125,10 +143,8 @@ describe("the plan step's package-scope question", () => {
     expect(readLeanCoverage(directory)).toMatchObject({ status: "uncovered", acts: [act], issues: [expect.stringContaining(MISPLACED)] })
     // Every allowed revision was spent first, and no part was drafted.
     expect(revisions(model)).toHaveLength(PLAN_COVERAGE_REVISIONS)
-    // Each plan's acts were placed afresh; the acts were listed once for the
-    // step, in two runs, and that listing served every revision.
+    // Each plan's recorded acts were placed afresh.
     expect(model.count(AGENT.coverage)).toBe(PLAN_COVERAGE_REVISIONS + 1)
-    expect(model.count(AGENT.coverageActs)).toBe(2)
     expect(partPrompts(model)).toEqual([])
   }, 120_000)
 
@@ -177,20 +193,23 @@ describe("the plan step's package-scope question", () => {
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: SCOPE_ID, stage: "draft", status: "answered", answer: ANSWER })])
   }, 120_000)
 
-  test("a coverage reply that never passes its check (unchecked) never blocks and the plan is saved; the same outline checked and uncovered blocks", async () => {
-    const unchecked = prepared()
-    const model = scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => "The plan looks complete.") })
-    const result = await runStep(unchecked, model)
-    expect(result.status).toBe("done")
-    expect(result.status !== "failed" && (result.questions ?? []).filter(row => row.id.startsWith(PACKAGE_SCOPE_QUESTION))).toEqual([])
-    expect(readLeanCoverage(unchecked)).toMatchObject({ status: "unchecked", acts: [] })
-    // Both listing runs spent their retries, so no act was there to place.
-    expect(model.count(AGENT.coverageActs)).toBe(2 * (LEAN_MAX_RETRIES + 1))
-    expect(model.count(AGENT.coverage)).toBe(0)
-    expect(readLeanPlan(unchecked)!.documents.map(row => row.title)).toEqual(["Release letter"])
+  test("unchecked coverage, from an act record never checked or a placement reply that never passes, never blocks and the plan is saved; the same outline checked and uncovered blocks", async () => {
+    const neverListed = prepared()
+    writeLeanText(neverListed, "acts.json", JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status: "unchecked", acts: [], verify: null, deliverables: [], issues: [{ job: "what", issues: ["The listing never passed its check."] }] }))
+    const neverPlaced = prepared()
+    for (const [unchecked, placements] of [[neverListed, 0], [neverPlaced, LEAN_MAX_RETRIES + 1]] as const) {
+      const model = scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => "The plan looks complete.") })
+      const result = await runStep(unchecked, model)
+      expect(result.status).toBe("done")
+      expect(result.status !== "failed" && (result.questions ?? []).filter(row => row.id.startsWith(PACKAGE_SCOPE_QUESTION))).toEqual([])
+      expect(readLeanCoverage(unchecked)).toMatchObject({ status: "unchecked", acts: [] })
+      // With the record unchecked no act is there to place; a placement that never passes spends its retries.
+      expect(model.count(AGENT.coverage)).toBe(placements)
+      expect(readLeanPlan(unchecked)!.documents.map(row => row.title)).toEqual(["Release letter"])
+    }
 
     const uncovered = prepared()
-    const blocked = await runStep(uncovered, scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => ACTS) }))
+    const blocked = await runStep(uncovered, scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => ACTS) }))
     expect(blocked).toMatchObject({ status: "blocked", questions: [expect.objectContaining({ id: SCOPE_ID, stage: "draft", status: "open" })] })
     expect(planSaved(uncovered)).toBe(false)
   }, 120_000)
@@ -200,7 +219,7 @@ describe("the plan step's package-scope question", () => {
     const plan = writeLeanPlan(directory, [{ title: "Release letter", purpose: "", parts: [{ heading: "Terms", scope: "" }], executed_by: ["Kestrel Works"] }], outlineBasis(directory))
     const saved = readFileSync(leanFile(directory, "plan.json"), "utf8")
     expect(planCoverageCurrent(directory)).toBe(false)
-    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), ...coverageJobs(() => ACTS) })
+    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), ...placementJob(() => ACTS) })
     const result = await runStep(directory, model)
 
     expect(result).toMatchObject({ status: "blocked", outputs: ["coverage.json"], openItems: [], reason: expect.stringContaining("d1.draft") })
@@ -213,11 +232,10 @@ describe("the plan step's package-scope question", () => {
     expect(asked!.context).toContain('to add a document, stop this draft with "Stop draft", then start a new one, which plans the package from the start.')
     // No outline was asked for and no part drafted: the plan stands as saved.
     expect(model.count(AGENT.draft)).toBe(0)
-    // The step lists the acts in its two runs, then places them in the saved plan once.
-    expect(model.count(AGENT.coverageActs)).toBe(2)
+    // The step places the recorded acts in the saved plan once.
     expect(model.count(AGENT.coverage)).toBe(1)
     expect(readFileSync(leanFile(directory, "plan.json"), "utf8")).toBe(saved)
-    expect(readLeanCoverage(directory)).toMatchObject({ status: "uncovered", plan: coveragePlanHash(plan.documents, plan.acting_for), acts: [act] })
+    expect(readLeanCoverage(directory)).toMatchObject({ status: "uncovered", plan: coveragePlanHash(directory, plan.documents, plan.acting_for), acts: [act] })
   }, 120_000)
 
   test("once the plan step's scope question is answered, the gate asks none for an instruction left open that the question showed, and the instruction refers to it", async () => {
@@ -243,15 +261,16 @@ describe("the plan step's package-scope question", () => {
 
   test("while the gate's scope question is open, a recheck of an edited plan that leaves an act uncovered asks no second one and keeps the draft: the act is disclosed and answering the open question unblocks the run", async () => {
     const directory = prepared()
-    // The plan carries every act at first; the checklist check leaves the instruction open, so the gate asks.
-    expect((await runLean(directory, { sessions: scriptedModel(replies({ ...openChecklist, ...coverageJobs(() => JSON.stringify({ acts: [] })) })).port })).status).toBe("completed")
+    // The act record finds no act at first; the checklist check leaves the instruction open, so the gate asks.
+    expect((await runLean(directory, { sessions: scriptedModel(replies({ ...openChecklist, ...covering(directory, []) })).port })).status).toBe("completed")
     const [asked] = readQuestions(directory)
     expect(asked).toMatchObject({ stage: "gate", status: "open" })
     expect(asked!.id.startsWith(PACKAGE_SCOPE_QUESTION)).toBe(true)
     expect(asked!.id).not.toBe(SCOPE_ID)
 
-    // The lawyer edits the saved plan's executing parties instead of answering; its recheck
-    // leaves the act uncovered, and the draft reads nothing the edit changes.
+    // The lawyer edits the saved plan's executing parties instead of answering, and the act
+    // record now lists the act; the recheck leaves it uncovered, and the draft reads nothing the edit changes.
+    recordActs(directory, [act])
     const plan = readLeanJson(directory, "plan.json") as { documents: PlannedDocument[] }
     writeLeanText(directory, "plan.json", `${JSON.stringify({ ...plan, documents: plan.documents.map(row => ({ ...row, executed_by: ["Kestrel Works", "the Heron Trust"] })) }, null, 2)}\n`)
     const body = readFileSync(leanFile(directory, "d1/body.docx"))
@@ -286,7 +305,7 @@ describe("the plan step's package-scope question", () => {
   test("an answered question showed the act and a re-run leaves it uncovered: no new question, and the act is disclosed with the answered-question note; one that showed only another act settles none", async () => {
     const directory = prepared()
     writeQuestions(directory, [shows(APPROVE)])
-    const result = await runStep(directory, scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => ACTS) }))
+    const result = await runStep(directory, scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => ACTS) }))
     expect(result.status).toBe("done")
     expect(readLeanCoverage(directory)).toMatchObject({ status: "uncovered", acts: [act] })
     expect(coverageItems(directory).map(item => item.detail)).toEqual([expect.stringContaining(`The lawyer answered the package-scope question ${SCOPE_ID};`)])
@@ -294,7 +313,7 @@ describe("the plan step's package-scope question", () => {
     // An answered question that showed only another act leaves this one to ask.
     const other = prepared()
     writeQuestions(other, [{ ...shows(DEPOSIT), id: `${PACKAGE_SCOPE_QUESTION}deposit` }])
-    const asked = await runStep(other, scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => ACTS) }))
+    const asked = await runStep(other, scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => ACTS) }))
     expect(asked).toMatchObject({ status: "blocked", questions: [expect.objectContaining({ id: SCOPE_ID, stage: "draft", status: "open" })] })
     expect(planSaved(other)).toBe(false)
   }, 120_000)
@@ -302,7 +321,7 @@ describe("the plan step's package-scope question", () => {
   test("an answered question showed one act and an update adds another uncovered act: one new question names only the new act, with its own id", async () => {
     const directory = prepared()
     writeQuestions(directory, [shows(APPROVE)])
-    const result = await runStep(directory, scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => JSON.stringify({ acts: [act, release] })) }))
+    const result = await runStep(directory, scriptedModel({ [AGENT.draft]: outliner(ONE), ...covering(directory, [act, release]) }))
     const questions = result.status === "blocked" ? result.questions : []
     expect(questions).toEqual([expect.objectContaining({ stage: "draft", status: "open", id: planID(release) })])
     expect(questions![0]!.id).not.toBe(SCOPE_ID)
@@ -314,7 +333,7 @@ describe("the plan step's package-scope question", () => {
   test("a re-run that quotes a shorter span of the instruction an answered question showed asks nothing; one that quotes the sentence around the clause it showed asks once more", async () => {
     const directory = prepared()
     writeQuestions(directory, [shows(SENTENCE)])
-    const result = await runStep(directory, scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => JSON.stringify({ acts: [{ ...act, quote: APPROVE }] })) }))
+    const result = await runStep(directory, scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => JSON.stringify({ acts: [{ ...act, quote: APPROVE }] })) }))
     expect(result.status).toBe("done")
     expect(coverageItems(directory).map(item => item.detail)).toEqual([expect.stringContaining(`The lawyer answered the package-scope question ${SCOPE_ID};`)])
     // The answered line quoted one clause, which may have been another act's:
@@ -322,7 +341,7 @@ describe("the plan step's package-scope question", () => {
     const longer = prepared()
     writeQuestions(longer, [shows(APPROVE)])
     const whole = { ...act, quote: SENTENCE }
-    const asked = await runStep(longer, scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => JSON.stringify({ acts: [whole] })) }))
+    const asked = await runStep(longer, scriptedModel({ [AGENT.draft]: outliner(ONE), ...covering(longer, [whole]) }))
     expect(asked).toMatchObject({ status: "blocked", questions: [expect.objectContaining({ id: planID(whole), stage: "draft", status: "open" })] })
     expect(planSaved(longer)).toBe(false)
   }, 120_000)
@@ -331,7 +350,7 @@ describe("the plan step's package-scope question", () => {
     const directory = prepared()
     const WAREHOUSE = "Deliver to the buyer's warehouse"
     writeQuestions(directory, [shows(WAREHOUSE, "open", "gate")])
-    const result = await runStep(directory, scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => ACTS) }))
+    const result = await runStep(directory, scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => ACTS) }))
     expect(result.status).toBe("done")
     expect(planSaved(directory)).toBe(true)
     expect(readLeanCoverage(directory)).toMatchObject({ status: "uncovered", acts: [act] })
@@ -339,7 +358,7 @@ describe("the plan step's package-scope question", () => {
     // Answered, the other stage's question settles only what it showed.
     const answered = prepared()
     writeQuestions(answered, [{ ...shows(WAREHOUSE, "answered", "gate"), id: `${PACKAGE_SCOPE_QUESTION}warehouse` }])
-    const asked = await runStep(answered, scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => ACTS) }))
+    const asked = await runStep(answered, scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => ACTS) }))
     expect(asked).toMatchObject({ status: "blocked", questions: [expect.objectContaining({ id: SCOPE_ID, stage: "draft", status: "open" })] })
     expect(planSaved(answered)).toBe(false)
   }, 120_000)
@@ -349,7 +368,7 @@ describe("the plan step's package-scope question", () => {
     const DEPOSIT = "Kestrel Works then releases the deposit"
     const release: CoverageAct = { act: "release the deposit", source: "request", quote: DEPOSIT, parties: ["Kestrel Works"], document: null }
     const plan = writeLeanPlan(directory, [{ title: "Release letter", purpose: "", parts: [{ heading: "Terms", scope: "" }], executed_by: ["Kestrel Works"] }], outlineBasis(directory))
-    writeLeanText(directory, "coverage.json", JSON.stringify({ schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(plan.documents, plan.acting_for), status: "uncovered",
+    writeLeanText(directory, "coverage.json", JSON.stringify({ schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(directory, plan.documents, plan.acting_for), status: "uncovered",
       acts: [act, release], issues: planCoverageIssues([act, release], plan.documents, directory) }))
     // The plan step asked about the approval alone and the lawyer answered.
     writeQuestions(directory, [{ id: SCOPE_ID, stage: "draft", question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in d1 "Release letter", executed by "Kestrel Works".`,
@@ -429,7 +448,7 @@ describe("scope asker termination: fix wave 3", () => {
 
     const directory = prepared()
     writeQuestions(directory, [answered])
-    const result = await runStep(directory, scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => ACTS) }))
+    const result = await runStep(directory, scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => ACTS) }))
     expect(result.status).toBe("done")
     expect(planSaved(directory)).toBe(true)
     expect(coverageItems(directory).map(item => item.detail)).toEqual([expect.stringContaining(`The lawyer answered the package-scope question ${SCOPE_ID};`)])
@@ -477,8 +496,7 @@ describe("scope asker termination: fix wave 3", () => {
         const directory = matter(SOURCE_TEXT)
         writeLeanText(directory, "request.md", `${REQUEST} ${quote} ${MINUTE} ${NOTICE}`)
         writeQuestions(directory, questions)
-        const coverage = () => JSON.stringify({ acts: [shown, minute, notice] })
-        return { directory, result: await runStep(directory, scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(coverage) })) }
+        return { directory, result: await runStep(directory, scriptedModel({ [AGENT.draft]: outliner(ONE), ...covering(directory, [shown, minute, notice]) })) }
       }
       // The answered question showed the act: only the two beside it are asked, in a question of their own.
       const once = await step([answered])
@@ -500,19 +518,19 @@ describe("scope asker termination: fix wave 3", () => {
   }, 120_000)
 
   test("the plan step asks once more, not again: with two of its questions answered, an act quoting the last answer is disclosed, not asked; the gate's answered questions do not count", async () => {
-    const coverage = () => JSON.stringify({ acts: [act, quoting(MINUTE), quoting(NOTICE)] })
+    const acts = [act, quoting(MINUTE), quoting(NOTICE)]
     const first = planAnswered([act], FIRST_ANSWER)
     const second = planAnswered([quoting(MINUTE)], SECOND_ANSWER)
     // One answered: the act quoting its answer is asked about, once more.
     const once = prepared()
     writeQuestions(once, [first])
-    const more = await runStep(once, scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => JSON.stringify({ acts: [act, quoting(MINUTE)] })) }))
+    const more = await runStep(once, scriptedModel({ [AGENT.draft]: outliner(ONE), ...covering(once, [act, quoting(MINUTE)]) }))
     expect(more).toMatchObject({ status: "blocked", questions: [expect.objectContaining({ id: planID(quoting(MINUTE)), stage: "draft", status: "open" })] })
 
     // Two answered: the act quoting the second answer is disclosed, and the plan saved.
     const twice = prepared()
     writeQuestions(twice, [first, second])
-    const result = await runStep(twice, scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(coverage) }))
+    const result = await runStep(twice, scriptedModel({ [AGENT.draft]: outliner(ONE), ...covering(twice, acts) }))
     expect(result.status).toBe("done")
     expect(planSaved(twice)).toBe(true)
     expect(readQuestions(twice)).toEqual([first, second])
@@ -526,7 +544,7 @@ describe("scope asker termination: fix wave 3", () => {
     // The same two answered by the gate leave the plan step its own question.
     const byGate = prepared()
     writeQuestions(byGate, [{ ...first, stage: "gate" }, { ...second, stage: "gate" }])
-    const asked = await runStep(byGate, scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(coverage) }))
+    const asked = await runStep(byGate, scriptedModel({ [AGENT.draft]: outliner(ONE), ...covering(byGate, acts) }))
     expect(asked).toMatchObject({ status: "blocked", questions: [expect.objectContaining({ id: planID(quoting(NOTICE)), stage: "draft" })] })
   }, 120_000)
 
@@ -553,8 +571,7 @@ describe("scope asker termination: fix wave 3", () => {
     const directory = matter(SOURCE_TEXT)
     writeLeanText(directory, "request.md", `The Committee must act: ${INCH}. Kestrel Works then releases the deposit.`)
     const pipes: CoverageAct = { act: "approve the pipe plan", source: "request", quote: INCH, parties: ["the Committee"], document: "d1" }
-    const acts = JSON.stringify({ acts: [pipes] })
-    const run = () => runLean(directory, { sessions: scriptedModel(replies(coverageJobs(() => acts))).port })
+    const run = () => runLean(directory, { sessions: scriptedModel(replies(covering(directory, [pipes]))).port })
     const first = await run()
     expect(first.status).toBe("blocked")
     const [question] = readQuestions(directory)
@@ -573,10 +590,11 @@ describe("scope asker termination: fix wave 3", () => {
 
   test("through the run: answers the coverage job quotes back as new acts bring one more question, then a disclosure; the run ends after two answers", async () => {
     const directory = prepared()
-    // Each act the lawyer's answers direct is listed once those answers exist,
-    // and placed where the plan puts the approval.
-    const coverage: Reply = text => JSON.stringify({ acts: [act, ...[MINUTE, NOTICE].filter(quote => text.includes(quote)).map(quoting)] })
-    const run = () => runLean(directory, { sessions: scriptedModel(replies(coverageJobs(coverage))).port })
+    // Each act the lawyer's answers direct is in the act record once those
+    // answers exist, and placed where the plan puts the approval.
+    const instructed = (text: string) => [act, ...[MINUTE, NOTICE].filter(quote => text.includes(quote)).map(quoting)]
+    const coverage: Reply = text => JSON.stringify({ acts: instructed(text) })
+    const run = () => runLean(directory, { sessions: scriptedModel(replies({ [AGENT.acts]: actRecordOf(instructed), ...placementJob(coverage) })).port })
     const answer = (text: string) => {
       const open = readQuestions(directory).filter(question => question.status === "open")
       expect(open).toHaveLength(1)

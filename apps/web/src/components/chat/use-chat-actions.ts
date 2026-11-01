@@ -8,6 +8,7 @@ import { AUTO_CANDIDATES, CHAT_ASSISTANTS, EXPLICIT_ONLY, QUICK_DRAFT, isAuto, t
 import { startDraftingRun } from "../../api/ingest/drafting-run"
 import { getPreferences } from "../../api/ingest/preferences"
 import type { Turn } from "./turn-model"
+import { carriedInstructions, earlierInstructions, type ChatInstructionsValue } from "./ChatInstructions"
 import { FALLBACK_ACK, withAck, withoutAck } from "./acknowledgement"
 import { bounded } from "./conversation"
 import {
@@ -47,6 +48,7 @@ export function useChatActions({
   onSessionStarted,
   onDraftingStarted,
   sourceCount,
+  pendingRoute,
 }: {
   state: ChatState
   settlement: TurnSettlement
@@ -63,6 +65,8 @@ export function useChatActions({
   // How many source documents the matter holds, when known: with three or
   // fewer, a drafting request can only draw on few of them.
   sourceCount?: number
+  // The request a pending quick-draft offer holds.
+  pendingRoute?: string
 }) {
   const {
     turns,
@@ -94,6 +98,46 @@ export function useChatActions({
   // An explicit Quick draft pick whose request is outside quick-draft scope:
   // the reason, and the request for the full run it offers instead.
   const [quickLimit, setQuickLimit] = useState<{ text: string; reason: string }>()
+  // A full run held for Start because this chat holds the lawyer's earlier
+  // messages: its request, the turn its narration answers under, any working
+  // draft, and how many turns came before the request.
+  const [pendingStart, setPendingStart] = useState<{ request: string; anchor: number; workingDraft?: string; before: number }>()
+  // The lawyer's changes to Instructions from this chat, for one request.
+  const [instructionEdits, setInstructionEdits] = useState<{ request: string; text?: string; include?: boolean }>()
+  const workflowPrompts = workflows.map((workflow) => workflow.prompt)
+
+  // Instructions from this chat for a full run of `request`: the lawyer's own
+  // messages in `before`, pre-filled and included unless they changed them.
+  // None when the chat holds no earlier message of theirs.
+  function instructionsFor(request: string, before: Turn[]): ChatInstructionsValue | undefined {
+    const { text, count } = earlierInstructions(before, workflowPrompts)
+    if (!count) return undefined
+    const edits = instructionEdits?.request === request ? instructionEdits : undefined
+    return { text: edits?.text ?? text, include: edits?.include ?? true, count }
+  }
+
+  // The turns before a pending offer's request, which is the last turn until
+  // the conversation reloads.
+  const beforeRoute = (request: string) => {
+    const last = turns.at(-1)
+    return last?.role === "user" && last.text === request ? turns.slice(0, -1) : turns
+  }
+
+  // The start surface on show (held Start, quick-draft limit, or offer) and
+  // its instructions block.
+  const surface = pendingStart
+    ? { request: pendingStart.request, before: turns.slice(0, pendingStart.before) }
+    : quickLimit
+      ? { request: quickLimit.text, before: turns }
+      : pendingRoute !== undefined
+        ? { request: pendingRoute, before: beforeRoute(pendingRoute) }
+        : undefined
+  const instructions = surface && instructionsFor(surface.request, surface.before)
+  const changeInstructions = (change: Partial<Pick<ChatInstructionsValue, "text" | "include">>) => {
+    if (!surface) return
+    const request = surface.request
+    setInstructionEdits((prev) => ({ ...(prev?.request === request ? prev : {}), request, ...change }))
+  }
 
   // A send owns its turn until its prompt returns; Stop marks the turn stopped.
   function startTurn() {
@@ -206,15 +250,22 @@ export function useChatActions({
   // header above the chat shows its steps and what to do next. An upgraded
   // quick draft rides along as an unverified working draft, never as request
   // text. Stop does not reach a drafting run once it starts; it has its own.
-  async function startFullRun(request: string, anchor: number, workingDraft?: string) {
+  async function startFullRun(request: string, anchor: number, workingDraft?: string, chatInstructions?: string) {
     if (!matterId) throw new Error("A drafting run needs a matter.")
     const model = modelSpec(await bounded(getConfig(), 3_000, "Model configuration"))
     if (!model) throw new Error("The configured drafting model could not be resolved.")
     const started = await bounded(
-      startDraftingRun(matterId, { request, agent: "draft", model, ...(workingDraft ? { workingDraft } : {}) }),
+      startDraftingRun(matterId, {
+        request,
+        agent: "draft",
+        model,
+        ...(workingDraft ? { workingDraft } : {}),
+        ...(chatInstructions ? { chatInstructions } : {}),
+      }),
       15_000,
       "Drafting run start",
     )
+    setInstructionEdits(undefined)
     onDraftingStarted?.(started.ownerSessionID, anchor)
     // A fresh chat has no conversation of its own to reopen, so a reload
     // opens the run's conversation, which shows the request and narration.
@@ -222,6 +273,53 @@ export function useChatActions({
     onSessionStarted?.()
     busyRef.current = false
     setBusy(false)
+  }
+
+  // A full run asked for in a chat that holds the lawyer's earlier messages
+  // waits for Start, with those messages offered as instructions; otherwise it
+  // starts at once.
+  async function beginFullRun(request: string, anchor: number, before: Turn[], workingDraft?: string) {
+    if (!instructionsFor(request, before)) return startFullRun(request, anchor, workingDraft)
+    setPendingStart({ request, anchor, workingDraft, before: before.length })
+    busyRef.current = false
+    setBusy(false)
+  }
+
+  // Start on a held full run: the run takes the instructions as kept.
+  async function confirmStart() {
+    const pending = pendingStart
+    if (!pending || busy) return
+    const carried = carriedInstructions(instructionsFor(pending.request, turns.slice(0, pending.before)))
+    const turn = startTurn()
+    setBusy(true)
+    try {
+      await startFullRun(pending.request, pending.anchor, pending.workingDraft, carried)
+      setPendingStart(undefined)
+    } catch (e) {
+      setPendingStart(undefined)
+      if (!pending.workingDraft) dropPendingRequest(pending.request)
+      failTurn(e instanceof Error ? e.message : "Could not start the drafting run. Try again.")
+    } finally {
+      turn.owned = false
+    }
+  }
+
+  // Cancel on a held full run: nothing ran, so a typed request goes back to
+  // the composer.
+  function cancelStart() {
+    const pending = pendingStart
+    if (!pending || busy) return
+    setPendingStart(undefined)
+    if (!pending.workingDraft) dropPendingRequest(pending.request)
+  }
+
+  // Removes the unsent request turn and gives its text back to the composer.
+  function dropPendingRequest(request: string) {
+    setTurns((prev) => {
+      const last = prev.at(-1)
+      return last?.role === "user" && !last.id && last.text === request ? prev.slice(0, -1) : prev
+    })
+    setInput((current) => (current.trim() ? current : request))
   }
 
   // A conversation made only to hold the quick-draft offer, with nothing stored
@@ -286,8 +384,9 @@ export function useChatActions({
     let sent = false
     try {
       if (choice === "full") {
+        const carried = carriedInstructions(instructionsFor(request, beforeRoute(request)))
         await retireOfferSession()
-        return await startFullRun(request, anchor)
+        return await startFullRun(request, anchor, undefined, carried)
       }
       setResolvedAgent(QUICK_DRAFT)
       if (turn.stopped) return cancelUnsent(request)
@@ -321,7 +420,7 @@ export function useChatActions({
     const turn = startTurn()
     setBusy(true)
     try {
-      await startFullRun(input.request, index, input.workingDraft)
+      await beginFullRun(input.request, index, turns.slice(0, input.from), input.workingDraft)
     } catch (e) {
       failTurn(e instanceof Error ? e.message : "Could not start the drafting run. Try again.")
     } finally {
@@ -333,6 +432,7 @@ export function useChatActions({
   async function runFullInstead() {
     const offer = quickLimit
     if (!offer || busy || !matterId) return
+    const carried = carriedInstructions(instructionsFor(offer.text, turns))
     setQuickLimit(undefined)
     setInput((current) => (current.trim() === offer.text ? "" : current))
     const anchor = turns.length
@@ -340,7 +440,7 @@ export function useChatActions({
     const turn = startTurn()
     setBusy(true)
     try {
-      await startFullRun(offer.text, anchor)
+      await startFullRun(offer.text, anchor, undefined, carried)
     } catch (e) {
       setInput((current) => (current.trim() ? current : offer.text))
       failTurn(e instanceof Error ? e.message : "Could not start the drafting run. Try again.")
@@ -401,7 +501,7 @@ export function useChatActions({
           return await offerQuickDraft(text, turn)
         }
         ack("draft")
-        if (offer === "off") return await startFullRun(text, prior.length)
+        if (offer === "off") return await beginFullRun(text, prior.length, prior)
         // Automatic is the firm's consent, as the Quick draft pick is the
         // lawyer's: the request goes to Quick draft like that pick.
         target = QUICK_DRAFT
@@ -539,5 +639,10 @@ export function useChatActions({
     quickLimit,
     dismissQuickLimit: () => setQuickLimit(undefined),
     runFullInstead,
+    pendingStart,
+    confirmStart,
+    cancelStart,
+    instructions,
+    changeInstructions,
   }
 }

@@ -258,3 +258,21 @@ test("candidate staging resolves only the selected secret without invoking the i
   expect(JSON.stringify(result)).not.toContain(f.oauth.access)
   expect(readFileSync(f.file)).toEqual(before)
 })
+
+test("a legacy API key without metadata imports as a key", async () => {
+  const f = fixture()
+  writeFileSync(path.join(f.directory, "auth.json"), JSON.stringify({ "opencode-go": { type: "api", key: "synthetic-legacy-key" } }))
+  const source = f.service.list().sources.find(source => source.label === "OpenCode legacy sign-ins")!
+  await f.service.importSelected({ sourceId: source.id, connectionId: source.connections[0]!.id })
+  expect(f.imported).toEqual([{ integrationID: "opencode-go", label: "API key", value: { type: "key", key: "synthetic-legacy-key" } }])
+})
+
+test("a legacy OAuth sign-in without account details imports without metadata", async () => {
+  const f = fixture()
+  writeFileSync(path.join(f.directory, "auth.json"), JSON.stringify({ "github-copilot": { type: "oauth", refresh: "synthetic-refresh", access: "synthetic-access", expires: 4102444800000 } }))
+  const source = f.service.list().sources.find(source => source.label === "OpenCode legacy sign-ins")!
+  await f.service.importSelected({ sourceId: source.id, connectionId: source.connections[0]!.id })
+  expect(f.imported).toEqual([{ integrationID: "github-copilot", label: "OAuth", value: {
+    type: "oauth", methodID: "device", refresh: "synthetic-refresh", access: "synthetic-access", expires: 4102444800000,
+  } }])
+})

@@ -294,6 +294,21 @@ button.question-dock-cta:focus-visible {
   overflow-wrap: anywhere;
 }
 
+/* The instruction's own words a settled answer rests on. */
+.question-settled-by {
+  margin: 0 0 var(--space-2);
+  padding-left: 10px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text);
+}
+
+.question-settled-by cite {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
 /* Answered and left: a dot per question, filled once answered. */
 .question-progress {
   display: flex;
@@ -350,6 +365,45 @@ button.question-dock-cta:focus-visible {
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 500;
+}
+
+/* Instructions from this chat: the lawyer's earlier messages offered at Start,
+   included by default, with the text itself behind Review or edit. */
+.chat-instructions {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+* + .chat-instructions {
+  margin-top: var(--space-3);
+}
+
+.chat-instructions > legend {
+  padding: 0;
+}
+
+.chat-instructions-include {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.chat-instructions-edit {
+  margin-top: 6px;
+}
+
+.chat-instructions-edit > summary {
+  width: fit-content;
+  color: var(--accent);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.chat-instructions-edit > textarea {
+  margin-top: var(--space-2);
 }
 
 .question-answer {

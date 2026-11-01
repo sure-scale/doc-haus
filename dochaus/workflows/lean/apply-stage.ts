@@ -1,8 +1,11 @@
-import { copyFileSync, existsSync, readFileSync, rmSync } from "node:fs"
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { comparisonBaseline } from "./comparison"
 import { compareDocxWithPointers, paragraphPointers, withStableRevisionDates } from "../../lib/drafting-amendment"
+import { amendmentParagraphs } from "../../lib/drafting-amendment"
 import { applyAmendments } from "../../lib/drafting-amendment-apply"
 import { finalBodyItems, readChangeList, readParagraphs, settleApply, type ApplyResult, type ChangeList } from "./checks"
 import type { DocID } from "./plan"
@@ -14,7 +17,7 @@ import { consistencyItems } from "./consistency"
 import { tableItems } from "./original-tables"
 import { exportAppliedChangeComments } from "./review-evidence"
 import { draftingAttribution, withGeneratedDocxAttribution } from "../../lib/docx-attribution"
-import { numberDocxClauses } from "../../lib/docx-numbering"
+import { continueListStarts, numberDocxClauses, numberedList } from "../../lib/docx-numbering"
 import { linkCrossReferences, referenceFields } from "../../lib/docx-crossrefs"
 import { paragraphFields, refInstruction, unlink } from "../../lib/docx-fields"
 import { shadeOpenItemsInDocx, unshadeOpenItems } from "../../lib/open-items"
@@ -57,16 +60,16 @@ export async function runApply(directory: string, state: LeanState, document: Do
   // A changed paragraph whose text now carries a clause number the body's list
   // supplies is numbered by the list, as at drafting. The later parts of a
   // split paragraph leave its list unless they open with its next number at
-  // the paragraph's own level or a deeper one. Cross-references then show
+  // the paragraph's own level or a deeper one. A run of the list that counted
+  // on from the one before it in the drafted body still does, so the numbers
+  // after an added or removed item follow on. Cross-references then show
   // their targets' new numbers; one whose target the changes removed becomes
   // an open-item marker, checked below like any other. A paragraph the changes
   // rewrote is linked again from its new text, as drafting links a document's
   // references (none in a document kept to typed numbers, advice or a letter),
   // so a number a change wrote or extended points at the clause it names; the
   // other paragraphs are only refreshed.
-  const later = new Set(settled.result.applied.flatMap(row => row.result_pids?.slice(1) ?? []))
-  const split = (paragraph: Element) => paragraphPointers(paragraph).some(pointer => later.has(pointer.pid))
-  const renumbered = numberDocxClauses(readFileSync(out), { house: false, split })
+  const renumbered = renumberApplied(readFileSync(body), readFileSync(out), settled.result)
   const rewritten = new Set(settled.result.applied.flatMap(row => row.mode === "code" ? row.result_pids ?? [row.pid] : []))
   const relink = (paragraph: Element) => paragraphPointers(paragraph).some(pointer => rewritten.has(pointer.pid))
   const links = draftedReferences(directory, document).links
@@ -94,6 +97,47 @@ export async function runApply(directory: string, state: LeanState, document: Do
       ...consistencyItems(directory, document, readParagraphs(directory, document), rows, referenceFields(readFileSync(out))),
       ...tableItems(directory, document, readFileSync(out), rows),
     ],
+  }
+}
+
+// The applied body numbered by the drafted body's list (see runApply).
+function renumberApplied(body: Uint8Array, applied: Uint8Array, result: ApplyResult) {
+  const later = new Set(result.applied.flatMap(row => row.result_pids?.slice(1) ?? []))
+  const split = (paragraph: Element) => paragraphPointers(paragraph).some(pointer => later.has(pointer.pid))
+  const list = numberedList(applied)
+  return continueListStarts(body, numberDocxClauses(applied, { house: false, split, ...(list ? { list } : {}) }))
+}
+
+/** The numbers the projected body change-review reads will show once applied:
+ * the change list applied to a scratch copy of the drafted body and numbered
+ * as apply numbers it. Saved as <document>/paragraphs-projected.json, one row
+ * per projected paragraph (its initial pid, its text as the change list
+ * gives it and the label it then shows), which the projection takes only
+ * while its own text matches. Nothing is saved when a change would not apply:
+ * the projection then shows the drafted numbers. */
+export async function writeProjectedNumbers(directory: string, document: DocID) {
+  const file = `${document}/paragraphs-projected.json`
+  const changes = readChangeList(directory, document)
+  const body = leanFile(directory, `${document}/body.docx`)
+  rmSync(leanFile(directory, file), { force: true })
+  if (!changes || !existsSync(body)) return
+  const scratch = mkdtempSync(join(tmpdir(), "dochaus-projected-"))
+  try {
+    const out = join(scratch, "body.docx")
+    const result = await applyAmendments({ docxPath: body, outPath: out, amendments: changes.amendments }).catch(() => undefined)
+    const settled = settleApply(changes, result, existsSync(out))
+    if (settled.result.unapplied.length) return
+    writeFileSync(out, renumberApplied(readFileSync(body), readFileSync(out), settled.result))
+    const labels = new Map((await paragraphRows(out)).map(row => [row.pid, row.label]))
+    const outcomes = new Map(settled.result.applied.map(row => [row.pid, row]))
+    const amendments = new Map(changes.amendments.map(row => [row.pid, amendmentParagraphs(row)]))
+    const rows = readParagraphs(directory, document).flatMap(row => (amendments.get(row.pid) ?? [row.text]).map((text, at) => {
+      const label = labels.get(outcomes.get(row.pid)?.result_pids?.[at] ?? row.pid)
+      return { pid: row.pid, text, ...(label ? { label } : {}) }
+    }))
+    writeLeanText(directory, file, `${JSON.stringify(rows, null, 2)}\n`)
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
   }
 }
 

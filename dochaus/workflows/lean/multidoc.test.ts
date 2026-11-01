@@ -37,7 +37,7 @@ describe("lean drafting with several documents", () => {
 
     expect(state.status).toBe("completed")
     expect(readLeanPlan(directory)?.documents.map(row => [row.id, row.title])).toEqual([["d1", "Supply note"]])
-    expect(Object.keys(state.stages)).toEqual(["discrepancy", "intake", "research", "research-review", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "checklist-check", "package-review", "gate"])
+    expect(Object.keys(state.stages)).toEqual(["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "checklist-check", "package-review", "gate"])
     expect(existsSync(leanFile(directory, "d2"))).toBe(false)
     expect(readLeanDocuments(directory)!.documents.map(row => `${row.kind}:${row.document}:${row.deliverable}`)).toEqual([
       "body:d1:Supply note.docx", "redline:d1:Supply note - redline.docx", "drafting_notes:null:Supply note - drafting notes.docx", "drafting_notes_markdown:null:null",
@@ -53,7 +53,7 @@ describe("lean drafting with several documents", () => {
 
     expect(state.status).toBe("completed")
     expect(Object.keys(state.stages)).toEqual([
-      "discrepancy", "intake", "research", "research-review", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "d2.draft", "d2.review", "d2.review-independent", "d2.review-wording", "d2.review-client-disadvantage", "d2.change-plan", "d2.change-prepare", "d2.changes", "d2.change-review", "d2.apply", "finalize", "checklist-check", "package-review", "gate",
+      "instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "d2.draft", "d2.review", "d2.review-independent", "d2.review-wording", "d2.review-client-disadvantage", "d2.change-plan", "d2.change-prepare", "d2.changes", "d2.change-review", "d2.apply", "finalize", "checklist-check", "package-review", "gate",
     ])
     expect(readLeanPlan(directory)?.documents.map(row => [row.id, row.title, row.parts.length])).toEqual([["d1", "Supply note", 2], ["d2", "Covering letter", 2]])
     const firstPids = [...readParagraphs(directory, "d1"), ...readParagraphs(directory, "d1", "paragraphs-applied.json")].map(row => row.pid)
@@ -215,7 +215,7 @@ describe("lean drafting with several documents", () => {
     // Only the later document is drafted; the first document's accepted draft is kept.
     expect(answered.counts()).toEqual([2, 2, 2, 1])
     const rerun = Object.keys(resumed.stages).filter(step => resumed.stages[step as keyof typeof resumed.stages]?.finished_at !== blocked.stages[step as keyof typeof blocked.stages]?.finished_at)
-    expect(rerun).toEqual(["discrepancy", "intake", "research", "research-review", "spine", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "d2.draft", "d2.review", "d2.review-independent", "d2.review-wording", "d2.review-client-disadvantage", "d2.change-plan", "d2.change-prepare", "d2.changes", "d2.change-review", "d2.apply", "finalize", "checklist-check", "package-review", "gate"])
+    expect(rerun).toEqual(["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "d2.draft", "d2.review", "d2.review-independent", "d2.review-wording", "d2.review-client-disadvantage", "d2.change-plan", "d2.change-prepare", "d2.changes", "d2.change-review", "d2.apply", "finalize", "checklist-check", "package-review", "gate"])
     expect(readParagraphs(directory, "d2", "paragraphs-applied.json").map(row => row.text)).toContain(
       "The goods will be delivered as the supply note states: The supplier shall deliver the goods within thirty days of the order date, and late delivery carries no remedy.")
 
@@ -245,7 +245,7 @@ describe("lean drafting with several documents", () => {
 
     const restored = restoreLeanStage(directory, "d1.apply")
     expect(Object.entries(restored.stages).map(([step, row]) => `${step}=${row?.status}`)).toEqual([
-      "discrepancy=done", "intake=done", "research=done", "research-review=done", "spine=done", "d1.draft=done", "d1.review=done", "d1.review-independent=done", "d1.review-wording=done", "d1.review-client-disadvantage=done", "d1.change-plan=done", "d1.change-prepare=done", "d1.changes=done", "d1.change-review=done", "d1.apply=done",
+      "instructions=done", "discrepancy=done", "intake=done", "research=done", "research-review=done", "acts=done", "spine=done", "d1.draft=done", "d1.review=done", "d1.review-independent=done", "d1.review-wording=done", "d1.review-client-disadvantage=done", "d1.change-plan=done", "d1.change-prepare=done", "d1.changes=done", "d1.change-review=done", "d1.apply=done",
       "d2.draft=pending", "d2.review=pending", "d2.review-independent=pending", "d2.review-wording=pending", "d2.review-client-disadvantage=pending", "d2.change-plan=pending", "d2.change-prepare=pending", "d2.changes=pending", "d2.change-review=pending", "d2.apply=pending", "finalize=pending", "checklist-check=pending", "package-review=pending", "gate=pending",
     ])
     expect(existsSync(leanFile(directory, "d1/redline.docx"))).toBe(true)
