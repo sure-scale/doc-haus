@@ -91,7 +91,7 @@ export default function Settings({ onClose, closing = false, firstRun = false, r
         {tab === "approvals" && <ApprovalsTab />}
         {tab === "background" && <BackgroundAgentsTab onSaved={(m) => toast("success", m)} />}
         {tab === "appearance" && <AppearanceTab />}
-      </div><div className="settings-footer" ref={setFooter} /></SettingsFooterContext.Provider></div>
+      </div><div className="settings-footer" data-toast-clear ref={setFooter} /></SettingsFooterContext.Provider></div>
     </div>
   </SettingsDialog>
 }

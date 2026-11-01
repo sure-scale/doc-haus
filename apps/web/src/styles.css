@@ -4332,11 +4332,11 @@ button.linklike:hover:not(:disabled) {
 }
 
 /* On a narrow screen a modal's header (title and close) fills the top, so toasts shown inside a
-   modal dialog sit at the bottom instead. */
+   modal dialog sit at the bottom instead, above its footer actions (--toast-lift, see Toast.tsx). */
 @media (max-width: 700px) {
   dialog .toast-stack {
     top: auto;
-    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(8px + max(var(--toast-lift, 0px), 8px + env(safe-area-inset-bottom, 0px)));
   }
 }
 

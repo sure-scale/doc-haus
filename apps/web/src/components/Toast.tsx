@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 
 // App-wide toasts: transient notifications stacked top-centre. Type sets the
@@ -29,12 +29,26 @@ function topModal(): HTMLDialogElement | null {
   return null
 }
 
+// Space to keep clear at the bottom of a dialog: its footer bar (marked data-toast-clear) holds the
+// actions, such as Save, that a toast at the bottom would otherwise cover.
+function clearance(dialog: HTMLDialogElement | null): number {
+  const footer = dialog?.querySelector<HTMLElement>("[data-toast-clear]")
+  if (!footer || footer.offsetHeight === 0) return 0
+  return Math.max(0, window.innerHeight - footer.getBoundingClientRect().top)
+}
+
 // Monotonic id source — unique within a session without Date.now().
 let counter = 0
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
   const [host, setHost] = useState<HTMLDialogElement | null>(null)
+  const [lift, setLift] = useState(0)
+  const follow = useCallback(() => {
+    const modal = topModal()
+    setHost(modal)
+    setLift(clearance(modal))
+  }, [])
   const timers = useRef(new Set<ReturnType<typeof setTimeout>>())
   useEffect(() => () => {
     for (const timer of timers.current) clearTimeout(timer)
@@ -58,25 +72,24 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const showing = toasts.length > 0
   useEffect(() => {
     if (!showing) return
-    const follow = () => setHost(topModal())
     document.addEventListener("close", follow, true)
     return () => document.removeEventListener("close", follow, true)
-  }, [showing])
+  }, [showing, follow])
   const notify = useCallback(
     (type: ToastType, message: string) => {
       const id = ++counter
-      setHost(topModal())
+      follow()
       setToasts((list) => [...list, { id, type, message }])
       // Errors linger longer; they tend to carry something the user must read.
       schedule(() => dismiss(id), type === "error" ? 8000 : 5000)
     },
-    [dismiss, schedule],
+    [dismiss, schedule, follow],
   )
 
   return (
     <ToastContext.Provider value={notify}>
       {children}
-      {createPortal(<div className="toast-stack">
+      {createPortal(<div className="toast-stack" style={{ "--toast-lift": `${lift}px` } as CSSProperties}>
         {toasts.map((t) => (
           <div
             key={t.id}
