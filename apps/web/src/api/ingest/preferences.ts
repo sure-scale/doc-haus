@@ -60,16 +60,9 @@ export function postureLabel(posture: Posture) {
   return POSTURES.find((row) => row.value === posture)?.label ?? posture
 }
 
-export type RateOverride = Partial<{
-  input_per_mtok: number
-  output_per_mtok: number
-  cache_read_per_mtok?: number
-}>
-
 export type TelemetryPreferences = {
   retention_days: number
   retention_days_source?: "user" | "default"
-  rate_overrides: Record<string, RateOverride>
 }
 
 export type BackgroundAgents = { chronologySuggestion: boolean; reviewCompare: boolean; narration: boolean }

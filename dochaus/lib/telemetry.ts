@@ -1,7 +1,6 @@
 import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
-import { computeCost, getRate, PRICING_SOURCE, type RateOverrides } from "./pricing"
 
 export type TurnInput = {
   sessionID: string
@@ -11,7 +10,6 @@ export type TurnInput = {
   agent: string
   contextChars: number
   estimatedInputTokens: number
-  rateOverrides?: RateOverrides
 }
 
 export type ToolCallInput = {
@@ -101,11 +99,8 @@ export function openTelemetryDb(matterDir: string) {
   `)
   db.query("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)").run("schema_version", "1")
   db.query("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)").run("created_at", String(Date.now()))
-  db.query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(
-    "pricing_source",
-    PRICING_SOURCE,
-  )
-  db.query("DELETE FROM meta WHERE key = ?").run("pricing_as_of")
+  // Cost now comes from native sessions; drop the old estimate's metadata.
+  db.query("DELETE FROM meta WHERE key IN ('pricing_source', 'pricing_as_of', 'unknown_models')").run()
   return db
 }
 
@@ -153,10 +148,9 @@ export function touchSession(db: Database, sessionID: string, patch: SessionTouc
   `).run(patch.parentID ?? null, now, patch.status ?? null, patch.model ?? null, patch.agent ?? null, sessionID)
 }
 
+// A turn records the context size check only. Cost is read from native
+// sessions (services/ingest/src/matter-usage.ts); cost_usd stays null.
 export function recordTurn(db: Database, input: TurnInput) {
-  const rate = getRate(input.model, input.rateOverrides, input.estimatedInputTokens)
-  const costUsd = rate ? computeCost(input.estimatedInputTokens, rate) : null
-  const unknownModel = !rate
   db.query(`
     INSERT INTO turns (
       session_id,
@@ -178,7 +172,7 @@ export function recordTurn(db: Database, input: TurnInput) {
     input.agent,
     input.contextChars,
     input.estimatedInputTokens,
-    costUsd,
+    null,
     turnStatus(input.estimatedInputTokens),
   )
   touchSession(db, input.sessionID, {
@@ -187,8 +181,6 @@ export function recordTurn(db: Database, input: TurnInput) {
     agent: input.agent,
     status: "active",
   })
-  if (unknownModel) recordUnknownModel(db, input.model)
-  return { costUsd, unknownModel }
 }
 
 export function recordToolCall(db: Database, input: ToolCallInput) {
@@ -228,7 +220,6 @@ export function clearTelemetry(db: Database) {
   db.query("DELETE FROM tool_calls").run()
   db.query("DELETE FROM generations").run()
   db.query("DELETE FROM sessions").run()
-  db.query("DELETE FROM meta WHERE key = ?").run("unknown_models")
 }
 
 export function summarizeMessages(messages: MessageLike[]) {
@@ -236,39 +227,10 @@ export function summarizeMessages(messages: MessageLike[]) {
   return { chars, estimatedTokens: Math.ceil(chars / 4) }
 }
 
-export function getUnknownModels(db: Database, rateOverrides?: RateOverrides) {
-  const row = db.query("SELECT value FROM meta WHERE key = ?").get("unknown_models") as { value: string } | null
-  if (!row) return []
-  const parsed = parseJson(row.value)
-  if (!Array.isArray(parsed)) return []
-  return parsed.filter((value): value is string => typeof value === "string" && !getRate(value, rateOverrides))
-}
-
-export function getPricingSource(db: Database) {
-  const row = db.query("SELECT value FROM meta WHERE key = ?").get("pricing_source") as { value: string } | null
-  return row?.value ?? null
-}
-
 function turnStatus(estimatedInputTokens: number) {
   if (estimatedInputTokens >= 180_000) return "fail"
   if (estimatedInputTokens >= 90_000) return "warn"
   return "ok"
-}
-
-function recordUnknownModel(db: Database, model: string) {
-  const models = Array.from(new Set([...getUnknownModels(db), model])).sort()
-  db.query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(
-    "unknown_models",
-    JSON.stringify(models),
-  )
-}
-
-function parseJson(value: string) {
-  try {
-    return JSON.parse(value) as unknown
-  } catch {
-    return undefined
-  }
 }
 
 function textLength(value: unknown): number {

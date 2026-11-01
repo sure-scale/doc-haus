@@ -1,8 +1,6 @@
 import { openTelemetryDb, recordToolCall, recordTurn, summarizeMessages, touchSession } from "../../lib/telemetry"
 import { sessionAgent } from "./session"
 import { diagnosticErrorMetadata } from "../../lib/diagnostic-metadata"
-import { normalizePreferences } from "../../lib/drafting-preferences"
-import { readFirmPreferences } from "../../lib/preferences"
 
 const SESSION_TELEMETRY = new Map<string, { directory: string; agent: string; model: string }>()
 const TURN_COUNTERS = new Map<string, number>()
@@ -36,7 +34,6 @@ export function recordContextBudget(
       agent: session.agent,
       contextChars: summary.chars,
       estimatedInputTokens: summary.estimatedTokens,
-      rateOverrides: normalizePreferences(readFirmPreferences()).telemetry.rate_overrides,
     })
   } catch (e) {
     console.error("telemetry recordTurn failed", diagnosticErrorMetadata(e))

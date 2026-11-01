@@ -79,16 +79,9 @@ export type BackgroundAgents = {
  * into its plan (workflows/lean/plan.ts runPosture). */
 export type Posture = DraftingPreferences["posture"]
 
-export type RateOverride = Partial<{
-  input_per_mtok: number
-  output_per_mtok: number
-  cache_read_per_mtok?: number
-}>
-
 export type TelemetryPreferences = {
   retention_days: number
   retention_days_source?: "user" | "default"
-  rate_overrides: Record<string, RateOverride>
 }
 
 export const DEFAULT_DRAFTING: DraftingPreferences = {
@@ -107,7 +100,7 @@ export const DEFAULT_DRAFTING: DraftingPreferences = {
   caseLawApiKey: "",
   courtlistenerMcpEnabled: false,
   approvedSources: [],
-  telemetry: { retention_days: 90, retention_days_source: "default", rate_overrides: {} },
+  telemetry: { retention_days: 90, retention_days_source: "default" },
   pageNumbers: "plain",
   pageNumberPosition: "center",
   numberFirstPage: true,
@@ -231,9 +224,6 @@ function normalizeTelemetry(input: unknown): TelemetryPreferences {
   return {
     retention_days: Number.isFinite(retention) && retention > 0 ? retention : DEFAULT_DRAFTING.telemetry.retention_days,
     retention_days_source: telemetry.retention_days_source === "user" ? "user" : DEFAULT_DRAFTING.telemetry.retention_days_source,
-    rate_overrides: telemetry.rate_overrides && typeof telemetry.rate_overrides === "object" && !Array.isArray(telemetry.rate_overrides)
-      ? telemetry.rate_overrides
-      : DEFAULT_DRAFTING.telemetry.rate_overrides,
   }
 }
 

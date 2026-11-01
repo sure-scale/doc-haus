@@ -49,21 +49,21 @@ test("writer normalizes invalid drafting values before saving canonical JSON and
     searchApiKey: "synthetic-search-secret", caseLawApiKey: "synthetic-case-secret",
     webResearch: "open", approvedSources: ["trusted.test"], courtlistenerMcpEnabled: true,
     process: "legacy-value", customOption: { retained: true },
-    telemetry: { retention_days: 21, retention_days_source: "user", rate_overrides: { "synthetic-model": { input_per_mtok: 2 } } },
+    telemetry: { retention_days: 21, retention_days_source: "user" },
   })
   expect(saved).toMatchObject({
     attorney: "", firm: "", houseStyle: "", posture: "balanced", formality: "formal", detail: "concise", dateFormat: "month-day-year", numberStyle: "numerals",
     searchApiKey: "synthetic-search-secret", caseLawApiKey: "synthetic-case-secret",
     webResearch: "open", approvedSources: ["trusted.test"], courtlistenerMcpEnabled: true,
     process: "legacy-value", customOption: { retained: true },
-    telemetry: { retention_days: 21, retention_days_source: "user", rate_overrides: { "synthetic-model": { input_per_mtok: 2 } } },
+    telemetry: { retention_days: 21, retention_days_source: "user" },
   })
   expect(readDraftingPreferences()).toEqual(saved)
   expect(JSON.parse(readFileSync(path.join(root, ".preferences/preferences.json"), "utf8"))).toEqual(saved)
   const instructions = readFileSync(path.join(root, ".preferences/drafting.md"), "utf8")
   expect(readFirmDraftingPreferences()).toBe(instructions)
   expect(instructions).toContain("Use formal legal drafting style throughout.")
-  for (const secret of ["undefined", "synthetic-search-secret", "synthetic-case-secret", "synthetic-model", "customOption", "legacy-value"]) expect(instructions).not.toContain(secret)
+  for (const secret of ["undefined", "synthetic-search-secret", "synthetic-case-secret", "customOption", "legacy-value"]) expect(instructions).not.toContain(secret)
 })
 
 test("an actual markdown export failure leaves the previous authoritative JSON and no temporary files", () => {
@@ -88,7 +88,7 @@ test("an actual markdown export failure leaves the previous authoritative JSON a
 })
 
 test("research-only patches preserve unrelated drafting and operational preferences", () => {
-  const baseline = writeDraftingPreferences({ ...DEFAULT_DRAFTING, attorney: "Test lawyer", houseStyle: "Preserve this style.", telemetry: { retention_days: 17, rate_overrides: {} } })
+  const baseline = writeDraftingPreferences({ ...DEFAULT_DRAFTING, attorney: "Test lawyer", houseStyle: "Preserve this style.", telemetry: { retention_days: 17 } })
   const saved = writeDraftingPreferences({ webResearch: "open", approvedSources: ["Trusted.Example"], searchApiKey: " synthetic-key " })
   expect(saved).toMatchObject({ attorney: baseline.attorney, houseStyle: baseline.houseStyle, telemetry: baseline.telemetry,
     webResearch: "open", approvedSources: ["trusted.example"], searchApiKey: "synthetic-key" })
