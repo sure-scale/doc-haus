@@ -88,14 +88,23 @@ export type RowFill = { fills: Record<string, string>; include: Record<string, b
 
 const YES = new Set(["yes", "y", "true", "1", "include", "included"])
 const NO = new Set(["no", "n", "false", "0", "omit", "exclude"])
+// Never written into a document: a bracket would read as a placeholder.
+export const UNSAFE = /[[\]\p{Cc}]/u
+// Line breaks and tabs read as spaces; runs of spaces close up.
+const clean = (value: string | undefined) => (value ?? "").replace(/[\r\n\t]+/g, " ").replace(/ {2,}/g, " ").trim()
 
 /** One row's values for the template. A fill with no usable value is missing
  * and keeps its placeholder; a value holding a bracket or a control character
  * is never written into the document (line breaks and tabs read as spaces).
  * An optional component with no column or a blank cell keeps the template's
  * default (kept); one whose cell is not a clear yes or no is missing, and is
- * kept with its marker left in for the lawyer to resolve. */
-export function rowFill(fields: BatchField[], columns: string[], row: string[], mapping: Record<string, string | null>): RowFill {
+ * kept with its marker left in for the lawyer to resolve.
+ *
+ * `entered` holds values the lawyer typed in the preview for this row, by
+ * field key. One is used only where the row itself gives no usable value, and
+ * passes the same checks as a cell, so it fills a gap and never overrides the
+ * spreadsheet. */
+export function rowFill(fields: BatchField[], columns: string[], row: string[], mapping: Record<string, string | null>, entered: Record<string, string> = {}): RowFill {
   const fills: Record<string, string> = {}
   const include: Record<string, boolean> = {}
   const missing: string[] = []
@@ -107,14 +116,14 @@ export function rowFill(fields: BatchField[], columns: string[], row: string[], 
   for (const field of fields) {
     const column = mapping[field.key]
     const index = column ? columns.indexOf(column) : -1
-    const value = index >= 0 ? (row[index] ?? "").replace(/[\r\n\t]+/g, " ").replace(/ {2,}/g, " ").trim() : undefined
+    const cell = index >= 0 ? clean(row[index]) : ""
+    const typed = clean(entered[field.key])
     if (field.kind === "optional") {
-      if (!value) {
-        include[field.key] = true
-        continue
-      }
-      const answer = value.toLowerCase()
-      if (YES.has(answer)) include[field.key] = true
+      // A blank cell keeps the template's default, so only an unclear answer
+      // leaves a gap a typed yes or no can fill.
+      const clear = !cell || YES.has(cell.toLowerCase()) || NO.has(cell.toLowerCase())
+      const answer = (clear ? cell : typed || cell).toLowerCase()
+      if (!answer || YES.has(answer)) include[field.key] = true
       else if (NO.has(answer)) include[field.key] = false
       else {
         include[field.key] = true
@@ -122,8 +131,9 @@ export function rowFill(fields: BatchField[], columns: string[], row: string[], 
       }
       continue
     }
-    if (!value || /[[\]\p{Cc}]/u.test(value)) lack(field)
-    else fills[field.key] = value
+    const value = [cell, typed].find((candidate) => candidate && !UNSAFE.test(candidate))
+    if (value) fills[field.key] = value
+    else lack(field)
   }
   return { fills, include, missing, missingKeys }
 }

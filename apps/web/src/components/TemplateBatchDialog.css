@@ -54,6 +54,19 @@
 .template-batch-skip label { cursor: pointer; font-size: .9rem; }
 .template-batch-status { margin: 0; color: var(--text-secondary); font-size: .85rem; line-height: 1.6; }
 .template-batch-status.is-warn { padding: var(--space-2) var(--space-3); border: 1px solid var(--warn-border); border-radius: var(--radius-md); background: var(--warn-soft); color: var(--warn); }
+.template-batch-key { margin: 0; color: var(--text-secondary); font-size: .85rem; line-height: 1.6; }
+.template-batch-key-sample { padding: 0 1px; border-radius: 2px; background: #FFF2CC; color: #1f1f1f; }
+@media (forced-colors: active) { .template-batch-key-sample { outline: 1px solid CanvasText; } }
+/* Values typed for the shown row's document. */
+.template-batch-gaps { display: grid; gap: var(--space-3); }
+.template-batch-gap { display: grid; gap: var(--space-1); }
+.template-batch-gap-label { color: var(--text); font-size: .85rem; font-weight: 500; }
+.template-batch-gap input[type="text"] { width: 100%; }
+.template-batch-gap-choices { display: flex; gap: var(--space-4); }
+.template-batch-gap-choices label { display: flex; align-items: center; gap: var(--space-2); font-size: .85rem; cursor: pointer; }
+.template-batch-gap-choices input[type="radio"] { min-height: 0; margin: 0; padding: 0; }
+.template-batch-gap-problem { color: var(--warn); font-size: .8rem; }
+.template-batch-gaps-note { margin: 0; color: var(--text-secondary); font-size: .8rem; line-height: 1.5; }
 .template-batch-change { align-self: flex-start; min-height: 0; font-size: .85rem; }
 .template-batch-status .template-batch-change { font-size: inherit; }
 

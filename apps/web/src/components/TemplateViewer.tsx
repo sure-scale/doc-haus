@@ -4,7 +4,7 @@ import { createPortal } from "react-dom"
 import { createViewer, type DocxViewer } from "docxodus/embed"
 import { fetchTemplateBytes, type TemplatePlaceholder } from "../api/ingest/library"
 import { ModalClose } from "./ModalHeader"
-import { decorateMarkers, markerEntries, type MarkerEntry } from "./document-markers"
+import { decorateFilledValues, decorateMarkers, markerEntries, type MarkerEntry } from "./document-markers"
 import backdropClose from "./backdropClose"
 import useModalFocus from "./useModalFocus"
 import { removeUnsafeLinkTargets } from "./docx-links"
@@ -40,7 +40,8 @@ export default function TemplateViewer({
   loadBytes?: () => Promise<Uint8Array>
   sidebar?: ReactNode
   footer?: ReactNode
-  onRendered?: () => void
+  /** Called once the document shows; `filled` counts the values a batch preview filled in. */
+  onRendered?: (shown: { filled: number }) => void
 }) {
   const closing = useContext(Closing)
   const panel = useRef<HTMLDivElement>(null)
@@ -60,33 +61,42 @@ export default function TemplateViewer({
   const optional = markers.filter(isOptional)
   const redactions = markers.filter((entry) => entry.kind === "redaction")
 
+  // The viewer on screen. A new render replaces it only once ready, so a
+  // preview that changes (a value typed in) never blanks the page or loses
+  // its scroll position.
+  const shown = useRef<DocxViewer>(undefined)
+  useEffect(() => () => { shown.current?.destroy(); shown.current = undefined }, [])
   useEffect(() => {
     let cancelled = false
-    let viewer: DocxViewer | undefined
     // Render offscreen first. The embed scopes Word's body/span CSS before it
     // enters the page; raw converter HTML would restyle the surrounding app.
     const mount = document.createElement("div")
-    setReady(false)
+    if (!shown.current) {
+      setReady(false)
+      setMarkers([])
+      documentHost.current?.replaceChildren()
+    }
     setError(undefined)
-    setMarkers([])
-    documentHost.current?.replaceChildren()
     ;(loadBytes ? loadBytes() : fetchTemplateBytes(name))
       .then((bytes) => createViewer(mount, withSafeStyleValues(bytes), { wasmBasePath: "/wasm/", renderHeadersAndFooters: true }))
       .then((result) => {
         if (cancelled) { result.destroy(); return }
-        viewer = result
         removeUnsafeLinkTargets(mount)
         documentHost.current?.replaceChildren(mount)
+        shown.current?.destroy()
+        shown.current = result
         decorateMarkers(mount, fields.current?.map((p) => p.text))
+        const filled = decorateFilledValues(mount)
         setMarkers(markerEntries(mount))
         setReady(true)
-        rendered.current?.()
+        rendered.current?.({ filled })
       })
-      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : String(e)))
-    return () => {
-      cancelled = true
-      viewer?.destroy()
-    }
+      .catch((e) => {
+        if (cancelled) return
+        setReady(false)
+        setError(e instanceof Error ? e.message : String(e))
+      })
+    return () => { cancelled = true }
   }, [name, loadBytes])
 
   // Keep viewport overlays outside the page's width/spacing rules.

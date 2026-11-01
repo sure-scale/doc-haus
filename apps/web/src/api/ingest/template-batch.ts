@@ -1,6 +1,6 @@
 import { INGEST_URL } from "../../config"
 import { ingestError } from "./errors"
-import { rowFill, type BatchField } from "../../../../../dochaus/lib/template-batch"
+import { rowFill, UNSAFE, type BatchField } from "../../../../../dochaus/lib/template-batch"
 
 // Batch documents from one library template and a spreadsheet: one document
 // per row, filled deterministically by ingest (no model calls). The types
@@ -14,6 +14,8 @@ export type { BatchField }
 export type BatchMapping = Record<string, string | null>
 // row is the spreadsheet's own row number: header = 1, first data row = 2.
 export type BatchRow = { row: number; values: string[] }
+// Values the lawyer typed in the preview for one row, field key → text.
+export type BatchEntered = Record<string, string>
 
 export type BatchSheet = {
   template: { name: string; sha256: string }
@@ -50,7 +52,7 @@ export async function readTemplateBatch(name: string, file: File): Promise<Batch
 
 // One row filled into the template, for the preview. `missing` lists the field
 // labels the row leaves for the lawyer to fill.
-export async function previewTemplateBatch(input: { name: string; columns: string[]; values: string[]; mapping: BatchMapping }): Promise<{ bytes: Uint8Array; missing: string[] }> {
+export async function previewTemplateBatch(input: { name: string; columns: string[]; values: string[]; mapping: BatchMapping; entered?: BatchEntered }): Promise<{ bytes: Uint8Array; missing: string[] }> {
   const res = await fetch(`${INGEST_URL}/templates/batch/preview`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -76,7 +78,7 @@ export async function createTemplateBatch(matterId: string, input: {
   sha256: string
   source: string
   columns: string[]
-  rows: BatchRow[]
+  rows: (BatchRow & { entered?: BatchEntered })[]
   skipped: number[]
   mapping: BatchMapping
 }): Promise<BatchResult> {
@@ -93,9 +95,21 @@ export async function createTemplateBatch(matterId: string, input: {
   return res.json()
 }
 
-// Which fields a row leaves for the lawyer, by label, in field order: the
-// server's own rules (dochaus/lib/template-batch.ts), so the preview's summary
-// counts every row exactly as the created documents will.
-export function rowMissing(fields: BatchField[], columns: string[], values: string[], mapping: BatchMapping): string[] {
-  return rowFill(fields, columns, values, mapping).missing
+// One row as the created document will have it, by the server's own rules
+// (dochaus/lib/template-batch.ts), so the preview counts every row exactly as
+// Create will. `missing` lists the labels still left for the lawyer once their
+// typed values are in; `gaps` the fields the spreadsheet itself leaves, the
+// ones the preview offers to type.
+export function rowStatus(fields: BatchField[], columns: string[], values: string[], mapping: BatchMapping, entered: BatchEntered = {}) {
+  const gaps = new Set(rowFill(fields, columns, values, mapping).missingKeys)
+  return {
+    missing: rowFill(fields, columns, values, mapping, entered).missing,
+    gaps: fields.filter((field) => gaps.has(field.key)),
+  }
+}
+
+// Why a typed value cannot go into the document, or nothing when it can.
+export function enteredProblem(value: string) {
+  // Line breaks and tabs read as spaces, as in a cell.
+  return UNSAFE.test(value.replace(/[\r\n\t]+/g, " ")) ? "Square brackets can't be used here." : undefined
 }

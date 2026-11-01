@@ -28,3 +28,7 @@ export const OPTIONAL_CLAUSE_PATTERN = /\[optional:[^\]\r\n]*\]/gi
 
 /** The label dochaus/tool/redact.ts writes by default. A custom label is not detectable. */
 export const REDACTION_MARKER_PATTERN = /\[REDACTED\]/g
+
+/** The shading the spreadsheet batch preview gives a value it filled in, so the
+ * viewer can highlight it. Preview only: created documents never carry it. */
+export const FILLED_VALUE_FILL = "E2EFDA"

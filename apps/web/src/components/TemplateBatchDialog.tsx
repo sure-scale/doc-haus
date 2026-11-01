@@ -7,9 +7,11 @@ import { humanizeError } from "../api/ingest/errors"
 import {
   createTemplateBatch,
   previewTemplateBatch,
+  enteredProblem,
   readTemplateBatch,
-  rowMissing,
+  rowStatus,
   templateBatchSampleUrl,
+  type BatchEntered,
   type BatchField,
   type BatchMapping,
   type BatchResult,
@@ -35,14 +37,16 @@ const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ?
 const stem = (name: string) => name.replace(/\.docx$/i, "")
 const IDENTIFYING = /name|party|client|company|counterparty|recipient|addressee|tenant|employee/i
 
-// The column whose value tells rows apart in the stepper and lists: the
+// The field whose value tells rows apart in the stepper and lists: the
 // server's choice while still matched, else the same rule on the current matching.
-function identifyingColumn(fields: BatchField[], mapping: BatchMapping, preferred: string | null) {
-  if (preferred && mapping[preferred]) return mapping[preferred]
+function identifyingField(fields: BatchField[], mapping: BatchMapping, preferred: string | null) {
+  if (preferred && mapping[preferred]) return preferred
   const mapped = fields.filter((field) => field.kind === "fill" && mapping[field.key])
-  const field = mapped.find((item) => IDENTIFYING.test(item.label)) ?? mapped[0]
-  return field ? mapping[field.key] ?? null : null
+  return (mapped.find((item) => IDENTIFYING.test(item.label)) ?? mapped[0])?.key ?? null
 }
+
+// How long typing pauses before the preview shows the typed values.
+const TYPING_PAUSE_MS = 450
 
 export default function TemplateBatchDialog({ template, matter, onClose, onCreated }: {
   template: Template
@@ -64,7 +68,14 @@ export default function TemplateBatchDialog({ template, matter, onClose, onCreat
   const [manualKeys, setManualKeys] = useState<string[]>([])
   const [index, setIndex] = useState(0)
   const [skipped, setSkipped] = useState<Set<number>>(() => new Set())
-  const [shownMissing, setShownMissing] = useState<{ row: number; missing: string[] }>()
+  // Values typed in the preview, by spreadsheet row, for that row's document only.
+  const [entered, setEntered] = useState<Record<number, BatchEntered>>({})
+  // The same once typing pauses: what the preview document shows.
+  const [settled, setSettled] = useState(entered)
+  // Bumped to put the cursor in the shown row's first empty field.
+  const [focusGap, setFocusGap] = useState(0)
+  // Whether the row in the preview shows any value filled in from the sheet.
+  const [shownFilled, setShownFilled] = useState<{ row: number; filled: boolean }>()
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string>()
   const [result, setResult] = useState<BatchResult>()
@@ -108,7 +119,8 @@ export default function TemplateBatchDialog({ template, matter, onClose, onCreat
       setManualKeys(unmatched)
       setIndex(0)
       setSkipped(new Set())
-      setShownMissing(undefined)
+      setEntered({})
+      setSettled({})
       setStep(unmatched.length ? "match" : "preview")
     } catch (cause) {
       if (alive.current) setError(humanizeError(cause, `Could not read ${file.name}.`))
@@ -117,26 +129,33 @@ export default function TemplateBatchDialog({ template, matter, onClose, onCreat
     }
   }
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSettled(entered), TYPING_PAUSE_MS)
+    return () => window.clearTimeout(timer)
+  }, [entered])
+
   const rows = sheet?.rows ?? []
-  const missing = useMemo(
-    () => sheet ? sheet.rows.map((row) => rowMissing(sheet.fields, sheet.columns, row.values, mapping)) : [],
-    [sheet, mapping],
+  const status = useMemo(
+    () => sheet ? sheet.rows.map((row) => rowStatus(sheet.fields, sheet.columns, row.values, mapping, entered[row.row])) : [],
+    [sheet, mapping, entered],
   )
-  const identity = sheet ? identifyingColumn(sheet.fields, mapping, sheet.identifyingKey) : null
-  const identityAt = identity && sheet ? sheet.columns.indexOf(identity) : -1
-  const rowName = (at: number) => (identityAt >= 0 ? rows[at]?.values[identityAt]?.trim() : "") || `Spreadsheet row ${rows[at]?.row}`
+  const missing = status.map((row) => row.missing)
+  const identityKey = sheet ? identifyingField(sheet.fields, mapping, sheet.identifyingKey) : null
+  const identityAt = identityKey && sheet ? sheet.columns.indexOf(mapping[identityKey] ?? "") : -1
+  const rowName = (at: number) => (identityAt >= 0 ? rows[at]?.values[identityAt]?.trim() : "")
+    || (identityKey ? entered[rows[at]?.row ?? 0]?.[identityKey]?.trim() : "")
+    || `Spreadsheet row ${rows[at]?.row}`
   const included = rows.filter((row) => !skipped.has(row.row)).length
   const needInput = rows.map((row, at) => ({ row, at })).filter(({ row, at }) => !skipped.has(row.row) && missing[at]?.length)
   const skippedRows = rows.map((row, at) => ({ row, at })).filter(({ row }) => skipped.has(row.row))
 
   const current = rows[index]
   const values = current?.values
+  const typed = current ? settled[current.row] : undefined
   const loadBytes = useCallback(async () => {
-    if (!sheet || !current || !values) return new Uint8Array()
-    const preview = await previewTemplateBatch({ name: template.name, columns: sheet.columns, values, mapping })
-    if (alive.current) setShownMissing({ row: current.row, missing: preview.missing })
-    return preview.bytes
-  }, [template.name, sheet, current, values, mapping])
+    if (!sheet || !values) return new Uint8Array()
+    return (await previewTemplateBatch({ name: template.name, columns: sheet.columns, values, mapping, entered: typed })).bytes
+  }, [template.name, sheet, values, mapping, typed])
 
   async function create() {
     if (!sheet || !matterId || creating) return
@@ -148,7 +167,7 @@ export default function TemplateBatchDialog({ template, matter, onClose, onCreat
         sha256: sheet.template.sha256,
         source: sheet.source,
         columns: sheet.columns,
-        rows: sheet.rows,
+        rows: sheet.rows.map((row) => entered[row.row] ? { ...row, entered: entered[row.row] } : row),
         skipped: sheet.rows.filter((row) => skipped.has(row.row)).map((row) => row.row),
         mapping,
       })
@@ -173,19 +192,24 @@ export default function TemplateBatchDialog({ template, matter, onClose, onCreat
 
   const heading = `Fill ${stem(template.name)} from a spreadsheet`
   if (step === "preview" && sheet && current) {
-    const rowMissingNow = shownMissing?.row === current.row ? shownMissing.missing : missing[index] ?? []
     const isSkipped = skipped.has(current.row)
     return <TemplateViewer
       name={template.name}
       title={heading}
       loadBytes={loadBytes}
       onClose={close}
+      onRendered={({ filled }) => alive.current && setShownFilled({ row: current.row, filled: filled > 0 })}
       sidebar={<PreviewRow
         position={index}
         total={rows.length}
         sheetRow={current.row}
         title={rowName(index)}
-        missing={rowMissingNow}
+        missing={missing[index] ?? []}
+        gaps={status[index]?.gaps ?? []}
+        entered={entered[current.row] ?? {}}
+        onEnter={(key, value) => setEntered((previous) => ({ ...previous, [current.row]: { ...previous[current.row], [key]: value } }))}
+        focusGap={focusGap}
+        filled={shownFilled?.row === current.row && shownFilled.filled}
         skipped={isSkipped}
         onStep={(delta) => setIndex((at) => Math.min(rows.length - 1, Math.max(0, at + delta)))}
         onSkip={() => toggleSkip(current.row)}
@@ -207,7 +231,7 @@ export default function TemplateBatchDialog({ template, matter, onClose, onCreat
                 key: row.row,
                 label: rowName(at),
                 detail: `Row ${row.row} · ${missing[at]!.join(", ")}`,
-                onSelect: () => setIndex(at),
+                onSelect: () => { setIndex(at); setFocusGap((count) => count + 1) },
               }))}
             />
           </>}
@@ -358,19 +382,34 @@ function MatchStep({ sheet, mapping, manualKeys, onMap, onRestart }: {
 }
 
 // The preview's side panel: which row is shown, whether it will be created,
-// and what it leaves to fill. Missing fields stay highlighted in the document.
-function PreviewRow({ position, total, sheetRow, title, missing, skipped, onStep, onSkip, onChangeMatching }: {
+// and what it leaves to fill. Each field the spreadsheet leaves out can be
+// typed in here for this row's document; a field still blank stays
+// highlighted in the document. The values filled in are highlighted, with a
+// one-line key.
+function PreviewRow({ position, total, sheetRow, title, missing, gaps, entered, onEnter, focusGap, filled, skipped, onStep, onSkip, onChangeMatching }: {
   position: number
   total: number
   sheetRow: number
   title: string
   missing: string[]
+  gaps: BatchField[]
+  entered: BatchEntered
+  onEnter: (key: string, value: string) => void
+  focusGap: number
+  filled: boolean
   skipped: boolean
   onStep: (delta: number) => void
   onSkip: () => void
   onChangeMatching?: () => void
 }) {
   const id = useId()
+  const fieldsRef = useRef<HTMLDivElement>(null)
+  const typedAny = gaps.some((field) => entered[field.key]?.trim() && !enteredProblem(entered[field.key]!))
+  useEffect(() => {
+    if (!focusGap) return
+    const inputs = [...fieldsRef.current?.querySelectorAll<HTMLInputElement>("input[type=text]") ?? []]
+    ;(inputs.find((input) => !input.value.trim()) ?? inputs[0])?.focus()
+  }, [focusGap])
   return <div className="template-batch-row">
     <div className="template-batch-stepper" role="group" aria-label="Row shown">
       <button type="button" className="template-batch-step" aria-label="Previous row" disabled={position === 0} onClick={() => onStep(-1)}>
@@ -394,7 +433,33 @@ function PreviewRow({ position, total, sheetRow, title, missing, skipped, onStep
     {skipped ? <p className="template-batch-status">This row will not be created.</p>
       : missing.length ? <p className="template-batch-status is-warn">Needs input: {missing.join(", ")}</p>
       : <p className="template-batch-status">Every field is filled.{onChangeMatching && " "}{onChangeMatching && <button type="button" className="linklike template-batch-change" onClick={onChangeMatching}>Change matching</button>}</p>}
+    {!skipped && gaps.length > 0 && <div className="template-batch-gaps" ref={fieldsRef} role="group" aria-label="Values for this document">
+      {gaps.map((field) => <GapField key={`${sheetRow}:${field.key}`} field={field} value={entered[field.key] ?? ""} onChange={(value) => onEnter(field.key, value)} />)}
+      <p className="template-batch-gaps-note">Used for this document only; the spreadsheet is unchanged.</p>
+    </div>}
+    {!skipped && filled && <p className="template-batch-key"><span className="template-batch-key-sample">Highlighted</span> text is filled in from the spreadsheet{typedAny ? " or typed here" : ""}.</p>}
     {(skipped || missing.length > 0) && onChangeMatching && <button type="button" className="linklike template-batch-change" onClick={onChangeMatching}>Change matching</button>}
+  </div>
+}
+
+// One field the spreadsheet leaves out: text for a fill, yes or no for an
+// optional clause whose cell was unclear.
+function GapField({ field, value, onChange }: { field: BatchField; value: string; onChange: (value: string) => void }) {
+  const id = useId()
+  if (field.kind === "optional") return <div className="template-batch-gap" role="radiogroup" aria-labelledby={`${id}-label`}>
+    <span id={`${id}-label`} className="template-batch-gap-label">{field.label}</span>
+    <div className="template-batch-gap-choices">
+      {(["yes", "no"] as const).map((answer) => <label key={answer}>
+        <input type="radio" name={id} value={answer} checked={value === answer} onChange={() => onChange(answer)} />
+        {answer === "yes" ? "Yes" : "No"}
+      </label>)}
+    </div>
+  </div>
+  const problem = enteredProblem(value)
+  return <div className="template-batch-gap">
+    <label htmlFor={id} className="template-batch-gap-label">{field.label}</label>
+    <input id={id} type="text" value={value} autoComplete="off" spellCheck aria-invalid={problem ? true : undefined} aria-describedby={problem ? `${id}-problem` : undefined} onChange={(event) => onChange(event.target.value)} />
+    {problem && <span id={`${id}-problem`} className="template-batch-gap-problem">{problem}</span>}
   </div>
 }
 

@@ -29,10 +29,12 @@ import { templatePath, TEMPLATES_DIR } from "./template"
 
 const MAX_ROWS = 1000
 const MAX_COLUMNS = 200
+const MAX_ENTERED = 2000
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 type Mapping = Record<string, string | null>
-type Row = { row: number; values: string[] }
+// `entered`: values typed in the preview for this row, by field key.
+type Row = { row: number; values: string[]; entered?: Record<string, string> }
 type BatchDocument = { name: string; row: number; missing: string[] }
 // What a document was written with: its bytes' sha256 and the placeholder
 // text of each missing label (missingKeys[i] for missing[i]).
@@ -91,8 +93,8 @@ export function templateBatchRoutes() {
     const template = await loadTemplate(body?.name)
     const columns = strings(body?.columns, "columns")
     const values = strings(body?.values, "values")
-    const fill = rowFill(template.fields, columns, values, mappingOf(body?.mapping))
-    const { bytes } = await fillTemplateDocx(template.bytes, fill)
+    const fill = rowFill(template.fields, columns, values, mappingOf(body?.mapping), enteredOf(body?.entered))
+    const { bytes } = await fillTemplateDocx(template.bytes, fill, { markFilled: true })
     return new Response(Buffer.from(bytes), {
       headers: { "Content-Type": DOCX, "X-DocHaus-Batch-Missing": encodeURIComponent(JSON.stringify(fill.missing)) },
     })
@@ -130,10 +132,10 @@ export function templateBatchRoutes() {
     const failed: { row: number; error: string }[] = []
     const taken = new Set<string>()
     // One at a time: each document is its own registered write.
-    for (const { row, values } of rows) {
+    for (const { row, values, entered } of rows) {
       if (skip.has(row)) continue
       try {
-        const fill = rowFill(template.fields, columns, values, mapping)
+        const fill = rowFill(template.fields, columns, values, mapping, entered)
         const { bytes } = await fillTemplateDocx(template.bytes, fill)
         const name = freeName(matter.dir, batchDocumentName(template.name, idKey ? fill.fills[idKey] : undefined, row, width), taken)
         taken.add(name)
@@ -305,10 +307,19 @@ function mappingOf(value: unknown): Mapping {
 function rowsOf(value: unknown): Row[] {
   if (!Array.isArray(value) || value.length > MAX_ROWS) throw new BatchRequestError(`"rows" must list at most ${MAX_ROWS} rows.`)
   return value.map((row) => {
-    const { row: number, values } = (row ?? {}) as { row?: unknown; values?: unknown }
+    const { row: number, values, entered } = (row ?? {}) as { row?: unknown; values?: unknown; entered?: unknown }
     if (!Number.isSafeInteger(number) || (number as number) < 1) throw new BatchRequestError("Each row needs its spreadsheet row number.")
-    return { row: number as number, values: strings(values, "values") }
+    return { row: number as number, values: strings(values, "values"), entered: enteredOf(entered) }
   })
+}
+
+// Values typed in the preview, field key -> text. rowFill applies its own
+// checks; only the shape and size are checked here.
+function enteredOf(value: unknown): Record<string, string> {
+  if (value === undefined || value === null) return {}
+  if (typeof value !== "object" || Array.isArray(value) || !Object.values(value).every((text) => typeof text === "string" && text.length <= MAX_ENTERED))
+    throw new BatchRequestError(`"entered" must map fields to text of at most ${MAX_ENTERED} characters.`)
+  return value as Record<string, string>
 }
 
 function csvCell(value: string) {
