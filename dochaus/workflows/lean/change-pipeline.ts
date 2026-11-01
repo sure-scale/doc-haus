@@ -446,7 +446,8 @@ export function changeReviewPrompt(directory: string, document: DocID) {
       : "List numbers in projected_full_body are those before apply: when the changes are applied, the list renumbers the paragraphs after a deleted or split one, and a split's later paragraphs show the numbers the list then gives them.",
     `<projected_full_body>\n${projectedChangeParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</projected_full_body>`,
     ...earlierDocuments(directory, document).map(row => `<earlier_body document="${row.id}">\n${finalBodyParagraphs(directory, row.id).map(paragraph => `[${paragraph.pid}] ${shownText(paragraph)}`).join("\n\n")}\n</earlier_body>`),
-    `<reconciled_changes>\n${readLeanText(directory, `${document}/changes.json`)}\n</reconciled_changes>`,
+    "In reconciled_changes, `updated` excludes the paragraph's Word list number; `list_label` is the number the list prints before it, as in projected_full_body.",
+    `<reconciled_changes>\n${changesWithListLabels(directory, document)}\n</reconciled_changes>`,
     `<adjudicated_goals>\n${adjudicated ? JSON.stringify(writerPlan(adjudicated), null, 2) : "No prior adjudication."}\n</adjudicated_goals>`,
     `<questions>\n${JSON.stringify(readQuestions(directory).map(questionContent), null, 2)}\n</questions>`,
     `<preparation_limits>\n${JSON.stringify((readLeanJson(directory, `${document}/change-preparation.json`) as ChangePreparation | undefined)?.groups?.map(row => ({ group: row.group, withheld: row.changes.withheld, questions: row.changes.questions })) ?? [], null, 2)}\n</preparation_limits>`,
@@ -455,6 +456,17 @@ export function changeReviewPrompt(directory: string, document: DocID) {
     "Independently review the actual projected full resulting text BEFORE application. An amendment being suggested, accepted by another agent or quote-matched is not evidence of its correct effect. Inspect canonical supporting context on demand. Check that the operative wording and its explanation perform the accepted goals, preserve unaffected rights/obligations and settled decisions, and remain consistent across definitions, conditions, exceptions, cross-references and earlier finished documents. Identify lost supported corrections, unsupported additions or changed effects, contradictory paragraphs and inaccurate reasons/source explanations. Check explicit questions and withheld amendments: a material unresolved or silently dropped correction is not a pass merely because it is recorded as withheld or disclosed in limitations. Appropriately marked/disclosed review-draft placeholders can remain; optional expansion is not mandatory. Do not reopen answered decisions without contrary evidence or supply law from memory.",
     'Reply exactly {"status":"pass"|"changes-required","findings":[{"document":"owning document id, omit for the current body","pid":"affected paragraph id of that document when identifiable, otherwise omit","detail":"specific material defect, actual wording/evidence and required correction","target":"body|research, omit for body"}],"limitations":["remaining disclosed limits"]}. Pass requires no findings. Changes-required requires at least one material finding. A correction to an earlier_body must name that earlier document and its own paragraph rather than a paragraph in the current body; the coordinator returns it through that document’s existing cumulative amendment flow and rechecks dependent work. Only the current body or an earlier run-owned body may be targeted; never a future document or external file. Use target research only for a genuinely new material authority proposition beyond approved research that needs actual retrieval; explain why present research cannot answer it. Do not invent law or route ordinary wording defects to research. Do not rewrite paragraphs or write files; corrections return through the same bounded amendment pipeline.',
   ].join("\n\n")
+}
+
+// An amendment's updated text omits the list number Word prints before it;
+// show that number beside it so the reviewer never reads it as lost.
+function changesWithListLabels(directory: string, document: DocID) {
+  const text = readLeanText(directory, `${document}/changes.json`)
+  const labels = new Map<string, string>()
+  for (const row of projectedChangeParagraphs(directory, document)) if (row.label && !labels.has(row.pid)) labels.set(row.pid, row.label)
+  const parsed = parseJsonObject(text ?? "")
+  if (!labels.size || !parsed.ok || !Array.isArray(parsed.value.amendments)) return text
+  return JSON.stringify({ ...parsed.value, amendments: parsed.value.amendments.map(row => record(row) && typeof row.pid === "string" && labels.has(row.pid) ? { ...row, list_label: labels.get(row.pid) } : row) }, null, 2)
 }
 
 export function checkChangeReview(directory: string, document: DocID, value: unknown) {

@@ -5,7 +5,7 @@ import { DOMParser } from "@xmldom/xmldom"
 import { strFromU8, unzipSync } from "fflate"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { runApply, writeProjectedNumbers } from "./apply-stage"
-import { projectedChangeParagraphs } from "./change-pipeline"
+import { changeReviewPrompt, projectedChangeParagraphs } from "./change-pipeline"
 import { readParagraphs, shownText, withoutListLabel, type ParagraphRow } from "./checks"
 import { writeLeanPlan } from "./plan"
 import { paragraphRows } from "./stages"
@@ -135,4 +135,15 @@ test("the projected body change review reads carries the numbers after apply", a
     "4. Ratification. RESOLVED, that the earlier actions are ratified.",
     "5. Fiscal Year. RESOLVED, that the fiscal year ends on December 31.",
   ])
+}, 60_000)
+
+// An amendment's updated text omits its list number, which the list still
+// prints; change review sees that number beside it, never as a lost one.
+test("change review reads each amended paragraph's list number beside its text", async () => {
+  const directory = await draftResolutions(rows => [
+    { pid: at(rows, "Officers"), updated: "Officers. RESOLVED, that the officers are re-elected." },
+  ])
+  await writeProjectedNumbers(directory, "d1")
+  const changes = JSON.parse(/<reconciled_changes>\n([\s\S]*?)\n<\/reconciled_changes>/.exec(changeReviewPrompt(directory, "d1"))![1]!)
+  expect(changes.amendments).toEqual([expect.objectContaining({ updated: "Officers. RESOLVED, that the officers are re-elected.", list_label: "2." })])
 }, 60_000)

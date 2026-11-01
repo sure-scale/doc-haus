@@ -151,7 +151,9 @@ export function sourceQuotes(text: string, options: SourceQuoteScanOptions = { f
 export function proseQuoteIssues(directory: string, where: string, text: string, options: SourceQuoteScanOptions = { format: "markdown" }) {
   const scanned = scanSourceQuotes(text, options)
   return [
-    ...scanned.issues.map(issue => `${where} could not read a cited quotation: ${issue.message}. Write the exact quoted words followed by [source: exact source name].`),
+    // Name the passage: told only that some marker is unreadable, a writer
+    // cannot find it and rewrites the citations that were sound.
+    ...new Set(scanned.issues.map(issue => `${where} could not read a cited quotation in "${excerptEnd(issue.statement)}": ${issue.message}. Write the exact quoted words followed by [source: exact source name].`)),
     ...scanned.quotes.filter(quote => !proseQuoteFound(directory, quote)).map(quote => quoteMissIssue(directory, where, quote)),
   ]
 }
@@ -352,4 +354,10 @@ export function quoteMissItems(directory: string, stage: StageID, text: string, 
 export function excerpt(text: string, length = EXCERPT) {
   const flat = text.replace(/\s+/g, " ").trim()
   return flat.length > length ? `${flat.slice(0, length - 1)}…` : flat
+}
+
+/** The end of a statement, where its source marker sits. */
+function excerptEnd(text: string, length = EXCERPT) {
+  const flat = text.replace(/\s+/g, " ").trim()
+  return flat.length > length ? `…${flat.slice(1 - length)}` : flat
 }
