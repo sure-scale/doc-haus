@@ -30,7 +30,7 @@ import Dropzone from "./Dropzone"
 import { useToast } from "./Toast"
 import { Tooltip } from "./Tooltip"
 import UploadReviewDialog from "./UploadReviewDialog"
-import { WordBadge, WordOpenControl, WordSetup, WordWarning } from "./WordDocuments"
+import { WordBadge, WordOpenControl, WordWarning } from "./WordDocuments"
 
 // One row per file the lawyer added in this session, so a slow or failed upload
 // is visible next to its name instead of hiding behind a single spinner.
@@ -565,7 +565,6 @@ export default function DocumentUpload({
         const added = Array.from(event.dataTransfer.files)
         if (added.length) onFiles(added)
       }}>
-        {documents.some((document) => /\.docx$/i.test(document.name)) && <WordSetup />}
         <WordWarning />
         {files}
       </div>

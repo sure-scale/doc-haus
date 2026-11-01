@@ -2,7 +2,6 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { copySavedWordRecovery, fetchWordConfig, fetchWordDocuments, fetchWordOpenState, linkedWordDocument, prepareWordOpen, recoverWordEditing, type WordConfig, type WordOpenDocument } from "../api/ingest/word"
 import { humanizeError } from "../api/ingest/errors"
 import { useToast } from "./Toast"
-import { useOpenSettings } from "./settings/navigation"
 
 type WordState = {
   config?: WordConfig
@@ -12,9 +11,8 @@ type WordState = {
   refreshKey: number
   refresh: () => void
   documentCreated: () => void
-  retrySetup: () => void
 }
-const WordDocuments = createContext<WordState>({ documents: [], refreshKey: 0, refresh: () => {}, documentCreated: () => {}, retrySetup: () => {} })
+const WordDocuments = createContext<WordState>({ documents: [], refreshKey: 0, refresh: () => {}, documentCreated: () => {} })
 
 // Heartbeats only say that Word is in contact. Version identity, rather than a
 // save-time timestamp, tells the app that ingest actually received new bytes.
@@ -101,7 +99,7 @@ export function WordDocumentsProvider({ matterId, onChanged, children }: { matte
     }
   }, [matterId])
 
-  return <WordDocuments.Provider value={{ config, setupError, documents, statusError, refreshKey, refresh: () => refresh.current(), documentCreated: () => { setRefreshKey(value => value + 1); changed.current(); refresh.current() }, retrySetup: () => setSetupAttempt((value) => value + 1) }}>{children}</WordDocuments.Provider>
+  return <WordDocuments.Provider value={{ config, setupError, documents, statusError, refreshKey, refresh: () => refresh.current(), documentCreated: () => { setRefreshKey(value => value + 1); changed.current(); refresh.current() } }}>{children}</WordDocuments.Provider>
 }
 
 // A refresh never remounts the viewer or clears a typed edit request. Defer
@@ -156,20 +154,6 @@ export function wordSetupReason(config?: WordConfig, error?: string) {
   if (error) return error
   if (!config) return "Checking Word setup…"
   if (!config.available) return "Word is not ready. Set it up in Settings → Word add-in."
-}
-
-// Kept nearby instead of repeated on every row. It remains discoverable when
-// Word cannot be used, with the actual reason and a way to check after setup.
-export function WordSetup() {
-  const { config, setupError, retrySetup } = useContext(WordDocuments)
-  const openSettings = useOpenSettings()
-  const reason = wordSetupReason(config, setupError)
-  if (reason) return <div className="word-setup" role="status">
-    <span>{reason}</span>
-    {config && !config.available && <button type="button" className="linklike" onClick={() => openSettings("addins")}>Set up Word</button>}
-    {(config || setupError) && <button type="button" className="linklike" onClick={retrySetup}>Check again</button>}
-  </div>
-  return null
 }
 
 export function WordOpenControl({ matterId, name, disabled = false, compact = false }: { matterId: string; name: string; disabled?: boolean; compact?: boolean }) {
