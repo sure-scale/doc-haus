@@ -30,5 +30,5 @@ export const OPTIONAL_CLAUSE_PATTERN = /\[optional:[^\]\r\n]*\]/gi
 export const REDACTION_MARKER_PATTERN = /\[REDACTED\]/g
 
 /** The shading the spreadsheet batch preview gives a value it filled in, so the
- * viewer can outline it. Preview only: created documents never carry it. */
+ * viewer can highlight it. Preview only: created documents never carry it. */
 export const FILLED_VALUE_FILL = "E2EFDA"

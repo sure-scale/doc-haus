@@ -90,9 +90,9 @@ export function decorateMarkers(root: HTMLElement, placeholders?: string[]): Mar
   return counts
 }
 
-/** Outlines the values a spreadsheet batch preview filled in. The preview
+/** Highlights the values a spreadsheet batch preview filled in. The preview
  * shades each in FILLED_VALUE_FILL (created documents never carry it); the
- * outline takes the place of that shading. Returns how many spans it marked. */
+ * viewer paints its own highlight over it. Returns how many spans it marked. */
 export function decorateFilledValues(root: HTMLElement) {
   const [red, green, blue] = [0, 2, 4].map((at) => parseInt(FILLED_VALUE_FILL.slice(at, at + 2), 16))
   // Browsers report the computed colour as rgb(); some DOMs keep the hex.

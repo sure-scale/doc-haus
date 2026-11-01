@@ -162,7 +162,7 @@ export async function fillTemplate(template: Uint8Array, options: TemplateFillOp
 /** The filled document for one row: the shared template fill, then every
  * placeholder still in it shaded so it stands out. With `markFilled` (the
  * preview only) each placeholder it fills is shaded in FILLED_VALUE_FILL first,
- * and the fill keeps its run's formatting, so the viewer can outline exactly
+ * and the fill keeps its run's formatting, so the viewer can highlight exactly
  * the values written in; a created document is never marked. */
 export async function fillTemplateDocx(template: Uint8Array, fill: RowFill, { markFilled = false } = {}) {
   const names = (keys: string[]) => keys.flatMap((key) => {

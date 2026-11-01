@@ -363,7 +363,7 @@ function MatchStep({ sheet, mapping, manualKeys, onMap, onRestart }: {
 
 // The preview's side panel: which row is shown, whether it will be created,
 // and what it leaves to fill. Missing fields stay highlighted in the document;
-// the values filled in from the sheet are outlined, with a one-line key.
+// the values filled in from the sheet are highlighted, with a one-line key.
 function PreviewRow({ position, total, sheetRow, title, missing, filled, skipped, onStep, onSkip, onChangeMatching }: {
   position: number
   total: number
@@ -400,7 +400,7 @@ function PreviewRow({ position, total, sheetRow, title, missing, filled, skipped
     {skipped ? <p className="template-batch-status">This row will not be created.</p>
       : missing.length ? <p className="template-batch-status is-warn">Needs input: {missing.join(", ")}</p>
       : <p className="template-batch-status">Every field is filled.{onChangeMatching && " "}{onChangeMatching && <button type="button" className="linklike template-batch-change" onClick={onChangeMatching}>Change matching</button>}</p>}
-    {!skipped && filled && <p className="template-batch-key"><span className="template-batch-key-sample">Outlined</span> text is filled in from the spreadsheet.</p>}
+    {!skipped && filled && <p className="template-batch-key"><span className="template-batch-key-sample">Highlighted</span> text is filled in from the spreadsheet.</p>}
     {(skipped || missing.length > 0) && onChangeMatching && <button type="button" className="linklike template-batch-change" onClick={onChangeMatching}>Change matching</button>}
   </div>
 }

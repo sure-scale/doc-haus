@@ -47,8 +47,8 @@ template. A column for an optional clause takes yes or no; a blank cell keeps
 the template's default.
 
 Step through the preview row by row and skip any row you do not want. In the
-preview, each value filled in from the spreadsheet is outlined; the saved
-documents carry no outline. **Create**
+preview, each value filled in from the spreadsheet is highlighted; the saved
+documents carry no highlight. **Create**
 saves one Word document per row into the matter, grouped in the Documents panel
 under the template name and date. A row with a blank or unclear value is still
 created, with its placeholder or clause marker left in the text and marked

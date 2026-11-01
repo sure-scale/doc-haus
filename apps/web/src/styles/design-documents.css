@@ -849,9 +849,10 @@ button:is(.change-id, .change-ref):hover { text-decoration: underline; }
 /* The template viewer's marker list (TemplateViewer.tsx) uses the same chips. */
 :is(.docx-render .doc-marker, .marker-entry).doc-marker-redaction { background: var(--md-sys-color-inverse-surface); color: var(--md-sys-color-inverse-on-surface); border-color: var(--md-sys-color-inverse-surface); }
 :is(.docx-render .doc-marker, .marker-entry).doc-marker-placeholder { background: var(--md-sys-color-warning-container); color: var(--md-sys-color-warning); border: 1px dashed var(--md-sys-color-warning); }
-/* Values a spreadsheet batch preview filled in (decorateFilledValues): a quiet
-   outline in place of the preview's shading; created documents carry neither. */
-.docx-render .doc-filled { padding: 0 2px; background: transparent !important; border-radius: var(--radius-sm); box-shadow: 0 0 0 1px color-mix(in srgb, var(--md-sys-color-primary) 60%, transparent); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+/* Values a spreadsheet batch preview filled in (decorateFilledValues): the same
+   pale yellow as a placeholder's shading, with a little room around the text;
+   created documents carry neither. */
+.docx-render .doc-filled { padding: 0 1px; border-radius: 2px; background: #FFF2CC !important; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
 .viewer-title-markers { color: var(--md-sys-color-warning); font-weight: 500; }
 .marker-entry { display: flex; align-items: center; gap: var(--space-2); width: 100%; min-width: 0; padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); border: 1px solid transparent; font: inherit; font-size: 0.8125rem; font-weight: 500; line-height: 1.45; text-align: left; cursor: pointer; }
 .marker-entry-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -871,7 +872,7 @@ button:is(.change-id, .change-ref):hover { text-decoration: underline; }
   :is(.docx-render .doc-marker, .marker-entry).doc-marker-redaction { border: 1px solid CanvasText; }
   :is(.docx-render .doc-marker, .marker-entry).doc-marker-placeholder { border: 1px dashed CanvasText; }
   .docx-render .doc-marker:is(.is-linked, .is-flash) { outline: 2px solid Highlight; clip-path: none; }
-  .docx-render .doc-filled { outline: 1px solid CanvasText; box-shadow: none; }
+  .docx-render .doc-filled { outline: 1px solid CanvasText; }
   .marker-entry.is-linked, .marker-entry:focus-visible { outline-color: Highlight; }
 }
 .docx-render .doc-marker[data-marker-part="first"], .docx-render .doc-marker[data-marker-part="middle"] { border-top-right-radius: 0; border-bottom-right-radius: 0; border-right: 0; padding-right: 0; }
