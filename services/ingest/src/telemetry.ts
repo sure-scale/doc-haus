@@ -293,9 +293,10 @@ function readCurrentSession(matterDir: string, sessions: UsageSession[], session
 }
 
 // The conversation list's rule: a top-level chat the lawyer started, or a
-// drafting run's own conversation; never a background agent.
+// drafting run's own conversation; never a background agent or a throwaway
+// job session (review table cells, routing), which carry a "doc.haus" title.
 function conversation(parentID: string | null, native: UsageSession | undefined, group: UsageGroup) {
-  if (group === "background" || parentID || native?.parentID) return false
+  if (group === "background" || parentID || native?.parentID || /^doc\.haus/i.test(native?.title ?? "")) return false
   const role = native?.metadata?.dochaus_role
   return role === undefined || role === "lean-drafting-owner"
 }

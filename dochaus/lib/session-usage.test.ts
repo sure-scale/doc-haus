@@ -18,6 +18,11 @@ test("each priced model step is an entry under its agent and model; the remainde
   ])
 })
 
+test("a title costing under a hundredth of a cent is still upkeep", () => {
+  const titled = { ...session, cost: 0.02005 }
+  expect(sessionUsageEntries(titled, [step(0.02, 2_000)]).at(-1)).toEqual({ time: 9_000, cost: expect.closeTo(0.00005, 12), session: "ses_usage", agent: UPKEEP_AGENT })
+})
+
 test("a session without cost is one whole entry; Word suggestions resolve by metadata", () => {
   const unpriced = { ...session, cost: 0, metadata: { kind: "suggestions" } }
   expect(sessionUsageEntries(unpriced, [step(0.02, 2_000)])).toEqual([wholeSessionUsage(unpriced)])

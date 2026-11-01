@@ -39,6 +39,7 @@ export function sessionUsageEntries(session: UsageSession, messages: readonly Us
     tokens: usageTokens(info.tokens),
   }] : [])
   const rest = session.cost - entries.reduce((sum, entry) => sum + entry.cost, 0)
-  if (rest > .0001) entries.push({ time: session.time.updated, cost: rest, session: session.id, agent: UPKEEP_AGENT })
+  // Float noise only; a title can cost less than a hundredth of a cent.
+  if (rest > 1e-9) entries.push({ time: session.time.updated, cost: rest, session: session.id, agent: UPKEEP_AGENT })
   return entries
 }

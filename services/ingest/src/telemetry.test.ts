@@ -217,6 +217,8 @@ test("the latest conversation passes over background agents, sub-agents and runt
   insertSession(db, { id: "sub", lastActivityAt: now - 2_000, model: "synthetic/fast", agent: "explore" })
   insertSession(db, { id: "compare", lastActivityAt: now - 1_000, model: "synthetic/fast", agent: "review-compare" })
   insertTurn(db, { sessionId: "compare", ts: now - 1_000, tokens: 296 })
+  insertSession(db, { id: "cell", lastActivityAt: now - 500, model: "synthetic/fast", agent: "extract" })
+  insertTurn(db, { sessionId: "cell", ts: now - 500, tokens: 900 })
   db.close()
   fakeEngine(dir, [
     { id: "chat", agent: "qa", cost: 0, updated: now - 5_000, messages: [] },
@@ -224,6 +226,7 @@ test("the latest conversation passes over background agents, sub-agents and runt
     { id: "job", agent: "dashboard", metadata: { dochaus_role: "dashboard" }, cost: 0, updated: now - 3_000, messages: [] },
     { id: "sub", agent: "explore", parentID: "chat", cost: 0, updated: now - 2_000, messages: [] },
     { id: "compare", agent: "review-compare", metadata: { dochaus_role: "review-compare" }, cost: 0, updated: now - 1_000, messages: [] },
+    { id: "cell", agent: "extract", title: "doc.haus grid: Lease.docx", cost: 0, updated: now - 500, messages: [] },
   ])
 
   expect((await readLeanPayload(dir, { signal: signal() })).current_session).toEqual({
