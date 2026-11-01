@@ -1,5 +1,5 @@
 {
-  "version": 22,
-  "name": "2.2.0",
-  "notes": "Chat with doc.haus in Word: ask about the open document or the whole matter from a Chat tab beside your draft, and apply reviewed amendments as tracked changes you can accept, reject or undo in Word. Export chronologies to Word, with clearer chronology reimports. Various UI improvements and minor bug fixes."
+  "version": 23,
+  "name": "2.3.0",
+  "notes": "Fill many documents from one template and a spreadsheet, with each document showing whether it still needs input, and start from a template inside a matter. Word chat: a proposal the reviewer sends back can be revised from the reviewer's issues, and a change inside a table can be prepared again as a table change in one click. On Windows, the doc.haus pane now opens by itself in documents with comments. Various UI improvements and minor bug fixes."
 }
