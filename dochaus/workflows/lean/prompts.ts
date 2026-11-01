@@ -40,6 +40,10 @@ const SOURCE_RULES = [
   "- A preference is a drafting choice needed to fulfil the requested purpose, within the requested scope. For a new substantive choice not settled by instructions or answers, draft balanced wording and add a visible [open item: confirm ...] marker in the same paragraph saying what was chosen. Do not add confirmation markers to settled decisions or ordinary wording that creates no new substantive choice. A drafted choice is not an invented fact; the marker goes with the drafted wording, never in its place.",
 ]
 
+/** A blank the lawyer's instructions say to leave is the lawyer's to fill;
+ * every other blank is filled from the sources as before. */
+export const DIRECTED_BLANK = "A blank, bracket or point to be confirmed that the instructions, later updates or answers expressly direct be left for the lawyer or client stays as directed until the lawyer's later instruction or answer fills it. A value another source supplies may be offered in the drafting notes as a candidate, never inserted or presented as decided. Fill every other blank or bracket, including a template's own, from the sources as usual."
+
 /** The scope of the firm's drafting preferences in a revision; the original's
  * unchanged paragraphs are not style-checked either (styleScopedRows). */
 export const REVISION_PREFERENCE_SCOPE = "The drafting preferences apply to text this revision writes or changes; unchanged wording of the original keeps its own style."
@@ -64,6 +68,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const scope = tagged("scope_and_decisions", [
     "Fulfil the document's requested purpose, scope and level of detail. Test essential operative function and legal/source support strictly; optional protections or refinements do not become additional mandatory requirements merely because a fuller document could include them.",
     "Explicit instructions, later updates and human answers settle the corresponding drafting decision. Apply them even when an earlier source or review differs. Disclose the remaining documentary discrepancy where useful; do not reopen the decision, rephrase it as a new question, or attach a confirmation marker to it unless new contrary evidence creates a material problem with carrying it out. Explain that new evidence and the specific problem.",
+    DIRECTED_BLANK,
     "Ask only an unresolved material decision without which an essential requested requirement cannot be fulfilled honestly within the authorised scope. First check the request, sources and answers; use authorised descriptive placeholders and disclosed limitations when they permit a usable review draft. Explain the concrete consequence for this requested document, rather than general possible legal or commercial risks. Optional refinements may be omitted or recorded as non-blocking recommendations in the notes; they must not become a mandatory interview.",
     "Human questions must concern information or judgment only the human can supply. Resolve paragraph routing, identifiers, rendering and other internal mechanics in the system; never ask the user to repair them. State the decision, its effect on the requested work and why a disclosed placeholder cannot suffice in context. Preserve the alternatives supported by the sources without selecting an unapproved answer.",
     "Do not ask the human to supply legal research conclusions. Inspect available authority and distinguish its support from unverified law; record or route research gaps as such. Never assert unsupported law or assume a material missing decision to avoid a question. A genuinely indispensable unresolved decision still requires clarification.",
