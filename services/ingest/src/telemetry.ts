@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite"
 import { existsSync, statSync } from "node:fs"
 import path from "node:path"
-import { UPKEEP_AGENT, USAGE_GROUP_LABEL, usageAgent, usageAgentKey, type UsageGroup } from "../../../dochaus/lib/usage-agents"
+import { UPKEEP_AGENT, USAGE_GROUP_LABEL, humanize, usageAgent, usageAgentKey, type UsageGroup } from "../../../dochaus/lib/usage-agents"
 import { enginePages, generationUsage, sessionUsage, type UsageEntry, type UsageSession } from "./matter-usage"
 
 // The Usage drawer reports provider cost as OpenCode recorded it per model
@@ -24,8 +24,10 @@ export type LeanPayload = {
 export type DetailPayload = {
   by_group: Array<{ group: UsageGroup; label: string; cost_usd: number; turns: number }>
   by_agent: Array<{ agent: string; label: string; group: UsageGroup; cost_usd: number; turns: number; tool_calls: number }>
-  by_model: Array<{ model: string | null; cost_usd: number; turns: number; unpriced_turns: number }>
-  by_tool: Array<{ tool: string; calls: number; total_duration_ms: number; avg_duration_ms: number }>
+  // Upkeep has no model; its row carries a plain label instead, so the rows
+  // sum to the matter total.
+  by_model: Array<{ model: string | null; label?: string; cost_usd: number; turns: number; unpriced_turns: number }>
+  by_tool: Array<{ tool: string; label: string; calls: number; total_duration_ms: number; avg_duration_ms: number }>
   recent_turns: Array<{ ts: number; agent: string; label: string; group: UsageGroup; model: string | null; tokens: number; cost_usd: number | null }>
   recent_sessions: Array<{ id: string; title: string; agent: string; label: string; group: UsageGroup; last_activity_at: number; cost_usd: number }>
   sparkline: Array<{ ts: number; cost_usd: number }>
@@ -113,11 +115,16 @@ export async function readDetailPayload(matterDir: string, signal: AbortSignal):
     return row
   }
   const models = new Map<string | null, DetailPayload["by_model"][number]>()
+  let upkeep: DetailPayload["by_model"][number] | undefined
   for (const entry of usage.entries) {
     const agent = agentRow(entry.agent)
     agent.cost_usd += entry.cost
     agent.turns += call(entry) ? 1 : 0
-    if (entry.agent === UPKEEP_AGENT) continue
+    if (entry.agent === UPKEEP_AGENT) {
+      upkeep ??= { model: null, label: usageAgent(UPKEEP_AGENT).label, cost_usd: 0, turns: 0, unpriced_turns: 0 }
+      upkeep.cost_usd += entry.cost
+      continue
+    }
     const model = entry.model ?? null
     const row = models.get(model) ?? { model, cost_usd: 0, turns: 0, unpriced_turns: 0 }
     row.cost_usd += entry.cost
@@ -195,7 +202,7 @@ export async function readDetailPayload(matterDir: string, signal: AbortSignal):
   return {
     by_group: byGroup,
     by_agent: byAgent,
-    by_model: [...models.values()].sort((a, b) => b.cost_usd - a.cost_usd || b.turns - a.turns),
+    by_model: [...models.values(), ...(upkeep ? [upkeep] : [])].sort((a, b) => b.cost_usd - a.cost_usd || b.turns - a.turns),
     by_tool: byTool,
     recent_turns: recentTurns,
     recent_sessions: recentSessions,
@@ -228,7 +235,7 @@ export function readStoragePayload(matterDirs: string[]): StoragePayload {
 function readToolCalls(matterDir: string, sessions: Map<string, UsageSession>) {
   const result = withTelemetryDb(matterDir, (db) => {
     if (!hasTable(db, "tool_calls")) return undefined
-    const byTool = db
+    const byTool = (db
       .query(`
         SELECT
           tool,
@@ -239,7 +246,8 @@ function readToolCalls(matterDir: string, sessions: Map<string, UsageSession>) {
         GROUP BY tool
         ORDER BY calls DESC
       `)
-      .all() as DetailPayload["by_tool"]
+      .all() as Omit<DetailPayload["by_tool"][number], "label">[])
+      .map((row) => ({ ...row, label: humanize(row.tool) }))
     const toolCallsByAgent = new Map<string, number>()
     const rows = db
       .query("SELECT session_id, agent, COUNT(*) AS calls FROM tool_calls GROUP BY session_id, agent")
@@ -255,29 +263,42 @@ function readToolCalls(matterDir: string, sessions: Map<string, UsageSession>) {
 
 // Context size is the plugin's per-turn estimate; native sessions record no
 // equivalent. The assistant name comes from the native session when present.
+// Without a requested session this is the lawyer's latest conversation, so
+// background agents, sub-agents and runtime-owned jobs are passed over.
 function readCurrentSession(matterDir: string, sessions: UsageSession[], sessionID?: string): LeanPayload["current_session"] {
   return withTelemetryDb(matterDir, (db) => {
     if (!hasTable(db, "sessions") || !hasTable(db, "turns")) return null
-    const session = (
+    const rows = (
       sessionID
-        ? db.query("SELECT id, model, agent FROM sessions WHERE id = ?").get(sessionID)
-        : db.query("SELECT id, model, agent FROM sessions ORDER BY last_activity_at DESC LIMIT 1").get()
-    ) as { id: string; model: string | null; agent: string | null } | null
-    if (!session) return null
-    const turn = db
-      .query("SELECT agent, model, estimated_input_tokens AS tokens FROM turns WHERE session_id = ? ORDER BY ts DESC LIMIT 1")
-      .get(session.id) as { agent: string | null; model: string | null; tokens: number } | null
-    const tokens = turn?.tokens ?? 0
-    const native = sessions.find((item) => item.id === session.id)
-    const agent = usageAgent(session.agent ?? turn?.agent ?? native?.agent, native)
-    return {
-      tokens,
-      status: tokenStatus(tokens),
-      agent: agent.key,
-      label: agent.label,
-      model: session.model ?? turn?.model ?? "unknown",
+        ? db.query("SELECT id, parent_id, model, agent FROM sessions WHERE id = ?").all(sessionID)
+        : db.query("SELECT id, parent_id, model, agent FROM sessions ORDER BY last_activity_at DESC LIMIT 100").all()
+    ) as { id: string; parent_id: string | null; model: string | null; agent: string | null }[]
+    const natives = new Map(sessions.map((item) => [item.id, item]))
+    const turnQuery = db.query("SELECT agent, model, estimated_input_tokens AS tokens FROM turns WHERE session_id = ? ORDER BY ts DESC LIMIT 1")
+    for (const session of rows) {
+      const turn = turnQuery.get(session.id) as { agent: string | null; model: string | null; tokens: number } | null
+      const native = natives.get(session.id)
+      const agent = usageAgent(session.agent ?? turn?.agent ?? native?.agent, native)
+      if (!sessionID && !conversation(session.parent_id, native, agent.group)) continue
+      const tokens = turn?.tokens ?? 0
+      return {
+        tokens,
+        status: tokenStatus(tokens),
+        agent: agent.key,
+        label: agent.label,
+        model: session.model ?? turn?.model ?? "unknown",
+      }
     }
+    return null
   }) ?? null
+}
+
+// The conversation list's rule: a top-level chat the lawyer started, or a
+// drafting run's own conversation; never a background agent.
+function conversation(parentID: string | null, native: UsageSession | undefined, group: UsageGroup) {
+  if (group === "background" || parentID || native?.parentID) return false
+  const role = native?.metadata?.dochaus_role
+  return role === undefined || role === "lean-drafting-owner"
 }
 
 function tokenStatus(tokens: number): "ok" | "warn" | "fail" {

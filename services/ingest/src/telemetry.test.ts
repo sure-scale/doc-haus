@@ -83,8 +83,10 @@ test("totals are the provider-reported cost of every model step, upkeep and gene
   const detail = await readDetailPayload(dir, signal())
   expect(detail.by_model).toEqual([
     { model: "synthetic/strong", cost_usd: expect.closeTo(0.4), turns: 2, unpriced_turns: 0 },
+    { model: null, label: "Conversation titles and compaction", cost_usd: expect.closeTo(0.1), turns: 0, unpriced_turns: 0 },
     { model: "synthetic/fast", cost_usd: 0.05, turns: 1, unpriced_turns: 0 },
   ])
+  expect(detail.by_model.reduce((sum, row) => sum + row.cost_usd, 0)).toBeCloseTo(lean.matter_total.cost_usd)
   expect(detail.by_agent.map(({ agent, label, group, turns }) => ({ agent, label, group, turns }))).toEqual([
     { agent: "draft", label: "Draft", group: "work", turns: 2 },
     { agent: "conversation-upkeep", label: "Conversation titles and compaction", group: "work", turns: 0 },
@@ -102,6 +104,7 @@ test("background agents and Word suggestions are split from the lawyer's own wor
   const db = seedDb(dir)
   insertToolCall(db, { sessionId: "words", ts: now, tool: "read-document", agent: "qa", durationMs: 10 })
   insertToolCall(db, { sessionId: "chat", ts: now, tool: "read-document", agent: "qa", durationMs: 30 })
+  insertToolCall(db, { sessionId: "chat", ts: now, tool: "record-key-date", agent: "qa", durationMs: 5 })
   db.close()
   fakeEngine(dir, [
     { id: "chat", agent: "qa", cost: 0.4, updated: now - 1_000, messages: [{ id: "m1", time: now - 1_000, cost: 0.4, agent: "qa", model: "synthetic/strong" }] },
@@ -115,8 +118,11 @@ test("background agents and Word suggestions are split from the lawyer's own wor
     { group: "work", label: "Your work", cost_usd: 0.4, turns: 1 },
   ])
   expect(detail.by_agent).toContainEqual({ agent: "word-suggestions", label: "Suggest ideas in Word", group: "background", cost_usd: 0.2, turns: 1, tool_calls: 1 })
-  expect(detail.by_agent).toContainEqual({ agent: "qa", label: "Questions", group: "work", cost_usd: 0.4, turns: 1, tool_calls: 1 })
-  expect(detail.by_tool).toEqual([{ tool: "read-document", calls: 2, total_duration_ms: 40, avg_duration_ms: 20 }])
+  expect(detail.by_agent).toContainEqual({ agent: "qa", label: "Questions", group: "work", cost_usd: 0.4, turns: 1, tool_calls: 2 })
+  expect(detail.by_tool).toEqual([
+    { tool: "read-document", label: "Read document", calls: 2, total_duration_ms: 40, avg_duration_ms: 20 },
+    { tool: "record-key-date", label: "Record key date", calls: 1, total_duration_ms: 5, avg_duration_ms: 5 },
+  ])
   expect(detail.recent_sessions.map(({ id, label, group }) => ({ id, label, group }))).toEqual([
     { id: "chat", label: "Questions", group: "work" },
     { id: "words", label: "Suggest ideas in Word", group: "background" },
@@ -197,6 +203,34 @@ test("the current conversation reports its context size with a plain assistant n
 
   expect((await readLeanPayload(dir, { signal: signal(), session: "words" })).current_session).toEqual({
     tokens: 120_000, status: "warn", agent: "word-suggestions", label: "Suggest ideas in Word", model: "synthetic/fast",
+  })
+})
+
+test("the latest conversation passes over background agents, sub-agents and runtime jobs", async () => {
+  const dir = tempMatter()
+  const now = Date.now()
+  const db = seedDb(dir)
+  insertSession(db, { id: "chat", lastActivityAt: now - 5_000, model: "synthetic/strong", agent: "qa" })
+  insertTurn(db, { sessionId: "chat", ts: now - 5_000, tokens: 4_000 })
+  insertSession(db, { id: "child", parentId: "chat", lastActivityAt: now - 4_000, model: "synthetic/fast", agent: "lean-advise" })
+  insertSession(db, { id: "job", lastActivityAt: now - 3_000, model: "synthetic/fast", agent: "dashboard" })
+  insertSession(db, { id: "sub", lastActivityAt: now - 2_000, model: "synthetic/fast", agent: "explore" })
+  insertSession(db, { id: "compare", lastActivityAt: now - 1_000, model: "synthetic/fast", agent: "review-compare" })
+  insertTurn(db, { sessionId: "compare", ts: now - 1_000, tokens: 296 })
+  db.close()
+  fakeEngine(dir, [
+    { id: "chat", agent: "qa", cost: 0, updated: now - 5_000, messages: [] },
+    { id: "child", agent: "lean-advise", parentID: "chat", cost: 0, updated: now - 4_000, messages: [] },
+    { id: "job", agent: "dashboard", metadata: { dochaus_role: "dashboard" }, cost: 0, updated: now - 3_000, messages: [] },
+    { id: "sub", agent: "explore", parentID: "chat", cost: 0, updated: now - 2_000, messages: [] },
+    { id: "compare", agent: "review-compare", metadata: { dochaus_role: "review-compare" }, cost: 0, updated: now - 1_000, messages: [] },
+  ])
+
+  expect((await readLeanPayload(dir, { signal: signal() })).current_session).toEqual({
+    tokens: 4_000, status: "ok", agent: "qa", label: "Questions", model: "synthetic/strong",
+  })
+  expect((await readLeanPayload(dir, { signal: signal(), session: "compare" })).current_session).toMatchObject({
+    tokens: 296, agent: "review-compare", label: "Compare review answers",
   })
 })
 
@@ -303,9 +337,9 @@ function seedDb(matterDir: string) {
   return db
 }
 
-function insertSession(db: Database, input: { id: string; lastActivityAt: number; model?: string; agent?: string }) {
-  db.query("INSERT INTO sessions (id, parent_id, created_at, last_activity_at, status, model, agent) VALUES (?, NULL, ?, ?, 'active', ?, ?)")
-    .run(input.id, input.lastActivityAt, input.lastActivityAt, input.model ?? null, input.agent ?? null)
+function insertSession(db: Database, input: { id: string; parentId?: string; lastActivityAt: number; model?: string; agent?: string }) {
+  db.query("INSERT INTO sessions (id, parent_id, created_at, last_activity_at, status, model, agent) VALUES (?, ?, ?, ?, 'active', ?, ?)")
+    .run(input.id, input.parentId ?? null, input.lastActivityAt, input.lastActivityAt, input.model ?? null, input.agent ?? null)
 }
 
 function insertTurn(db: Database, input: { sessionId: string; ts: number; tokens?: number }) {

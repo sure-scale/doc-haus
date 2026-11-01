@@ -47,7 +47,8 @@ export function usageAgent(agent: string | undefined, session?: SessionLike): Us
 
 export const USAGE_GROUP_LABEL: Record<UsageGroup, string> = { background: "Background agents", work: "Your work" }
 
-function humanize(key: string) {
+// Sentence case for an id with no plain name of its own (agents, tools).
+export function humanize(key: string) {
   const words = key.replace(/^lean-/, "").replace(/[-_]+/g, " ").trim()
   return words ? words[0]!.toUpperCase() + words.slice(1) : "Other"
 }

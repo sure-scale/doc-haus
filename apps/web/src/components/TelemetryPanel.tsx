@@ -165,13 +165,13 @@ export default function TelemetryPanel({ matterId, sessionID }: Props) {
 
                 <TelemetrySection title="By model">
                   {detail.by_model.length ? detail.by_model.map((row) => (
-                    <BarRow key={row.model ?? ""} label={row.model ?? "Model not reported"} value={row.unpriced_turns && row.cost_usd <= 0 ? "Cost not reported" : formatCost(row.cost_usd, row.unpriced_turns > 0)} meta={calls(row.turns)} fraction={row.cost_usd / maxBy(detail.by_model, (r) => r.cost_usd)} />
+                    <BarRow key={row.label ?? row.model ?? ""} label={row.label ?? row.model ?? "Model not reported"} value={row.unpriced_turns && row.cost_usd <= 0 ? "Cost not reported" : formatCost(row.cost_usd, row.unpriced_turns > 0)} meta={row.turns ? calls(row.turns) : ""} fraction={row.cost_usd / maxBy(detail.by_model, (r) => r.cost_usd)} />
                   )) : undefined}
                 </TelemetrySection>
 
                 <TelemetrySection title="By tool">
                   {detail.by_tool.length ? detail.by_tool.map((row) => (
-                    <BarRow key={row.tool} label={row.tool} value={`${row.calls} calls`} meta={`${number(row.avg_duration_ms)} ms avg · ${number(row.total_duration_ms)} ms total`} fraction={row.calls / maxBy(detail.by_tool, (r) => r.calls)} />
+                    <BarRow key={row.tool} label={row.label} value={`${number(row.calls)} ${row.calls === 1 ? "call" : "calls"}`} meta={`${number(row.avg_duration_ms)} ms avg · ${number(row.total_duration_ms)} ms total`} fraction={row.calls / maxBy(detail.by_tool, (r) => r.calls)} />
                   )) : undefined}
                 </TelemetrySection>
 

@@ -16,8 +16,10 @@ export type TelemetryLean = {
 export type TelemetryDetail = {
   by_group: Array<{ group: UsageGroup; label: string; cost_usd: number; turns: number }>
   by_agent: Array<{ agent: string; label: string; group: UsageGroup; cost_usd: number; turns: number; tool_calls: number }>
-  by_model: Array<{ model: string | null; cost_usd: number; turns: number; unpriced_turns: number }>
-  by_tool: Array<{ tool: string; calls: number; total_duration_ms: number; avg_duration_ms: number }>
+  // Conversation upkeep (titles, compaction) has no model; its row carries a
+  // plain label so the rows add up to the matter total.
+  by_model: Array<{ model: string | null; label?: string; cost_usd: number; turns: number; unpriced_turns: number }>
+  by_tool: Array<{ tool: string; label: string; calls: number; total_duration_ms: number; avg_duration_ms: number }>
   recent_turns: Array<{ ts: number; agent: string; label: string; group: UsageGroup; model: string | null; tokens: number; cost_usd: number | null }>
   recent_sessions: Array<{ id: string; title: string; agent: string; label: string; group: UsageGroup; last_activity_at: number; cost_usd: number }>
   sparkline: Array<{ ts: number; cost_usd: number }>
