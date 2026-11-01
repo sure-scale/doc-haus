@@ -821,14 +821,18 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
     return named ? disclosed("cross-reference or defined-term problem named in the drafting notes") : open("the drafting notes do not name this cross-reference or defined-term problem")
   if (item.kind === "question") {
     const question = item.ref.question_id ? context.questions.get(item.ref.question_id) : undefined
-    if (question && undecidedQuestion(question)) {
-      const why = question.answer_class === "declined" ? "not answered; this needs your answer" : "you asked us to decide, but this needs your answer"
-      return named || context.notes.includes(question.id) ? disclosed(`${why}; named in the drafting notes`) : open(`${why}; the drafting notes do not name it`)
-    }
-    if (question?.status === "answered") return resolved(question.answer_kind === "adopted" ? "delegated by the lawyer; the recommended option was adopted" : question.answer_kind === "instruction" ? "settled by the lawyer's instruction" : "answered by the lawyer")
     // A question asked again by a later document points into that document; the
     // item's own paragraph is in the document it was found in.
     const pid = item.ref.pid ?? ((question?.document ?? FIRST_DOCUMENT) === document ? question?.pid : undefined)
+    if (question && undecidedQuestion(question)) {
+      const why = question.answer_class === "declined" ? "not answered; this needs your answer" : "you asked us to decide, but this needs your answer"
+      if (!named && !context.notes.includes(question.id)) return open(`${why}; the drafting notes do not name it`)
+      // Its paragraph is checked as an unanswered question's is, but the
+      // notes' disclosure alone still delivers it, as before the check.
+      return disclosed(!pid ? `${why}; named in the drafting notes` : marked(final, pid) ? `${why}; marked in the body and named in the drafting notes`
+        : `${why}; named in the drafting notes, but its paragraph shows no open-item marker`)
+    }
+    if (question?.status === "answered") return resolved(question.answer_kind === "adopted" ? "delegated by the lawyer; the recommended option was adopted" : question.answer_kind === "instruction" ? "settled by the lawyer's instruction" : "answered by the lawyer")
     if (named && pid && marked(final, pid)) return disclosed("unanswered; marked in the body and named in the drafting notes")
     if (named && item.ref.amendment_id)
       return disclosed("unanswered; the change that would have marked its paragraph was withheld, so the paragraph is unchanged; named in the drafting notes")
