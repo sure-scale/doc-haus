@@ -8,7 +8,7 @@ import { ToggleRow } from "./controls"
 // own saved setting, which the Word pane reads.
 type Switches = BackgroundAgents & { wordSuggestions: boolean }
 const AGENTS: { key: keyof Switches; title: string; when: string; description: string }[] = [
-  { key: "chronologySuggestion", title: "Suggest a chronology", when: "When you open a matter or add documents.", description: "Checks whether a timeline of events would help and suggests one. If off, open it yourself from the matter menu." },
+  { key: "chronologySuggestion", title: "Suggest a chronology", when: "When you open a matter, add documents or close a chat.", description: "Checks whether a timeline of events would help and suggests one. If off, open it yourself from the matter menu." },
   { key: "reviewCompare", title: "Compare review answers", when: "When you fill a review table.", description: "Shows which documents give the same answer to each question and which differ. If off, use Compare with AI on a column." },
   { key: "narration", title: "Narrate drafting progress", when: "While a draft is being prepared.", description: "Adds a short plain-English update as each step finishes, and every few minutes during long steps. If off, you still see each step." },
   { key: "wordSuggestions", title: "Suggest ideas in Word", when: "While the doc.haus pane is open in Word.", description: "Offers up to three ideas about your document or the passage you've selected. If off, ask in the Word chat." },
