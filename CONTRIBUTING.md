@@ -34,3 +34,7 @@ UI changes and state clearly when external authentication was mocked.
 
 Use conventional commit messages and explain the behavior, reason and relevant
 verification. Do not include unrelated work in the change.
+
+Product releases are normally one end-of-day bundle, not one release per PR.
+Do not bump the version in feature PRs. See [Product versions and releases](docs/releases.md)
+for version selection, preparation, CI publication and the daily website changelog.

@@ -129,3 +129,13 @@ Run package checks from the owning package using bun run typecheck, including
 before a live end-to-end run. The root bun test intentionally fails. See
 CONTRIBUTING.md for check commands and README.md for startup. Never run paid
 model probes without explicit intent.
+
+## Product release metadata
+
+Feature PRs do not bump the product version. Prepare one reviewed release bundle
+when the owner requests a release, normally at the end of the day. Follow
+[Product versions and releases](docs/releases.md): use `bun run release:prepare`
+and `bun run release:check`, keep the root package version aligned with
+`release.json`, and use the same approved notes for GitHub and the website.
+Pushing a changed release marker to `dochaus` makes the updater release available
+and triggers GitHub publication after CI; it requires explicit release intent.

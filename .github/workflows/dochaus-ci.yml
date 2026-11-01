@@ -19,12 +19,40 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Do not interrupt publication when another feature lands on dochaus.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
+  release-metadata:
+    name: release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      target: ${{ steps.release.outputs.target }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+      - name: Validate version and release transition
+        env:
+          RELEASE_BASE: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+        run: bun run release:check --base "$RELEASE_BASE"
+      - name: Test release preparation and publication
+        working-directory: scripts
+        run: bun test test/release.test.ts test/publish-release.test.ts
+      - name: Resolve the exact updater release commit
+        id: release
+        env:
+          RELEASE_BASE: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+        run: bun scripts/publish-release.ts check --base "$RELEASE_BASE"
+
   launcher-tests:
     name: launcher tests
     runs-on: ubuntu-latest
@@ -232,3 +260,24 @@ jobs:
           DOCHAUS_INSTALL_TOOLS: "no"
           SKIP_INSTALL: "1"
         run: start.cmd --smoke
+
+  publish-release:
+    name: publish GitHub release
+    needs: [release-metadata, launcher-tests, web-build, windows]
+    if: github.repository == 'sure-scale/doc-haus' && github.event_name == 'push' && github.ref == 'refs/heads/dochaus' && needs.release-metadata.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+      - name: Publish the tested release using its canonical notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TARGET: ${{ needs.release-metadata.outputs.target }}
+        run: bun scripts/publish-release.ts publish --target "$RELEASE_TARGET"
