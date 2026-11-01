@@ -80,6 +80,8 @@
 .template-reader .changes-panel { width: min(400px, 35vw); }
 .template-reader.has-footer { height: calc(var(--viewport-block) - 64px); }
 .template-reader.has-footer > .viewer-bar { flex-shrink: 0; }
+/* A dialog heading wraps on a narrow screen; a file name keeps its ellipsis. */
+.template-reader .viewer-title-name.is-heading { white-space: normal; }
 .template-reader-footer { flex: none; max-height: 60%; overflow-y: auto; padding: var(--space-4) var(--space-5); border-top: 1px solid var(--border); background: var(--panel); }
 .template-save-bar { display: grid; gap: var(--space-3); }
 .template-save-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); align-items: start; gap: var(--space-4); }

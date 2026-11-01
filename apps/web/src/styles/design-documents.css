@@ -660,6 +660,8 @@
 .docs-drawer-footer .dropzone.is-compact .dropzone-title { color: inherit; font-size: 0.8125rem; font-weight: 500; }
 .docs-drawer-footer .dropzone > svg { color: inherit; }
 .docs-drawer-footer p { margin: 9px 0 0; color: var(--muted); font-size: 0.6875rem; line-height: 1.5; text-align: center; }
+/* The second way to add a document, kept quiet under the upload hint. */
+.docs-drawer-footer .docs-drawer-template { display: block; min-height: 32px; margin: 2px auto 0; font-size: 0.8125rem; font-weight: 500; text-align: center; }
 
 /* Quiet metadata badges, with a native menu on click. Explicit height overrides
    the shared form-control height so labels stay aligned with the origin text. */
@@ -731,7 +733,9 @@
 .document-reader :is(.compare-untracked, .compare-proposals) .change-card:last-child { padding-bottom: 0; border-bottom: 0; }
 .compare-hunk-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-bottom: var(--space-1); }
 .compare-untracked-tag,
-.compare-outcome-tag { padding: 0 6px; border: 1px solid var(--warn-border); border-radius: var(--radius-sm); background: var(--warn-soft); color: var(--warn); font-size: 0.6875rem; font-weight: 500; letter-spacing: 0; line-height: 16px; text-transform: none; }
+.compare-outcome-tag,
+/* Quiet amber text beside "Row N", not a chip, so the row keeps its neighbours' shape. */
+.doc-needs-input { color: var(--warn); font-size: 0.6875rem; font-weight: 500; letter-spacing: 0; line-height: 16px; text-transform: none; }
 /* Outcome tags read neutral; a rejected proposal and a link to an untracked edit warn. */
 .compare-outcome-tag:not(.is-warn) { border-color: var(--border); background: var(--panel); color: var(--text-secondary); }
 .compare-outcome-tag .compare-ref { font: inherit; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
@@ -807,6 +811,14 @@ button:is(.change-id, .change-ref):hover { text-decoration: underline; }
 .doc-children-chevron { flex: none; transition: transform var(--duration-fast) var(--ease-out); }
 .doc-children-toggle[aria-expanded="true"] .doc-children-chevron { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { .doc-children-chevron { transition: none; } }
+/* A batch filled from a spreadsheet (#208): a folder row named like a top-level
+   document, its count and any documents needing input on the line beneath. */
+.doc-row.is-batch .doc-row-name { font-size: 0.8125rem; font-weight: 500; }
+.doc-row.is-batch .doc-batch-attention { min-height: 0; color: var(--warn); font-size: 0.6875rem; font-weight: 500; }
+.doc-children-group .drafted-row { padding-block: var(--space-2); }
+.doc-needs-input { flex: none; }
+.drafted-file-meta .doc-needs-input::before { content: "·"; margin-right: 6px; color: var(--muted); }
+.doc-needs-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .doc-children-note { padding: var(--space-1) var(--space-2); color: var(--muted); font-size: 0.6875rem; line-height: 1.5; }
 .docs-drawer .matter-files-collection .doc-row.is-child { padding: 6px var(--space-2); }
 .docs-drawer .matter-files-collection .doc-row.is-child .doc-row-main { gap: var(--space-2); min-height: 32px; }

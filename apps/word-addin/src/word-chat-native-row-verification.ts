@@ -38,6 +38,36 @@ function parts(xml:string) {
   if(!result.has(MAIN)) return fail()
   return result
 }
+const RECORDED: Record<string,string> = {tblPrChange:"tblPr", tblGridChange:"tblGrid", trPrChange:"trPr", tcPrChange:"tcPr"}
+/** With Track Formatting on, Word records the table's, grid's, rows' and
+ * cells' properties when it appends a row, even where none changed, and may
+ * fix an automatic table width at the grid total. Remove records whose old
+ * properties equal the current ones and restore that one width; any other
+ * recorded change stays for the caller's comparison to reject. */
+export function settleNativeWordChatTableRecords(table:Element) {
+  const holders=[...named(table,"tblPr"),...named(table,"tblGrid")]
+  for(const row of named(table,"tr")) holders.push(...named(row,"trPr"),...named(row,"tc").flatMap(c=>named(c,"tcPr")))
+  const props=(e:Element)=>JSON.stringify(elements(e).filter(c=>!(c.namespaceURI===W && ["ins","del",...Object.keys(RECORDED)].includes(c.localName))).map(canon))
+  for(const holder of holders) {
+    const records=elements(holder).filter(e=>e.namespaceURI===W && RECORDED[e.localName]===holder.localName)
+    if(records.length!==1) continue
+    const record=records[0]!, recorded=elements(record)
+    if(recorded.length!==1 || recorded[0]!.namespaceURI!==W || recorded[0]!.localName!==holder.localName || Array.from(recorded[0]!.attributes).some(a=>a.namespaceURI!==XMLNS) ||
+       Array.from(record.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===W && ["id","author","date"].includes(a.localName)) && !(a.namespaceURI===W16DU && a.localName==="dateUtc"))) continue
+    const old=recorded[0]!
+    if(props(holder)===props(old)) { holder.removeChild(record); continue }
+    if(holder.localName!=="tblPr") continue
+    const width=named(holder,"tblW"), oldWidth=named(old,"tblW"), grid=named(table,"tblGrid")
+    if(width.length!==1 || oldWidth.length!==1 || grid.length!==1 || oldWidth[0]!.getAttributeNS(W,"type")!=="auto" || width[0]!.getAttributeNS(W,"type")!=="dxa" ||
+       Array.from(width[0]!.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===W && ["w","type"].includes(a.localName)))) continue
+    const total=named(grid[0]!,"gridCol").reduce((sum,col)=>sum+Number(col.getAttributeNS(W,"w")),0)
+    if(!Number.isSafeInteger(total) || String(total)!==width[0]!.getAttributeNS(W,"w")) continue
+    const restored=oldWidth[0]!.cloneNode(true) as Element
+    holder.replaceChild(restored,width[0]!)
+    if(props(holder)===props(old)) holder.removeChild(record)
+    else holder.replaceChild(width[0]!,restored)
+  }
+}
 /** Direct run flags: only b/bCs/i/iCs/u with a bare val. A toggle is on when
  * present without val or with an on value; a complex-script counterpart must be
  * absent or agree; underline is exactly single or none. Anything else fails. */
@@ -114,13 +144,17 @@ export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:strin
   if(bodies.length!==1 || oldBodies.length!==1 || !Number.isSafeInteger(tableIndex) || tableIndex<0 || !Number.isSafeInteger(priorRows) || priorRows<1 || !cells.length || cells.length>32 ||
      runs!==undefined && (!Array.isArray(runs) || runs.length!==cells.length || runs.some(cell=>!Array.isArray(cell)))) return fail()
   const tables=named(bodies[0]!,"tbl"), oldTables=named(oldBodies[0]!,"tbl"); if(tableIndex>=tables.length || oldTables.length!==tables.length) return fail()
+  settleNativeWordChatTableRecords(tables[tableIndex]!); settleNativeWordChatTableRecords(oldTables[tableIndex]!)
   const rows=named(tables[tableIndex]!,"tr"), oldRows=named(oldTables[tableIndex]!,"tr"); if(rows.length!==priorRows+1 || oldRows.length!==priorRows) return fail()
   const referenceCells=named(oldRows.at(-1)!,"tc"); if(referenceCells.length!==cells.length) return fail()
   const metadata = (element:Element) => Array.from(element.attributes).every(a => a.namespaceURI===XMLNS ||
-    a.namespaceURI===W && ["rsidR","rsidRPr","rsidRDefault"].includes(a.localName) && /^[0-9A-Fa-f]{8}$/.test(a.value) ||
+    a.namespaceURI===W && ["rsidR","rsidRPr","rsidRDefault","rsidTr"].includes(a.localName) && /^[0-9A-Fa-f]{8}$/.test(a.value) ||
     a.namespaceURI===W14 && ["paraId","textId"].includes(a.localName) && /^[0-9A-Fa-f]{8}$/.test(a.value))
   const row=rows.at(-1)!, rowCells=named(row,"tc"), rowPr=named(row,"trPr"), marks=rowPr.length===1?named(rowPr[0]!,"ins"):[]
-  if(!metadata(row) || !only(row,["trPr","tc"]) || rowCells.length!==cells.length || rowPr.length!==1 || !only(rowPr[0]!,["ins"]) || marks.length!==1 || marks[0]!.childNodes.length) return fail()
+  // Word gives an appended row the old last row's own row properties.
+  const referenceRowPr=named(oldRows.at(-1)!,"trPr"), rowRest=(props:Element|undefined)=>props ? elements(props).filter(e=>!(e.namespaceURI===W && e.localName==="ins")).map(canon) : []
+  if(!metadata(row) || !only(row,["trPr","tc"]) || rowCells.length!==cells.length || rowPr.length!==1 || referenceRowPr.length>1 || marks.length!==1 || marks[0]!.childNodes.length ||
+     referenceRowPr.some(p=>["ins","del","trPrChange"].some(n=>p.getElementsByTagNameNS(W,n).length)) || JSON.stringify(rowRest(rowPr[0]))!==JSON.stringify(rowRest(referenceRowPr[0]))) return fail()
   const ids=new Set<string>(), authors=new Set<string>(); let stamp:string|undefined
   const mark=(e:Element) => {
     const id=e.getAttributeNS(W,"id"), author=e.getAttributeNS(W,"author"), date=e.getAttributeNS(W,"date"), utc=e.getAttributeNS(W16DU,"dateUtc")
@@ -129,6 +163,22 @@ export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:strin
   }
   mark(marks[0]!)
   const noAttrs=(p:Element) => Array.from(p.attributes).every(a=>a.namespaceURI===XMLNS)
+  /** Word gives an added row's paragraphs the reference row's paragraph
+   * properties (spacing, alignment, style). Apart from the mark's rPr they
+   * must equal that column's paragraph in the old last row and carry no
+   * revision of their own. */
+  const inherited=(pPr:Element, referenceCell:Element) => {
+    const reference=named(referenceCell,"p"), referenceProps=reference.length===1 ? named(reference[0]!,"pPr") : []
+    if(reference.length!==1 || referenceProps.length>1) return false
+    const rest=(props:Element|undefined)=>{
+      if(!props) return []
+      const copy=props.cloneNode(true) as Element
+      for(const r of named(copy,"rPr")) copy.removeChild(r)
+      return ["ins","del","pPrChange","rPrChange"].some(n=>copy.getElementsByTagNameNS(W,n).length) ? undefined : (canon(copy) as unknown[])[3]
+    }
+    const own=rest(pPr)
+    return own!==undefined && JSON.stringify(own)===JSON.stringify(rest(referenceProps[0]))
+  }
   const basic=(p:Element) => noAttrs(p) && only(p,["b","bCs","i","iCs","u"]) && elements(p).every(e=>!elements(e).length && Array.from(e.attributes).every(a=>a.namespaceURI===XMLNS || a.namespaceURI===W && a.localName==="val"))
   for(let i=0;i<cells.length;i++) {
     const cell=rowCells[i]!, ps=named(cell,"p"), cellProps=named(cell,"tcPr"), referenceProps=named(referenceCells[i]!,"tcPr")
@@ -136,7 +186,7 @@ export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:strin
        [cell,...referenceCells.slice(i,i+1)].some(c=>["gridSpan","vMerge","hMerge"].some(n=>c.getElementsByTagNameNS(W,n).length))) return fail()
     if(!metadata(cell) || !only(cell,["tcPr","p"]) || ps.length!==1 || !metadata(ps[0]!) || !only(ps[0]!,["pPr","ins"])) return fail()
     const p=ps[0]!, pp=named(p,"pPr"), pr=pp.length===1?named(pp[0]!,"rPr"):[], pm=pr.length===1?named(pr[0]!,"ins"):[]
-    if(pp.length!==1 || !noAttrs(pp[0]!) || pr.length!==1 || !noAttrs(pr[0]!) || pm.length!==1 || pm[0]!.childNodes.length || !only(pp[0]!,["rPr"]) || !only(pr[0]!,["ins","b","bCs","i","iCs","u"])) return fail()
+    if(pp.length!==1 || !noAttrs(pp[0]!) || pr.length!==1 || !noAttrs(pr[0]!) || pm.length!==1 || pm[0]!.childNodes.length || !inherited(pp[0]!,referenceCells[i]!) || !only(pr[0]!,["ins","b","bCs","i","iCs","u"])) return fail()
     if(elements(pr[0]!).some(e=>e.localName!=="ins" && (!only(e,[]) || Array.from(e.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===W && a.localName==="val"))))) return fail()
     mark(pm[0]!)
     let value=""
@@ -173,4 +223,17 @@ export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:strin
 
 export function verifyNativeWordChatAddedRow(beforeXml:string, afterXml:string, binding:{tableIndex:number;rows:unknown[]}, cells:string[], runs?:WordChatCellRun[][]): string[] {
   return verifyNativeWordChatInsertedRow(beforeXml, afterXml, binding.tableIndex, binding.rows.length, cells, runs).authors
+}
+
+/** Whether Word, while adding a row, also re-fitted the bound table's column
+ * widths as a tracked table-format change. Word for Windows can do this after
+ * earlier tracked edits; the row is then present but cannot be confirmed, and
+ * the lawyer needs to know why. Diagnostic only: never admits the change. */
+export function nativeWordChatRowRefitWidths(beforeXml:string, afterXml:string, tableIndex:number): boolean {
+  try {
+    const table=(xml:string)=>{ const t=named(named(parts(xml).get(MAIN)!.getElementsByTagNameNS(W,"document")[0]!,"body")[0]!,"tbl")[tableIndex]; if(!t) return fail(); settleNativeWordChatTableRecords(t); return t }
+    const widths=(t:Element)=>named(t,"tblGrid").flatMap(g=>named(g,"gridCol")).map(c=>c.getAttributeNS(W,"w"))
+    const before=table(beforeXml), after=table(afterXml)
+    return JSON.stringify(widths(before))!==JSON.stringify(widths(after)) && named(named(after,"tblGrid")[0] ?? after,"tblGridChange").length===1
+  } catch { return false }
 }

@@ -28,8 +28,9 @@ import DraftedList from "./drafting/DraftedList"
 import { deliverableGroups, type DraftedOutput } from "./drafting/model"
 import Dropzone from "./Dropzone"
 import { useToast } from "./Toast"
+import { Tooltip } from "./Tooltip"
 import UploadReviewDialog from "./UploadReviewDialog"
-import { WordBadge, WordOpenControl, WordSetup, WordWarning } from "./WordDocuments"
+import { WordBadge, WordOpenControl, WordWarning } from "./WordDocuments"
 
 // One row per file the lawyer added in this session, so a slow or failed upload
 // is visible next to its name instead of hiding behind a single spinner.
@@ -74,6 +75,7 @@ export default function DocumentUpload({
   incoming,
   onIncoming,
   onCompare,
+  onStartFromTemplate,
 }: {
   matterId: string
   documents: Document[]
@@ -86,6 +88,8 @@ export default function DocumentUpload({
   onIncoming?: () => void
   // Compare a Word file with another version of it.
   onCompare?: (name: string) => void
+  // Draft from a library template into this matter.
+  onStartFromTemplate?: () => void
 }) {
   const [uploads, setUploads] = useState<Upload[]>([])
   const [removing, setRemoving] = useState<string>()
@@ -218,8 +222,11 @@ export default function DocumentUpload({
   if (drafting && drafting.status !== "completed") watched.current = true
   const sources = documents.filter((d) => d.role !== "deliverable")
   const generated = documents.filter((d) => d.role === "deliverable")
+  // Documents filled from a template and a spreadsheet list once, in their
+  // batch's folder, never also as single deliverables.
+  const batches = batchFolders(generated)
   const drafted = deliverableGroups(
-    generated.map((d) => d.name),
+    generated.filter((d) => !d.batch).map((d) => d.name),
     drafting,
   )
   const pending = documents.reduce((n, d) => n + (d.pending ?? 0), 0)
@@ -385,6 +392,69 @@ export default function DocumentUpload({
     )
   }
 
+  // A batch reads as one folder: its name and count, where the spreadsheet
+  // came from, and its documents beneath it behind the same rule and toggle as
+  // an email's attachments. Each document opens and acts as any generated one;
+  // the row it came from and any field it still needs show on that row.
+  function renderBatch(batch: BatchFolder) {
+    const count = batch.documents.length
+    const long = count > EXPANDED_CHILDREN
+    const key = `batch:${batch.id}`
+    const open = expanded[key] ?? !long
+    const id = `doc-batch-${batch.id.replace(/[^\w-]/g, "_")}`
+    const byName = new Map(batch.documents.map((d) => [d.name, d]))
+    const needInput = batch.documents.filter((d) => d.batch?.missing.length).length
+    return (
+      <>
+        <div className="doc-row is-uploaded is-batch">
+          <div className="doc-row-main">
+            <span className="doc-type is-folder" title="Folder" aria-hidden><IconFolder /></span>
+            <span className="doc-row-name">{batch.folder}</span>
+          </div>
+          <div className="doc-row-meta">
+            <span className="document-origin is-created" title={`Filled from the spreadsheet ${batch.source}`}>{count} document{count === 1 ? "" : "s"} from {batch.source}</span>
+            {needInput > 0 && (
+              <button type="button" className="linklike doc-batch-attention" aria-controls={id}
+                onClick={() => setExpanded((prev) => ({ ...prev, [key]: true }))}>
+                {needInput} need{needInput === 1 ? "s" : ""} input
+              </button>
+            )}
+            <time className="document-time" dateTime={new Date(batch.createdAt).toISOString()} title={`Saved to matter: ${formatDateTime(batch.createdAt)}`}>
+              {formatTime(batch.createdAt)}
+            </time>
+          </div>
+        </div>
+        <div className="doc-children-group">
+          {long && (
+            <button type="button" className="doc-children-toggle" aria-expanded={open} aria-controls={id}
+              onClick={() => setExpanded((prev) => ({ ...prev, [key]: !open }))}>
+              <IconChevron />
+              {open ? "Hide documents" : "Show documents"}
+            </button>
+          )}
+          {open && (
+            <div id={id} role="group" aria-label={`Documents in ${batch.folder}`}>
+              <DraftedList matterId={matterId} groups={batch.documents.map((d) => ({ main: { name: d.name, role: "draft" }, extras: [] }))}
+                onView={onView} onCompare={onCompare} pending={draftedPending}
+                origin={(output) => {
+                  const from = byName.get(output.name)?.batch
+                  return from && { text: `Row ${from.row}`, title: `From spreadsheet row ${from.row} of ${from.source}` }
+                }}
+                shownName={(output) => batchShownName(output.name, batch.folder)}
+                renderLabel={(output) => {
+                  const document = byName.get(output.name)!
+                  return <>
+                    <NeedsInput missing={document.batch?.missing ?? []} />
+                    <DocumentLabelBadge matterId={matterId} name={output.name} label={document.label ?? "draft"} onChanged={onUploaded} />
+                  </>
+                }} />
+            </div>
+          )}
+        </div>
+      </>
+    )
+  }
+
   const timeline = [
     ...drafted.flatMap((group): DraftedOutput[] => [group.main, ...group.extras, ...(group.combined ? [{ name: group.combined, role: "combined" as const }] : [])]).map((output) => {
       const document = generated.find((document) => document.name === output.name)!
@@ -401,6 +471,11 @@ export default function DocumentUpload({
           </>} />,
       }
     }),
+    ...batches.map((batch) => ({
+      key: `batch:${batch.id}`,
+      createdAt: batch.createdAt,
+      content: renderBatch(batch),
+    })),
     ...documentTree(sources).map((node) => ({
       key: `source:${node.document.id}`,
       createdAt: node.document.created_at,
@@ -490,7 +565,6 @@ export default function DocumentUpload({
         const added = Array.from(event.dataTransfer.files)
         if (added.length) onFiles(added)
       }}>
-        {documents.some((document) => /\.docx$/i.test(document.name)) && <WordSetup />}
         <WordWarning />
         {files}
       </div>
@@ -503,6 +577,7 @@ export default function DocumentUpload({
           title={working > 0 ? `Uploading ${working} document${working === 1 ? "" : "s"}…` : "Upload documents"}
         />
         <p>Drop Word, PDF, email, Excel, Markdown or zip files here, or click to browse.</p>
+        {onStartFromTemplate && <button type="button" className="linklike docs-drawer-template" onClick={onStartFromTemplate}>Start from a template</button>}
       </footer>
       {review && <UploadReviewDialog
         reviewId={review.key}
@@ -670,6 +745,50 @@ export function documentTree(sources: Document[]): SourceNode[] {
   const roots = sources.filter((d) => !parentOf(d)).map((d) => node(d))
   for (const d of sources) if (!placed.has(d.name)) roots.push(node(d))
   return roots
+}
+
+// Generated documents filled from one template and one spreadsheet, by batch:
+// the folder sits in the timeline at its newest document, and lists its
+// documents in spreadsheet row order.
+type BatchFolder = { id: string; folder: string; source: string; createdAt: number; documents: Document[] }
+
+function batchFolders(documents: Document[]): BatchFolder[] {
+  const folders = new Map<string, BatchFolder>()
+  for (const d of documents) {
+    if (!d.batch) continue
+    const folder = folders.get(d.batch.id)
+    if (!folder) folders.set(d.batch.id, { id: d.batch.id, folder: d.batch.folder, source: d.batch.source, createdAt: d.created_at, documents: [d] })
+    else {
+      folder.documents.push(d)
+      folder.createdAt = Math.max(folder.createdAt, d.created_at)
+    }
+  }
+  for (const folder of folders.values()) folder.documents.sort((a, b) => a.batch!.row - b.batch!.row || a.name.localeCompare(b.name))
+  return [...folders.values()]
+}
+
+// Inside its folder a batch document is known by what tells it apart: the
+// template stem the folder already names and the row suffix the row line
+// shows are dropped ("NDA – Acme Ltd – row 008.docx" → "Acme Ltd"). The full
+// file name stays on hover.
+function batchShownName(name: string, folder: string) {
+  const stem = folder.replace(/ – \d{4}-\d{2}-\d{2}$/, "")
+  const shown = name.replace(/\.docx$/i, "").replace(/ – row \d+(?: \(\d+\))?$/, "")
+  return shown.startsWith(`${stem} – `) ? shown.slice(stem.length + 3) : undefined
+}
+
+// A filled document whose spreadsheet row left fields empty: one small tag,
+// the fields it still needs on hover or focus.
+function NeedsInput({ missing }: { missing: string[] }) {
+  if (!missing.length) return null
+  const fields = missing.join(", ")
+  return (
+    <Tooltip label={`Still to fill: ${fields}`} describes={false} around=".drafted-row">
+      <span className="doc-needs-input" role="img" tabIndex={0} aria-label={`Needs input: ${fields}`}>
+        Needs input
+      </span>
+    </Tooltip>
+  )
 }
 
 // Up to this many children show under their parent; a longer list starts
@@ -961,6 +1080,14 @@ function DocumentType({ name }: { name: string }) {
     <span className={`doc-type is-${kind}`} title={DOCUMENT_TYPE_LABEL[kind]} aria-hidden>
       {kind === "eml" || kind === "msg" ? <IconEmail /> : kind === "xlsx" ? <IconSheet /> : kind === "zip" ? <IconArchive /> : <IconFile />}
     </span>
+  )
+}
+
+function IconFolder() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+    </svg>
   )
 }
 

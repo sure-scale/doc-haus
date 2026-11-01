@@ -31,6 +31,10 @@ export type Document = {
   // ingested before the quality gate, which shows nothing.
   quality?: ExtractionQuality
   source_provenance?: "supplied-chronology"
+  // On a deliverable filled from a template and a spreadsheet (#208): its
+  // batch and folder, the spreadsheet row it came from (header row = 1), the
+  // spreadsheet's file name, and the labels of fields the row left unfilled.
+  batch?: { id: string; folder: string; row: number; source: string; missing: string[] }
 }
 
 // The extraction quality gate's result for a source

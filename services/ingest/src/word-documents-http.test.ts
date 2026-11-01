@@ -9,7 +9,7 @@ import { openDb } from "./db"
 import type { DeskSources } from "../../../dochaus/lib/word-source-desk-contract"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { linkedWordDocx, readWordLink } from "../../../dochaus/lib/word-linked-docx"
-import { WORD_ADDIN_VERSION, WORD_LINK_SETTING, type WordDocumentLink, type WordSaveResponse, type WordConnectionState, type WordLeaseAction } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_PROTOCOL_VERSION, WORD_LINK_SETTING, type WordDocumentLink, type WordSaveResponse, type WordConnectionState, type WordLeaseAction } from "../../../dochaus/lib/word-addin-contract"
 
 const paneOrigin = "https://localhost:47612"
 const browserOrigin = "http://localhost:5190"
@@ -44,7 +44,7 @@ async function handout(name: string) {
   const bytes = new Uint8Array(await response.arrayBuffer())
   return { bytes, link: readLink(bytes) }
 }
-const tokenHeaders = (link: WordDocumentLink, extra: Record<string, string> = {}) => ({ Origin: paneOrigin, Authorization: `Bearer ${link.token}`, "x-dochaus-word-version": WORD_ADDIN_VERSION, ...extra })
+const tokenHeaders = (link: WordDocumentLink, extra: Record<string, string> = {}) => ({ Origin: paneOrigin, Authorization: `Bearer ${link.token}`, "x-dochaus-word-version": WORD_PROTOCOL_VERSION, ...extra })
 const owners = new Map<string, { session: string; generation: string }>()
 async function lease(link: WordDocumentLink, action: WordLeaseAction, session = "session-test-0001", baseVersion = link.baseVersion,
   expected: { expectedCurrent?: string; expectedGeneration?: string } = {}) {
@@ -409,7 +409,7 @@ test("token endpoints require the exact configured pane origin on success, error
   const preflight = await request("/word/saves", { method: "OPTIONS", headers: { Origin: paneOrigin, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,x-dochaus-word-base-version" } })
   expect(preflight.status).toBe(204)
   expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe(paneOrigin)
-  const invalid = await request("/word/saves", { method: "POST", headers: { Origin: paneOrigin, Authorization: "Bearer invalid", "x-dochaus-word-version": WORD_ADDIN_VERSION } })
+  const invalid = await request("/word/saves", { method: "POST", headers: { Origin: paneOrigin, Authorization: "Bearer invalid", "x-dochaus-word-version": WORD_PROTOCOL_VERSION } })
   expect(invalid.status).toBe(401)
   expect(invalid.headers.get("Access-Control-Allow-Origin")).toBe(paneOrigin)
   const malformed = await save(link, new Uint8Array([1, 2, 3]))

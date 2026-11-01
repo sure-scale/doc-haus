@@ -10,6 +10,11 @@ const WE = "http://schemas.microsoft.com/office/webextensions/webextension/2010/
 const TP = "http://schemas.microsoft.com/office/webextensions/taskpanes/2010/11"
 const TP_REL = "http://schemas.microsoft.com/office/2011/relationships/webextensiontaskpanes"
 const WE_REL = "http://schemas.microsoft.com/office/2011/relationships/webextension"
+// Word's own marker for Office.addin.setStartupBehavior(load): Word starts the
+// shared runtime when the file opens, so the pane can show itself even when Word
+// gives the right dock to its Comments pane instead (seen on Windows).
+const DRAWING = "http://schemas.openxmlformats.org/drawingml/2006/main"
+const BACKGROUND_APP_EXT = "{0858819E-0033-43BF-8937-05EC82904868}"
 const extensionPart = "word/webextensions/dochaus.xml"
 const taskpanePart = "word/webextensions/taskpanes.xml"
 const taskpaneRels = "word/webextensions/_rels/taskpanes.xml.rels"
@@ -193,7 +198,7 @@ export function linkedWordDocx(bytes: Uint8Array, link: WordDocumentLink) {
   pane.appendChild(ref)
   parts[taskpanePart] = serialize(panes)
   parts[taskpaneRels] = serialize(rels)
-  const extension = xml(`<we:webextension xmlns:we="${WE}" id="{${WORD_ADDIN_ID.toUpperCase()}}"><we:reference id="${WORD_ADDIN_ID}" version="${WORD_ADDIN_VERSION}" store="developer" storeType="Registry"/><we:alternateReferences/><we:properties/><we:bindings/><we:snapshot xmlns:r="${R}"/></we:webextension>`)
+  const extension = xml(`<we:webextension xmlns:we="${WE}" id="{${WORD_ADDIN_ID.toUpperCase()}}"><we:reference id="${WORD_ADDIN_ID}" version="${WORD_ADDIN_VERSION}" store="developer" storeType="Registry"/><we:alternateReferences/><we:properties/><we:bindings/><we:snapshot xmlns:r="${R}"/><we:extLst><a:ext xmlns:a="${DRAWING}" uri="${BACKGROUND_APP_EXT}"><we:backgroundApp state="1" runtimeId="Pane.Url"/></a:ext></we:extLst></we:webextension>`)
   const properties = elements(extension, WE, "properties")[0]!
   for (const [name, value] of [["Office.AutoShowTaskpaneWithDocument", "true"], [WORD_LINK_SETTING, JSON.stringify(link)]]) {
     const property = extension.createElementNS(WE, "we:property")

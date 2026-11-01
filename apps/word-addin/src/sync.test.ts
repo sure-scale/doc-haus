@@ -978,3 +978,31 @@ test("a failed native Save after retrying pending bytes cannot publish newer con
   expect(uploads).toBe(afterPendingAcknowledged + 1)
   expect(nativeSaves).toBe(4)
 })
+
+test("a background check that loses doc.haus stays calm; a Save the lawyer chose still reports the issue", async () => {
+  let available = true
+  const sync = new WordSync(
+    "base",
+    { saved: async () => true, save: immediate, export: async () => new Uint8Array([1]) },
+    {
+      heartbeat: async () => {
+        if (!available) throw new ConnectionError("Cannot reach doc.haus.", true)
+      },
+      done: immediate,
+      save: async () => {
+        if (!available) throw new ConnectionError("Cannot reach doc.haus.", true)
+        return acknowledgement("v1")
+      },
+    },
+    checkpoints(),
+    () => {},
+    fingerprint,
+    immediate,
+  )
+  available = false
+  expect(await sync.tick()).toBe(false)
+  expect(sync.snapshot()).toMatchObject({ problem: true, connectionFailed: true, reconnecting: true })
+  expect(await sync.save()).toBe(false)
+  expect(sync.snapshot()).toMatchObject({ problem: true, connectionFailed: true })
+  expect(sync.snapshot().reconnecting).toBeUndefined()
+})

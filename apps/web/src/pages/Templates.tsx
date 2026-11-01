@@ -13,13 +13,15 @@ import { useToast } from "../components/Toast"
 import Dropzone from "../components/Dropzone"
 import { humanizeError } from "../api/ingest/errors"
 import TemplateViewer from "../components/TemplateViewer"
-import { markerKind } from "../components/document-markers"
+import { templateDraftLink, templateFieldCounts, templateFieldSummary } from "../lib/template-use"
 import MatterPicker from "../components/MatterPicker"
 import { Exit } from "../components/useExit"
 import ChatPanel from "../components/ChatPanel"
 import { useLibraryChatKey } from "../components/chat/use-library-chat-key"
 import LibraryLayout from "../components/LibraryLayout"
 import TemplateDraftBuilder from "../components/TemplateDraftBuilder"
+import TemplateBatchDialog from "../components/TemplateBatchDialog"
+import { SplitButton } from "../components/SplitButton"
 import { TEMPLATE_BUILDER } from "../agents"
 
 // The firm's global template library: the drafting bases shared across every
@@ -46,6 +48,8 @@ export default function Templates() {
   const [viewing, setViewing] = useState<Template>()
   // "Use" flow: the template being assembled into a matter the lawyer picks.
   const [using, setUsing] = useState<Template>()
+  // "Fill from spreadsheet": one document per spreadsheet row into a matter.
+  const [batching, setBatching] = useState<Template>()
   const navigate = useNavigate()
   // The session id the composer just minted, so the remount that follows the first
   // send keeps the cursor seated (same pattern as MatterDetail).
@@ -152,8 +156,7 @@ export default function Templates() {
   // prompt prefilled — the lawyer reviews and sends; nothing auto-runs.
   function useTemplate(t: Template, m: Matter) {
     setUsing(undefined)
-    const prompt = `Draft a new document from the template "${t.name}". Gather what you can from this matter's documents and our conversation first, then interview me for the remaining terms and any optional clauses before assembling it.`
-    navigate(`/matter/${m.id}?view=chat&agent=draft&prompt=${encodeURIComponent(prompt)}`)
+    navigate(templateDraftLink(m.id, t.name))
   }
 
   const visible = [...templates].sort((a, b) => a.name.localeCompare(b.name))
@@ -216,11 +219,7 @@ export default function Templates() {
         ) : (
           <ul className="matter-list">
             {visible.map((t) => {
-              // As the viewer's side panel counts them: a [REDACTED] mark is a
-              // redaction, not a placeholder to fill.
-              const markers = t.placeholders.filter((p) => markerKind(p.text) !== "redaction")
-              const optional = markers.filter((p) => /^\[optional:/i.test(p.text)).length
-              const fills = markers.length - optional
+              const fields = templateFieldCounts(t).total
               return (
                 <li
                   key={t.name}
@@ -259,23 +258,24 @@ export default function Templates() {
                           {t.description || "Add description"}
                         </button>
                       )}
-                      <span className="list-row-date">
-                        {fills} placeholder{fills === 1 ? "" : "s"}
-                        {optional > 0 && `, ${optional} optional clause${optional === 1 ? "" : "s"}`}
-                      </span>
+                      <span className="list-row-date">{templateFieldSummary(t)}</span>
                     </span>
                   </div>
                   <div className="list-row-actions">
-                    <button
-                      className="icon-btn is-primary"
-                      title="Draft a document from this template into a matter"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setUsing(t)
-                      }}
-                    >
-                      Use
-                    </button>
+                    <span className="template-use" onClick={(e) => e.stopPropagation()}>
+                      <SplitButton
+                        label="Use"
+                        title="Draft a document from this template into a matter"
+                        onClick={() => setUsing(t)}
+                        toggleLabel={`More ways to use ${t.name}`}
+                        items={[{
+                          label: "Fill from spreadsheet…",
+                          title: fields ? "Create one document per spreadsheet row" : "This template has no fields to fill",
+                          disabled: fields === 0,
+                          onSelect: () => setBatching(t),
+                        }]}
+                      />
+                    </span>
                     <button
                       className="icon-btn"
                       title="View template"
@@ -333,6 +333,10 @@ export default function Templates() {
 
       <Exit when={viewing}>{(viewing) => (
         <TemplateViewer name={viewing.name} placeholders={viewing.placeholders} onClose={() => setViewing(undefined)} />
+      )}</Exit>
+
+      <Exit when={batching}>{(batching) => (
+        <TemplateBatchDialog template={batching} onClose={() => setBatching(undefined)} />
       )}</Exit>
 
       <Exit when={using}>{(using) => (

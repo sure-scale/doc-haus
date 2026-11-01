@@ -20,6 +20,7 @@ import { withSafeStyleValues } from "./docx-style-values"
 // the placeholders the server's scan listed, the set drafting fills.
 export default function TemplateViewer({
   name,
+  title,
   placeholders,
   onClose,
   loadBytes,
@@ -28,6 +29,8 @@ export default function TemplateViewer({
   onRendered,
 }: {
   name: string
+  /** A heading for the reader in place of the file name, where the reader is one step of a larger task. */
+  title?: string
   // The server's placeholder scan of a library template; without it the
   // viewer marks what the shared marker patterns find.
   placeholders?: TemplatePlaceholder[]
@@ -89,13 +92,13 @@ export default function TemplateViewer({
   // Keep viewport overlays outside the page's width/spacing rules.
   return createPortal(
     <div className={`viewer-overlay template-viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
-      <div ref={panel} className={`viewer-panel template-reader${footer ? " has-footer" : ""}`} role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.stopPropagation()} onKeyDown={(event) => {
+      <div ref={panel} className={`viewer-panel template-reader${footer ? " has-footer" : ""}`} role="dialog" aria-modal="true" aria-label={title ?? name} onClick={(e) => e.stopPropagation()} onKeyDown={(event) => {
         if (event.key === "Escape" && !event.defaultPrevented) { event.stopPropagation(); onClose() }
       }}>
         <div className="viewer-bar">
           <span className="viewer-title">
-            <span className="viewer-doctype">DOCX</span>
-            <span className="viewer-title-name">{name}</span>
+            {!title && <span className="viewer-doctype">DOCX</span>}
+            <span className={`viewer-title-name${title ? " is-heading" : ""}`}>{title ?? name}</span>
           </span>
           <div className="viewer-bar-actions">
             <ModalClose onClose={onClose} />

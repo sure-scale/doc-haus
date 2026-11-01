@@ -23,12 +23,23 @@ bounded messages are required; a reloaded child establishes a fresh channel.
 Desk requests never call the save queue or editing lease. See
 [`docs/word-addin.md`](../../docs/word-addin.md#matter-documents-and-version-comparison) for scope and limits.
 
-The manifest, linked handout and pane share one add-in version. Both manifest
-pane URLs include that version, and a missing or different URL version stops
-startup before Office access. Token requests also carry the version; ingest
-rejects old clients with HTTP 426 before recording contact or accepting bytes.
-After updating this version, run Word setup again, restart Word and open a fresh
-handout. File equality alone does not prove Office adopted its cached manifest.
+Updates reach lawyers without setup steps. doc.haus serves the pane itself, so
+pane changes ship with doc.haus, and ingest rewrites the registered manifest at
+startup.
+
+- **Add-in version** (`WORD_ADDIN_VERSION`) is named by the manifest, every
+  linked handout and the hosted bootstrap. Keep it fixed. Changing it breaks
+  handouts already given out (Mac Word reports "This add-in is no longer
+  available"). Manifest content changes at the same version reach Word after a
+  restart. A pane URL with a different version stops startup before Office
+  access. The hosted bootstrap accepts any well-formed version and passes it
+  to the local pane, so it never needs redeploying in step with installs.
+- **Protocol version** (`WORD_PROTOCOL_VERSION`) is carried by token requests.
+  Bump it when pane requests change. Ingest rejects other versions with HTTP
+  426 before recording contact or accepting bytes. A pane left open across an
+  update reloads itself once. It asks for a Word restart only if the reload
+  does not help.
+
 This compatibility gate does not elect a writer or adopt another copy's latest
 parent. The server checks versions and a recoverable editing lease separately.
 

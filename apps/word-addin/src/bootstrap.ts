@@ -1,4 +1,3 @@
-import { WORD_ADDIN_VERSION } from "../../../dochaus/lib/word-addin-contract"
 import { WORD_HEALTH_PATH, WORD_LAUNCH_URL, loopbackWordOrigin, readBootstrapOrigin, wordPaneUrl } from "./bootstrap-contract"
 
 type Request = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -56,7 +55,7 @@ export async function probeWordPane(origin: string, request: Request = fetch, ti
     if (!response.ok) { void response.body?.cancel().catch(() => {}); return false }
     const health: unknown = await response.json()
     return Boolean(health && typeof health === "object" &&
-      (health as { ready?: unknown }).ready === true && (health as { version?: unknown }).version === WORD_ADDIN_VERSION)
+      (health as { ready?: unknown }).ready === true)
   } catch { return false }
   finally { clearTimeout(timeout); signal?.removeEventListener("abort", abort) }
 }
@@ -103,7 +102,7 @@ export async function showBootstrap(document: Document, href: string, navigate: 
           if (lifetime.signal.aborted) return false
           entered = true
           stop()
-          navigate(wordPaneUrl(origin))
+          navigate(wordPaneUrl(origin, new URL(href).searchParams.get("version")!))
           return true
         }
         if (lifetime.signal.aborted) return false

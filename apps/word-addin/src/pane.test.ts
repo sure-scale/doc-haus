@@ -27,8 +27,8 @@ test("a cached unversioned pane stops before Office access or sync startup", asy
     })
     await import("./pane")
     expect(officeReads).toBe(0)
-    expect(elements.get("status")?.textContent).toBe("Update needed")
-    expect(elements.get("message")?.textContent).toContain("out of date")
+    expect(elements.get("status")?.textContent).toBe("Restart Word")
+    expect(elements.get("message")?.textContent).toContain("Restart Word to finish")
     expect(elements.get("actions")?.hidden).toBe(true)
   } finally {
     globals.forEach((key, index) => {

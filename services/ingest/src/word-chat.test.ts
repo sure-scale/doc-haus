@@ -715,6 +715,87 @@ test("reviewer issues are framed as a rejected proposal even if they use applied
   } finally { routerAgent = "qa"; amend = false; modelProposal = undefined; reviewerRawOutput = undefined }
 })
 
+const reviewSessions = (turnId: string) => [...sessions.values()].filter(session => session.parentID === turnId && session.metadata.type === "word-chat-review")
+const revisionAdmissions = (turnId: string) => admissions.filter(value => value.session === turnId && value.tail === "/prompt" && String(value.payload.id).startsWith("msg_word_revision_"))
+// Scripts reviewer decisions in order and the drafter's revised wording.
+function scriptRevision(decisions: { approved: boolean; issues: string[] }[], revisedAfter: string, holdRevision = false) {
+  let reviews = 0
+  engineHook = async (session, tail, method, payload) => {
+    if (tail !== "/prompt" || method !== "POST") return
+    if (session.metadata.type === "word-chat-review") reviewerRawOutput = JSON.stringify(decisions[Math.min(reviews++, decisions.length - 1)])
+    else if (String(payload.id).startsWith("msg_word_revision_")) { modelProposal = { before: context.text, after: revisedAfter }; if (holdRevision) hold = true }
+  }
+}
+
+test("a rejected proposal is revised once from the reviewer's issues and the approved revision is shown", async () => {
+  const id = await newConversation()
+  routerAgent = "redliner"; amend = true
+  modelProposal = { before: context.text, after: context.text.replace("Tuesday", "Wednesday") }
+  scriptRevision([{ approved: false, issues: ["The replacement drops the delivery qualification."] }, { approved: true, issues: [] }], context.text.replace("Tuesday", "Thursday"))
+  try {
+    const turn = (await (await send(id, "document", "Revise the delivery day")).json() as { turn: WordChatTurn }).turn
+    expect(turn.status).toBe("complete")
+    expect(turn.error).toBeUndefined()
+    expect(turn.proposal?.id).toBe(turn.id)
+    expect(turn.proposal?.after).toBe(context.text.replace("Tuesday", "Thursday"))
+    const revision = messages.get(turn.id)!.filter(message => message.type === "synthetic").at(-1)!.text as string
+    expect(revision).toContain("The replacement drops the delivery qualification.")
+    expect(revision).toContain("reviewIssues")
+    const [first, second] = reviewSessions(turn.id)
+    expect(suppliedContext(sessionContext(first!.id)).proposal.after).toContain("Wednesday")
+    expect(suppliedContext(sessionContext(second!.id)).proposal).toEqual(turn.proposal)
+    expect(revisionAdmissions(turn.id)).toHaveLength(1)
+  } finally { engineHook = undefined; routerAgent = "qa"; amend = false; modelProposal = undefined; reviewerRawOutput = undefined }
+})
+
+test("a revision rejected again shows the second review's issues and makes no further model call", async () => {
+  const id = await newConversation()
+  routerAgent = "redliner"; amend = true
+  modelProposal = { before: context.text, after: context.text.replace("Tuesday", "Wednesday") }
+  scriptRevision([{ approved: false, issues: ["First review issue."] }, { approved: false, issues: ["Second review issue."] }], context.text.replace("Tuesday", "Thursday"))
+  try {
+    const before = generations
+    const turn = (await (await send(id, "document", "Revise the delivery day")).json() as { turn: WordChatTurn }).turn
+    expect(turn.proposal).toBeUndefined()
+    expect(turn.error).toBe("The proposal needs revision before it can be applied. No change was applied.")
+    expect(turn.answer).toBe("The reviewer found these issues in the proposed change:\nSecond review issue.")
+    // Draft, first review, revision and second review: never a second revision.
+    expect(generations - before).toBe(4)
+    for (let i = 0; i < 3; i++) expect((await (await post("poll", { conversationId: id, turnId: turn.id })).json() as { turn: WordChatTurn }).turn.answer).toContain("Second review issue.")
+    expect(generations - before).toBe(4)
+    expect(reviewSessions(turn.id)).toHaveLength(2)
+    expect(revisionAdmissions(turn.id)).toHaveLength(1)
+  } finally { engineHook = undefined; routerAgent = "qa"; amend = false; modelProposal = undefined; reviewerRawOutput = undefined }
+})
+
+test("polling a running revision never resends it and shows no unreviewed proposal", async () => {
+  const id = await newConversation()
+  routerAgent = "redliner"; amend = true
+  modelProposal = { before: context.text, after: context.text.replace("Tuesday", "Wednesday") }
+  const revisedAfter = context.text.replace("Tuesday", "Thursday")
+  scriptRevision([{ approved: false, issues: ["The replacement drops the delivery qualification."] }, { approved: true, issues: [] }], revisedAfter, true)
+  try {
+    const running = (await (await send(id, "document", "Revise the delivery day")).json() as { turn: WordChatTurn }).turn
+    expect(running.status).toBe("running"); expect(running.proposal).toBeUndefined(); expect(running.answer).toBe("")
+    for (let i = 0; i < 3; i++) {
+      const polled = (await (await post("poll", { conversationId: id, turnId: running.id })).json() as { turn: WordChatTurn }).turn
+      expect(polled.status).toBe("running"); expect(polled.proposal).toBeUndefined()
+    }
+    expect(revisionAdmissions(running.id)).toHaveLength(1)
+    expect(reviewSessions(running.id)).toHaveLength(1)
+    hold = false
+    const child = sessions.get(running.id)!
+    const finished = new Date(Date.now() + 5).toISOString()
+    messages.get(child.id)!.push({ id: `msg_revised_${next++}`, type: "assistant", content: [{ type: "text", text: structuredFixture(JSON.stringify({ answer: "Revised for review.", citations: [], proposal: { before: context.text, after: revisedAfter, explanation: "Resolved the review issue.", openItems: [] } })) }], time: { created: finished, completed: finished } })
+    child.time.idle = finished; child.outcome = "succeeded"
+    const done = (await (await post("poll", { conversationId: id, turnId: running.id })).json() as { turn: WordChatTurn }).turn
+    expect(done.status).toBe("complete"); expect(done.error).toBeUndefined()
+    expect(done.proposal?.after).toBe(revisedAfter)
+    expect(done.answer).toBe("Revised for review.")
+    expect(revisionAdmissions(running.id)).toHaveLength(1)
+  } finally { engineHook = undefined; hold = false; routerAgent = "qa"; amend = false; modelProposal = undefined; reviewerRawOutput = undefined }
+})
+
 test("a completion claim without a proposal is not shown as an applied change", async () => {
   const id = await newConversation()
   routerAgent = "redliner"
@@ -1028,6 +1109,18 @@ test("formatted row cell runs normalize from model output and reach review and r
     output({action:"delete",cells:["Alpha","Plain"],cellRuns:[[{text:"Alpha",bold:true}],[{text:"Plain"}]]})
     expect((await turnOf()).rowProposal).toBeUndefined()
   } finally { modelRawOutput = undefined }
+})
+
+test("structured answer parts space text after a reference and merge back-to-back references to one source", async () => {
+  const id = await newConversation(), ref = (quote: string) => ({type:"reference" as const,sourceId:"word",quote})
+  try {
+    modelStructuredRawOutput = JSON.stringify({answerParts:[{type:"text",text:"Delivery is weekly."},ref(context.text),ref("Tuesday delivery"),{type:"text",text:"It falls on Tuesday"},ref("Tuesday"),{type:"text",text:"."}]})
+    const turn = (await (await send(id,"document","When is delivery?")).json() as {turn:WordChatTurn}).turn
+    expect(turn.status).toBe("complete")
+    expect(turn.answerParts).toEqual([{type:"text",text:"Delivery is weekly."},ref(context.text),{type:"text",text:" It falls on Tuesday"},ref("Tuesday"),{type:"text",text:"."}])
+    expect(turn.answer).toBe("Delivery is weekly. It falls on Tuesday.")
+    expect(turn.sources.map(source => source.quote)).toEqual([context.text,"Tuesday delivery","Tuesday"])
+  } finally { modelStructuredRawOutput = undefined }
 })
 
 test("structured answer parts preserve literal brackets and verify explicit references without legacy fallback", async () => {

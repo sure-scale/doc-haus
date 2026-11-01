@@ -1,6 +1,6 @@
-import { WORD_ADDIN_VERSION, type WordDocumentLink } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_PROTOCOL_VERSION, type WordDocumentLink } from "../../../dochaus/lib/word-addin-contract"
 import { WORD_CHAT_ROUTES } from "../../../dochaus/lib/word-chat-contract"
-import { httpsOrigin, WORD_UPDATE_MESSAGE } from "./client"
+import { httpsOrigin, reloadAfterUpdate, WORD_UPDATE_MESSAGE } from "./client"
 import { OpenCode, type V2Event } from "@opencode/client"
 
 export class ChatRequestError extends Error {
@@ -31,7 +31,7 @@ export function chatClient(
       const response = await request(`${origin}/word/chat/${action}`, {
         method: "POST", headers: {
           Authorization: `Bearer ${link.token}`,
-          "x-dochaus-word-version": WORD_ADDIN_VERSION,
+          "x-dochaus-word-version": WORD_PROTOCOL_VERSION,
           ...(action === "prepare" ? prepareHeaders?.() : {}),
           ...(multipart ? {} : { "Content-Type": "application/json" }),
         },
@@ -39,7 +39,7 @@ export function chatClient(
         referrerPolicy: "no-referrer", signal: abort.signal,
       })
       if (!response.ok) {
-        if (response.status === 426) throw new ChatRequestError(WORD_UPDATE_MESSAGE)
+        if (response.status === 426) { await reloadAfterUpdate(); throw new ChatRequestError(WORD_UPDATE_MESSAGE) }
         const value = await response.json().catch(() => undefined) as { error?: unknown } | undefined
         throw new ChatRequestError(typeof value?.error === "string" ? value.error : "Chat could not complete the request. Keep your message and reconnect.", response.status >= 500 || response.status === 429)
       }
@@ -64,10 +64,10 @@ export function chatClient(
         const url = new URL(input instanceof Request ? input.url : String(input))
         if (url.origin !== origin || url.pathname !== "/api/event") throw new ChatRequestError("This chat stream is unavailable.")
         const response = await request(`${origin}/word/chat/events`, {
-          method: "POST", headers: { Authorization: `Bearer ${link.token}`, "x-dochaus-word-version": WORD_ADDIN_VERSION, "Content-Type": "application/json" },
+          method: "POST", headers: { Authorization: `Bearer ${link.token}`, "x-dochaus-word-version": WORD_PROTOCOL_VERSION, "Content-Type": "application/json" },
           body: JSON.stringify({ conversationId }), credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", signal: init?.signal,
         })
-        if (response.status === 426) { await response.body?.cancel(); throw new ChatRequestError(WORD_UPDATE_MESSAGE) }
+        if (response.status === 426) { await response.body?.cancel(); await reloadAfterUpdate(); throw new ChatRequestError(WORD_UPDATE_MESSAGE) }
         return response
       }
       const native = OpenCode.make({ baseUrl: origin, fetch: transport as typeof globalThis.fetch })
