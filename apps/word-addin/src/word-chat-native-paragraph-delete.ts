@@ -2,6 +2,7 @@ import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import type { WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { projectNativeWordChatBody } from "./word-chat-host-ooxml"
 import { assertNativeWordChatStoryInverse } from "./word-chat-native-paragraph-merge"
+import { pointerBookmarks } from "./word-chat-pointer-bookmarks"
 
 type Projection = ReturnType<typeof projectNativeWordChatBody>
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -95,11 +96,13 @@ function qualified(p: Element | undefined, text: string) {
   if (!p || p.namespaceURI !== W || p.localName !== "p" || !validMeta(p)) return fail()
   const children = elements(p),
     pp = named(p, "pPr"),
-    runs = named(p, "r")
+    runs = named(p, "r"),
+    pointers = pointerBookmarks(children)
   if (
+    !pointers ||
     pp.length > 1 ||
     (pp.length && children[0] !== pp[0]) ||
-    children.length !== pp.length + runs.length ||
+    children.length !== pp.length + runs.length + pointers.length ||
     !runs.length ||
     Array.from(p.childNodes).some((n) => n.nodeType !== 1 && !blank(n)) ||
     Array.from(p.getElementsByTagNameNS(W, "*")).some((e) => unsupported.has(e.localName))
@@ -180,11 +183,31 @@ export function verifyNativeWordChatParagraphDeletion(
     )
   )
     return fail()
-  const children = elements(actual),
+  // doc.haus's hidden pointer bookmark stays on the deleted text, but Word moves its
+  // end inside the last w:del. Accept that shape (or the end left after the w:del).
+  const had = pointerBookmarks(elements(oldP)) ?? fail(),
+    children = elements(actual),
     pp = named(actual, "pPr"),
     rp = pp.length === 1 ? named(pp[0]!, "rPr") : [],
     marks = rp.length === 1 ? named(rp[0]!, "del") : [],
-    content = children.slice(pp.length)
+    startMark = had.length ? children[pp.length] : undefined,
+    direct = had.length && children.at(-1)?.localName === "bookmarkEnd" ? children.at(-1) : undefined,
+    content = children.slice(pp.length + (startMark ? 1 : 0), direct ? -1 : undefined)
+  let endMark = direct
+  if (had.length) {
+    const inner = content.at(-1) && elements(content.at(-1)!).at(-1)
+    if (!endMark && inner?.namespaceURI === W && inner.localName === "bookmarkEnd") endMark = inner
+    if (
+      !startMark ||
+      startMark.namespaceURI !== W ||
+      startMark.localName !== "bookmarkStart" ||
+      startMark.getAttributeNS(W, "name") !== had[0]!.getAttributeNS(W, "name") ||
+      !endMark ||
+      endMark.getAttributeNS(W, "id") !== startMark.getAttributeNS(W, "id") ||
+      Array.from(endMark.attributes).some((a) => a.namespaceURI !== XMLNS && !(a.namespaceURI === W && a.localName === "id"))
+    )
+      return fail()
+  }
   if (
     pp.length !== 1 ||
     children[0] !== pp[0] ||
@@ -226,8 +249,9 @@ export function verifyNativeWordChatParagraphDeletion(
   // Inverse: unwrap each deleted run, restoring w:t and dropping rsidDel; every
   // text carrier must be deleted, so a surviving w:t fails as unplain.
   for (const d of content) {
-    const runs = named(d, "r")
-    if (!runs.length || elements(d).length !== runs.length || Array.from(d.childNodes).some((n) => n.nodeType !== 1 && !blank(n)))
+    const runs = named(d, "r"),
+      carriesEnd = endMark !== undefined && endMark.parentNode === d
+    if (!runs.length || elements(d).length !== runs.length + (carriesEnd ? 1 : 0) || Array.from(d.childNodes).some((n) => n.nodeType !== 1 && !blank(n)))
       return fail()
     for (const r of runs) {
       if (r.hasAttributeNS(W, "rsidDel") && !hex(r.getAttributeNS(W, "rsidDel"))) return fail()
@@ -243,8 +267,11 @@ export function verifyNativeWordChatParagraphDeletion(
       }
       actual.insertBefore(r, d)
     }
+    if (carriesEnd) actual.insertBefore(endMark!, d)
     actual.removeChild(d)
   }
+  // Word renumbers bookmark ids when it adds revisions; the pair keeps its name and place.
+  if (startMark) for (const [node, from] of [[startMark, had[0]!], [endMark!, had[1]!]] as const) node.setAttributeNS(W, "w:id", from.getAttributeNS(W, "id")!)
   // Remove the mark, and a container Word added for it.
   rp[0]!.removeChild(mark)
   const priorProps = named(oldP, "pPr"),

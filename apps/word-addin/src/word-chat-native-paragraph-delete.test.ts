@@ -54,6 +54,30 @@ test("native deletion retains identity and validates both owned carriers and pri
   expect(() => assertNativeWordChatParagraphDeletionTarget(before, { ...target, endOffset: 4 })).toThrow()
 })
 
+test("a doc.haus pointer bookmark on the deleted paragraph survives Word moving its end into the deletion", () => {
+  const ptrName = "_dh_p0123456789ab", runs = "<w:r><w:t>Original</w:t></w:r>"
+  const oldPointer = targetOld.replace(runs, `<w:bookmarkStart w:id="11" w:name="${ptrName}"/>${runs}<w:bookmarkEnd w:id="11"/>`)
+  const old = projectNativeWordChatBody(flat(oldPointer + rest), inv)
+  const run = (body: string) => verifyNativeWordChatParagraphDeletion(old, projectNativeWordChatBody(flat(body), afterInv), target)
+  // Word renumbers the bookmark, leaves the start before the deletion and moves the end inside it.
+  const deleted = targetAfter.replace("<w:del w:id=\"3\"", `<w:bookmarkStart w:id="9" w:name="${ptrName}"/><w:del w:id="3"`).replace("</w:del></w:p>", '<w:bookmarkEnd w:id="9"/></w:del></w:p>')
+  const good = deleted + rest.replace('w:id="5" w:author="Earlier"', 'w:id="7" w:author="Earlier"')
+  expect(assertNativeWordChatParagraphDeletionTarget(old, target)).toBe(0)
+  expect(run(good)).toEqual(["Reviewer"])
+  // The end left after the deletion is the same bookmark.
+  expect(run(good.replace('<w:bookmarkEnd w:id="9"/></w:del>', "</w:del><w:bookmarkEnd w:id=\"9\"/>"))).toEqual(["Reviewer"])
+  for (const bad of [
+    good.replace(`w:name="${ptrName}"`, 'w:name="_dh_p00000000ffff"'), // a different bookmark
+    good.replace('<w:bookmarkEnd w:id="9"/></w:del>', "</w:del>"), // end lost
+    good.replace('<w:bookmarkEnd w:id="9"/>', '<w:bookmarkEnd w:id="8"/>'), // end of another bookmark
+    good.replace(`<w:bookmarkStart w:id="9" w:name="${ptrName}"/>`, ""), // start lost
+  ])
+    expect(() => run(bad)).toThrow()
+  // Anything wider than the one pointer pair is still refused up front.
+  for (const bad of [targetOld.replace(runs, `<w:bookmarkStart w:id="1" w:name="Keep"/>${runs}<w:bookmarkEnd w:id="1"/>`), targetOld.replace(runs, `<w:bookmarkStart w:id="11" w:name="${ptrName}"/>${runs}`)])
+    expect(() => assertNativeWordChatParagraphDeletionTarget(projectNativeWordChatBody(flat(bad + rest), inv), target)).toThrow()
+})
+
 test("a following ordinary paragraph can retain its comment and bookmark graph", () => {
   const following = '<w:p w14:paraId="22222222"><w:bookmarkStart w:id="1" w:name="Keep"/><w:commentRangeStart w:id="3"/><w:r><w:t>Next</w:t></w:r><w:commentRangeEnd w:id="3"/><w:bookmarkEnd w:id="1"/><w:r><w:commentReference w:id="3"/></w:r></w:p>'
   const old = projectNativeWordChatBody(flat(targetOld + following),inv.slice(0,2))

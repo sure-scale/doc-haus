@@ -2,6 +2,7 @@ import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import type { WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { assertNativeWordChatInlineDependencies, projectNativeWordChatBody } from "./word-chat-host-ooxml"
 import { normalizeNativeWordChatCommentIds } from "./word-chat-native-comments"
+import { pointerBookmarks } from "./word-chat-pointer-bookmarks"
 
 type Projection = ReturnType<typeof projectNativeWordChatBody>
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -110,17 +111,19 @@ export function assertNativeWordChatParagraphInsertionTarget(projection: Project
   const p = paragraph(item.xml),
     children = elements(p),
     props = named(p, "pPr"),
-    runs = named(p, "r")
+    runs = named(p, "r"),
+    pointers = pointerBookmarks(children)
   if (
+    !pointers ||
     !validMeta(p) ||
     props.length > 1 ||
     (props.length === 1 && children[0] !== props[0]) ||
     !runs.length ||
-    children.length !== props.length + runs.length ||
+    children.length !== props.length + runs.length + pointers.length ||
     Array.from(p.getElementsByTagNameNS("*", "*")).some(
       (e) =>
         e.namespaceURI === W
-          ? refused.has(e.localName)
+          ? refused.has(e.localName) && !pointers.includes(e)
           : (e.parentNode as Element | null)?.namespaceURI !== W || (e.parentNode as Element).localName !== "rPr",
     )
   )

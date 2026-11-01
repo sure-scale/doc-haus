@@ -59,6 +59,28 @@ test("tracked paragraph insertion validates transferred identity, marks and prot
   ).toThrow()
 })
 
+test("a doc.haus pointer bookmark on the anchor is accepted, and nothing wider is", () => {
+  const ptr = (id: string, name = "_dh_p0123456789ab") => (runs: string) => `<w:bookmarkStart w:id="${id}" w:name="${name}"/>${runs}<w:bookmarkEnd w:id="${id}"/>`
+  const originalRuns = "<w:r><w:t>Original</w:t></w:r>"
+  const oldPointer = old.replace(originalRuns, ptr("1")(originalRuns))
+  // Word renumbers the bookmark when it adds the tracked insertion, but keeps it on the anchor text.
+  const nextPointer = next.replace(originalRuns, ptr("9")(originalRuns))
+  const run = (beforeBody: string, afterBody: string, t = target) =>
+    verifyNativeWordChatParagraphInsertion(projectNativeWordChatBody(flat(beforeBody), beforeInv), projectNativeWordChatBody(flat(afterBody), afterInv), t, "Added")
+  expect(assertNativeWordChatParagraphInsertionTarget(projectNativeWordChatBody(flat(oldPointer), beforeInv), target)).toBe(0)
+  expect(run(oldPointer, nextPointer)).toEqual(["Reviewer"])
+  for (const bad of [
+    old.replace(originalRuns, ptr("1", "Keep")(originalRuns)), // someone else's bookmark
+    old.replace(originalRuns, ptr("1", "_dh_pXYZ")(originalRuns)), // not a pointer name
+    old.replace(originalRuns, `<w:bookmarkStart w:id="1" w:name="_dh_p0123456789ab"/>${originalRuns}`), // never closed
+    old.replace(originalRuns, `${ptr("1")(originalRuns)}<w:bookmarkStart w:id="2" w:name="_dh_p0123456789cd"/><w:bookmarkEnd w:id="2"/>`), // a second one
+    old.replace(originalRuns, `<w:bookmarkStart w:id="1" w:name="_dh_p0123456789ab"/><w:bookmarkEnd w:id="1"/>${originalRuns}`), // wraps nothing
+  ])
+    expect(() => assertNativeWordChatParagraphInsertionTarget(projectNativeWordChatBody(flat(bad), beforeInv), target)).toThrow()
+  // The bookmark must stay on the anchor text, not move to the new paragraph.
+  expect(() => run(oldPointer, next.replace("<w:t>Added</w:t></w:r>", `<w:t>Added</w:t></w:r><w:bookmarkEnd w:id="9"/>`).replace(originalRuns, ptr("9")(originalRuns)))).toThrow()
+})
+
 test("annotations after the inserted paragraph keep location and payload across ID remapping", () => {
   const wrap = (body: string, commentId: string) =>
     flat(body).replace(
