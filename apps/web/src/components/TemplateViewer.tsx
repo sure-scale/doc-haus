@@ -98,7 +98,7 @@ export default function TemplateViewer({
         <div className="viewer-bar">
           <span className="viewer-title">
             {!title && <span className="viewer-doctype">DOCX</span>}
-            <span className="viewer-title-name">{title ?? name}</span>
+            <span className={`viewer-title-name${title ? " is-heading" : ""}`}>{title ?? name}</span>
           </span>
           <div className="viewer-bar-actions">
             <ModalClose onClose={onClose} />
