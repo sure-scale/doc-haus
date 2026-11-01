@@ -1,46 +1,17 @@
 import { chartData } from "../../../dochaus/lib/dashboard-chart"
 import { checkPlan, type Chart } from "../../../dochaus/lib/dashboard-plan"
-import { engineV2Fetch } from "../../../dochaus/lib/engine-v2"
 import { listMatters, listPlaybooks, workspaceRoot } from "./matter"
 import { listClients } from "./clients"
 import { existsSync, readdirSync } from "node:fs"
 import path from "node:path"
 import { leanDraftingStatus } from "./lean-drafting"
-import { engineURL } from "./matter-session"
+import { enginePages, generationUsage, sessionUsage } from "./matter-usage"
 import { openDb, listSourceDocuments } from "./db"
 import type { DashboardData, MatterActivity, Period } from "../../../dochaus/lib/dashboard-chart"
 type Session = MatterActivity["sessions"][number] & { cost: number; tokens: { input: number; output: number; reasoning: number; cache?: { read: number; write: number } } }
 type Row = Omit<MatterActivity, "sessions" | "drafting"> & { sessions: Session[]; drafting?: ReturnType<typeof leanDraftingStatus>; sessionUnread: boolean; draftingUnread: boolean; documentsUnread: boolean }
 
 const PERIODS = new Set(["month", "last-month", "quarter", "all"])
-async function pages(directory: string, pathname: string, signal: AbortSignal): Promise<unknown[]> {
-  let cursor: string | undefined
-  const all: unknown[] = [], seen = new Set<string>()
-  for (let page = 0; page < 100; page++) {
-    let next: string | undefined
-    const transport = Object.assign(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      const response = await fetch(input, init)
-      if (response.ok && new URL(String(input)).pathname === pathname) {
-        const envelope: any = await response.clone().json()
-        next = typeof envelope?.cursor?.next === "string" ? envelope.cursor.next : undefined
-      }
-      return response
-    }, { preconnect: fetch.preconnect }) as typeof fetch
-    const url = new URL(pathname, engineURL())
-    url.searchParams.set("limit", "200")
-    if (cursor) url.searchParams.set("cursor", cursor)
-    else url.searchParams.set("order", pathname === "/api/session" ? "desc" : "asc")
-    const response = await engineV2Fetch(transport)(url, { headers: { "x-opencode-directory": directory }, signal })
-    if (!response.ok) throw new Error("Engine read failed")
-    const rows: unknown = await response.json()
-    if (!Array.isArray(rows)) throw new Error("Invalid engine response")
-    all.push(...rows)
-    if (!next) return all
-    if (seen.has(next)) throw new Error("Repeated cursor")
-    seen.add(next); cursor = next
-  }
-  throw new Error("Engine page limit reached")
-}
 async function loadPractice(): Promise<{ matters: Row[] }> {
   const signal = AbortSignal.timeout(10_000)
   const matters = listMatters().filter(matter => !matter.sample)
@@ -50,7 +21,7 @@ async function loadPractice(): Promise<{ matters: Row[] }> {
     while (index < matters.length) {
       const i = index++; const matter = matters[i]!
       let sessions: Session[] = [], drafting: Row["drafting"], sessionUnread = false, draftingUnread = false, documentsUnread = false
-      try { sessions = await pages(matter.dir, "/api/session", signal) as Session[] } catch { sessionUnread = true }
+      try { sessions = await enginePages(matter.dir, "/api/session", signal) as Session[] } catch { sessionUnread = true }
       try { drafting = leanDraftingStatus(matter.dir) as Row["drafting"] } catch { draftingUnread = true }
       let documents = 0
       try {
@@ -61,16 +32,11 @@ async function loadPractice(): Promise<{ matters: Row[] }> {
       } catch { documentsUnread = true }
       const costs: MatterActivity["costs"] = []
       for (const session of sessions) {
-        const whole = { time: session.time.created, cost: session.cost || 0, session: session.id }
-        if (!session.cost) { costs.push(whole); continue }
-        try {
-          const messages = await pages(matter.dir, `/api/session/${encodeURIComponent(session.id)}/message`, signal) as { info: { cost?: number; time: { created: number } } }[]
-          const entries = messages.flatMap(({ info }) => info.cost ? [{ time: info.time.created, cost: info.cost, session: session.id }] : [])
-          const rest = session.cost - entries.reduce((sum, entry) => sum + entry.cost, 0)
-          if (rest > .0001) entries.push({ time: session.time.updated, cost: rest, session: session.id })
-          costs.push(...entries)
-        } catch { costs.push(whole); sessionUnread = true }
+        const usage = await sessionUsage(matter.dir, session, signal)
+        costs.push(...usage.entries)
+        sessionUnread ||= usage.unread
       }
+      costs.push(...generationUsage(matter.dir))
       const unpriced = sessions.filter(({ cost, tokens }) => !cost && ((tokens.input || 0) + (tokens.output || 0) + (tokens.reasoning || 0) + (tokens.cache?.read || 0) + (tokens.cache?.write || 0)) > 0).length
       rows[i] = { matter, sessions, drafting, documents, costs, unread: sessionUnread || draftingUnread || documentsUnread, sessionUnread, draftingUnread, documentsUnread, unpriced }
     }

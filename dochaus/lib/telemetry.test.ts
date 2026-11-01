@@ -9,6 +9,8 @@ import {
   getUnknownModels,
   markSessionStatus,
   openTelemetryDb,
+  readGenerations,
+  recordGeneration,
   recordToolCall,
   recordTurn,
   summarizeMessages,
@@ -41,7 +43,7 @@ test("openTelemetryDb creates the schema idempotently", () => {
       .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
       .all()
       .map((row) => row.name),
-  ).toEqual(["meta", "sessions", "tool_calls", "turns"])
+  ).toEqual(["generations", "meta", "sessions", "tool_calls", "turns"])
   expect(getPricingSource(reopened)).toBe(PRICING_SOURCE)
   expect(reopened.query("SELECT value FROM meta WHERE key = ?").get("pricing_as_of")).toBeNull()
   reopened.close()
@@ -231,4 +233,23 @@ test("summarizeMessages estimates tokens as chars/4", () => {
       },
     ]),
   ).toEqual({ chars: 400, estimatedTokens: 100 })
+})
+
+test("stateless generation usage round-trips and follows retention and clear", () => {
+  const db = openTelemetryDb(tempMatter())
+  try {
+    const tokens = { input: 1200, output: 300, reasoning: 50, cache: { read: 400, write: 0 } }
+    recordGeneration(db, { agent: "prepare-changes", model: "google/gemini", tokens, cost: 0.0123, ts: Date.now() - 10 * 86_400_000 })
+    recordGeneration(db, { agent: "comment-replies", tokens, cost: null })
+    expect(readGenerations(db).map((row) => [row.agent, row.model, row.cost, row.tokens])).toEqual([
+      ["prepare-changes", "google/gemini", 0.0123, tokens],
+      ["comment-replies", "", null, tokens],
+    ])
+    applyRetentionPolicy(db, 5)
+    expect(readGenerations(db).map((row) => row.agent)).toEqual(["comment-replies"])
+    clearTelemetry(db)
+    expect(readGenerations(db)).toEqual([])
+  } finally {
+    db.close()
+  }
 })

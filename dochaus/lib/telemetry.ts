@@ -77,6 +77,18 @@ export function openTelemetryDb(matterDir: string) {
       output_chars INTEGER,
       phase TEXT NOT NULL DEFAULT 'ok'
     );
+    CREATE TABLE IF NOT EXISTS generations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      agent TEXT NOT NULL,
+      model TEXT,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+      cost_usd REAL
+    );
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -85,6 +97,7 @@ export function openTelemetryDb(matterDir: string) {
     CREATE INDEX IF NOT EXISTS turns_ts ON turns (ts);
     CREATE INDEX IF NOT EXISTS tool_calls_session_ts ON tool_calls (session_id, ts);
     CREATE INDEX IF NOT EXISTS sessions_last_activity ON sessions (last_activity_at);
+    CREATE INDEX IF NOT EXISTS generations_ts ON generations (ts);
   `)
   db.query("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)").run("schema_version", "1")
   db.query("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)").run("created_at", String(Date.now()))
@@ -94,6 +107,33 @@ export function openTelemetryDb(matterDir: string) {
   )
   db.query("DELETE FROM meta WHERE key = ?").run("pricing_as_of")
   return db
+}
+
+// Stateless generation jobs (Prepare changes, comment replies) have no native
+// session, so their provider-reported usage is kept here for usage reports.
+export type GenerationUsage = {
+  agent: string
+  model?: string
+  tokens: { input: number; output: number; reasoning: number; cache: { read: number; write: number } }
+  cost: number | null
+  ts?: number
+}
+
+export function recordGeneration(db: Database, usage: GenerationUsage) {
+  db.query(`
+    INSERT INTO generations (ts, agent, model, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, cost_usd)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(usage.ts ?? Date.now(), usage.agent, usage.model ?? null, usage.tokens.input, usage.tokens.output, usage.tokens.reasoning, usage.tokens.cache.read, usage.tokens.cache.write, usage.cost)
+}
+
+export function readGenerations(db: Database): Required<GenerationUsage>[] {
+  const rows = db.query("SELECT ts, agent, model, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, cost_usd FROM generations ORDER BY ts").all() as {
+    ts: number; agent: string; model: string | null; input_tokens: number; output_tokens: number; reasoning_tokens: number; cache_read_tokens: number; cache_write_tokens: number; cost_usd: number | null
+  }[]
+  return rows.map((row) => ({
+    ts: row.ts, agent: row.agent, model: row.model ?? "", cost: row.cost_usd,
+    tokens: { input: row.input_tokens, output: row.output_tokens, reasoning: row.reasoning_tokens, cache: { read: row.cache_read_tokens, write: row.cache_write_tokens } },
+  }))
 }
 
 export function touchSession(db: Database, sessionID: string, patch: SessionTouch) {
@@ -176,6 +216,7 @@ export function applyRetentionPolicy(db: Database, retentionDays: number) {
   const cutoff = Date.now() - retentionDays * 86_400_000
   const turns = db.query("DELETE FROM turns WHERE ts < ?").run(cutoff).changes
   const toolCalls = db.query("DELETE FROM tool_calls WHERE ts < ?").run(cutoff).changes
+  db.query("DELETE FROM generations WHERE ts < ?").run(cutoff)
   const sessions = db
     .query("DELETE FROM sessions WHERE last_activity_at < ? AND status = 'finished'")
     .run(cutoff).changes
@@ -185,6 +226,7 @@ export function applyRetentionPolicy(db: Database, retentionDays: number) {
 export function clearTelemetry(db: Database) {
   db.query("DELETE FROM turns").run()
   db.query("DELETE FROM tool_calls").run()
+  db.query("DELETE FROM generations").run()
   db.query("DELETE FROM sessions").run()
   db.query("DELETE FROM meta WHERE key = ?").run("unknown_models")
 }

@@ -5,7 +5,8 @@ export type MatterActivity = {
   sessions: { id: string; parentID?: string; title?: string; metadata?: { dochaus_role?: unknown }; tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }; time: { created: number; updated: number } }[]
   drafting?: { status?: string; documents?: { status: string; documents: { kind: string; deliverable?: unknown }[] } | null }
   documents?: number
-  costs: { time: number; cost: number }[]
+  // agent is a usage-agents key; labels and groups come from usageAgent().
+  costs: { time: number; cost: number; agent?: string }[]
   unread: boolean
   unpriced: number
 }
