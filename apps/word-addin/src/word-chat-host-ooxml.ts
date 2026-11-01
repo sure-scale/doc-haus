@@ -327,6 +327,17 @@ function content(parts: Map<string, Element>, table: boolean, section: boolean) 
   }
   throw new Error("Choose ordinary paragraphs within one document passage")
 }
+/** The Current text of the one paragraph a range's OOXML holds (the Word text view of its
+ * accepted wording). Undefined when the package does not hold exactly one body paragraph. */
+export function nativeWordChatParagraphCurrentText(xml: string): string | undefined {
+  try {
+    const main = parse(xml, 16_000_000).get(MAIN), data = main && elements(main).filter(n => n.namespaceURI === PKG && n.localName === "xmlData")
+    const body = data?.length === 1 ? elements(data[0]!)[0] && Array.from(elements(data[0]!)[0]!.getElementsByTagNameNS(W, "body")) : undefined
+    if (body?.length !== 1) return
+    const paragraphs = Array.from(body[0]!.getElementsByTagNameNS(W, "p"))
+    return paragraphs.length === 1 ? text(paragraphs[0]!, "Current") : undefined
+  } catch { return }
+}
 function text(node: Node, version: "Current" | "Original" = "Current"): string {
   if (node.nodeType !== 1) return ""
   const element = node as Element

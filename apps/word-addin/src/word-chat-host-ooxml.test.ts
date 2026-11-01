@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { reviewedWordChatInlineControl, importedWordChatDifference, reviewedMixedWordChatArtifact, sameWordChatOoxml, sameNativeWordChatParagraphContent, sameWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatReplacementFormatting, sameWordChatTargetSnapshot, sameNativeWordChatBodySnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, wordChatOoxmlDifference } from "./word-chat-host-ooxml"
+import { nativeWordChatParagraphCurrentText, reviewedWordChatInlineControl, importedWordChatDifference, reviewedMixedWordChatArtifact, sameWordChatOoxml, sameNativeWordChatParagraphContent, sameWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatReplacementFormatting, sameWordChatTargetSnapshot, sameNativeWordChatBodySnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, wordChatOoxmlDifference } from "./word-chat-host-ooxml"
 import { reviewedWordChatParagraphFormatting } from "../../../dochaus/lib/word-chat-formatting-ooxml"
 import { DOMParser } from "@xmldom/xmldom"
 
@@ -592,4 +592,16 @@ test("inline review IDs remain unique across the whole main story", async () => 
   const next = '<w:p><w:r><w:rPr><w:b/><w:rPrChange w:id="4" w:author="Native" w:date="2026-01-01T00:00:00Z"><w:rPr/></w:rPrChange></w:rPr><w:t>Target</w:t></w:r></w:p>'
   expect(() => verify(flat(prior+next))).not.toThrow()
   expect(() => verify(flat(prior+next.replace('w:id="4"','w:id="3"')))).toThrow("inline_revision_id_collision")
+})
+
+test("a cell paragraph's Current text comes from its own XML, without the tracked-deleted wording", () => {
+  const stamp = 'w:author="Reviewer" w:date="2026-01-01T00:00:00Z"'
+  const replaced = `<w:p><w:ins w:id="1" ${stamp}><w:r><w:t>31 July</w:t></w:r></w:ins><w:del w:id="2" ${stamp}><w:r><w:delText>30 June</w:delText></w:r></w:del><w:r><w:t xml:space="preserve"> 2027</w:t></w:r></w:p>`
+  // Word's own reviewed text for this cell reads "31 July30 June 2027".
+  expect(nativeWordChatParagraphCurrentText(flat(replaced))).toBe("31 July 2027")
+  expect(nativeWordChatParagraphCurrentText(flat('<w:p><w:r><w:t>Plain</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t>text</w:t></w:r></w:p>'))).toBe("Plain\ttext")
+  expect(nativeWordChatParagraphCurrentText(flat(`<w:p><w:del w:id="3" ${stamp}><w:r><w:delText>Gone</w:delText></w:r></w:del></w:p>`))).toBe("")
+  // Not exactly one paragraph, or not a package: no answer rather than a guess.
+  expect(nativeWordChatParagraphCurrentText(flat("<w:p><w:r><w:t>A</w:t></w:r></w:p><w:p><w:r><w:t>B</w:t></w:r></w:p>"))).toBeUndefined()
+  expect(nativeWordChatParagraphCurrentText("<not a package")).toBeUndefined()
 })
