@@ -51,6 +51,8 @@ export type PaneState = {
   content: "unverified" | "changed" | "confirmed"
   problem?: boolean
   connectionFailed?: boolean
+  /** A background check lost doc.haus; it retries by itself, so stay calm. */
+  reconnecting?: boolean
 }
 type Pending = { bytes: Uint8Array; fingerprint: string; base: string; generation: string }
 
@@ -151,7 +153,7 @@ export class WordSync {
     return { ...this.state }
   }
 
-  private show(status: PaneState["status"], message: string, problem = false, connectionFailed = false): void {
+  private show(status: PaneState["status"], message: string, problem = false, connectionFailed = false, reconnecting = false): void {
     this.state = {
       status,
       message,
@@ -162,6 +164,7 @@ export class WordSync {
       content: this.content,
       problem,
       ...(connectionFailed ? { connectionFailed: true } : {}),
+      ...(reconnecting ? { reconnecting: true } : {}),
     }
     this.render(this.snapshot())
   }
@@ -186,14 +189,10 @@ export class WordSync {
             : error instanceof Error && error.name === "DocumentStateError"
               ? error.message
               : "Word could not finish the save. Keep this document open and try Save again."
-        this.show(
-          "not-saved",
-          this.nativeUncertain || this.connection?.nativeOperation?.state === "pending" ?
-            this.blockedMessage() :
-            error instanceof ConnectionError && this.connection && !this.canWrite() ? this.blockedMessage() : message,
-          true,
-          error instanceof ConnectionError && error.retryable,
-        )
+        const blocked = this.nativeUncertain || this.connection?.nativeOperation?.state === "pending" ||
+          (error instanceof ConnectionError && this.connection && !this.canWrite())
+        const retryable = error instanceof ConnectionError && error.retryable
+        this.show("not-saved", blocked ? this.blockedMessage() : message, true, retryable, quiet && retryable && !blocked)
         return false
       } finally {
         this.queued--

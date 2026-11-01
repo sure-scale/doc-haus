@@ -31,6 +31,7 @@ export function savePresentation(state: PaneState): SavePresentation {
     ...result, badge: "Saving paused", tone: "blocked", message: "Another Word session is editing this document.",
     help: "Your local changes stay in Word. Wait for the other session to finish, or take over editing here.",
   }
+  if (state.problem && state.reconnecting) return { ...result, badge: "Reconnecting…", tone: "neutral", message: "Reconnecting to doc.haus. Your work stays in Word." }
   if (state.problem) return { ...result, badge: "Save issue", tone: "blocked", message: state.message }
   if (state.status === "saved" || state.status === "done") {
     const receipt = state.acknowledgement

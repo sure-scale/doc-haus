@@ -27,6 +27,7 @@ test("only observed changes get Not saved; verified saves get one receipt line",
   expect(view.mismatch).toBeUndefined()
   expect(savePresentation(state({ status: "saving", message: "Saving in Word…" }))).toMatchObject({ badge: "Saving…", message: "Saving in Word…" })
   expect(savePresentation(state({ problem: true, content: "confirmed", acknowledgement: receipt, message: "doc.haus did not confirm this save." }))).toMatchObject({ badge: "Save issue", message: "doc.haus did not confirm this save." })
+  expect(savePresentation(state({ problem: true, connectionFailed: true, reconnecting: true, connection: undefined, message: "Cannot reach doc.haus." }))).toMatchObject({ badge: "Reconnecting…", tone: "neutral", message: "Reconnecting to doc.haus. Your work stays in Word." })
 })
 
 test("blocked copies show contextual recovery and only a real version mismatch gets the extra version line", () => {
