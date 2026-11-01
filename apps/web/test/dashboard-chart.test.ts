@@ -3,8 +3,8 @@ import { expect, test } from "bun:test"
 import type { Chart } from "../../../dochaus/lib/dashboard-plan"
 import type { Matter } from "../src/api/ingest/matters"
 import type { LeanDraftingStatus } from "../src/api/ingest/lean"
-import { chartData } from "../src/components/dashboard/chart-data"
-import type { DashboardData, MatterActivity, Session } from "../src/components/dashboard/data"
+import { chartCaption, chartData } from "../src/components/dashboard/chart-data"
+import { summarize, type DashboardData, type MatterActivity, type Session } from "../src/components/dashboard/data"
 
 const at = (iso: string) => new Date(iso).getTime()
 const now = at("2026-10-29T12:00:00Z")
@@ -14,9 +14,9 @@ const row = (id: string, patch: Partial<MatterActivity> = {}): MatterActivity =>
 const data = (...matters: MatterActivity[]): DashboardData => ({ matters })
 
 test("AI charts count priced calls when spent, respect filters, omit sample data, and disclose unpriced activity", () => {
-  const a = row("a", { costs: [{ session: "call", cost: 7, time: at("2026-10-25T23:30:00Z") }, { session: "call", cost: 5, time: at("2026-09-30T12:00:00Z") }], unpriced: 1 })
-  const b = row("b", { matter: { ...row("b").matter, client: "Birch Studio" }, costs: [{ session: "b", cost: 3, time: now }] })
-  const sample = row("sample", { matter: { ...row("sample").matter, sample: true }, costs: [{ session: "sample", cost: 100, time: now }] })
+  const a = row("a", { costs: [{ cost: 7, time: at("2026-10-25T23:30:00Z") }, { cost: 5, time: at("2026-09-30T12:00:00Z") }], unpriced: 1 })
+  const b = row("b", { matter: { ...row("b").matter, client: "Birch Studio" }, costs: [{ cost: 3, time: now }] })
+  const sample = row("sample", { matter: { ...row("sample").matter, sample: true }, costs: [{ cost: 100, time: now }] })
   const view = chartData(chart({ client: "Alder House" }), data(a, b, sample), "month", now)
   expect(view.total).toBe(7)
   expect(view.points).toEqual([{ key: "Alder House", label: "Alder House", value: 7 }])
@@ -103,4 +103,27 @@ test("both occurrences of a repeated midnight belong to the same earliest civil-
   const view = chartData(chart({ metric: "matters", groupBy: "day", form: "line", period: "all" }), data(...records), "all", at("2020-11-02T12:00:00Z"), "America/Havana")
   expect(view.points[0]).toMatchObject({ label: "1 Nov", time: at("2020-11-01T04:00:00Z"), value: 2 })
   expect(view.points.reduce((sum, point) => sum + point.value, 0)).toBe(2)
+})
+
+test("spend outside any matter joins totals and ranks as one row, but never a matter or a filtered view", () => {
+  const a = row("a", { costs: [{ cost: 4, time: at("2026-10-20T12:00:00Z"), agent: "qa" }] })
+  const b = row("b", { matter: { ...row("b").matter, client: "Birch Studio" }, costs: [{ cost: 3, time: at("2026-10-21T12:00:00Z"), agent: "prepare-changes" }] })
+  const workspace = { costs: [{ cost: 1, time: at("2026-10-22T12:00:00Z"), agent: "dashboard" }, { cost: 0.5, time: at("2026-10-22T13:00:00Z"), agent: "dashboard-chart" }], unread: false, unpriced: 0 }
+  const practice: DashboardData = { matters: [a, b], workspace }
+  const total = chartData(chart({ groupBy: "none", form: "stat" }), practice, "month", now)
+  // The built-in spend tile and a generated total read the same entries.
+  expect(total.total).toBe(8.5)
+  expect(summarize(practice.matters, "month", now, practice.workspace).spend).toBe(8.5)
+  const byMatter = chartData(chart({ groupBy: "matter" }), practice, "month", now)
+  expect(byMatter.points.map(({ label, value }) => [label, value])).toEqual([["a", 4], ["b", 3], ["Not in a matter", 1.5]])
+  expect(chartCaption(chart({ groupBy: "matter" }), byMatter).count).toBe("2 matters")
+  expect(chartData(chart(), practice, "month", now).points.map(({ label, value }) => [label, value])).toEqual([["Alder House", 4], ["Birch Studio", 3], ["Not in a matter", 1.5]])
+  expect(chartData(chart({ groupBy: "agent" }), practice, "month", now).points.map(({ label, value }) => [label, value])).toEqual([["Questions", 4], ["Prepare changes", 3], ["Build dashboards", 1.5]])
+  expect(chartData(chart({ client: "Birch Studio", groupBy: "none", form: "stat" }), practice, "month", now).total).toBe(3)
+  expect(chartData(chart({ matter: "a", groupBy: "none", form: "stat" }), practice, "month", now).total).toBe(4)
+  expect(chartData(chart({ metric: "matters", groupBy: "none", form: "stat", period: "all" }), practice, "month", now).total).toBe(2)
+  // Unread spend outside matters makes spend partial, but not a client's view.
+  const unread = { ...practice, workspace: { ...workspace, unread: true } }
+  expect(chartData(chart({ groupBy: "none", form: "stat" }), unread, "month", now).incomplete).toBe(true)
+  expect(chartData(chart({ client: "Birch Studio", groupBy: "none", form: "stat" }), unread, "month", now).incomplete).toBe(false)
 })

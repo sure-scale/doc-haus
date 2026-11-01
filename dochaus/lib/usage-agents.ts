@@ -29,6 +29,8 @@ const WORK: Record<string, string> = {
   "chronology-match": "Build a chronology",
   qa: "Questions",
   extract: "Review table",
+  dashboard: "Build dashboards",
+  "dashboard-chart": "Build dashboards",
 }
 
 type SessionLike = { metadata?: Record<string, unknown> | null } | undefined

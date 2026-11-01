@@ -7,22 +7,44 @@ import path from "node:path"
 import { leanDraftingStatus } from "./lean-drafting"
 import { enginePages, generationUsage, sessionUsage } from "./matter-usage"
 import { openDb, listSourceDocuments } from "./db"
-import type { DashboardData, MatterActivity, Period } from "../../../dochaus/lib/dashboard-chart"
+import type { DashboardData, MatterActivity, OutsideMatters, Period } from "../../../dochaus/lib/dashboard-chart"
 import { USAGE_GROUP_LABEL, type UsageGroup } from "../../../dochaus/lib/usage-agents"
 type Session = MatterActivity["sessions"][number] & { cost: number; tokens: { input: number; output: number; reasoning: number; cache?: { read: number; write: number } } }
 type Row = Omit<MatterActivity, "sessions" | "drafting"> & { sessions: Session[]; drafting?: ReturnType<typeof leanDraftingStatus>; sessionUnread: boolean; draftingUnread: boolean; documentsUnread: boolean }
 
+type Practice = { matters: Row[]; workspace?: OutsideMatters; samples?: Row[] }
+
 const PERIODS = new Set(["month", "last-month", "quarter", "all"])
-async function loadPractice(): Promise<{ matters: Row[] }> {
+// One folder's spend through the usage ledger: live sessions, each priced per
+// message, plus its telemetry rows (stateless jobs and deleted sessions).
+async function ledger(dir: string, signal: AbortSignal) {
+  let sessions: Session[] = [], unread = false
+  try { sessions = await enginePages(dir, "/api/session", signal) as Session[] } catch { unread = true }
+  const costs: MatterActivity["costs"] = []
+  for (const session of sessions) {
+    const usage = await sessionUsage(dir, session, signal)
+    costs.push(...usage.entries)
+    unread ||= usage.unread
+  }
+  costs.push(...generationUsage(dir, sessions))
+  const unpriced = sessions.filter(({ cost, tokens }) => !cost && ((tokens.input || 0) + (tokens.output || 0) + (tokens.reasoning || 0) + (tokens.cache?.read || 0) + (tokens.cache?.write || 0)) > 0).length
+  return { sessions, costs, unread, unpriced }
+}
+// The sample matter is read only for its own spend (the Recent widget); every
+// practice figure leaves it out.
+async function loadPractice(): Promise<Practice> {
   const signal = AbortSignal.timeout(10_000)
-  const matters = listMatters().filter(matter => !matter.sample)
+  const matters = listMatters()
   const rows: Row[] = new Array(matters.length)
   let index = 0
+  // Dashboard building runs outside every matter, in the workspace's .dashboard folder.
+  const dashboards = path.join(workspaceRoot(), ".dashboard")
+  const outside = existsSync(dashboards) ? ledger(dashboards, signal) : undefined
   await Promise.all(Array.from({ length: Math.min(4, matters.length) }, async () => {
     while (index < matters.length) {
       const i = index++; const matter = matters[i]!
-      let sessions: Session[] = [], drafting: Row["drafting"], sessionUnread = false, draftingUnread = false, documentsUnread = false
-      try { sessions = await enginePages(matter.dir, "/api/session", signal) as Session[] } catch { sessionUnread = true }
+      let drafting: Row["drafting"], draftingUnread = false, documentsUnread = false
+      const { sessions, costs, unread: sessionUnread, unpriced } = await ledger(matter.dir, signal)
       try { drafting = leanDraftingStatus(matter.dir) as Row["drafting"] } catch { draftingUnread = true }
       let documents = 0
       try {
@@ -31,20 +53,13 @@ async function loadPractice(): Promise<{ matters: Row[] }> {
           try { documents = listSourceDocuments(db).length } finally { db.close() }
         }
       } catch { documentsUnread = true }
-      const costs: MatterActivity["costs"] = []
-      for (const session of sessions) {
-        const usage = await sessionUsage(matter.dir, session, signal)
-        costs.push(...usage.entries)
-        sessionUnread ||= usage.unread
-      }
-      costs.push(...generationUsage(matter.dir, sessions))
-      const unpriced = sessions.filter(({ cost, tokens }) => !cost && ((tokens.input || 0) + (tokens.output || 0) + (tokens.reasoning || 0) + (tokens.cache?.read || 0) + (tokens.cache?.write || 0)) > 0).length
       rows[i] = { matter, sessions, drafting, documents, costs, unread: sessionUnread || draftingUnread || documentsUnread, sessionUnread, draftingUnread, documentsUnread, unpriced }
     }
   }))
-  return { matters: rows }
+  const { costs, unread, unpriced } = await outside ?? { costs: [], unread: false, unpriced: 0 }
+  return { matters: rows.filter(row => !row.matter.sample), workspace: { costs, unread, unpriced }, samples: rows.filter(row => row.matter.sample) }
 }
-let pending: Promise<{ data: { matters: Row[] }; updatedAt: number }> | undefined
+let pending: Promise<{ data: Practice; updatedAt: number }> | undefined
 function practice() {
   if (!pending) {
     const current = loadPractice().then(data => ({ data, updatedAt: Date.now() }))
@@ -63,6 +78,17 @@ export async function dashboardChartSource(raw: string | undefined, period: stri
   const snapshot = await practice()
   return { data: projection(chart, chartData(chart, scopedData(chart, snapshot.data), period as Period, Date.now(), timeZone)), updatedAt: snapshot.updatedAt }
 }
+// Each matter's priced spend, and spend outside any matter, for the built-in
+// widgets: the same ledger the generated charts read.
+export async function dashboardUsage() {
+  const snapshot = await practice(), data = snapshot.data, outside = data.workspace ?? { costs: [], unread: false, unpriced: 0 }
+  const slim = (costs: MatterActivity["costs"]) => costs.map(({ time, cost, agent }) => ({ time, cost, ...(agent ? { agent } : {}) }))
+  return {
+    updatedAt: snapshot.updatedAt,
+    matters: Object.fromEntries([...data.matters, ...data.samples ?? []].map(row => [row.matter.id, { costs: slim(row.costs), unread: row.sessionUnread, unpriced: row.unpriced }])),
+    workspace: { ...outside, costs: slim(outside.costs) },
+  }
+}
 function projection(chart: Chart, view: ReturnType<typeof chartData>) {
   const format = (value: number) => chart.metric === "spend" ? (value > 0 && value < .01 ? "< $0.01" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value)) : new Intl.NumberFormat("en-GB", { maximumFractionDigits: 0 }).format(value)
   const caption = chartCaption(chart, view)
@@ -77,10 +103,10 @@ function validateContext(period: unknown, zone: unknown): asserts period is Peri
   if (typeof period !== "string" || !PERIODS.has(period) || typeof zone !== "string" || !zone || zone.length > 100) throw new Error("Invalid dashboard source")
   try { new Intl.DateTimeFormat("en", { timeZone: zone }).format() } catch { throw new Error("Invalid dashboard source") }
 }
-function scopedData(chart: Chart, data: { matters: Row[] }) {
-  return { matters: data.matters.map(row => ({ ...row, unread: chart.metric === "matters" ? false : chart.metric === "documents" ? row.documentsUnread : chart.metric === "drafts" ? row.draftingUnread : row.sessionUnread })) }
+function scopedData(chart: Chart, data: Practice): DashboardData {
+  return { workspace: data.workspace, matters: data.matters.map(row => ({ ...row, unread: chart.metric === "matters" ? false : chart.metric === "documents" ? row.documentsUnread : chart.metric === "drafts" ? row.draftingUnread : row.sessionUnread })) }
 }
-function chartAvailability(chart: Chart, data: { matters: Row[] }, period: Period, zone: string): Availability {
+function chartAvailability(chart: Chart, data: Practice, period: Period, zone: string): Availability {
   const view = chartData(chart, scopedData(chart, data), period, Date.now(), zone)
   if (view.unavailable) return { status: "unavailable", usable: false, reason: view.empty }
   if (view.total > 0) return { status: view.incomplete ? "partial" : "available", usable: true, total: view.total }
@@ -110,7 +136,7 @@ function activityDays(zone: string, now: number) {
   const weekday = new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay()
   return 365 + (weekday + 6) % 7
 }
-export function templateAvailability(id: string, data: { matters: Row[] }, period: Period, zone: string): Availability {
+export function templateAvailability(id: string, data: Practice, period: Period, zone: string): Availability {
   const rows = data.matters, unread = rows.some(row => id === "attention" || id === "drafts" ? row.draftingUnread : row.sessionUnread), now = Date.now()
   const query = (metric: Chart["metric"], p: Chart["period"] = "dashboard") => chartAvailability({ type: "chart", title: "Total", metric, groupBy: "none", form: "stat", period: p }, data, period, zone)
   if (["actions", "ideas", "library", "sample", "setup", "journey"].includes(id)) return { status: "available", usable: true }
@@ -121,8 +147,9 @@ export function templateAvailability(id: string, data: { matters: Row[] }, perio
     return count ? { status: unread ? "partial" : "available", usable: true, total: count } : { status: unread ? "unavailable" : "empty", usable: false, reason: "No recent conversations." }
   }
   if (id === "week") {
-    const total = rows.flatMap(row => row.costs).filter(cost => withinDays(cost.time, 7, zone, now)).reduce((sum, cost) => sum + cost.cost, 0)
-    return total > 0 ? { status: unread ? "partial" : "available", usable: true, total } : { status: unread ? "unavailable" : "empty", usable: false, reason: "No priced spend in the last seven days." }
+    const total = [...rows.flatMap(row => row.costs), ...data.workspace?.costs ?? []].filter(cost => withinDays(cost.time, 7, zone, now)).reduce((sum, cost) => sum + cost.cost, 0)
+    const partial = unread || Boolean(data.workspace?.unread)
+    return total > 0 ? { status: partial ? "partial" : "available", usable: true, total } : { status: partial ? "unavailable" : "empty", usable: false, reason: "No priced spend in the last seven days." }
   }
   if (["spend", "matter-spend", "trend"].includes(id)) return query("spend")
   if (id === "matter-cost") return query("spend", "all")
@@ -157,7 +184,7 @@ export async function dashboardInventory(period: unknown, timeZone: unknown) {
   const zone = timeZone as string, snapshot = await practice(), data = snapshot.data
   const metrics = Object.fromEntries((["matters", "conversations", "spend", "drafts", "tokens", "documents"] as const).map(metric => {
     const periods = Object.fromEntries((["month", "last-month", "quarter", "all"] as const).map(p => [p, (metric === "documents" || metric === "drafts") && p !== "all" ? { status: "unavailable", usable: false, reason: "This dataset is available across all time only." } : chartAvailability({ type: "chart", title: "Total", metric, groupBy: "none", form: "stat", period: p }, data, p, zone)])) as Record<Period, Availability>
-    const times = metric === "matters" ? data.matters.map(row => row.matter.created_at) : metric === "spend" ? data.matters.flatMap(row => row.costs.map(cost => cost.time)) : metric === "conversations" ? data.matters.flatMap(row => row.sessions.filter(session => !session.parentID && !/^doc\.haus/i.test(session.title ?? "") && (session.metadata?.dochaus_role === undefined || session.metadata.dochaus_role === "lean-drafting-owner")).map(session => session.time.created)) : metric === "tokens" ? data.matters.flatMap(row => row.sessions.map(session => session.time.created)) : []
+    const times = metric === "matters" ? data.matters.map(row => row.matter.created_at) : metric === "spend" ? [...data.matters.flatMap(row => row.costs), ...data.workspace?.costs ?? []].map(cost => cost.time) : metric === "conversations" ? data.matters.flatMap(row => row.sessions.filter(session => !session.parentID && !/^doc\.haus/i.test(session.title ?? "") && (session.metadata?.dochaus_role === undefined || session.metadata.dochaus_role === "lean-drafting-owner")).map(session => session.time.created)) : metric === "tokens" ? data.matters.flatMap(row => row.sessions.map(session => session.time.created)) : []
     const valid = times.filter(Number.isFinite)
     return [metric, { ...periods[metric === "documents" || metric === "drafts" ? "all" : period], periods, ...(valid.length ? { firstAt: Math.min(...valid), lastAt: Math.max(...valid) } : {}), ...(metric === "drafts" ? { note: "Latest finished run per matter; all time only." } : metric === "documents" ? { note: "Current source documents; all time only." } : metric === "tokens" ? { note: "Session totals by session start date." } : {}) }]
   }))

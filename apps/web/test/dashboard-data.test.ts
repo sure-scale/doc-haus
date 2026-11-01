@@ -1,10 +1,9 @@
 process.env.TZ = "Europe/London"
 import { expect, test } from "bun:test"
-import type { SessionMessageInfo } from "@opencode/client"
 import type { Matter } from "../src/api/ingest/matters"
 import type { LeanDraftingStatus } from "../src/api/ingest/lean"
 import {
-  attention, costByMatter, dailyConversations, dailySpend, drafts, lastDays, messageCosts, periodRange, previousRange, progress, spendCsv, summarize,
+  attention, chartStart, costByMatter, costEntries, dailyConversations, dailySpend, drafts, lastDays, periodRange, previousRange, progress, spendCsv, summarize,
   type CostEntry, type MatterActivity, type Session,
 } from "../src/components/dashboard/data"
 
@@ -14,7 +13,7 @@ const iso = (time: number) => new Date(time).toISOString()
 const session = (id: string, created: string, patch: Partial<Session> = {}) =>
   ({ id, title: "Payment terms", time: { created: at(created), updated: at(created) }, cost: 1, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, ...patch }) as Session
 // Each session's spend on the day it started, as loading gives a single-day session.
-const startCosts = (sessions: Session[]): CostEntry[] => sessions.map((row) => ({ time: row.time.created, cost: row.cost, session: row.id }))
+const startCosts = (sessions: Session[]): CostEntry[] => sessions.map((row) => ({ time: row.time.created, cost: row.cost }))
 const row = (sessions: Session[], patch: Partial<MatterActivity> = {}): MatterActivity =>
   ({ matter, sessions, costs: startCosts(sessions), unread: false, unpriced: 0, ...patch })
 const activity = (sessions: Session[], drafting?: Partial<LeanDraftingStatus>): MatterActivity[] =>
@@ -36,28 +35,36 @@ test("each day's spend lands on its own calendar day across a clock change", () 
   expect([iso(range.start), iso(range.end)]).toEqual(["2026-10-22T23:00:00.000Z", "2026-10-30T00:00:00.000Z"])
 })
 
-test("a conversation spanning days puts each model call's spend on its own day and month", () => {
+test("ledger spend lands on each entry's own day and month", () => {
   const long = session("long", "2026-09-30T16:00:00+01:00", { cost: 10, time: { created: at("2026-09-30T16:00:00+01:00"), updated: at("2026-10-02T09:00:00+01:00") } })
-  const assistant = (created: string, cost?: number) => ({ type: "assistant", time: { created: at(created) }, ...(cost === undefined ? {} : { cost }) }) as SessionMessageInfo
-  const costs = messageCosts(long, [
-    { type: "user", time: { created: at("2026-09-30T16:00:00+01:00") } } as SessionMessageInfo,
-    assistant("2026-09-30T16:01:00+01:00", 3),
-    assistant("2026-10-01T10:00:00+01:00", 4),
-    assistant("2026-10-01T10:05:00+01:00"),
-  ])
-  // What the messages do not account for lands when the session was last active.
-  expect(costs.map((entry) => [iso(entry.time), entry.cost])).toEqual([
-    ["2026-09-30T15:01:00.000Z", 3],
-    ["2026-10-01T09:00:00.000Z", 4],
-    ["2026-10-02T08:00:00.000Z", 3],
-  ])
+  // As ingest's ledger reports it: each priced call, then the leftover upkeep.
+  const costs = [
+    { time: at("2026-09-30T16:01:00+01:00"), cost: 3, agent: "qa" },
+    { time: at("2026-10-01T10:00:00+01:00"), cost: 4, agent: "qa" },
+    { time: at("2026-10-02T09:00:00+01:00"), cost: 3, agent: "conversation-upkeep" },
+  ]
   const matters = [row([long], { costs })]
   const october = at("2026-10-15T12:00:00+01:00")
   expect(summarize(matters, "month", october)).toMatchObject({ spend: 7, previous: 3 })
   expect(summarize(matters, "last-month", october).spend).toBe(3)
   const days = dailySpend(matters, periodRange("month", october))
   expect(days.slice(0, 3).map((day) => day.cost)).toEqual([4, 3, 0])
-  expect(days[0].matters).toEqual([{ matter, cost: 4 }])
+  expect(days[0].matters).toEqual([{ title: matter.title, cost: 4 }])
+})
+
+test("spend outside any matter counts in totals, trends and the export, never as a matter", () => {
+  const matters = [row([session("o", "2026-10-28T09:00:00Z", { cost: 2 })])]
+  // A deleted chart session's generation row and a live planner session.
+  const workspace = { costs: [{ time: at("2026-10-27T09:00:00Z"), cost: 0.5, agent: "dashboard" }, { time: at("2026-09-02T09:00:00Z"), cost: 0.25, agent: "dashboard-chart" }], unread: false, unpriced: 0 }
+  expect(summarize(matters, "month", now, workspace)).toMatchObject({ spend: 2.5, previous: 0.25, conversations: 1, activeMatters: 1 })
+  expect(costByMatter(matters, periodRange("month", now)).map((item) => item.cost)).toEqual([2])
+  const days = dailySpend(matters, lastDays(3, now), workspace)
+  expect(days.map((day) => day.cost)).toEqual([0.5, 2, 0])
+  expect(days[0].matters).toEqual([{ title: "Not in a matter", cost: 0.5 }])
+  expect(costEntries(matters, workspace).reduce((sum, entry) => sum + entry.value, 0)).toBe(2.75)
+  expect(iso(chartStart(matters, periodRange("all", now), workspace))).toBe("2026-09-01T23:00:00.000Z")
+  expect(spendCsv(costByMatter(matters, periodRange("month", now)), 0.5).split("\r\n").slice(-2)).toEqual([",Not in a matter,,,0.50", ""])
+  expect(summarize(matters, "month", now, { ...workspace, unpriced: 1 }).unpriced).toBe(1)
 })
 
 test("the fictional sample matter adds nothing to spend", () => {

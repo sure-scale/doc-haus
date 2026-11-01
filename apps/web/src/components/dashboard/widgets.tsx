@@ -26,6 +26,8 @@ import {
   dailySpend,
   drafts,
   lastDays,
+  OUTSIDE_MATTERS,
+  outsideSpend,
   PERIOD_LABELS,
   periodRange,
   progress,
@@ -114,7 +116,7 @@ function SpendTile({ data, summary, period, now }: WidgetContext) {
       tagTitle={summary.previous !== undefined && BEFORE[period] ? `${BEFORE[period]}: ${formatCost(summary.previous)}` : undefined}
       note={summary.unpriced ? "Estimate: some AI use has no price on record, so the total may be low." : undefined}
     >
-      <Sparkline values={bucketed(costEntries(data.matters), chartStart(data.matters, range), range.end, 12)} label={`Spend, ${lower(period)}`} />
+      <Sparkline values={bucketed(costEntries(data.matters, data.workspace), chartStart(data.matters, range, data.workspace), range.end, 12)} label={`Spend, ${lower(period)}`} />
     </Stat>
   )
 }
@@ -143,13 +145,13 @@ function DraftCostTile({ data }: WidgetContext) {
 // A day's tooltip line: the matters that spent the most.
 function topMatters(day: DaySpend) {
   if (!day.matters.length) return undefined
-  const named = day.matters.slice(0, 2).map(({ matter, cost }) => `${matter.title} ${money(cost)}`)
+  const named = day.matters.slice(0, 2).map(({ title, cost }) => `${title} ${money(cost)}`)
   const more = day.matters.length - named.length
   return [...named, ...(more > 0 ? [plural(more, "other matter")] : [])].join("; ")
 }
 
 function WeekWidget({ data, now }: WidgetContext) {
-  const days = dailySpend(data.matters, lastDays(14, now))
+  const days = dailySpend(data.matters, lastDays(14, now), data.workspace)
   const week = days.slice(7)
   const total = week.reduce((sum, row) => sum + row.cost, 0)
   const before = days.slice(0, 7).reduce((sum, row) => sum + row.cost, 0)
@@ -176,7 +178,14 @@ function dateStamp(time: number) {
 }
 
 function MatterSpend({ data, period, now }: WidgetContext) {
-  const rows = costByMatter(data.matters, periodRange(period, now))
+  const range = periodRange(period, now)
+  const matters = costByMatter(data.matters, range)
+  const outside = outsideSpend(data.workspace, range)
+  // Spend outside any matter (building dashboards) is one unlinked row.
+  const rows = [
+    ...matters.map((row) => ({ key: row.matter.id, title: row.matter.title, href: `/matter/${row.matter.id}`, detail: [row.matter.client, row.matter.reference].filter(Boolean).join(" · ") || "No client recorded", cost: row.cost })),
+    ...(outside > 0 ? [{ key: "", title: OUTSIDE_MATTERS, href: undefined, detail: "Building dashboards", cost: outside }] : []),
+  ].sort((a, b) => b.cost - a.cost)
   if (!rows.length) return <Empty icon="bars" title="No spend in this period">Each matter's share appears once you work in it.</Empty>
   const shown = rows.slice(0, 6)
   const rest = rows.slice(6)
@@ -184,7 +193,7 @@ function MatterSpend({ data, period, now }: WidgetContext) {
   const total = rows.reduce((sum, row) => sum + row.cost, 0)
   const share = (cost: number) => `${Math.round(cost / total * 100)}%`
   function download() {
-    const url = URL.createObjectURL(new Blob(["\uFEFF", spendCsv(rows)], { type: "text/csv;charset=utf-8" }))
+    const url = URL.createObjectURL(new Blob(["\uFEFF", spendCsv(matters, outside)], { type: "text/csv;charset=utf-8" }))
     Object.assign(document.createElement("a"), { href: url, download: `spend-${period}-${dateStamp(now)}.csv` }).click()
     setTimeout(() => URL.revokeObjectURL(url))
   }
@@ -192,10 +201,10 @@ function MatterSpend({ data, period, now }: WidgetContext) {
     <div className="dash-hbars">
       <ol>
         {shown.map((row) => (
-          <li key={row.matter.id}>
+          <li key={row.key}>
             <span className="dash-hbar-label">
-              <Link to={`/matter/${row.matter.id}`} className="dash-hbar-name" title={row.matter.title}>{row.matter.title}</Link>
-              <span className="dash-hbar-client">{[row.matter.client, row.matter.reference].filter(Boolean).join(" · ") || "No client recorded"}</span>
+              {row.href ? <Link to={row.href} className="dash-hbar-name" title={row.title}>{row.title}</Link> : <span className="dash-hbar-name" title={row.title}>{row.title}</span>}
+              <span className="dash-hbar-client">{row.detail}</span>
             </span>
             <span className="dash-hbar-track" aria-hidden="true">
               <span className="dash-hbar-fill" style={{ width: `max(2px, ${(row.cost / max) * 100}%)` }} />
@@ -205,7 +214,7 @@ function MatterSpend({ data, period, now }: WidgetContext) {
         ))}
       </ol>
       <div className="dash-card-foot">
-        {rest.length > 0 && <p className="dash-footnote">{plural(rest.length, "other matter")} · {formatCost(rest.reduce((sum, row) => sum + row.cost, 0))} ({share(rest.reduce((sum, row) => sum + row.cost, 0))})</p>}
+        {rest.length > 0 && <p className="dash-footnote">{[rest.some((row) => row.href) && plural(rest.filter((row) => row.href).length, "other matter"), rest.some((row) => !row.href) && OUTSIDE_MATTERS.toLowerCase()].filter(Boolean).join(" and ")} · {formatCost(rest.reduce((sum, row) => sum + row.cost, 0))} ({share(rest.reduce((sum, row) => sum + row.cost, 0))})</p>}
         <button type="button" className="dash-text-button" onClick={download}>{icons.download}Export CSV</button>
       </div>
     </div>
@@ -343,7 +352,7 @@ function Tokens({ summary, period }: WidgetContext) {
 // Daily spend over the window; long windows group by week.
 function Trend({ data, period, now }: WidgetContext) {
   const range = periodRange(period, now)
-  const daily = dailySpend(data.matters, { start: chartStart(data.matters, range), end: range.end })
+  const daily = dailySpend(data.matters, { start: chartStart(data.matters, range, data.workspace), end: range.end }, data.workspace)
   const weekly = daily.length > 92
   const points = weekly
     ? Array.from({ length: Math.ceil(daily.length / 7) }, (_, index) => {

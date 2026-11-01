@@ -9,6 +9,26 @@ export async function dashboardDirectory(signal?: AbortSignal): Promise<string> 
   return value.dir
 }
 
+export type UsageEntry = { time: number; cost: number; agent?: string }
+export type FolderUsage = { costs: UsageEntry[]; unread: boolean; unpriced: number }
+export type DashboardUsage = { matters: Record<string, FolderUsage>; workspace: FolderUsage }
+
+const entries = (value: unknown): value is UsageEntry[] => Array.isArray(value) && value.every((entry) =>
+  entry && typeof entry === "object" && Number.isFinite(entry.time) && Number.isFinite(entry.cost) && (entry.agent === undefined || typeof entry.agent === "string"))
+const folder = (value: unknown): value is FolderUsage => !!value && typeof value === "object" && "costs" in value && entries(value.costs)
+  && "unread" in value && typeof value.unread === "boolean" && "unpriced" in value && Number.isFinite(value.unpriced)
+
+// Each matter's spend from ingest's usage ledger (the one generated charts and
+// the Usage panel read), plus spend outside any matter.
+export async function dashboardUsage(signal?: AbortSignal): Promise<DashboardUsage> {
+  const res = await fetch(`${INGEST_URL}/dashboard/discovery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "usage" }), signal })
+  if (!res.ok) throw new Error("Could not read spend.")
+  const value: unknown = await res.json()
+  if (!value || typeof value !== "object" || !("matters" in value) || !value.matters || typeof value.matters !== "object" || !Object.values(value.matters).every(folder) || !("workspace" in value) || !folder(value.workspace))
+    throw new Error("Could not read spend.")
+  return { matters: value.matters as Record<string, FolderUsage>, workspace: value.workspace }
+}
+
 // Only app-constructed URLs and the checked chart contract reach this endpoint.
 // The backend coalesces the underlying practice read across different charts.
 import type { Chart } from "../../../../../dochaus/lib/dashboard-plan"

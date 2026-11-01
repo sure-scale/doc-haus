@@ -2,9 +2,11 @@ import { test, expect } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { mkdirSync } from "node:fs"
 import { createMatter } from "./matter"
 import { openDb } from "./db"
-import { dashboardChartSource, dashboardInventory, validateDashboardSources, templateAvailability } from "./dashboard-source"
+import { openTelemetryDb, recordGeneration } from "../../../dochaus/lib/telemetry"
+import { dashboardChartSource, dashboardInventory, dashboardUsage, validateDashboardSources, templateAvailability } from "./dashboard-source"
 import { dashboardRoutes } from "./dashboard"
 
 test("local source reads current matters, coalesces concurrent reads, and rejects unknown mappings", async () => {
@@ -143,6 +145,62 @@ test("spend splits by plain agent name and background agents, with Word suggesti
     const checks = await validateDashboardSources({ widgets: [{ ...base, groupBy: "matter", agentGroup: "background" }], period: "all", timeZone: "UTC" })
     expect(checks.results[0]?.usable).toBe(true)
     await expect(read({ metric: "tokens" })).rejects.toThrow("Invalid dashboard source")
+  } finally {
+    globalThis.fetch = originalFetch
+    if (previous === undefined) delete process.env.WORKSPACE_ROOT; else process.env.WORKSPACE_ROOT = previous
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("built-in usage and charts share one ledger: generation rows count, dashboard building is outside every matter", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "dashboard-ledger-"))
+  const previous = process.env.WORKSPACE_ROOT, originalFetch = globalThis.fetch
+  process.env.WORKSPACE_ROOT = root
+  const one = createMatter("One"), two = createMatter("Two")
+  const sample = createMatter("Sample", undefined, undefined, undefined, undefined, undefined, true)
+  const dashboards = path.join(root, ".dashboard")
+  mkdirSync(dashboards, { recursive: true })
+  const time = Date.parse("2026-10-20T12:00:00Z")
+  const tokens = { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }
+  const session = (id: string, dir: string, agent: string, cost: number) => ({ id, location: { directory: dir }, title: id, agent, cost, tokens, time: { created: time, updated: time } })
+  const sessions = [session("ask", one.dir, "qa", 2), session("try", sample.dir, "qa", 9), session("plan", dashboards, "dashboard", .5)]
+  // A stateless job in matter Two and a deleted chart session in the dashboard folder.
+  for (const [dir, agent, cost] of [[two.dir, "prepare-changes", 1], [dashboards, "dashboard-chart", .25]] as const) {
+    const db = openTelemetryDb(dir)
+    try { recordGeneration(db, { agent, tokens, cost, ts: time, ...(agent === "dashboard-chart" ? { session: "ses_deleted" } : {}) }) } finally { db.close() }
+  }
+  globalThis.fetch = Object.assign(async (input: Parameters<typeof fetch>[0]) => {
+    const url = new URL(String(input))
+    if (url.pathname === "/api/session") return Response.json({ data: sessions.filter(row => row.location.directory === url.searchParams.get("directory")), cursor: {} })
+    const id = /^\/api\/session\/([^/]+)/.exec(url.pathname)?.[1]
+    const found = sessions.find(row => row.id === id)
+    if (found && url.pathname.endsWith("/message")) return Response.json({ data: [{ id: `m-${id}`, type: "assistant", time: { created: time }, cost: found.cost, content: [] }], cursor: {} })
+    if (found) return Response.json({ data: found })
+    return new Response("missing", { status: 404 })
+  }, { preconnect: originalFetch.preconnect }) as typeof fetch
+  const base = { type: "chart", title: "Spend", metric: "spend", groupBy: "none", form: "stat", period: "all", source: { kind: "local-query", query: "practice-chart", version: 1 } }
+  const read = async (patch: Record<string, unknown>) => (await dashboardChartSource(JSON.stringify({ ...base, ...patch }), "all", "UTC")).data
+  const rows = (data: { points: { label: string; value: number }[] }) => data.points.map(point => [point.label, point.value])
+  try {
+    const usage = await dashboardUsage()
+    expect(usage.matters[one.id]?.costs.map(cost => [cost.cost, cost.agent])).toEqual([[2, "qa"]])
+    expect(usage.matters[two.id]?.costs.map(cost => [cost.cost, cost.agent])).toEqual([[1, "prepare-changes"]])
+    // The sample matter's own spend reaches its row in Recent, never a total.
+    expect(usage.matters[sample.id]?.costs.map(cost => cost.cost)).toEqual([9])
+    expect(usage.workspace.costs.map(cost => [cost.cost, cost.agent])).toEqual([[.5, "dashboard"], [.25, "dashboard-chart"]])
+    expect(usage.workspace.unread).toBe(false)
+    expect((await read({})).total).toBe(3.75)
+    expect(rows(await read({ groupBy: "matter", form: "bars" }))).toEqual([["One", 2], ["Two", 1], ["Not in a matter", .75]])
+    expect((await read({ groupBy: "matter", form: "bars" })).badge).toBe("2 matters")
+    expect(rows(await read({ groupBy: "client", form: "bars" }))).toEqual([["No client recorded", 3], ["Not in a matter", .75]])
+    expect(rows(await read({ groupBy: "agent", form: "bars" }))).toEqual([["Questions", 2], ["Prepare changes", 1], ["Build dashboards", .75]])
+    expect((await read({ matter: "One" })).total).toBe(2)
+    expect((await read({ matter: "Two", groupBy: "agent", form: "bars" })).total).toBe(1)
+    const inventory = await dashboardInventory("all", "UTC")
+    expect(inventory.metrics.matters.total).toBe(2)
+    expect(inventory.metrics.spend.total).toBe(3.75)
+    expect((await read({ metric: "matters" })).total).toBe(2)
+    expect((await read({ metric: "conversations" })).total).toBe(1)
   } finally {
     globalThis.fetch = originalFetch
     if (previous === undefined) delete process.env.WORKSPACE_ROOT; else process.env.WORKSPACE_ROOT = previous

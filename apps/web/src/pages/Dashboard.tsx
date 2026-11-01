@@ -72,7 +72,7 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
   const shownData = data && saved.data === data ? { ...data, preferences: saved.preferences } : data
   const ready = data && !data.error ? data : undefined
   const context: WidgetContext | undefined = shownData
-    ? { data: shownData, setup, period: active.period, now, summary: summarize(shownData.matters, active.period, now), onPreferences: (preferences) => setSaved({ data: latest.current, preferences }), onRetry: reload }
+    ? { data: shownData, setup, period: active.period, now, summary: summarize(shownData.matters, active.period, now, shownData.workspace), onPreferences: (preferences) => setSaved({ data: latest.current, preferences }), onRetry: reload }
     : undefined
   const canGenerate = !!ready && setup?.ready === true
   const setupProgress = shownData ? setupTabProgress(shownData, setup) : undefined
@@ -263,7 +263,7 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
   }
 
   const periodic = !data?.error && widgets.some(({ widget }) => widget.type === "chart" ? widget.period === "dashboard" : PERIODIC.has(widget.type))
-  const unread = ready?.matters.filter((row) => row.unread).length ?? 0
+  const unread = (ready?.matters.filter((row) => row.unread).length ?? 0) + (ready?.workspace?.unread ? 1 : 0)
   const bold: WidgetId | undefined = ready && widgets.some(({ widget }) => widget.type === "attention") && attention(ready.matters).length ? "attention" : widgets.some(({ widget }) => widget.type === "journey") ? "journey" : undefined
 
   if (!stored.ready) return <>

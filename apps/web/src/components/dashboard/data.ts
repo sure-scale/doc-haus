@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react"
-import type { SessionMessageInfo } from "@opencode/client"
 import { getMatter, listJurisdictions, listMatters, type Jurisdiction, type Matter } from "../../api/ingest/matters"
 import { getDraftingStatus } from "../../api/ingest/drafting-status"
 import { leanStageSessions, type LeanDocument, type LeanDraftingStatus } from "../../api/ingest/lean"
@@ -7,15 +6,17 @@ import { getPreferences, type DraftingPreferences } from "../../api/ingest/prefe
 import { fetchWordSetup, type WordSetupStatus } from "../../api/ingest/word"
 import { listPlaybookLibrary, listTemplates } from "../../api/ingest/library"
 import { listClients } from "../../api/ingest/clients"
-import { listMessageInfos, listSessions } from "../../api/opencode/sessions"
-import { matterClient, type Client } from "../../api/opencode/client"
+import { dashboardUsage, type DashboardUsage, type FolderUsage, type UsageEntry } from "../../api/ingest/dashboard"
+import { listSessions } from "../../api/opencode/sessions"
+import { matterClient } from "../../api/opencode/client"
 import { checklistFindingsCount, cleanTitle, openQuestions } from "../drafting/model"
 
 export type Session = Awaited<ReturnType<typeof listSessions>>[number]
 
-// One piece of spend at the moment it happened. A conversation that runs over
-// several days is spread across them, one entry per priced model call.
-export type CostEntry = { time: number; cost: number; session: string }
+// One piece of spend at the moment it happened, from ingest's usage ledger: a
+// conversation that runs over several days is spread across them, one entry
+// per priced model call, and generation jobs and deleted sessions count too.
+export type CostEntry = UsageEntry
 
 // One matter as the dashboard sees it: every engine session in its folder
 // (subagent runs included, each carrying its own cost) and its drafting run.
@@ -26,7 +27,7 @@ export type MatterActivity = {
   drafting?: LeanDraftingStatus
   documents?: number
   costs: CostEntry[]
-  // Sessions, cost timing or the drafting run could not be read completely.
+  // Sessions, spend or the drafting run could not be read completely.
   unread: boolean
   // Sessions that used tokens but report no cost: see isUnpriced.
   unpriced: number
@@ -42,6 +43,9 @@ export type DashboardData = {
   playbooks?: number
   clients?: number
   jurisdictions?: Jurisdiction[]
+  // Spend outside any matter, such as building dashboards. Never a matter: it
+  // counts in spend totals and trends and is one "Not in a matter" row.
+  workspace?: FolderUsage
   // Set when the matter list itself could not be read, so an unreachable
   // service is never shown as an empty practice.
   error?: string
@@ -73,47 +77,31 @@ async function mapLimited<T, R>(items: T[], limit: number, work: (item: T) => Pr
 
 const settled = <T,>(promise: Promise<T>) => promise.then((value) => value, () => undefined)
 
-// Each priced message at its own time; whatever the messages do not account
-// for lands when the session was last active.
-export function messageCosts(session: Session, messages: SessionMessageInfo[]): CostEntry[] {
-  const entries = messages.flatMap((message) =>
-    "cost" in message && message.cost ? [{ time: message.time.created, cost: message.cost, session: session.id }] : [])
-  const rest = (session.cost || 0) - entries.reduce((sum, entry) => sum + entry.cost, 0)
-  if (rest > 0.0001) entries.push({ time: session.time.updated, cost: rest, session: session.id })
-  return entries
-}
-
-// A session that stayed within one day needs no message read. If the read
-// fails the session's spend falls on the day it started and is marked partial.
-async function sessionCosts(client: Client, session: Session): Promise<{ entries: CostEntry[]; unread: boolean }> {
-  const whole = [{ time: session.time.created, cost: session.cost || 0, session: session.id }]
-  if (!session.cost || startOfDay(session.time.created) === startOfDay(session.time.updated)) return { entries: whole, unread: false }
-  return listMessageInfos(client, session.id).then((messages) => ({ entries: messageCosts(session, messages), unread: false }), () => ({ entries: whole, unread: true }))
-}
-
-async function loadMatter(matter: Matter, withDocuments: boolean): Promise<MatterActivity> {
-  const client = matterClient(matter.dir)
+// Spend comes from ingest's ledger. A matter it could not read, or one it has
+// not seen yet, is partial: its spend is unknown, not zero.
+async function loadMatter(matter: Matter, withDocuments: boolean, usage: DashboardUsage | undefined): Promise<MatterActivity> {
   const [sessions, drafting, documents] = await Promise.allSettled([
-    listSessions(client),
+    listSessions(matterClient(matter.dir)),
     getDraftingStatus(matter.id),
     withDocuments ? getMatter(matter.id).then((detail) => detail.documents.length) : Promise.resolve(undefined),
   ])
   const list = sessions.status === "fulfilled" ? sessions.value : []
-  const costs = await mapLimited(list, 2, (session) => sessionCosts(client, session))
+  const spend = usage?.matters[matter.id]
   return {
     matter,
     sessions: list,
     drafting: drafting.status === "fulfilled" ? drafting.value : undefined,
     documents: documents.status === "fulfilled" ? documents.value : undefined,
-    costs: costs.flatMap((result) => result.entries),
-    unread: sessions.status === "rejected" || drafting.status === "rejected" || costs.some((result) => result.unread),
+    costs: spend?.costs ?? [],
+    unread: sessions.status === "rejected" || drafting.status === "rejected" || !spend || spend.unread,
     unpriced: list.filter(isUnpriced).length,
   }
 }
 
 export async function loadDashboard(): Promise<DashboardData> {
-  const [matters, preferences, word, templates, playbooks, clients, jurisdictions] = await Promise.all([
+  const [matters, usage, preferences, word, templates, playbooks, clients, jurisdictions] = await Promise.all([
     listMatters().then((list) => ({ list }), () => ({ list: [] as Matter[], error: "Could not load matters" })),
+    settled(dashboardUsage()),
     getPreferences().then((value) => ({ value, failed: false }), () => ({ value: undefined, failed: true })),
     settled(fetchWordSetup()),
     settled(listTemplates().then((result) => result.templates.length)),
@@ -125,7 +113,7 @@ export async function loadDashboard(): Promise<DashboardData> {
   // the newest few own matters are enough.
   const byAge = matters.list.filter((matter) => !matter.sample).sort((a, b) => b.created_at - a.created_at)
   const newest = new Set(byAge.slice(0, 3).map((matter) => matter.id))
-  const rows = await mapLimited(matters.list, 4, (matter) => loadMatter(matter, newest.has(matter.id)))
+  const rows = await mapLimited(matters.list, 4, (matter) => loadMatter(matter, newest.has(matter.id), usage))
   // Before a first draft, an older matter may hold the only documents: look
   // further back, one at a time, until one does.
   if (!rows.some((row) => row.documents || draftedCount(row.drafting))) {
@@ -138,6 +126,7 @@ export async function loadDashboard(): Promise<DashboardData> {
   }
   return {
     matters: rows,
+    workspace: usage?.workspace ?? { costs: [], unread: true, unpriced: 0 },
     preferences: preferences.value,
     ...(preferences.failed ? { preferencesFailed: true } : {}),
     word, templates, playbooks, clients, jurisdictions,
@@ -272,9 +261,10 @@ const spent = (costs: CostEntry[], range?: Range) =>
 
 // Where a window's charts begin: all time starts on the day of the first own
 // spend or conversation, or today when there is none.
-export function chartStart(matters: MatterActivity[], range: Range) {
+export function chartStart(matters: MatterActivity[], range: Range, workspace?: FolderUsage) {
   if (Number.isFinite(range.start)) return range.start
   let first = addDays(range.end, -1)
+  for (const entry of workspace?.costs ?? []) if (entry.cost > 0) first = Math.min(first, entry.time)
   for (const row of own(matters)) {
     for (const entry of row.costs) if (entry.cost > 0) first = Math.min(first, entry.time)
     for (const session of row.sessions) if (isConversation(session)) first = Math.min(first, session.time.created)
@@ -303,10 +293,15 @@ export function totalCost(sessions: Session[]) {
   return sessions.reduce((sum, session) => sum + (session.cost || 0), 0)
 }
 
-// Own spend for sparklines.
-export function costEntries(matters: MatterActivity[]) {
-  return own(matters).flatMap((row) => row.costs.map((entry) => ({ time: entry.time, value: entry.cost })))
+// Own spend, and spend outside any matter, for sparklines.
+export function costEntries(matters: MatterActivity[], workspace?: FolderUsage) {
+  return [...own(matters).flatMap((row) => row.costs), ...workspace?.costs ?? []].map((entry) => ({ time: entry.time, value: entry.cost }))
 }
+
+export const OUTSIDE_MATTERS = "Not in a matter"
+
+// Spend outside any matter in the range.
+export const outsideSpend = (workspace: FolderUsage | undefined, range?: Range) => spent(workspace?.costs ?? [], range)
 
 // A stat tile's small trend: [start, end) split into even buckets.
 export function bucketed(values: { time: number; value: number }[], start: number, end: number, count: number) {
@@ -319,20 +314,25 @@ export function bucketed(values: { time: number; value: number }[], start: numbe
   return buckets
 }
 
-export type DaySpend = { day: number; cost: number; conversations: number; matters: { matter: Matter; cost: number }[] }
+// `matters` names each matter that spent, or "Not in a matter".
+export type DaySpend = { day: number; cost: number; conversations: number; matters: { title: string; cost: number }[] }
 
 // Own spend for each calendar day in the range (oldest first), each entry on
 // the day it was spent, with the matters that spent it, largest first.
-export function dailySpend(matters: MatterActivity[], range: Range): DaySpend[] {
+export function dailySpend(matters: MatterActivity[], range: Range, workspace?: FolderUsage): DaySpend[] {
   const days = dayIndex(range.start, range.end)
-  const buckets = Array.from({ length: days }, (_, index) => ({ day: addDays(range.start, index), cost: 0, conversations: 0, byMatter: new Map<Matter, number>() }))
-  for (const { matter, sessions, costs } of own(matters)) {
+  const buckets = Array.from({ length: days }, (_, index) => ({ day: addDays(range.start, index), cost: 0, conversations: 0, byMatter: new Map<Matter | undefined, number>() }))
+  const add = (key: Matter | undefined, costs: CostEntry[]) => {
     for (const entry of costs) {
       const index = dayIndex(range.start, entry.time)
       if (!entry.cost || index < 0 || index >= days) continue
       buckets[index].cost += entry.cost
-      buckets[index].byMatter.set(matter, (buckets[index].byMatter.get(matter) ?? 0) + entry.cost)
+      buckets[index].byMatter.set(key, (buckets[index].byMatter.get(key) ?? 0) + entry.cost)
     }
+  }
+  add(undefined, workspace?.costs ?? [])
+  for (const { matter, sessions, costs } of own(matters)) {
+    add(matter, costs)
     for (const session of sessions) {
       const index = dayIndex(range.start, session.time.created)
       if (index >= 0 && index < days && isConversation(session)) buckets[index].conversations += 1
@@ -340,7 +340,7 @@ export function dailySpend(matters: MatterActivity[], range: Range): DaySpend[] 
   }
   return buckets.map(({ byMatter, ...day }) => ({
     ...day,
-    matters: [...byMatter].map(([matter, cost]) => ({ matter, cost })).sort((a, b) => b.cost - a.cost),
+    matters: [...byMatter].map(([matter, cost]) => ({ title: matter?.title ?? OUTSIDE_MATTERS, cost })).sort((a, b) => b.cost - a.cost),
   }))
 }
 
@@ -393,8 +393,9 @@ function csvField(value: string) {
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
 }
 
-// A spend export for billing, grouped by client (none last), largest first.
-export function spendCsv(rows: MatterCost[]) {
+// A spend export for billing, grouped by client (none last), largest first;
+// spend outside any matter is the last line, so the file adds up to the total.
+export function spendCsv(rows: MatterCost[], outside = 0) {
   const sorted = [...rows].sort((a, b) => {
     const left = clientOf(a.matter)
     const right = clientOf(b.matter)
@@ -404,6 +405,7 @@ export function spendCsv(rows: MatterCost[]) {
   const lines = [
     ["Client", "Matter", "Reference", "Conversations", "Spend (USD)"],
     ...sorted.map((row) => [clientOf(row.matter) ?? "", row.matter.title, row.matter.reference ?? "", String(row.conversations), row.cost.toFixed(2)]),
+    ...(outside > 0 ? [["", OUTSIDE_MATTERS, "", "", outside.toFixed(2)]] : []),
   ]
   return lines.map((line) => line.map(csvField).join(",")).join("\r\n") + "\r\n"
 }
@@ -447,11 +449,11 @@ export type Summary = {
 
 // Spend counts when it happened; conversations, tokens and unpriced sessions
 // count in the window they started in.
-export function summarize(matters: MatterActivity[], period: Period, now: number): Summary {
+export function summarize(matters: MatterActivity[], period: Period, now: number, workspace?: FolderUsage): Summary {
   const range = periodRange(period, now)
   const before = previousRange(period, now)
   const rows = own(matters)
-  const costs = rows.flatMap((row) => row.costs)
+  const costs = [...rows.flatMap((row) => row.costs), ...workspace?.costs ?? []]
   const sessions = rows.flatMap((row) => row.sessions).filter((session) => within(session.time.created, range))
   const tokens = { input: 0, cached: 0, output: 0, reasoning: 0 }
   for (const { tokens: used } of sessions) {
@@ -465,7 +467,7 @@ export function summarize(matters: MatterActivity[], period: Period, now: number
     ...(before ? { previous: spent(costs, before) } : {}),
     conversations: sessions.filter(isConversation).length,
     activeMatters: costByMatter(matters, range).length,
-    unpriced: sessions.filter(isUnpriced).length,
+    unpriced: sessions.filter(isUnpriced).length + (workspace?.unpriced ?? 0),
     tokens,
   }
 }
