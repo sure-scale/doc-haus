@@ -1,5 +1,5 @@
 import { normalize, normalizeWithMap, sourceReadings } from "../../lib/quote-verify"
-import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
+import { TOOL_SYNTAX_ISSUE, printedToolCall, record, replyJson } from "./checks"
 import { readActRecord, signerFlags, type ActRecord } from "./act-record"
 import { FIRST_DOCUMENT, nameKey, namedIn, readLeanPlan, type ActingFor, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
@@ -114,10 +114,6 @@ export function coveragePlacementPrompt(directory: string, documents: PlannedDoc
   ].filter(Boolean).join("\n\n")
 }
 
-/** A reply's JSON value, bare or fenced; undefined when it is not JSON. */
-function replyJson(reply: string): unknown {
-  try { return JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {}
-}
 
 /** A listed act's own fields, as both jobs' checks read them: nonempty "act",
  * "source" and "quote" strings, trimmed, and "parties" as a list of nonempty
@@ -808,7 +804,10 @@ export function coverageItems(directory: string): OpenItem[] {
  * (signerFlags). The record's reading is a prompt for the lawyer to confirm,
  * never an answer, so the item asks only that and blocks nothing; an act the
  * record cannot check gives none. A conflict's item stands in for the act's
- * signer item, which would ask about the same difference. */
+ * signer item, which would ask about the same difference. When the record's
+ * HOW or WHO job never passed (its issues name the job), no act could be
+ * checked, so one item says which check did not run and asks the lawyer to
+ * confirm each act's signatories. */
 function actRecordItems(directory: string): OpenItem[] {
   const record = readActRecord(directory)
   if (!record) return []
@@ -825,7 +824,16 @@ function actRecordItems(directory: string): OpenItem[] {
   const conflicts = [...grouped.values()].map(({ acts, conflict }) => openItem("finalize", "omission",
     `Act record: for ${quotedList(acts)}, the instructions direct ${quoted(conflict.instruction)}, but ${quoted(conflict.authority)} requires otherwise: ` +
     `${conflict.difference.trim()} The lawyer should decide which governs.`, { repair_target: "memo" }))
-  return [...conflicts, ...signerFlags(record).filter(flag => flag.status === "flag" && !record.acts[flag.act]!.how?.conflict).map(({ act: index, missing }) => {
+  // A HOW or WHO job that never passed leaves every act unchecked: one item says
+  // so, as a silent record would read as nothing to confirm.
+  const failed = (job: "who" | "how") => record.acts.length > 0 && record.issues.some(row => row.job === job)
+  const confirm = " The lawyer should confirm that each instructed act's instrument is executed by every party whose authority it needs."
+  const unrun = failed("how")
+    ? [openItem("finalize", "omission", "Act record: the check of each instructed act's instrument and signatories, and of any conflict between the instructions and the authority, did not run." + confirm, { repair_target: "memo" })]
+    : failed("who")
+      ? [openItem("finalize", "omission", "Act record: the check of the parties whose authority each instructed act needs did not run, so no instrument's signatories were checked against them." + confirm, { repair_target: "memo" })]
+      : []
+  return [...unrun, ...conflicts, ...signerFlags(record).filter(flag => flag.status === "flag" && !record.acts[flag.act]!.how?.conflict).map(({ act: index, missing }) => {
     const act = record.acts[index]!
     const instrument = act.how?.instrument ? `the instrument "${act.how.instrument}"` : "the instrument"
     return openItem("finalize", "omission", `Act record: ${instrument} that effects "${act.act}", directed by "${act.quote.replace(/\s+/g, " ").trim()}" [source: ${act.source}], ` +

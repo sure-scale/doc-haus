@@ -354,6 +354,31 @@ describe("plan coverage open items", () => {
     ])
   })
 
+  test("an act record whose HOW or WHO job never passed yields one item saying the instrument and signatory check did not run; one that passed yields none", () => {
+    const directory = prepared()
+    const release = recorded({ act: "release the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works"], document: "d1" })
+    const failed = (job: "who" | "how", acts: ActRecord["acts"]) => writeLeanText(directory, "acts.json", JSON.stringify({
+      schema: LEAN_ACTS_SCHEMA, status: "listed", acts, verify: null, deliverables: [], issues: [{ job, issues: ['Reply with the JSON object only: {"acts":[]}.'] }],
+    }))
+    const plan = writeLeanPlan(directory, [RELEASE], "0".repeat(64))
+    const check = () => {
+      recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
+      return coverageItems(directory)
+    }
+    const confirm = " The lawyer should confirm that each instructed act's instrument is executed by every party whose authority it needs."
+    failed("how", [recorded(act), release])
+    const items = check()
+    expect(items).toEqual([expect.objectContaining({ stage: "finalize", kind: "omission", status: "open", ref: { repair_target: "memo" } })])
+    expect(items[0]!.detail).toBe("Act record: the check of each instructed act's instrument and signatories, and of any conflict between the instructions and the authority, did not run." + confirm)
+    expect(gate(directory, notesNaming(items))).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [], disclosed: [expect.objectContaining({ id: items[0]!.id, status: "disclosed" })] })
+    // WHO never passed: HOW ran, so any conflict it states stands, but no signatory was checked against the authorising parties.
+    failed("who", [{ ...recorded(act), who: null, how: { instrument: "Schedule consent", executed_by: ["Kestrel Works"], requires: [], basis: [], reason: null, conflict: null } }])
+    expect(check().map(item => item.detail)).toEqual(["Act record: the check of the parties whose authority each instructed act needs did not run, so no instrument's signatories were checked against them." + confirm])
+    // The jobs passed: nothing is left to confirm.
+    recordActs(directory, "listed", [{ ...recorded(act), how: { instrument: "Schedule consent", executed_by: ["the Orchard Committee"], requires: [], basis: [], reason: null, conflict: null } }])
+    expect(check()).toEqual([])
+  })
+
   test("a changed act record leaves the saved plan's coverage stale, so the plan is checked again", () => {
     const directory = prepared()
     recordActs(directory, "listed", [recorded(act)])

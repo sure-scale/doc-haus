@@ -371,3 +371,82 @@ function isParagraphRow(value: unknown): value is ParagraphRow {
 export function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
+
+const REPLY_FENCE_OPEN = /^```(?:json)?\s*/
+const REPLY_FENCE_CLOSE = /\s*```$/
+
+/** A reply's JSON value, bare or fenced; undefined when it is not JSON. */
+export function replyJson(reply: string): unknown {
+  try { return JSON.parse(reply.trim().replace(REPLY_FENCE_OPEN, "").replace(REPLY_FENCE_CLOSE, "")) } catch {}
+}
+
+const JSON_SPACE = new Set([" ", "\t", "\n", "\r"])
+const JSON_LITERAL = /true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y
+
+/** Retry feedback for a reply that replyJson cannot read: where its JSON
+ * first breaks, as a character offset in the reply, what was expected there
+ * (such as the bracket that closes the list or object open at that point,
+ * found by tracking nesting outside strings) and the words around it. A model
+ * told only the format tends to resend the same long reply unchanged; the
+ * place lets it mend the one slip. Undefined when no break is found, so the
+ * caller's format restatement stands alone. */
+export function jsonBreakNote(reply: string): string | undefined {
+  const lead = reply.length - reply.trimStart().length
+  const start = lead + (REPLY_FENCE_OPEN.exec(reply.slice(lead))?.[0].length ?? 0)
+  const body = reply.trim().replace(REPLY_FENCE_OPEN, "").replace(REPLY_FENCE_CLOSE, "")
+  const stack: { bracket: "{" | "["; at: number; name?: string }[] = []
+  // What the last token was: nothing yet, an opening bracket, a comma, a colon, an object's name or a complete value.
+  let last = "start" as "start" | "open" | "comma" | "colon" | "name" | "value"
+  let name: string | undefined
+  const where = (open: typeof stack[number]) => `the ${open.name === undefined ? "" : `"${open.name}" `}${open.bracket === "[" ? "list" : "object"} opened at character ${start + open.at}`
+  const closer = (open: typeof stack[number]) => open.bracket === "[" ? "]" : "}"
+  const note = (at: number, what: string) => {
+    const words = (text: string) => text.replace(/\s+/g, " ")
+    return `The reply is not valid JSON: at character ${start + at}, ${what}. ` +
+      `Around it, with >>> marking the place: \`${words(body.slice(Math.max(0, at - 40), at))}>>>${words(body.slice(at, at + 20))}\`. Fix that and resend the complete JSON.`
+  }
+  for (let at = 0; at < body.length; at++) {
+    const char = body[at]!
+    if (JSON_SPACE.has(char)) continue
+    const open = stack.at(-1)
+    if (last === "value" && !open) return note(at, "the JSON value has already ended, so nothing may follow it")
+    if (last === "name" && char !== ":") return note(at, `":" was expected after the name "${name}", but "${char}" was found`)
+    if (char === '"') {
+      if (last === "value") return note(at, `"," was expected between two values, but "${char}" was found`)
+      let end = at + 1
+      for (; end < body.length && body[end] !== '"'; end++) {
+        if (body[end] === "\\") end++
+        else if (body[end]! < " ") return note(end, "a line break or other control character was found inside a string; write it as an escape such as \\n")
+      }
+      if (end >= body.length) return note(at, "the string that starts here is never closed")
+      name = body.slice(at + 1, end)
+      last = open?.bracket === "{" && (last === "open" || last === "comma") ? "name" : "value"
+      at = end
+    } else if (char === ":") {
+      if (last !== "name") return note(at, `":" was found where it cannot stand`)
+      last = "colon"
+    } else if (char === ",") {
+      if (last !== "value") return note(at, `"," was found where a value was expected`)
+      last = "comma"
+    } else if (char === "{" || char === "[") {
+      if (last === "value") return note(at, `"," was expected between two values, but "${char}" was found`)
+      stack.push({ bracket: char, at, ...(last === "colon" ? { name } : {}) })
+      last = "open"
+    } else if (char === "}" || char === "]") {
+      if (!open) return note(at, `"${char}" closes nothing`)
+      if (char !== closer(open)) return note(at, `"${closer(open)}" was expected to close ${where(open)}, but "${char}" was found`)
+      if (last === "comma") return note(at, `a comma stands before "${char}" with no value after it`)
+      if (last === "colon") return note(at, `a value was expected after the name "${name}", but "${char}" was found`)
+      stack.pop()
+      last = "value"
+    } else {
+      JSON_LITERAL.lastIndex = at
+      const literal = last === "value" ? null : JSON_LITERAL.exec(body)
+      if (!literal) return note(at, last === "value" ? `"," was expected between two values, but "${char}" was found` : `"${char}" does not start a JSON value`)
+      at += literal[0].length - 1
+      last = "value"
+    }
+  }
+  const open = stack.at(-1)
+  if (open) return note(body.length, `the reply ends before "${closer(open)}" closes ${where(open)}`)
+}

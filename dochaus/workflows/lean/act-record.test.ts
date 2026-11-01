@@ -7,6 +7,7 @@ import {
   ACT_RECORD_AGENT, ACT_RECORD_SAMPLES, LEAN_ACTS_SCHEMA, actRecordBlock, actRecordPack, parseActHow, parseActList, readActRecord, runActRecordStage, signerFlags,
   type ActHow, type ActRecord, type ActWho, type ListedAct, type RecordedAct,
 } from "./act-record"
+import { jsonBreakNote } from "./checks"
 import { evidencePrompt } from "./evidence"
 import { researchHandoff } from "./research"
 import { stageInputSha } from "./runner"
@@ -228,6 +229,22 @@ describe("WHO and HOW", () => {
     expect(record?.acts.map(act => act.how)).toEqual([GRANT_HOW, APPROVE_HOW])
   })
 
+  test("a HOW reply that is not valid JSON is retried naming where it breaks, what was expected there and the words around it", async () => {
+    // A requirement's basis list closed as an object: `"}}` where `"}]}` belongs.
+    const sound = JSON.stringify(indexed("how", [GRANT_HOW, APPROVE_HOW]))
+    const broken = sound.replace('"}]}', '"}}')
+    const at = broken.indexOf('"}}') + 2
+    const opened = broken.indexOf('"basis":[') + '"basis":'.length
+    const { model, record } = await run((job, attempt) => job === "how" && attempt === 0 ? broken : valid(job, attempt, 0))
+    const retry = model.asked("how")[1]!.text
+    expect(retry).toContain(`The reply is not valid JSON: at character ${at}, "]" was expected to close the "basis" list opened at character ${opened}, but "}" was found.`)
+    expect(retry).toContain(`${broken.slice(at - 40, at)}>>>${broken.slice(at, at + 20)}`)
+    expect(retry).toContain("Fix that and resend the complete JSON.")
+    // The format restatement still follows.
+    expect(retry).toContain('Reply with the JSON object only: {"acts":[{"index":0,"how":{')
+    expect(record?.acts.map(act => act.how)).toEqual([GRANT_HOW, APPROVE_HOW])
+  })
+
   test("HOW is shown each act's WHO", async () => {
     const { model } = await run(valid)
     // Only the WHO reply names the committee in lower case, as a JSON string.
@@ -275,6 +292,18 @@ describe("WHO and HOW", () => {
     const reply = (edges: (number | null)[]) => JSON.stringify(indexed("how", edges.map(act => ({ ...APPROVE_HOW, requires: act === null ? [] : [{ act, need: "an earlier act", basis }] }))))
     expect(parseActHow(reply([1, 2, 0]), directory, acts).issues.join(" ")).toContain("act 0 requires act 1, act 1 requires act 2, act 2 requires act 0")
     expect(parseActHow(reply([1, 2, null]), directory, acts).issues).toEqual([])
+  })
+})
+
+describe("where a reply that is not JSON breaks", () => {
+  const what = (reply: string) => jsonBreakNote(reply)?.match(/^The reply is not valid JSON: (at character \d+, .*?)\. Around it/)?.[1]
+  test("a cut-off reply, a comma before a closing bracket and a missing comma are each placed; a fence is counted in the offset; valid JSON gives none", () => {
+    expect(what('{"acts":[{"index":0}')).toBe('at character 20, the reply ends before "]" closes the "acts" list opened at character 8')
+    expect(what('{"acts":[{"index":0},]}')).toBe('at character 21, a comma stands before "]" with no value after it')
+    expect(what('{"acts":[{"index":0} {"index":1}]}')).toBe('at character 21, "," was expected between two values, but "{" was found')
+    expect(what('```json\n{"acts":[{"index":0}}\n```')).toBe('at character 28, "]" was expected to close the "acts" list opened at character 16, but "}" was found')
+    expect(what('{"acts":[{"why":"one\ntwo"}]}')).toBe("at character 20, a line break or other control character was found inside a string; write it as an escape such as \\n")
+    expect(jsonBreakNote('{"acts":[{"why":"a \\"quoted\\" } ] word"}]}')).toBeUndefined()
   })
 })
 

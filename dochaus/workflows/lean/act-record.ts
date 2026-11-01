@@ -1,6 +1,6 @@
 import { normalize } from "../../lib/quote-verify"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
-import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
+import { TOOL_SYNTAX_ISSUE, jsonBreakNote, printedToolCall, record, replyJson } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { instructionSections, listedActIssues, mergeCoverageActs, namingTexts } from "./package-coverage"
 import { nameKey, namedIn } from "./plan"
@@ -36,7 +36,9 @@ import { readLeanJson, writeLeanText, type LeanStageState, type LeanState } from
 // Nothing here judges the legal substance or supplies a party. Whether an act's
 // instrument is executed by the parties whose authority it needs is read from
 // the record when it is used (signerFlags), never stored. A recorded conflict
-// reaches the lawyer as an open item (package-coverage.ts, actRecordItems).
+// reaches the lawyer as an open item (package-coverage.ts, actRecordItems), as
+// does a HOW or WHO job that never passed. A reply that is not JSON is retried
+// with where it breaks (jsonBreakNote).
 //
 // Every job's prompt starts with the same pack (actRecordPack): the task line,
 // the instructions, the approved research, the source names and the rules. Only
@@ -191,9 +193,11 @@ export function actRecordPack(directory: string) {
   ].filter(Boolean).join("\n\n")
 }
 
-/** A reply's JSON value, bare or fenced; undefined when it is not JSON. */
-function replyJson(reply: string): unknown {
-  try { return JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {}
+/** The issues of a reply not in `shape`: the format restated, after where the
+ * reply breaks (jsonBreakNote) when it is not JSON at all. */
+function shapeIssues(reply: string, value: unknown, shape: string) {
+  const broken = value === undefined ? jsonBreakNote(reply) : undefined
+  return broken ? [broken, shape] : [shape]
 }
 
 const text = (row: Record<string, unknown>, key: string) => typeof row[key] === "string" ? (row[key] as string).trim() : ""
@@ -206,7 +210,7 @@ const text = (row: Record<string, unknown>, key: string) => typeof row[key] === 
 function parseListing(reply: string, directory: string, list: "acts" | "deliverables", field: "act" | "deliverable", shape: string): Checked<ListedAct[]> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
   const value = replyJson(reply)
-  if (!record(value) || !Array.isArray(value[list])) return { issues: [shape] }
+  if (!record(value) || !Array.isArray(value[list])) return { issues: shapeIssues(reply, value, shape) }
   const issues: string[] = []
   const rows: ListedAct[] = []
   ;(value[list] as unknown[]).forEach((row, index) => {
@@ -247,7 +251,7 @@ function evidenceSources(directory: string) {
 function indexedEntries(reply: string, count: number, field: "verify" | "who" | "how", shape: string): { issues: string[]; rows?: Map<number, Record<string, unknown>> } {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
   const value = replyJson(reply)
-  if (!record(value) || !Array.isArray(value.acts)) return { issues: [`${shape} ${EVERY_ACT}`] }
+  if (!record(value) || !Array.isArray(value.acts)) return { issues: shapeIssues(reply, value, `${shape} ${EVERY_ACT}`) }
   const issues: string[] = []
   const rows = new Map<number, Record<string, unknown>>()
   const again = new Set<number>()
