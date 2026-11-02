@@ -92,6 +92,7 @@ describe("advising asked questions", () => {
     expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain("Draft a short supply note from the supply terms.")
     expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain(SOURCE)
     expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain("Whom the lawyer acts for is not recorded yet")
+    expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain("An instruction does not decide whether it can validly be carried out as given")
     expect(readQuestions(directory).map(row => [row.question, row.kind, row.advice])).toEqual([
       [LAW.question, "instruction", UNAVAILABLE], [SIGNATORY.question, "fact", UNAVAILABLE]])
   }, 120_000)
