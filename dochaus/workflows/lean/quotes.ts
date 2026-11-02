@@ -3,7 +3,7 @@ import { approvedResearch, researchSource } from "./research"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
-import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearestGap, normalize, quotePlaces, verifyQuote } from "../../lib/quote-verify"
+import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearestGap, normalize, normalizeWithMap, quotePlaces, verifyQuote } from "../../lib/quote-verify"
 import type { DocID } from "./plan"
 import { INSTRUCTIONS_FILE } from "./instructions"
 import { leanUserUpdates } from "./requests"
@@ -177,9 +177,12 @@ export function instructionFound(directory: string, quote: string) {
   return lawyerWordsHold(lawyerWords(directory), quote)
 }
 
+// The lawyer writes in the chat's Markdown, so their words are also read past
+// its formatting ("`draft.docx`" holds the quote "draft.docx").
 function lawyerWordsHold(texts: string[], quote: string) {
   const words = normalize(quote).toLowerCase()
-  return words.length > 0 && texts.some(text => quotePlaces(normalize(text).toLowerCase(), words, { first: true }).places.length > 0)
+  return words.length > 0 && texts.some(text => [normalize(text), normalizeWithMap(text, { markdown: true }).text]
+    .some(reading => quotePlaces(reading.toLowerCase(), words, { first: true }).places.length > 0))
 }
 
 /** Where the lawyer wrote `quote`: "request" when the request or an included

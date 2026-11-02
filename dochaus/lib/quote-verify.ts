@@ -40,8 +40,9 @@ const MARKDOWN_ESCAPABLE = /^[!-\/:-@\[-`{-~]$/
  * written (normalize) and, with
  * - `escapes`: without a backslash before ASCII punctuation;
  * - `markdown` (or its older name `unescapeMarkdown`): also without paired
- *   bold and emphasis marks (strongMarks, EMPHASIS) and a link's brackets and
- *   target (LINK), with ENTITIES and numeric entities decoded;
+ *   bold and emphasis marks (strongMarks, EMPHASIS), a code span's backticks
+ *   (CODE_SPAN) and a link's brackets and target (LINK), with ENTITIES and
+ *   numeric entities decoded;
  * - `replies`: without an email's reply marks (REPLY_MARKS), and never across
  *   a change of reply depth (replyDepthChanges);
  * - `rules`: with a PDF's page-break rule (RULE_LINE, pageBreak) read as a space;
@@ -87,6 +88,9 @@ const REPLY_MARKS = /(?<![^\n])[^\S\n]*(?:(?:>|&gt;|&amp;gt;)[^\S\n]*)+/g
 // neither, and before neither a word nor another "*". A "*" after a figure or
 // a closing bracket ("5%*", "(per claim)*") marks a footnote and stays.
 const EMPHASIS = /(?<![^\s([{"'\u201C\u2018])\*(?=[^\s*)\]}])[^*\n]*?[^\s*\\([{\u201C\u2018]\*(?![*\p{L}\p{N}])/gu
+// A code span's single backticks either side of words on one line, as in a file
+// name typed "`draft.docx`".
+const CODE_SPAN = /(?<!`)`(?=[^\s`])[^`\n]*?[^\s`]`(?!`)|(?<!`)`[^\s`]`(?!`)/g
 // A link, "[Schedule 2](#s2)", whose target is an anchor, a URL or a path, not
 // joined to a word either side. Brackets without one ("[insert date]", "[●]",
 // "clause [4](a)", "[£5m](TBC:board)") stay, as does a footnote link inside a
@@ -155,7 +159,7 @@ function pageBreak(raw: string, from: number, to: number) {
 }
 
 /** The raw offsets a reading reads as a space (`space`: page-break rules) or
- * leaves out (`skip`: bold and emphasis marks, a link's brackets and target,
+ * leaves out (`skip`: bold and emphasis marks, code-span backticks, a link's brackets and target,
  * reply marks), and the line starts where the reply depth changes (`depth`). */
 function readingMarks(raw: string, reading: { markdown: boolean; replies?: boolean; rules?: boolean }) {
   const space = new Set<number>(), skip = new Set<number>()
@@ -165,6 +169,7 @@ function readingMarks(raw: string, reading: { markdown: boolean; replies?: boole
   if (reading.markdown) {
     strongMarks(raw, skip)
     for (const match of raw.matchAll(EMPHASIS)) skip.add(match.index).add(match.index + match[0].length - 1)
+    for (const match of raw.matchAll(CODE_SPAN)) skip.add(match.index).add(match.index + match[0].length - 1)
     for (const match of raw.matchAll(LINK)) {
       skip.add(match.index)
       add(skip, match.index + match[0].indexOf("]("), match.index + match[0].length)

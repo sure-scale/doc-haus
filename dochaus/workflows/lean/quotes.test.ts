@@ -37,6 +37,16 @@ describe("lean quotation matching", () => {
     expect(quoteFound(directory, { quote: "[c]raft a short supply note", source_id: "request" })).toBe(false)
   })
 
+  test("a quotation of the request reads past the chat's Markdown, but keeps the lawyer's words", () => {
+    const directory = matter(undefined, "Draft a supply note from the **supply terms**. Output: `supply-note.docx` and `cover-memo.docx`.")
+    expect({
+      code: quoteFound(directory, { quote: "Output: supply-note.docx and cover-memo.docx.", source_id: "request" }),
+      bold: quoteFound(directory, { quote: "from the supply terms", source_id: "request" }),
+      asTyped: quoteFound(directory, { quote: "Output: `supply-note.docx`", source_id: "request" }),
+      changed: quoteFound(directory, { quote: "Output: supply-note.docx and memo.docx.", source_id: "request" }),
+    }).toEqual({ code: true, bold: true, asTyped: true, changed: false })
+  })
+
   test("a misquotation does not match and the issue names the quotation and the document", () => {
     const directory = matter(ESCAPED)
     expect(quoteFound(directory, { quote: "Clause 4.2 applies to some goods.", source_id: SOURCE })).toBe(false)
