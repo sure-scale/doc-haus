@@ -72,10 +72,11 @@ function citedSource(directory: string, row: { id: string; url: string; quote: s
 
 /** Checks research and records, on each finding, the retrieved source its URL
  * and quotation identify (`snapshot`). */
-function resolveResearch(directory: string, value: unknown): { issues: string[]; findings: ResearchFinding[] } {
-  if (!record(value) || !["completed", "limited", "not-needed"].includes(String(value.status)) || !Array.isArray(value.findings) || !strings(value.limitations)) return { issues: ["Return findings and limitations arrays in the specified JSON shape."], findings: [] }
+function resolveResearch(directory: string, value: unknown): { issues: string[]; findings: ResearchFinding[]; unverified: ResearchFinding[] } {
+  if (!record(value) || !["completed", "limited", "not-needed"].includes(String(value.status)) || !Array.isArray(value.findings) || !strings(value.limitations)) return { issues: ["Return findings and limitations arrays in the specified JSON shape."], findings: [], unverified: [] }
   const issues: string[] = []
   const findings: ResearchFinding[] = []
+  const unverified: ResearchFinding[] = []
   const seen = new Set<string>()
   let sources: RetrievedSource[] | undefined
   const all = () => sources ??= retrievedSources(directory)
@@ -88,7 +89,7 @@ function resolveResearch(directory: string, value: unknown): { issues: string[];
     if (seen.has(row.id as string)) issues.push(`Finding id ${row.id} is repeated.`)
     seen.add(row.id as string)
     const cited = citedSource(directory, row as { id: string; url: string; quote: string; snapshot?: unknown }, all)
-    if ("issue" in cited) { issues.push(cited.issue); continue }
+    if ("issue" in cited) { issues.push(cited.issue); unverified.push(row as ResearchFinding); continue }
     if (cited.source.source.completeness !== "complete" && !(row.limitations as string).trim())
       issues.push(`${row.id}: disclose that source extraction is partial or its completeness is unknown.`)
     findings.push({ ...(row as ResearchFinding), snapshot: cited.source.id })
@@ -96,7 +97,18 @@ function resolveResearch(directory: string, value: unknown): { issues: string[];
   if (value.status === "completed" && (!value.findings.length || value.limitations.length || value.findings.some(row => record(row) && typeof row.limitations === "string" && row.limitations.trim()))) issues.push("Completed research requires retrieved findings and no unresolved research gaps; use limited when research remains incomplete.")
   if (value.status === "not-needed" && value.findings.length) issues.push("Not-needed research cannot include authority findings.")
   if (!value.findings.length && !value.limitations.length) issues.push("No authority was retrieved: explain why research was unnecessary or unavailable in limitations; do not report research success.")
-  return { issues, findings }
+  return { issues, findings, unverified }
+}
+
+/** On the last attempt a finding whose URL was never retrieved, or whose
+ * quotation is not in the retrieved text, is withheld and disclosed as a
+ * research limitation, so one unverifiable authority does not stop the run.
+ * It never reaches drafting; any other issue still fails the attempt. */
+function withholdUnverified(value: Research, unverified: ResearchFinding[]): Research {
+  const rows = new Set<unknown>(unverified)
+  const withheld = unverified.map(row => `Authority withheld because its quotation could not be verified against text retrieved from its source: ${row.title}${row.citation.trim() ? ` (${row.citation})` : ""}, ${row.url}, cited for: ${row.claim}`)
+  return { ...value, status: value.status === "completed" ? "limited" : value.status,
+    findings: value.findings.filter(row => !rows.has(row)), limitations: [...value.limitations, ...withheld] }
 }
 
 export function checkResearch(directory: string, value: unknown): string[] {
@@ -255,7 +267,8 @@ function internalPathIssues(stage: "research" | "research-review", value: unknow
 /** Before the last attempt an internal file path is reported with any other
  * issues, so it costs no extra retry. On the last attempt (`final`) it is not
  * reported: a reply whose only issue is a path is saved as the model wrote it
- * rather than failing the run. */
+ * rather than failing the run. Unverifiable findings are withheld on that
+ * attempt too (withholdUnverified). */
 export function acceptResearchReply(directory: string, stage: ResearchStage, reply: string, options: { final?: boolean } = {}): StageAcceptance {
   if (stage === "intake") {
     const questions = intakeQuestions(directory, reply, "intake")
@@ -266,7 +279,11 @@ export function acceptResearchReply(directory: string, stage: ResearchStage, rep
   try { value = JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {
     return { issues: ["Reply with the requested JSON object only."], outputs: [], openItems: [] }
   }
-  const resolved = stage === "research" ? resolveResearch(directory, value) : undefined
+  let resolved = stage === "research" ? resolveResearch(directory, value) : undefined
+  if (resolved?.unverified.length && options.final) {
+    value = withholdUnverified(value as Research, resolved.unverified)
+    resolved = resolveResearch(directory, value)
+  }
   const issues = resolved ? resolved.issues : stage === "intake"
     ? !record(value) || value.ready !== true || typeof value.scope !== "string" || !value.scope.trim() || typeof value.jurisdiction !== "string" || !value.jurisdiction.trim()
       ? ["Return material questions, or {ready:true,jurisdiction:the supplied governing jurisdiction or an explanation why none is needed,scope:the research scope}. Never mark ready while a material decision is unresolved."] : []

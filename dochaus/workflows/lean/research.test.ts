@@ -103,6 +103,32 @@ test("a quotation absent from the text retrieved from its URL, or a URL never re
   expect(readLeanText(directory, "research.json")).toBeUndefined()
 })
 
+test("on the last attempt an unverifiable finding is withheld and disclosed; before it, and for any other issue, the attempt fails", () => {
+  const directory = matter()
+  const research = retrieved(directory)
+  const verified = { ...research.findings[0]!, limitations: "" }
+  const { snapshot: _, ...cited } = verified
+  const invented = { ...cited, id: "r2", title: "Remembered rule", citation: "Rule 9", quote: "A party may terminate without notice.", claim: "Termination needs no notice" }
+  const never = { ...cited, id: "r3", title: "Unretrieved rule", url: "https://example.gov/never-fetched", claim: "Another rule applies" }
+  const reply = { status: "completed", findings: [verified, invented, never], limitations: [] }
+  expect(acceptResearchReply(directory, "research", JSON.stringify(reply)).issues).toEqual([expect.stringContaining("r2:"), expect.stringContaining("r3:")])
+  expect(readLeanText(directory, "research.json")).toBeUndefined()
+  const last = acceptResearchReply(directory, "research", JSON.stringify(reply), { final: true })
+  expect(last.issues).toEqual([])
+  const withheld = [
+    "Authority withheld because its quotation could not be verified against text retrieved from its source: Remembered rule (Rule 9), https://example.gov/legal-notice, cited for: Termination needs no notice",
+    "Authority withheld because its quotation could not be verified against text retrieved from its source: Unretrieved rule, https://example.gov/never-fetched, cited for: Another rule applies",
+  ]
+  // Completed research that withheld authority is limited; only the verified finding reaches drafting.
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "limited", findings: [verified], limitations: withheld })
+  expect(last.openItems.map(item => item.detail)).toEqual(withheld)
+  expect(researchHandoff(directory)).not.toContain("A party may terminate without notice.")
+  // Any other issue still fails the last attempt, and nothing is saved.
+  const other = acceptResearchReply(directory, "research", JSON.stringify({ ...reply, findings: [{ ...verified, jurisdiction: "" }, invented] }), { final: true })
+  expect(other.issues).toEqual([expect.stringContaining("Every finding must include")])
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "limited", findings: [verified], limitations: withheld })
+})
+
 test("of two retrievals of one URL that both contain the quotation, the latest is recorded; a saved matching id is kept", () => {
   const directory = matter()
   const text = "A party must give written notice before termination."
@@ -208,7 +234,7 @@ test("a path is reported with the other issues before the last attempt, and only
   const research = retrieved(directory)
   const leak = "The readable context in .dochaus/lean/research-context.txt held no source text."
   const pathIssues = (issues: string[]) => issues.filter(issue => issue.includes("internal workflow file"))
-  const invented = { ...research, limitations: [leak], findings: [{ ...research.findings[0], quote: "Invented text" }] }
+  const invented = { ...research, limitations: [leak], findings: [{ ...research.findings[0], jurisdiction: "" }] }
   const both = acceptResearchReply(directory, "research", JSON.stringify(invented)).issues
   expect(both.length).toBe(2)
   expect(pathIssues(both)).toEqual([expect.stringContaining("limitations[0]")])

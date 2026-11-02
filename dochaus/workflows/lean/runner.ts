@@ -708,7 +708,8 @@ function roundPlanned(directory: string, state: LeanState, recorded: LeanStageSt
 
 /** One child session; the first prompt carries the step's inputs, each retry the
  * checker's issues. On the last attempt the changes step withholds amendments
- * whose quotations still fail (they become open items), and package review
+ * whose quotations still fail (they become open items), research withholds
+ * findings it cannot verify (disclosed as research limitations), and package review
  * withholds delivery rows its check still refuses, or reads a missing delivery
  * list as none (the planned names stand);
  * any other fourth failed check stops the run with those issues. */
