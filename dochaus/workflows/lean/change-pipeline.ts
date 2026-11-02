@@ -28,6 +28,9 @@ export type ChangeGroup = {
   limitations: string[]
   /** The review findings the group amends for (review-findings.ts). */
   resolves?: string[]
+  /** The separate repair goals a focused repair merge joined because they
+   * share a paragraph; a per-paragraph review reads only those touching it. */
+  parts?: Omit<ChangeGroup, "parts">[]
 }
 export type ReviewDisposition = {
   disposition: "deferred" | "recommendation" | "rejected"

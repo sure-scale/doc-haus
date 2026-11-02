@@ -69,6 +69,11 @@ test("shared PID goals merge transitively and unrelated amendments/dispositions 
   expect(merged.groups[0]!.goal).not.toContain("Preserve payment.")
   expect(merged.shared_decisions).toEqual(["Preserve unrelated source conditions."])
   expect(merged.findings).toEqual([plan.findings![1]!])
+  // Each joined goal stays separately readable, flattened across repeat merges.
+  expect(merged.groups[0]!.parts!.map(row => row.id)).toEqual([result.groups[0]!.id, "dependent"])
+  const again = mergeRepairAdjudications(plan, [{ ...result, groups: [merged.groups[0]!, { ...result.groups[0]!, id: "third", pids: [other], goal: "Third goal." }] }])
+  expect(again.groups[0]!.parts!.map(row => row.id)).toEqual([result.groups[0]!.id, "dependent", "third"])
+  expect(again.groups[0]!.parts!.every(row => !("parts" in row))).toBe(true)
 })
 test("native product dispatch accepts cumulative plan with one focused job and no generic read", async () => {
   const { directory } = await setup()

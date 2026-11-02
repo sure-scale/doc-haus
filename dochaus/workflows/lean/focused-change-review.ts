@@ -1,6 +1,6 @@
 import { parseJsonObject } from "./change-checks"
 import { checklistProducerInputs } from "./checklist-source-context"
-import { acceptChangeReview, checkChangeReview, projectedChangeParagraphs, readChangePlan, type ChangeReview } from "./change-pipeline"
+import { acceptChangeReview, checkChangeReview, projectedChangeParagraphs, readChangePlan, type ChangeGroup, type ChangeReview } from "./change-pipeline"
 import { readChangeList, readParagraphs, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { readLeanPlan, type DocID } from "./plan"
@@ -26,9 +26,9 @@ export function focusedChangeReviewInputs(directory: string, document: DocID): F
   const operations = [...changes.amendments, ...(changes.explanations ?? []), ...(changes.retained_initial ?? []), ...(changes.withheld ?? []).map(row => row.amendment)]
   if (operations.some(row => !initialPids.has(row.pid))) throw Error("Semantic review inventory contains a noncurrent target.")
   const covered = new Set<string>()
-  const units: { id: string; pids: string[]; goal: unknown }[] = plan.groups.map(group => {
+  const units: { id: string; pids: string[]; goal: unknown; parts?: ChangeGroup["parts"] }[] = plan.groups.map(({ parts, ...group }) => {
     group.pids.forEach(pid => covered.add(pid))
-    return { id: `group:${group.id}`, pids: group.pids, goal: group }
+    return { id: `group:${group.id}`, pids: group.pids, goal: group, parts }
   })
   for (const row of operations) {
     if (covered.has(row.pid)) continue
@@ -47,10 +47,10 @@ export function focusedChangeReviewInputs(directory: string, document: DocID): F
   const documentPlan = readLeanPlan(directory)
   const entry = documentPlan?.documents.find(row => row.id === document)
   const composition = packageCompositionBlock(directory, document)
-  const build = (unit: typeof units[number], split = false): FocusedChangeReviewInput => {
+  const build = (unit: typeof units[number], split = false, neighbors = true): FocusedChangeReviewInput => {
     const own = new Set(unit.pids)
     const context = new Set(unit.pids)
-    initial.forEach((row, index) => {
+    if (neighbors) initial.forEach((row, index) => {
       if (!own.has(row.pid)) return
       for (const neighbor of [index - 1, index + 1]) if (initial[neighbor]) context.add(initial[neighbor]!.pid)
     })
@@ -64,6 +64,7 @@ export function focusedChangeReviewInputs(directory: string, document: DocID): F
       `<shared_decisions>\n${JSON.stringify(plan.shared_decisions)}\n</shared_decisions>`,
       `<initial_target_and_neighbors>\n${initial.filter(row => context.has(row.pid)).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</initial_target_and_neighbors>`,
       `<projected_target_and_neighbors>\n${projected.filter(row => context.has(row.pid)).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</projected_target_and_neighbors>`,
+      ...(neighbors ? [] : ["Neighboring paragraphs are left out of this packet for size: retrieve them with read-document view=proposed_body and view=source before judging any dependency on them."]),
       `<cumulative_operations>\n${JSON.stringify({ amendments: changes.amendments.filter(row => own.has(row.pid)), explanations: (changes.explanations ?? []).filter(row => own.has(row.pid)), retained_initial: (changes.retained_initial ?? []).filter(row => own.has(row.pid)), withheld: (changes.withheld ?? []).filter(row => own.has(row.amendment.pid)), questions: changes.questions })}\n</cumulative_operations>`,
       "Your explicit dependency task: inspect the conditions, exceptions, definitions and cross-references on which this assigned wording depends, including related clauses outside these neighbors. For advice about another run-owned document, retrieve its actual relevant final clause and compare each material factual assertion, proposed resolution and remaining decision against that clause; agreement with another agent's summary is insufficient. Inspect relevant original source qualifications and actual instructions/answers. Report a cross-clause or earlier-document defect with its owning initial PID when identifiable. Do not review unrelated history or silently assume dependencies are consistent.",
       `Targeted retrieval: read-record .dochaus/lean/${document}/paragraphs.json and changes.json provide initial targets and the complete cumulative operation inventory. For this document, search-document/read-document view=proposed_body exposes the complete pending revision with initial-PID and split-part coordinates, including replacements and deletions. Use that view to locate disclosure passages even when this assignment has no inline target PID. Its words are generated proposals to evaluate, not source authority. current_body is the actual pre-apply Word artifact and may differ: never infer an omission in the pending revision from that older view. Original uploads are available using search-document/read-document view=source. Earlier run-owned final bodies can be inspected with document=<id>, view=current_body and bounded offset/count; use source-map.json and .dochaus/lean/plan.json to identify them. Approved legal propositions and limitations are in research-review.json/research.json; retrieve relevant approved text before asserting law, never substitute memory. Full plans, reviews and old findings remain targeted lookup, not authority.`,
@@ -77,12 +78,27 @@ export function focusedChangeReviewInputs(directory: string, document: DocID): F
     const input = build(unit)
     if (input.text.length <= MAX_CONTEXT) return [input]
     // A preparation group can merge many dependent targets. Review each target
-    // with the complete shared goal rather than duplicating every operation in
-    // one packet. The goal retains all related PIDs and source qualifications;
-    // each reviewer must retrieve its material dependencies before passing.
-    const inputs = unit.pids.length > 1
-      ? unit.pids.map(pid => build({ ...unit, id: `${unit.id}:target:${pid}`, pids: [pid] }, true))
-      : [input]
+    // with the shared goal rather than duplicating every operation in one
+    // packet. The goal retains all related PIDs; each reviewer must retrieve
+    // its material dependencies before passing. A focused repair merge joins
+    // separate goals that share a paragraph, so a target carries only the
+    // goals touching it, and every goal still reaches each of its targets.
+    // Neighbors move to targeted retrieval only when a target is still too large.
+    const split = unit.pids.length > 1
+    const targets = split || unit.parts ? unit.pids.map(pid => {
+      const parts = unit.parts?.filter(part => part.pids.includes(pid))
+      const goal = parts?.length ? { id: (unit.goal as ChangeGroup).id, pids: unit.pids, parts } : unit.goal
+      return { ...unit, id: split ? `${unit.id}:target:${pid}` : unit.id, pids: [pid], goal }
+    }) : [unit]
+    const inputs = targets.flatMap(row => {
+      const input = build(row, split)
+      if (input.text.length <= MAX_CONTEXT) return [input]
+      const compact = build(row, split, false)
+      const parts = (row.goal as { parts?: ChangeGroup["parts"] }).parts
+      if (compact.text.length <= MAX_CONTEXT || !parts || parts.length < 2) return [compact]
+      // Several goals on one paragraph: check each goal's effect on it alone.
+      return parts.map(part => build({ ...row, id: `${row.id}:goal:${part.id}`, goal: { ...(row.goal as object), parts: [part] } }, true, false))
+    })
     for (const row of inputs) if (row.text.length > MAX_CONTEXT)
       throw Error(`Semantic review assignment ${row.id} exceeds bounded context; decompose its related goals before model admission.`)
     return inputs
