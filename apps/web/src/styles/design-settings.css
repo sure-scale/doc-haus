@@ -284,6 +284,13 @@
   font-size: .93rem;
 }
 
+/* A lead-in inside a switch description (Background agents: when it runs) stays below the
+   row title's semibold weight. */
+.settings-toggle-text strong {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
 .settings-label {
   font-size: 12px;
   font-weight: 600;

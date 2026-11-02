@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { fetchWordChatPreferences, fetchWordSetup, saveWordChatPreferences, setupWordAddin, type WordChatPreferences, type WordSetupStatus } from "../../api/ingest/word"
 import { humanizeError } from "../../api/ingest/errors"
-import { FieldRow, SegRow } from "./controls"
+import { SegRow } from "./controls"
 
 export function useWordAddin() {
   const [status, setStatus] = useState<WordSetupStatus>()
@@ -99,13 +99,14 @@ export function WordChatDefaults({ onBusy }: { onBusy?: (busy: boolean) => void 
     if (!preferences || pending.current) return
     pending.current = true; setSaving(true); setError(""); setMessage("")
     try {
-      const value = await saveWordChatPreferences(preferences)
+      // Only the scope is set here; the suggestions switch lives in Background agents.
+      const value = await saveWordChatPreferences({ defaultScope: preferences.defaultScope })
       if (alive.current) { setPreferences(value); setSaved(value); setMessage("Chat defaults saved.") }
     } catch (cause) {
       if (alive.current) setError(humanizeError(cause, "Could not save Word chat defaults. Your choices are still here; try again."))
     } finally { pending.current = false; if (alive.current) setSaving(false) }
   }
-  const dirty = preferences && saved && (preferences.defaultScope !== saved.defaultScope || preferences.suggestions !== saved.suggestions)
+  const dirty = preferences && saved && preferences.defaultScope !== saved.defaultScope
   return <div className="settings-section">
     <h4>Chat defaults</h4>
     <p className="settings-hint muted">Starting choices for new Word chats.</p>
@@ -114,12 +115,6 @@ export function WordChatDefaults({ onBusy }: { onBusy?: (busy: boolean) => void 
         options={[{ value: "document", label: "This document" }, { value: "matter", label: "Whole matter" }]}
         hint="You can change source scope in each chat."
         onChange={value => change({ defaultScope: value as WordChatPreferences["defaultScope"] })} />
-      <FieldRow id="word-chat-suggestions" label="Suggestions" hint="Show up to three ideas beside your document.">
-        <button id="word-chat-suggestions" type="button" role="switch" aria-label="Suggestions" aria-checked={preferences.suggestions}
-          aria-describedby="word-chat-suggestions-hint" className={`switch${preferences.suggestions ? " on" : ""}`} disabled={saving}
-          onClick={() => change({ suggestions: !preferences.suggestions })} />
-        <span className="switch-state muted">{preferences.suggestions ? "On" : "Off"}</span>
-      </FieldRow>
       <div className="row settings-row"><button type="button" className="primary" disabled={saving || !dirty} onClick={() => void save()}>{saving ? "Saving…" : "Save chat defaults"}</button></div>
     </> : <button type="button" onClick={() => void load()}>Retry chat defaults</button>}
     {error && <p role="alert" className="settings-warning">{error}</p>}

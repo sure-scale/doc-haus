@@ -224,7 +224,7 @@ try {
   await scenario("Research saves Entire web without clearing approved sources or unrelated preferences and reloads explicit approved mode", async () => {
     const state = fixture(); state.connected = true; state.ready = true
     state.config = { model: "test-models/primary", small_model: "test-models/fast" }; state.completed = ["models"]
-    state.preferences = { ...state.preferences, webResearch: "official", approvedSources: ["saved.example", "archive.example"], caseLawApiKey: "saved-fixture-courtlistener", courtlistenerMcpEnabled: true, posture: "conservative", houseStyle: "Preserve this unrelated drafting preference.", telemetry: { retention_days: 31, retention_days_source: "user", rate_overrides: {} } }
+    state.preferences = { ...state.preferences, webResearch: "official", approvedSources: ["saved.example", "archive.example"], caseLawApiKey: "saved-fixture-courtlistener", courtlistenerMcpEnabled: true, posture: "conservative", houseStyle: "Preserve this unrelated drafting preference.", telemetry: { retention_days: 31, retention_days_source: "user" } }
     const original = structuredClone(state.preferences)
     const { page, context, errors } = await open(state)
     try {

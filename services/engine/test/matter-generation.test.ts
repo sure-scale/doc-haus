@@ -50,7 +50,7 @@ test("cold native matter generation uses the selected model/variant and refuses 
   config.model = config.small_model = "generation-fixture/configured-note#audit"
   config.providers = { "generation-fixture": { package: "@opencode/ai/providers/openai-compatible", name: "Independent generation fixture",
     settings: { baseURL: `http://127.0.0.1:${provider.port}/v1`, apiKey: "synthetic-test-only", provider: "generation-fixture" }, models: {
-      "configured-note": { name: "Configured note", limit: { context: 131072, output: 8192 },
+      "configured-note": { name: "Configured note", limit: { context: 131072, output: 8192 }, cost: { input: 2, output: 10 },
         variants: [{ id: "audit", headers: { "x-fixture-variant": "audit" }, body: { temperature: 0.25 } }] },
       "alternate-note": { name: "Never selected", limit: { context: 131072, output: 8192 } },
     } } }
@@ -105,7 +105,9 @@ test("cold native matter generation uses the selected model/variant and refuses 
     expect(generated.data.text).toBe("The independent working-note check completed.")
     expect(generated.data.model).toEqual({ providerID: "generation-fixture", id: "configured-note", variant: "audit" })
     expect(generated.data.elapsed_ms).toBeGreaterThanOrEqual(0)
-    expect(generated.data.usage).toBeNull()
+    // Provider-reported usage passes through, priced from the selected model's catalog cost.
+    expect(generated.data.usage.tokens).toEqual({ input: 12, output: 8, reasoning: 0, cache: { read: 0, write: 0 } })
+    expect(generated.data.usage.cost).toBeCloseTo((12 * 2 + 8 * 10) / 1_000_000, 12)
     expect(requests).toHaveLength(1)
     expect(requests[0].model).toBe("configured-note")
     expect(requests[0].stream).toBe(true)

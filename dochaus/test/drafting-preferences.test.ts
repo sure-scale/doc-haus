@@ -97,7 +97,7 @@ test("stale markdown and operational preferences cannot enter model instructions
     detail: "detailed",
     searchApiKey: "synthetic-search-secret",
     caseLawApiKey: "synthetic-case-law-secret",
-    telemetry: { retention_days: 13, rate_overrides: { "synthetic-model": { input_per_mtok: 7 } } },
+    telemetry: { retention_days: 13 },
   })
   writeFileSync(path.join(preferences, "drafting.md"), "Synthetic stale instructions.")
   const system = await systemFor()
@@ -106,7 +106,6 @@ test("stale markdown and operational preferences cannot enter model instructions
   expect(system).not.toContain("Synthetic stale instructions.")
   expect(system).not.toContain("synthetic-search-secret")
   expect(system).not.toContain("synthetic-case-law-secret")
-  expect(system).not.toContain("synthetic-model")
   expect(system).not.toContain("retention_days")
 })
 

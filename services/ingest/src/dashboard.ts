@@ -1,5 +1,5 @@
 import { Hono } from "hono"
-import { dashboardChartSource, dashboardInventory, validateDashboardSources } from "./dashboard-source"
+import { dashboardChartSource, dashboardInventory, dashboardUsage, validateDashboardSources } from "./dashboard-source"
 import path from "node:path"
 import { mkdirSync } from "node:fs"
 import { workspaceRoot } from "./matter"
@@ -20,8 +20,13 @@ export function dashboardRoutes() {
       const text = await c.req.text()
       if (text.length > 65536) throw new Error("Invalid dashboard source")
       const input = JSON.parse(text)
-      if (!input || typeof input !== "object" || Array.isArray(input) || !["inventory", "preview", "validate"].includes(input.action)) throw new Error("Invalid dashboard source")
+      if (!input || typeof input !== "object" || Array.isArray(input) || !["inventory", "preview", "validate", "usage"].includes(input.action)) throw new Error("Invalid dashboard source")
       const { action, ...rest } = input
+      // The web's built-in widgets; the planner's tool cannot ask for it.
+      if (action === "usage") {
+        if (Object.keys(rest).length) throw new Error("Invalid dashboard source")
+        return c.json(await dashboardUsage())
+      }
       if (action === "inventory") {
         if (Object.keys(rest).some(key => !["period", "timeZone"].includes(key))) throw new Error("Invalid dashboard source")
         return c.json(await dashboardInventory(rest.period, rest.timeZone))

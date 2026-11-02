@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from "react"
-import type { Chart } from "../../../../../dochaus/lib/dashboard-plan"
-import { chartData } from "./chart-data"
+import { RANKED, type Chart } from "../../../../../dochaus/lib/dashboard-plan"
+import { chartCaption, chartData } from "./chart-data"
 import type { DashboardData, Period } from "./data"
 import { formatChartValue } from "./visual/ChartCards"
 import { LiveComponent, type ComponentDefinition } from "./visual/LiveComponents"
@@ -13,9 +13,9 @@ export function chartProjection(chart: Chart, data: DashboardData, period: Perio
   const view = chartData(chart, data, period)
   const format = chart.metric === "spend" ? "money" : "count"
   const maximum = Math.max(0, ...view.points.map((point) => point.value))
-  const ranked = chart.groupBy === "client" || chart.groupBy === "matter"
+  const caption = chartCaption(chart, view)
   const interval = chart.groupBy === "day" ? "day" : chart.groupBy === "week" ? "wk" : "mo"
-  const badge = ranked ? `${view.groups} ${chart.groupBy}${view.groups === 1 ? "" : "s"}` : chart.form === "line" ? `Peak: ${formatChartValue(maximum, format)} / ${interval}` : ""
+  const badge = caption.count || (chart.form === "line" ? `Peak: ${formatChartValue(maximum, format)} / ${interval}` : "")
   const metric = chart.metric === "spend" ? "Estimated spend · USD" : chart.metric === "conversations" ? "Conversations started" : chart.metric === "matters" ? "Matters opened" : "Drafted documents"
   return {
     // Group keys can be empty or longer than component IDs; the renderer can
@@ -23,7 +23,7 @@ export function chartProjection(chart: Chart, data: DashboardData, period: Perio
     points: view.total === 0 ? [] : view.points.map(({ key: _key, ...point }) => point),
     total: view.total,
     basis: `${metric}${view.incomplete ? " · partial" : ""}`,
-    period: `${view.period}${chart.client ? ` · ${chart.client}` : chart.matter ? ` · ${chart.matter}` : ""}`,
+    period: caption.period,
     badge,
     unavailable: view.unavailable,
     notes: view.notes,
@@ -43,7 +43,7 @@ export function ChartWidget({ chart, data, period }: { chart: Chart; data: Dashb
   }, [data, source])
   const definition: ComponentDefinition = {
     id: "chart", kind: "chart",
-    props: { form: chart.form, label: chart.title, format: chart.metric === "spend" ? "money" : "count", showShares: chart.groupBy === "client" || chart.groupBy === "matter" },
+    props: { form: chart.form, label: chart.title, format: chart.metric === "spend" ? "money" : "count", showShares: RANKED.includes(chart.groupBy) },
     bindings: Object.fromEntries(["points", "total", "basis", "period", "badge", "unavailable", "notes", "empty"].map((field) => [field, { source: "chart", path: `/${field}` }])),
   }
   return <LiveComponent definition={definition} sources={sources} />

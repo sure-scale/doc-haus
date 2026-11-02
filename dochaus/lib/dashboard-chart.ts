@@ -1,15 +1,21 @@
 import type { Chart, Grouping, Metric } from "./dashboard-plan"
+import { USAGE_GROUP_LABEL, usageAgent } from "./usage-agents"
 export type Period = "month" | "last-month" | "quarter" | "all"
 export type MatterActivity = {
   matter: { id: string; title: string; client?: string; sample?: boolean; created_at: number }
   sessions: { id: string; parentID?: string; title?: string; metadata?: { dochaus_role?: unknown }; tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }; time: { created: number; updated: number } }[]
   drafting?: { status?: string; documents?: { status: string; documents: { kind: string; deliverable?: unknown }[] } | null }
   documents?: number
-  costs: { time: number; cost: number }[]
+  // agent is a usage-agents key; labels and groups come from usageAgent().
+  costs: { time: number; cost: number; agent?: string }[]
   unread: boolean
   unpriced: number
 }
-export type DashboardData = { matters: MatterActivity[]; error?: string }
+// Spend outside any matter, such as building dashboards. It is never a matter:
+// it joins spend totals and trends, ranks as one "Not in a matter" row, and
+// drops out when a chart narrows to a client or matter.
+export type OutsideMatters = { costs: MatterActivity["costs"]; unread: boolean; unpriced: number }
+export type DashboardData = { matters: MatterActivity[]; workspace?: OutsideMatters; error?: string }
 const PERIOD_LABELS: Record<Period, string> = { month: "This month", "last-month": "Last month", quarter: "Last 3 months", all: "All time" }
 function isConversation(session: MatterActivity["sessions"][number]) { const role = session.metadata?.dochaus_role; return !session.parentID && !/^doc\.haus/i.test(session.title ?? "") && (role === undefined || role === "lean-drafting-owner") }
 function draftedCount(drafting: MatterActivity["drafting"]) { return drafting?.documents?.status === "completed" ? drafting.documents.documents.filter(row => row.kind === "body" && row.deliverable).length : 0 }
@@ -54,7 +60,9 @@ export type ChartData = {
   incomplete: boolean
 }
 
-type Event = { time?: number; value: number; row: MatterActivity }
+// No row: spend outside any matter.
+type Event = { time?: number; value: number; row?: MatterActivity; agent?: string }
+const OUTSIDE = { key: "\u0000outside", label: "Not in a matter" }
 const TIME = new Set<Grouping>(["day", "week", "month"])
 const dateLabel = (time: number, month = false, zone?: string) => new Date(time).toLocaleDateString("en-GB", { timeZone: zone, ...(month ? { month: "short", year: "numeric" } : { day: "numeric", month: "short" }) })
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`
@@ -71,7 +79,7 @@ function nextBucket(time: number, group: Grouping, c: ReturnType<typeof calendar
 }
 
 function events(row: MatterActivity, metric: Metric): Event[] {
-  if (metric === "spend") return row.costs.map(({ time, cost }) => ({ time, value: cost, row }))
+  if (metric === "spend") return row.costs.map(({ time, cost, agent }) => ({ time, value: cost, row, agent }))
   if (metric === "conversations") return row.sessions.filter(isConversation).map(({ time }) => ({ time: time.created, value: 1, row }))
   if (metric === "matters") return [{ time: row.matter.created_at, value: 1, row }]
   if (metric === "documents") return [{ value: row.documents ?? 0, row }]
@@ -92,13 +100,15 @@ export function chartData(chart: Chart, data: DashboardData, dashboardPeriod: Pe
   const rows = own.filter(({ matter }) =>
     (chart.client === undefined || matter.client?.trim() === chart.client) &&
     (chart.matter === undefined || matter.title === chart.matter))
+  const outside = chart.metric === "spend" && chart.client === undefined && chart.matter === undefined ? data.workspace : undefined
+  const unread = chart.metric !== "matters" && (rows.some((row) => row.unread) || Boolean(outside?.unread))
   const notes: string[] = []
   const result = (points: ChartPoint[], total: number, groups = points.length): ChartData => ({
-    points, total, groups, notes, unavailable: Boolean(data.error), incomplete: chart.metric !== "matters" && rows.some((row) => row.unread),
+    points, total, groups, notes, unavailable: Boolean(data.error), incomplete: unread,
     period: chart.metric === "drafts" ? "Latest finished run in each matter · all time" : chart.metric === "documents" ? "Current source documents · all time" : PERIOD_LABELS[period],
     empty: data.error ? "These figures could not be loaded." : chart.client !== undefined && !rows.length ? `No matters found for ${chart.client}.`
       : chart.matter !== undefined && !rows.length ? `No matter named ${chart.matter} was found.`
-      : rows.some((row) => row.unread) && chart.metric !== "matters" ? "No figures are available from the activity that could be read." : "Nothing recorded for this view yet.",
+      : unread ? "No figures are available from the activity that could be read." : "Nothing recorded for this view yet.",
   })
   if (data.error) { notes.push(data.error); return result([], 0) }
   if (chart.matter !== undefined && rows.length > 1) {
@@ -117,10 +127,12 @@ export function chartData(chart: Chart, data: DashboardData, dashboardPeriod: Pe
     if (TIME.has(chart.groupBy)) return { ...result([], 0), unavailable: true, empty: "Documents cannot be dated for this view." }
   }
   if (chart.metric === "tokens") notes.push("Tokens are attributed to the date each session started.")
-  if (rows.some((row) => row.unread) && chart.metric !== "matters") notes.push("Some matter activity could not be read. These figures may be incomplete.")
-  if (chart.metric === "spend" && rows.some((row) => row.unpriced > 0)) notes.push("Some AI use has no price and is missing from this estimate.")
-  const values = rows.flatMap((row) => events(row, chart.metric)).filter((entry) =>
+  if (unread) notes.push("Some matter activity could not be read. These figures may be incomplete.")
+  if (chart.metric === "spend" && (rows.some((row) => row.unpriced > 0) || (outside?.unpriced ?? 0) > 0)) notes.push("Some AI use has no price and is missing from this estimate.")
+  const outsideEvents: Event[] = (outside?.costs ?? []).map(({ time, cost, agent }) => ({ time, value: cost, agent }))
+  const values = [...rows.flatMap((row) => events(row, chart.metric)), ...outsideEvents].filter((entry) =>
     Number.isFinite(entry.value) && entry.value >= 0 &&
+    (chart.agentGroup === undefined || usageAgent(entry.agent).group === chart.agentGroup) &&
     (["drafts", "documents"].includes(chart.metric) || (entry.time !== undefined && Number.isFinite(entry.time) && entry.time >= range.start && entry.time < range.end)))
   const total = values.reduce((sum, entry) => sum + entry.value, 0)
   if (chart.groupBy === "none") return result([{ key: "total", label: chart.title, value: total }], total)
@@ -144,15 +156,39 @@ export function chartData(chart: Chart, data: DashboardData, dashboardPeriod: Pe
   }
   const groups = new Map<string, ChartPoint>()
   for (const entry of values) {
-    const matter = entry.row.matter
-    const key = chart.groupBy === "matter" ? matter.id : matter.client?.trim() || ""
-    const label = chart.groupBy === "matter" ? matter.title : key || "No client recorded"
+    const { key, label } = rankedGroup(entry, chart.groupBy)
     const group = groups.get(key) ?? { key, label, value: 0 }
     group.value += entry.value
     groups.set(key, group)
   }
   const sorted = [...groups.values()].filter((point) => point.value > 0).sort((a, b) => b.value - a.value || a.label.localeCompare(b.label))
   const shown = sorted.slice(0, chart.limit ?? 12)
-  if (shown.length < sorted.length) notes.push(`Showing the top ${shown.length} of ${plural(sorted.length, chart.groupBy === "client" ? "client" : "matter")}. The total includes all of them.`)
-  return result(shown, total, sorted.length)
+  // "Not in a matter" is a row but never counts as a matter or client.
+  const counted = (points: ChartPoint[]) => points.filter((point) => point.key !== OUTSIDE.key).length
+  if (shown.length < sorted.length) notes.push(`Showing the top ${counted(shown)} of ${plural(counted(sorted), NOUN[chart.groupBy] ?? "group")}. The total includes all of them.`)
+  return result(shown, total, counted(sorted))
+}
+
+// Agents with the same plain name share one row.
+function rankedGroup(entry: Event, groupBy: Grouping) {
+  if (groupBy === "matter" || groupBy === "client") {
+    const matter = entry.row?.matter
+    if (!matter) return OUTSIDE
+    if (groupBy === "matter") return { key: matter.id, label: matter.title }
+    const client = matter.client?.trim() || ""
+    return { key: client, label: client || "No client recorded" }
+  }
+  const agent = usageAgent(entry.agent)
+  return groupBy === "agent" ? { key: agent.label, label: agent.label } : { key: agent.group, label: USAGE_GROUP_LABEL[agent.group] }
+}
+
+const NOUN: Partial<Record<Grouping, string>> = { matter: "matter", client: "client", agent: "agent" }
+
+// The group count and narrowing shown beside a chart, for both projections.
+export function chartCaption(chart: Chart, view: ChartData) {
+  const noun = NOUN[chart.groupBy]
+  return {
+    count: noun ? plural(view.groups, noun) : "",
+    period: [view.period, chart.client ?? chart.matter, chart.agentGroup && USAGE_GROUP_LABEL[chart.agentGroup]].filter(Boolean).join(" · "),
+  }
 }

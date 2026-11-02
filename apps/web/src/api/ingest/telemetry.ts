@@ -1,21 +1,27 @@
 import { INGEST_URL } from "../../config"
 import { ingestError } from "./errors"
 
+// Costs are provider-reported per model step, read from native sessions.
+export type UsageGroup = "background" | "work"
+
 export type TelemetryLean = {
   current_activity: { cost_usd: number; turns: number; since_ts: number } | null
   today: { cost_usd: number; turns: number }
   matter_total: { cost_usd: number; turns: number; sessions: number; since_ts: number }
-  current_session: { tokens: number; status: "ok" | "warn" | "fail"; agent: string; model: string } | null
-  rate_card_as_of: string | null
-  unknown_models: string[]
+  current_session: { tokens: number; status: "ok" | "warn" | "fail"; agent: string; label: string; model: string } | null
+  unpriced_turns: number
+  partial: boolean
 }
 
 export type TelemetryDetail = {
-  by_agent: Array<{ agent: string; cost_usd: number; turns: number; tool_calls: number }>
-  by_model: Array<{ model: string; cost_usd: number; turns: number }>
-  by_tool: Array<{ tool: string; calls: number; total_duration_ms: number; avg_duration_ms: number }>
-  recent_turns: Array<{ ts: number; agent: string; model: string; tokens: number; cost_usd: number | null; status: string }>
-  recent_sessions: Array<{ id: string; agent: string; status: string; last_activity_at: number; cost_usd: number }>
+  by_group: Array<{ group: UsageGroup; label: string; cost_usd: number; turns: number }>
+  by_agent: Array<{ agent: string; label: string; group: UsageGroup; cost_usd: number; turns: number; tool_calls: number }>
+  // Conversation upkeep (titles, compaction) has no model; its row carries a
+  // plain label so the rows add up to the matter total.
+  by_model: Array<{ model: string | null; label?: string; cost_usd: number; turns: number; unpriced_turns: number }>
+  by_tool: Array<{ tool: string; label: string; calls: number; total_duration_ms: number; avg_duration_ms: number }>
+  recent_turns: Array<{ ts: number; agent: string; label: string; group: UsageGroup; model: string | null; tokens: number; cost_usd: number | null }>
+  recent_sessions: Array<{ id: string; title: string; agent: string; label: string; group: UsageGroup; last_activity_at: number; cost_usd: number }>
   sparkline: Array<{ ts: number; cost_usd: number }>
 }
 
@@ -23,10 +29,6 @@ export type TelemetryStorage = {
   size_bytes: number
   matter_count: number
   oldest_ts: number | null
-  unknown_models: string[]
-  rate_card_as_of: string | null
-  rate_source: string
-  rate_reference_url: string
 }
 
 export function getTelemetry(matterId: string, session?: string): Promise<TelemetryLean> {

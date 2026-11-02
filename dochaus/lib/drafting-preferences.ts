@@ -59,6 +59,19 @@ export type DraftingPreferences = {
   // starts the full run ("off"). Read by the web app and never rendered into
   // drafting.md.
   quickDraftOffer: "ask" | "auto" | "off"
+  // Settings → Background agents: optional model jobs that start without a
+  // click. Each sends matter text to the model. Read by ingest and the web app;
+  // never rendered into drafting.md.
+  backgroundAgents: BackgroundAgents
+}
+
+export type BackgroundAgents = {
+  // chronology-assess: suggests a chronology when one would help the matter.
+  chronologySuggestion: boolean
+  // review-compare: groups matching answers once a review column fills.
+  reviewCompare: boolean
+  // narrator: writes progress notes during a drafting run.
+  narration: boolean
 }
 
 /** How hard negotiated terms lean toward the lawyer's client: the firm's
@@ -66,16 +79,9 @@ export type DraftingPreferences = {
  * into its plan (workflows/lean/plan.ts runPosture). */
 export type Posture = DraftingPreferences["posture"]
 
-export type RateOverride = Partial<{
-  input_per_mtok: number
-  output_per_mtok: number
-  cache_read_per_mtok?: number
-}>
-
 export type TelemetryPreferences = {
   retention_days: number
   retention_days_source?: "user" | "default"
-  rate_overrides: Record<string, RateOverride>
 }
 
 export const DEFAULT_DRAFTING: DraftingPreferences = {
@@ -94,7 +100,7 @@ export const DEFAULT_DRAFTING: DraftingPreferences = {
   caseLawApiKey: "",
   courtlistenerMcpEnabled: false,
   approvedSources: [],
-  telemetry: { retention_days: 90, retention_days_source: "default", rate_overrides: {} },
+  telemetry: { retention_days: 90, retention_days_source: "default" },
   pageNumbers: "plain",
   pageNumberPosition: "center",
   numberFirstPage: true,
@@ -105,6 +111,7 @@ export const DEFAULT_DRAFTING: DraftingPreferences = {
   notesMarking: true,
   styleTemplate: "",
   quickDraftOffer: "ask",
+  backgroundAgents: { chronologySuggestion: true, reviewCompare: true, narration: true },
 }
 
 /** Longest legend kept: a legend is one short line of page furniture. */
@@ -143,6 +150,17 @@ export function normalizePreferences(value: unknown): DraftingPreferences {
     notesMarking: input.notesMarking !== false,
     styleTemplate: normalizeStyleTemplate(input.styleTemplate),
     quickDraftOffer: input.quickDraftOffer === "auto" || input.quickDraftOffer === "off" ? input.quickDraftOffer : DEFAULT_DRAFTING.quickDraftOffer,
+    backgroundAgents: normalizeBackgroundAgents(input.backgroundAgents),
+  }
+}
+
+/** Every background agent stays on unless the firm switched it off. */
+export function normalizeBackgroundAgents(input: unknown): BackgroundAgents {
+  const value = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {}
+  return {
+    chronologySuggestion: value.chronologySuggestion !== false,
+    reviewCompare: value.reviewCompare !== false,
+    narration: value.narration !== false,
   }
 }
 
@@ -206,9 +224,6 @@ function normalizeTelemetry(input: unknown): TelemetryPreferences {
   return {
     retention_days: Number.isFinite(retention) && retention > 0 ? retention : DEFAULT_DRAFTING.telemetry.retention_days,
     retention_days_source: telemetry.retention_days_source === "user" ? "user" : DEFAULT_DRAFTING.telemetry.retention_days_source,
-    rate_overrides: telemetry.rate_overrides && typeof telemetry.rate_overrides === "object" && !Array.isArray(telemetry.rate_overrides)
-      ? telemetry.rate_overrides
-      : DEFAULT_DRAFTING.telemetry.rate_overrides,
   }
 }
 

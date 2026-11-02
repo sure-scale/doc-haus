@@ -19,13 +19,17 @@ import {
 } from "./chronology-generation"
 import { actOnChronology, decideChronologyProposal, mutateChronology, readChronology } from "./chronology-store"
 import { openDb, upsertDocument } from "./db"
+import { writeDraftingPreferences } from "./preferences"
 import { liveText } from "../../../dochaus/lib/extract"
 import type { StageSessionPort } from "../../../dochaus/workflows/lean/stages"
 const dirs: string[] = []
 const previous = process.env.DOCHAUS_RUNTIME_DIR
+const previousWorkspace = process.env.WORKSPACE_ROOT
 afterEach(() => {
   if (previous === undefined) delete process.env.DOCHAUS_RUNTIME_DIR
   else process.env.DOCHAUS_RUNTIME_DIR = previous
+  if (previousWorkspace === undefined) delete process.env.WORKSPACE_ROOT
+  else process.env.WORKSPACE_ROOT = previousWorkspace
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 function matter() {
@@ -39,6 +43,8 @@ function matter() {
   mkdirSync(path.join(runtime, "config/opencode"), { recursive: true })
   writeFileSync(path.join(runtime, "config/opencode/opencode.json"), JSON.stringify({ model: "fixture/local" }))
   process.env.DOCHAUS_RUNTIME_DIR = runtime
+  // Firm preferences live in an isolated workspace, never the developer's.
+  process.env.WORKSPACE_ROOT = path.join(dir, "workspace")
   return dir
 }
 function source(dir: string, name: string, body: string, quality?: string, role = "source") {
@@ -353,6 +359,29 @@ test("discovery uses actual context, caches assessment and preserves Hide withou
   expect(calls).toBe(1)
 })
 
+test("the Suggest a chronology switch turned off skips the relevance check without reads, model jobs or writes", async () => {
+  const dir = matter()
+  source(dir, "Note.md", "The instrument arrived late and a dated account would help resolve the dispute.")
+  writeDraftingPreferences({ backgroundAgents: { chronologySuggestion: false } })
+  let calls = 0,
+    reads = 0
+  const deps = fake(() => {
+    calls++
+    return JSON.stringify({ status: "relevant", reason: "The record describes disputed timing." })
+  })
+  deps.engine = { fetch: (async () => (reads++, Response.json({ data: [] }))) as unknown as typeof fetch }
+  const before = readChronology(dir)
+  const state = await assessChronology(dir, deps)
+  expect(state).toEqual(before)
+  expect(state.suggestion.status).not.toBe("relevant")
+  expect(calls).toBe(0)
+  expect(reads).toBe(0)
+  expect(readChronology(dir).revision).toBe(before.revision)
+  writeDraftingPreferences({ backgroundAgents: { chronologySuggestion: true } })
+  expect((await assessChronology(dir, deps)).suggestion.status).toBe("relevant")
+  expect(calls).toBe(1)
+})
+
 test("section splitting covers all characters with bounded overlap", () => {
   const body = "abcdef".repeat(6000),
     sections = chronologySections(body)
@@ -663,8 +692,9 @@ test("recent matter instructions contain only real main-chat user admissions fro
   expect(observed.some((route) => /\/(internal|child|lean)(?:\/|$)/.test(route))).toBe(false)
 })
 
-test("main-chat instruction changes enter relevance assessment content keys without importing assistant text", async () => {
+test("main-chat instructions inform the relevance assessment but never re-trigger it on their own", async () => {
   const dir = matter()
+  source(dir, "Note.md", "A delivery account.")
   let words = "Resolve disputed shipment dates before the hearing.",
     calls = 0
   const deps = fake((input) => {
@@ -680,13 +710,36 @@ test("main-chat instruction changes enter relevance assessment content keys with
   let state = await assessChronology(dir, deps)
   expect(state.suggestion.status).toBe("relevant")
   const oldKey = state.suggestion.assessedKey
-  await assessChronology(dir, deps)
-  expect(calls).toBe(1)
   words = "This matter is only a prospective standard form template; there is no historical event question."
+  state = await assessChronology(dir, deps)
+  expect(calls).toBe(1)
+  expect(state.suggestion.status).toBe("relevant")
+  source(dir, "Later.md", "A later note.")
   state = await assessChronology(dir, deps)
   expect(calls).toBe(2)
   expect(state.suggestion.assessedKey).not.toBe(oldKey)
   expect(state.suggestion.status).toBe("irrelevant")
+})
+
+test("an insufficient relevance result is reassessed once the lawyer states the matter's purpose in chat", async () => {
+  const dir = matter()
+  let words = "",
+    calls = 0
+  const deps = fake(() => {
+    calls++
+    return JSON.stringify({ status: "relevant", reason: "The lawyer describes disputed timing." })
+  })
+  deps.engine = { fetch: nativeChat(dir, () => words) }
+  let state = await assessChronology(dir, deps)
+  expect(state.suggestion.status).toBe("insufficient")
+  const revision = state.revision
+  state = await assessChronology(dir, deps)
+  expect(state.revision).toBe(revision)
+  expect(calls).toBe(0)
+  words = "Resolve disputed shipment dates before the hearing."
+  state = await assessChronology(dir, deps)
+  expect(calls).toBe(1)
+  expect(state.suggestion.status).toBe("relevant")
 })
 
 test("overlapping relevance checks share one model job per unchanged context and still assess new sources", async () => {

@@ -8,7 +8,7 @@ import { suggestQuestions } from "../api/review-suggest"
 import { matches, primaryAction, reviewAttention, type AttentionFilter, type MarkerState, type QueueEntry } from "../api/review-attention"
 import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, recheckPassages, saveGrid, type Grid, type GridCellData, type GridColumn, type SourceCheck } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
-import { getPreferences } from "../api/ingest/preferences"
+import { getBackgroundAgents, getPreferences } from "../api/ingest/preferences"
 import { getMatter } from "../api/ingest/matters"
 import type { Document } from "../api/ingest/documents"
 import { createSession, getMessages, sendPrompt } from "../api/opencode/sessions"
@@ -232,6 +232,11 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
   }, [questionEdit])
   const [fillPreview, setFillPreview] = useState<Array<{ docName: string; column: Pick<GridColumn, "id" | "question" | "compare"> }>>()
   const [checkingFill, setCheckingFill] = useState(false)
+  // Whether a reviewed Fill is followed by an automatic comparison, so the fill
+  // dialog promises one only when it will run. The fill itself re-reads it.
+  const [autoCompare, setAutoCompare] = useState(true)
+  const refreshAutoCompare = () => void getBackgroundAgents().then((agents) => setAutoCompare(agents.reviewCompare))
+  useEffect(refreshAutoCompare, [])
   // Filter and search change only what is shown. Rows and columns with a match
   // stay shown until they change, so a cell reviewed in place does not jump away.
   const [filters, setFilters] = useState<AttentionFilter[]>([])
@@ -756,7 +761,13 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
       }
       setFillPreview(undefined)
       // Only a reviewed Fill compares; a single cell's Fill or Refresh does not.
-      void fill(current).then(() => compareColumns([...new Set(current.map((target) => target.column.id))], epoch))
+      // The background-agent switch is read once filling ends, so a change made
+      // meanwhile applies; the column's own Compare button is unaffected.
+      void fill(current)
+        .then(() => getBackgroundAgents())
+        .then((agents) => {
+          if (agents.reviewCompare) return compareColumns([...new Set(current.map((target) => target.column.id))], epoch)
+        })
     } catch (e) {
       setError(humanizeError(e, "Could not check the saved table. Try again before filling."))
       setFillPreview(undefined)
@@ -976,7 +987,7 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
           query={query}
           onQuery={setQuery}
           onStarter={() => { setError(undefined); setStarterOpen({}) }}
-          onFill={() => { setError(undefined); setFillPreview(fillTargets()) }}
+          onFill={() => { setError(undefined); setFillPreview(fillTargets()); refreshAutoCompare() }}
           onReviewNext={reviewNext}
           onExport={exportAs}
           notice={walkDone ? "End of the review list" : undefined}
@@ -987,7 +998,7 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
         {saveProblem && <div role="alert"><p>{saveProblem}</p><p>Export the table above or download your local copy before reloading the saved table.</p><button type="button" onClick={downloadPending}>Download unsaved copy</button> <button type="button" disabled={reloading} onClick={reloadGrid}>{reloading ? "Reloading…" : "Reload saved table"}</button></div>}
 
         {starterOpen && <ReviewStarter documents={documents} existingQuestions={grid.columns.map((column) => column.question)} problem={saveProblem ?? error} initialStarter={starterOpen.starter} initialStep={starterOpen.step} suggest={suggest} description={suggestDescription} onDescription={setSuggestDescription} onCancel={() => setStarterOpen(undefined)} onConfirm={addStarterQuestions} />}
-        {fillPreview && <FillPreview targets={fillPreview} documentCount={documents.length} checking={checkingFill} onCancel={() => setFillPreview(undefined)} onConfirm={confirmFill} />}
+        {fillPreview && <FillPreview targets={fillPreview} documentCount={documents.length} compareAfterFill={autoCompare} checking={checkingFill} onCancel={() => setFillPreview(undefined)} onConfirm={confirmFill} />}
         {questionEdit && (() => {
           const column = questionEdit.id ? grid.columns.find((c) => c.id === questionEdit.id) : undefined
           if (questionEdit.id && !column) return null

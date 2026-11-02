@@ -3,7 +3,7 @@ import path from "node:path"
 import { workspaceRoot } from "./matter"
 import { DEFAULT_DRAFTING, normalizeApprovedSources, normalizePracticeAreas, normalizePreferences, normalizeStyleTemplate, renderInstructions, type DraftingPreferences } from "../../../dochaus/lib/drafting-preferences"
 
-export { DEFAULT_DRAFTING, type DraftingPreferences, type RateOverride, type TelemetryPreferences } from "../../../dochaus/lib/drafting-preferences"
+export { DEFAULT_DRAFTING, type DraftingPreferences, type TelemetryPreferences } from "../../../dochaus/lib/drafting-preferences"
 
 // Structured preferences are the shared source for settings and model context.
 // Keep a rendered markdown export alongside them for inspection. The engine

@@ -1,56 +1,50 @@
-import { chartData } from "../../../dochaus/lib/dashboard-chart"
+import { chartCaption, chartData } from "../../../dochaus/lib/dashboard-chart"
 import { checkPlan, type Chart } from "../../../dochaus/lib/dashboard-plan"
-import { engineV2Fetch } from "../../../dochaus/lib/engine-v2"
 import { listMatters, listPlaybooks, workspaceRoot } from "./matter"
 import { listClients } from "./clients"
 import { existsSync, readdirSync } from "node:fs"
 import path from "node:path"
 import { leanDraftingStatus } from "./lean-drafting"
-import { engineURL } from "./matter-session"
+import { enginePages, generationUsage, sessionUsage } from "./matter-usage"
 import { openDb, listSourceDocuments } from "./db"
-import type { DashboardData, MatterActivity, Period } from "../../../dochaus/lib/dashboard-chart"
+import type { DashboardData, MatterActivity, OutsideMatters, Period } from "../../../dochaus/lib/dashboard-chart"
+import { USAGE_GROUP_LABEL, type UsageGroup } from "../../../dochaus/lib/usage-agents"
 type Session = MatterActivity["sessions"][number] & { cost: number; tokens: { input: number; output: number; reasoning: number; cache?: { read: number; write: number } } }
 type Row = Omit<MatterActivity, "sessions" | "drafting"> & { sessions: Session[]; drafting?: ReturnType<typeof leanDraftingStatus>; sessionUnread: boolean; draftingUnread: boolean; documentsUnread: boolean }
 
+type Practice = { matters: Row[]; workspace?: OutsideMatters; samples?: Row[] }
+
 const PERIODS = new Set(["month", "last-month", "quarter", "all"])
-async function pages(directory: string, pathname: string, signal: AbortSignal): Promise<unknown[]> {
-  let cursor: string | undefined
-  const all: unknown[] = [], seen = new Set<string>()
-  for (let page = 0; page < 100; page++) {
-    let next: string | undefined
-    const transport = Object.assign(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      const response = await fetch(input, init)
-      if (response.ok && new URL(String(input)).pathname === pathname) {
-        const envelope: any = await response.clone().json()
-        next = typeof envelope?.cursor?.next === "string" ? envelope.cursor.next : undefined
-      }
-      return response
-    }, { preconnect: fetch.preconnect }) as typeof fetch
-    const url = new URL(pathname, engineURL())
-    url.searchParams.set("limit", "200")
-    if (cursor) url.searchParams.set("cursor", cursor)
-    else url.searchParams.set("order", pathname === "/api/session" ? "desc" : "asc")
-    const response = await engineV2Fetch(transport)(url, { headers: { "x-opencode-directory": directory }, signal })
-    if (!response.ok) throw new Error("Engine read failed")
-    const rows: unknown = await response.json()
-    if (!Array.isArray(rows)) throw new Error("Invalid engine response")
-    all.push(...rows)
-    if (!next) return all
-    if (seen.has(next)) throw new Error("Repeated cursor")
-    seen.add(next); cursor = next
+// One folder's spend through the usage ledger: live sessions, each priced per
+// message, plus its telemetry rows (stateless jobs and deleted sessions).
+async function ledger(dir: string, signal: AbortSignal) {
+  let sessions: Session[] = [], unread = false
+  try { sessions = await enginePages(dir, "/api/session", signal) as Session[] } catch { unread = true }
+  const costs: MatterActivity["costs"] = []
+  for (const session of sessions) {
+    const usage = await sessionUsage(dir, session, signal)
+    costs.push(...usage.entries)
+    unread ||= usage.unread
   }
-  throw new Error("Engine page limit reached")
+  costs.push(...generationUsage(dir, sessions))
+  const unpriced = sessions.filter(({ cost, tokens }) => !cost && ((tokens.input || 0) + (tokens.output || 0) + (tokens.reasoning || 0) + (tokens.cache?.read || 0) + (tokens.cache?.write || 0)) > 0).length
+  return { sessions, costs, unread, unpriced }
 }
-async function loadPractice(): Promise<{ matters: Row[] }> {
+// The sample matter is read only for its own spend (the Recent widget); every
+// practice figure leaves it out.
+async function loadPractice(): Promise<Practice> {
   const signal = AbortSignal.timeout(10_000)
-  const matters = listMatters().filter(matter => !matter.sample)
+  const matters = listMatters()
   const rows: Row[] = new Array(matters.length)
   let index = 0
+  // Dashboard building runs outside every matter, in the workspace's .dashboard folder.
+  const dashboards = path.join(workspaceRoot(), ".dashboard")
+  const outside = existsSync(dashboards) ? ledger(dashboards, signal) : undefined
   await Promise.all(Array.from({ length: Math.min(4, matters.length) }, async () => {
     while (index < matters.length) {
       const i = index++; const matter = matters[i]!
-      let sessions: Session[] = [], drafting: Row["drafting"], sessionUnread = false, draftingUnread = false, documentsUnread = false
-      try { sessions = await pages(matter.dir, "/api/session", signal) as Session[] } catch { sessionUnread = true }
+      let drafting: Row["drafting"], draftingUnread = false, documentsUnread = false
+      const { sessions, costs, unread: sessionUnread, unpriced } = await ledger(matter.dir, signal)
       try { drafting = leanDraftingStatus(matter.dir) as Row["drafting"] } catch { draftingUnread = true }
       let documents = 0
       try {
@@ -59,25 +53,13 @@ async function loadPractice(): Promise<{ matters: Row[] }> {
           try { documents = listSourceDocuments(db).length } finally { db.close() }
         }
       } catch { documentsUnread = true }
-      const costs: MatterActivity["costs"] = []
-      for (const session of sessions) {
-        const whole = { time: session.time.created, cost: session.cost || 0, session: session.id }
-        if (!session.cost) { costs.push(whole); continue }
-        try {
-          const messages = await pages(matter.dir, `/api/session/${encodeURIComponent(session.id)}/message`, signal) as { info: { cost?: number; time: { created: number } } }[]
-          const entries = messages.flatMap(({ info }) => info.cost ? [{ time: info.time.created, cost: info.cost, session: session.id }] : [])
-          const rest = session.cost - entries.reduce((sum, entry) => sum + entry.cost, 0)
-          if (rest > .0001) entries.push({ time: session.time.updated, cost: rest, session: session.id })
-          costs.push(...entries)
-        } catch { costs.push(whole); sessionUnread = true }
-      }
-      const unpriced = sessions.filter(({ cost, tokens }) => !cost && ((tokens.input || 0) + (tokens.output || 0) + (tokens.reasoning || 0) + (tokens.cache?.read || 0) + (tokens.cache?.write || 0)) > 0).length
       rows[i] = { matter, sessions, drafting, documents, costs, unread: sessionUnread || draftingUnread || documentsUnread, sessionUnread, draftingUnread, documentsUnread, unpriced }
     }
   }))
-  return { matters: rows }
+  const { costs, unread, unpriced } = await outside ?? { costs: [], unread: false, unpriced: 0 }
+  return { matters: rows.filter(row => !row.matter.sample), workspace: { costs, unread, unpriced }, samples: rows.filter(row => row.matter.sample) }
 }
-let pending: Promise<{ data: { matters: Row[] }; updatedAt: number }> | undefined
+let pending: Promise<{ data: Practice; updatedAt: number }> | undefined
 function practice() {
   if (!pending) {
     const current = loadPractice().then(data => ({ data, updatedAt: Date.now() }))
@@ -96,13 +78,24 @@ export async function dashboardChartSource(raw: string | undefined, period: stri
   const snapshot = await practice()
   return { data: projection(chart, chartData(chart, scopedData(chart, snapshot.data), period as Period, Date.now(), timeZone)), updatedAt: snapshot.updatedAt }
 }
+// Each matter's priced spend, and spend outside any matter, for the built-in
+// widgets: the same ledger the generated charts read.
+export async function dashboardUsage() {
+  const snapshot = await practice(), data = snapshot.data, outside = data.workspace ?? { costs: [], unread: false, unpriced: 0 }
+  const slim = (costs: MatterActivity["costs"]) => costs.map(({ time, cost, agent }) => ({ time, cost, ...(agent ? { agent } : {}) }))
+  return {
+    updatedAt: snapshot.updatedAt,
+    matters: Object.fromEntries([...data.matters, ...data.samples ?? []].map(row => [row.matter.id, { costs: slim(row.costs), unread: row.sessionUnread, unpriced: row.unpriced }])),
+    workspace: { ...outside, costs: slim(outside.costs) },
+  }
+}
 function projection(chart: Chart, view: ReturnType<typeof chartData>) {
   const format = (value: number) => chart.metric === "spend" ? (value > 0 && value < .01 ? "< $0.01" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value)) : new Intl.NumberFormat("en-GB", { maximumFractionDigits: 0 }).format(value)
-  const ranked = chart.groupBy === "client" || chart.groupBy === "matter"
+  const caption = chartCaption(chart, view)
   const interval = chart.groupBy === "day" ? "day" : chart.groupBy === "week" ? "wk" : "mo"
-  const badge = ranked ? `${view.groups} ${chart.groupBy}${view.groups === 1 ? "" : "s"}` : chart.form === "line" ? `Peak: ${format(Math.max(0, ...view.points.map(point => point.value)))} / ${interval}` : ""
+  const badge = caption.count || (chart.form === "line" ? `Peak: ${format(Math.max(0, ...view.points.map(point => point.value)))} / ${interval}` : "")
   const metric = chart.metric === "spend" ? "Estimated spend · USD" : chart.metric === "conversations" ? "Conversations started" : chart.metric === "matters" ? "Matters opened" : chart.metric === "tokens" ? "Tokens · by session start" : chart.metric === "documents" ? "Source documents" : "Drafted documents"
-  return { points: view.total === 0 ? [] : view.points.map(({ key: _key, ...point }) => point), total: view.total, basis: `${metric}${view.incomplete ? " · partial" : ""}`, period: `${view.period}${chart.client ? ` · ${chart.client}` : chart.matter ? ` · ${chart.matter}` : ""}`, badge, unavailable: view.unavailable, notes: view.notes, empty: view.empty }
+  return { points: view.total === 0 ? [] : view.points.map(({ key: _key, ...point }) => point), total: view.total, basis: `${metric}${view.incomplete ? " · partial" : ""}`, period: caption.period, badge, unavailable: view.unavailable, notes: view.notes, empty: view.empty }
 }
 
 type Availability = { status: "available" | "empty" | "partial" | "unavailable"; usable: boolean; dataBacked?: boolean; reason?: string; total?: number }
@@ -110,10 +103,10 @@ function validateContext(period: unknown, zone: unknown): asserts period is Peri
   if (typeof period !== "string" || !PERIODS.has(period) || typeof zone !== "string" || !zone || zone.length > 100) throw new Error("Invalid dashboard source")
   try { new Intl.DateTimeFormat("en", { timeZone: zone }).format() } catch { throw new Error("Invalid dashboard source") }
 }
-function scopedData(chart: Chart, data: { matters: Row[] }) {
-  return { matters: data.matters.map(row => ({ ...row, unread: chart.metric === "matters" ? false : chart.metric === "documents" ? row.documentsUnread : chart.metric === "drafts" ? row.draftingUnread : row.sessionUnread })) }
+function scopedData(chart: Chart, data: Practice): DashboardData {
+  return { workspace: data.workspace, matters: data.matters.map(row => ({ ...row, unread: chart.metric === "matters" ? false : chart.metric === "documents" ? row.documentsUnread : chart.metric === "drafts" ? row.draftingUnread : row.sessionUnread })) }
 }
-function chartAvailability(chart: Chart, data: { matters: Row[] }, period: Period, zone: string): Availability {
+function chartAvailability(chart: Chart, data: Practice, period: Period, zone: string): Availability {
   const view = chartData(chart, scopedData(chart, data), period, Date.now(), zone)
   if (view.unavailable) return { status: "unavailable", usable: false, reason: view.empty }
   if (view.total > 0) return { status: view.incomplete ? "partial" : "available", usable: true, total: view.total }
@@ -143,7 +136,7 @@ function activityDays(zone: string, now: number) {
   const weekday = new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay()
   return 365 + (weekday + 6) % 7
 }
-export function templateAvailability(id: string, data: { matters: Row[] }, period: Period, zone: string): Availability {
+export function templateAvailability(id: string, data: Practice, period: Period, zone: string): Availability {
   const rows = data.matters, unread = rows.some(row => id === "attention" || id === "drafts" ? row.draftingUnread : row.sessionUnread), now = Date.now()
   const query = (metric: Chart["metric"], p: Chart["period"] = "dashboard") => chartAvailability({ type: "chart", title: "Total", metric, groupBy: "none", form: "stat", period: p }, data, period, zone)
   if (["actions", "ideas", "library", "sample", "setup", "journey"].includes(id)) return { status: "available", usable: true }
@@ -154,8 +147,9 @@ export function templateAvailability(id: string, data: { matters: Row[] }, perio
     return count ? { status: unread ? "partial" : "available", usable: true, total: count } : { status: unread ? "unavailable" : "empty", usable: false, reason: "No recent conversations." }
   }
   if (id === "week") {
-    const total = rows.flatMap(row => row.costs).filter(cost => withinDays(cost.time, 7, zone, now)).reduce((sum, cost) => sum + cost.cost, 0)
-    return total > 0 ? { status: unread ? "partial" : "available", usable: true, total } : { status: unread ? "unavailable" : "empty", usable: false, reason: "No priced spend in the last seven days." }
+    const total = [...rows.flatMap(row => row.costs), ...data.workspace?.costs ?? []].filter(cost => withinDays(cost.time, 7, zone, now)).reduce((sum, cost) => sum + cost.cost, 0)
+    const partial = unread || Boolean(data.workspace?.unread)
+    return total > 0 ? { status: partial ? "partial" : "available", usable: true, total } : { status: partial ? "unavailable" : "empty", usable: false, reason: "No priced spend in the last seven days." }
   }
   if (["spend", "matter-spend", "trend"].includes(id)) return query("spend")
   if (id === "matter-cost") return query("spend", "all")
@@ -190,12 +184,14 @@ export async function dashboardInventory(period: unknown, timeZone: unknown) {
   const zone = timeZone as string, snapshot = await practice(), data = snapshot.data
   const metrics = Object.fromEntries((["matters", "conversations", "spend", "drafts", "tokens", "documents"] as const).map(metric => {
     const periods = Object.fromEntries((["month", "last-month", "quarter", "all"] as const).map(p => [p, (metric === "documents" || metric === "drafts") && p !== "all" ? { status: "unavailable", usable: false, reason: "This dataset is available across all time only." } : chartAvailability({ type: "chart", title: "Total", metric, groupBy: "none", form: "stat", period: p }, data, p, zone)])) as Record<Period, Availability>
-    const times = metric === "matters" ? data.matters.map(row => row.matter.created_at) : metric === "spend" ? data.matters.flatMap(row => row.costs.map(cost => cost.time)) : metric === "conversations" ? data.matters.flatMap(row => row.sessions.filter(session => !session.parentID && !/^doc\.haus/i.test(session.title ?? "") && (session.metadata?.dochaus_role === undefined || session.metadata.dochaus_role === "lean-drafting-owner")).map(session => session.time.created)) : metric === "tokens" ? data.matters.flatMap(row => row.sessions.map(session => session.time.created)) : []
+    const times = metric === "matters" ? data.matters.map(row => row.matter.created_at) : metric === "spend" ? [...data.matters.flatMap(row => row.costs), ...data.workspace?.costs ?? []].map(cost => cost.time) : metric === "conversations" ? data.matters.flatMap(row => row.sessions.filter(session => !session.parentID && !/^doc\.haus/i.test(session.title ?? "") && (session.metadata?.dochaus_role === undefined || session.metadata.dochaus_role === "lean-drafting-owner")).map(session => session.time.created)) : metric === "tokens" ? data.matters.flatMap(row => row.sessions.map(session => session.time.created)) : []
     const valid = times.filter(Number.isFinite)
     return [metric, { ...periods[metric === "documents" || metric === "drafts" ? "all" : period], periods, ...(valid.length ? { firstAt: Math.min(...valid), lastAt: Math.max(...valid) } : {}), ...(metric === "drafts" ? { note: "Latest finished run per matter; all time only." } : metric === "documents" ? { note: "Current source documents; all time only." } : metric === "tokens" ? { note: "Session totals by session start date." } : {}) }]
   }))
   const { TEMPLATES } = await import("../../../dochaus/lib/dashboard-plan")
-  return { updatedAt: snapshot.updatedAt, metrics, templates: Object.fromEntries(Object.keys(TEMPLATES).map(id => [id, templateAvailability(id, data, period, zone)])), library: libraryCounts(), filters: { clients: [...new Set(data.matters.map(row => row.matter.client?.trim()).filter((name): name is string => Boolean(name)))], matters: [...new Set(data.matters.map(row => row.matter.title))] } }
+  // Spend by agent group in the period, so the planner can offer background agent views.
+  const agentGroups = Object.fromEntries((Object.keys(USAGE_GROUP_LABEL) as UsageGroup[]).map(group => [group, { label: USAGE_GROUP_LABEL[group], ...chartAvailability({ type: "chart", title: "Total", metric: "spend", groupBy: "none", form: "stat", period: "dashboard", agentGroup: group }, data, period, zone) }]))
+  return { updatedAt: snapshot.updatedAt, metrics, templates: Object.fromEntries(Object.keys(TEMPLATES).map(id => [id, templateAvailability(id, data, period, zone)])), library: libraryCounts(), filters: { clients: [...new Set(data.matters.map(row => row.matter.client?.trim()).filter((name): name is string => Boolean(name)))], matters: [...new Set(data.matters.map(row => row.matter.title))], agentGroups } }
 }
 export async function validateDashboardSources(input: unknown) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Invalid dashboard source")

@@ -3,6 +3,7 @@
 // errors for the dashboard agent to fix, and by the web, which re-checks the
 // plan it reads back and computes every figure itself. A plan names widgets
 // and chart settings only; it never carries a number.
+import { USAGE_GROUP_LABEL, type UsageGroup } from "./usage-agents"
 
 // The ready-made widgets, as the web's dashboard catalog shows them.
 export const TEMPLATES = {
@@ -45,13 +46,15 @@ export const GROUPINGS = {
   month: "Each month.",
   matter: "Each matter, largest first.",
   client: "Each client, largest first. Matters with no client form one group.",
+  agent: "Each agent by its plain name, largest first. Spend only.",
+  "agent-group": "Background agents (proactive jobs that start without a click) against the lawyer's own work. Spend only.",
 } as const
 
 export const FORMS = {
   stat: "One large figure. Needs grouping none.",
   bars: "Bars, one per group.",
   line: "A line over time. Needs grouping day, week or month.",
-  list: "A ranked list. Needs grouping matter or client.",
+  list: "A ranked list. Needs grouping matter, client, agent or agent-group.",
   calendar: "A calendar with one cell per day. Needs grouping day.",
 } as const
 
@@ -74,7 +77,9 @@ export type Chart = {
   // Narrows the chart to one client's matters or one matter, by exact name.
   client?: string
   matter?: string
-  // How many groups a matter or client chart shows.
+  // Narrows spend to background agents or to the lawyer's own work.
+  agentGroup?: UsageGroup
+  // How many groups a ranked chart shows.
   limit?: number
 }
 
@@ -96,7 +101,8 @@ const MAX_NOTES = 5
 const MAX_NOTE = 160
 
 const TIME: Grouping[] = ["day", "week", "month"]
-const RANKED: Grouping[] = ["matter", "client"]
+export const RANKED: Grouping[] = ["matter", "client", "agent", "agent-group"]
+const AGENT: Grouping[] = ["agent", "agent-group"]
 
 const has = <T extends object>(table: T, key: unknown): key is keyof T => typeof key === "string" && Object.hasOwn(table, key)
 const quoted = (values: readonly string[]) => values.map((value) => `"${value}"`).join(", ")
@@ -119,20 +125,25 @@ function chartErrors(chart: Record<string, unknown>, at: string) {
   for (const key of ["client", "matter"] as const)
     if (chart[key] !== undefined && (typeof chart[key] !== "string" || !chart[key].trim())) errors.push(`${at}: ${key} must be a name, or left out.`)
   if (chart.client !== undefined && chart.matter !== undefined) errors.push(`${at}: narrow to a client or a matter, not both.`)
+  if (chart.agentGroup !== undefined && !has(USAGE_GROUP_LABEL, chart.agentGroup)) errors.push(`${at}: agentGroup must be one of ${quoted(Object.keys(USAGE_GROUP_LABEL))}, or left out.`)
   if (errors.length) return errors
   const { metric, groupBy, form } = chart as Pick<Chart, "metric" | "groupBy" | "form">
   if (form === "stat" && groupBy !== "none") errors.push(`${at}: a stat shows one total, so groupBy must be "none".`)
   if (form !== "stat" && groupBy === "none") errors.push(`${at}: groupBy "none" is one total, so form must be "stat".`)
   if (form === "line" && !TIME.includes(groupBy)) errors.push(`${at}: a line runs over time, so groupBy must be "day", "week" or "month".`)
-  if (form === "list" && !RANKED.includes(groupBy)) errors.push(`${at}: a list ranks matters or clients, so groupBy must be "matter" or "client".`)
+  if (form === "list" && !RANKED.includes(groupBy)) errors.push(`${at}: a list ranks groups, so groupBy must be one of ${quoted(RANKED)}.`)
   if (form === "calendar" && groupBy !== "day") errors.push(`${at}: a calendar has one cell per day, so groupBy must be "day".`)
   if (metric === "drafts" && chart.period !== "all") errors.push(`${at}: drafts have no completion dates, so period must be "all".`)
   if (metric === "drafts" && TIME.includes(groupBy)) errors.push(`${at}: drafts have no dates, so group them by "matter" or "client", or use "none".`)
   if (metric === "documents" && chart.period !== "all") errors.push(`${at}: source documents have no reliable dates, so period must be "all".`)
   if (metric === "documents" && TIME.includes(groupBy)) errors.push(`${at}: source documents have no reliable dates, so group them by "matter" or "client", or use "none".`)
   if (groupBy === "matter" && chart.matter !== undefined) errors.push(`${at}: a chart of one matter cannot group by matter.`)
+  // Only spend is recorded per agent; tokens follow whole sessions.
+  if (metric !== "spend" && AGENT.includes(groupBy)) errors.push(`${at}: only spend is recorded per agent, so use metric "spend" or another grouping.`)
+  if (metric !== "spend" && chart.agentGroup !== undefined) errors.push(`${at}: only spend is recorded per agent, so agentGroup needs metric "spend".`)
+  if (groupBy === "agent-group" && chart.agentGroup !== undefined) errors.push(`${at}: a chart of one agent group cannot group by agent-group; group by "agent" instead.`)
   if (chart.limit !== undefined) {
-    if (!RANKED.includes(groupBy)) errors.push(`${at}: limit applies only when grouping by matter or client.`)
+    if (!RANKED.includes(groupBy)) errors.push(`${at}: limit applies only when grouping by one of ${quoted(RANKED)}.`)
     else if (!Number.isInteger(chart.limit) || (chart.limit as number) < 1 || (chart.limit as number) > MAX_LIMIT)
       errors.push(`${at}: limit must be a whole number from 1 to ${MAX_LIMIT}.`)
   }
@@ -141,7 +152,7 @@ function chartErrors(chart: Record<string, unknown>, at: string) {
 
 // The same chart twice, whatever its title.
 export function chartKey(chart: Chart) {
-  return ["chart", chart.metric, chart.groupBy, chart.form, chart.period, chart.client ?? "", chart.matter ?? "", chart.limit ?? ""].join("|")
+  return ["chart", chart.metric, chart.groupBy, chart.form, chart.period, chart.client ?? "", chart.matter ?? "", chart.limit ?? "", chart.agentGroup ?? ""].join("|")
 }
 
 // Accepts a plan as the model wrote it, or lists every reason it cannot be
@@ -181,6 +192,7 @@ export function checkPlan(input: unknown): { plan: Plan; errors?: undefined } | 
         ...(chart.client !== undefined ? { client: chart.client.trim() } : {}),
         ...(chart.matter !== undefined ? { matter: chart.matter.trim() } : {}),
         ...(chart.limit !== undefined ? { limit: chart.limit } : {}),
+        ...(chart.agentGroup !== undefined ? { agentGroup: chart.agentGroup } : {}),
       }
     } else next = { type: widget.type as TemplateId }
     const key = next.type === "chart" ? chartKey(next) : next.type
@@ -209,7 +221,8 @@ export function describeCatalog() {
     "Forms:",
     ...lines(FORMS),
     `Periods: ${quoted(CHART_PERIODS)}. "dashboard" follows the period picked above the dashboard; the others are this month, last month, the last three months and all time.`,
-    `A matter or client chart may set limit, from 1 to ${MAX_LIMIT} groups.`,
+    `A spend chart may set agentGroup to "background" (${USAGE_GROUP_LABEL.background}: proactive jobs that start without a click, such as Word suggestions) or "work" (${USAGE_GROUP_LABEL.work}). It combines with a client or matter filter and any grouping except agent-group.`,
+    `A chart grouped by ${quoted(RANKED)} may set limit, from 1 to ${MAX_LIMIT} groups.`,
     `A dashboard holds 1 to ${MAX_WIDGETS} widgets, each once.`,
   ].join("\n")
 }

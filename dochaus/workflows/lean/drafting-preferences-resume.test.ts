@@ -33,7 +33,7 @@ test("unchanged, equivalent defaults and operational-only saves skip accepted st
   expect(first.status).toBe("completed")
   for (const preferences of [undefined, { ...DEFAULT_DRAFTING, houseStyle: " \n " }, {
     process: "plan-first", searchApiKey: "synthetic-search", caseLawApiKey: "synthetic-case-law",
-    telemetry: { retention_days: 21, rate_overrides: { synthetic: { input_per_mtok: 5 } } },
+    telemetry: { retention_days: 21 },
   }]) {
     if (preferences) save(preferences)
     const idle = scriptedModel({})

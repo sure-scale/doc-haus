@@ -5,16 +5,15 @@ import { join } from "node:path"
 import {
   applyRetentionPolicy,
   clearTelemetry,
-  getPricingSource,
-  getUnknownModels,
   markSessionStatus,
   openTelemetryDb,
+  readGenerations,
+  recordGeneration,
   recordToolCall,
   recordTurn,
   summarizeMessages,
   touchSession,
 } from "./telemetry"
-import { PRICING_SOURCE } from "./pricing"
 
 let cleanup: (() => void) | undefined
 
@@ -41,8 +40,7 @@ test("openTelemetryDb creates the schema idempotently", () => {
       .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
       .all()
       .map((row) => row.name),
-  ).toEqual(["meta", "sessions", "tool_calls", "turns"])
-  expect(getPricingSource(reopened)).toBe(PRICING_SOURCE)
+  ).toEqual(["generations", "meta", "sessions", "tool_calls", "turns"])
   expect(reopened.query("SELECT value FROM meta WHERE key = ?").get("pricing_as_of")).toBeNull()
   reopened.close()
 })
@@ -63,64 +61,19 @@ test("touchSession upserts and updates last_activity_at", () => {
   db.close()
 })
 
-test("recordTurn computes cost for a known model and inserts the row", () => {
+test("recordTurn keeps the context size check and leaves cost to native sessions", () => {
   const db = openTelemetryDb(tempMatter())
-  const result = recordTurn(db, {
+  recordTurn(db, {
     sessionID: "session-1",
     turnIndex: 3,
-    model: "synthetic/priced",
+    model: "synthetic/model",
     agent: "draft",
     contextChars: 40_000,
     estimatedInputTokens: 10_000,
-    rateOverrides: { "synthetic/priced": { input_per_mtok: 2, output_per_mtok: 6 } },
   })
   const row = db.query("SELECT turn_index, estimated_input_tokens, cost_usd FROM turns").get()
 
-  expect(result.costUsd).toBeGreaterThan(0)
-  expect(result.unknownModel).toBe(false)
-  expect(row.turn_index).toBe(3)
-  expect(row.estimated_input_tokens).toBe(10_000)
-  expect(row.cost_usd).toBe(result.costUsd)
-  db.close()
-})
-
-test("recordTurn nulls cost for an unknown model and accumulates it", () => {
-  const db = openTelemetryDb(tempMatter())
-  db.query("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run("unknown_models", "not-json")
-  expect(getUnknownModels(db)).toEqual([])
-
-  const result = recordTurn(db, {
-    sessionID: "session-1",
-    turnIndex: 1,
-    model: "unknown/mystery",
-    agent: "draft",
-    contextChars: 100,
-    estimatedInputTokens: 25,
-  })
-  recordTurn(db, {
-    sessionID: "session-1",
-    turnIndex: 2,
-    model: "unknown/mystery",
-    agent: "draft",
-    contextChars: 100,
-    estimatedInputTokens: 25,
-  })
-  const unknownModels = getUnknownModels(db)
-
-  expect(result.costUsd).toBeNull()
-  expect(result.unknownModel).toBe(true)
-  expect(unknownModels).toContain("unknown/mystery")
-  expect(unknownModels.filter((model) => model === "unknown/mystery")).toHaveLength(1)
-  db.close()
-})
-
-test("getUnknownModels omits entries that now have rates", () => {
-  const db = openTelemetryDb(tempMatter())
-  db
-    .query("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
-    .run("unknown_models", JSON.stringify(["synthetic/priced", "unknown/mystery"]))
-
-  expect(getUnknownModels(db, { "synthetic/priced": { input_per_mtok: 2, output_per_mtok: 6 } })).toEqual(["unknown/mystery"])
+  expect(row).toEqual({ turn_index: 3, estimated_input_tokens: 10_000, cost_usd: null })
   db.close()
 })
 
@@ -231,4 +184,23 @@ test("summarizeMessages estimates tokens as chars/4", () => {
       },
     ]),
   ).toEqual({ chars: 400, estimatedTokens: 100 })
+})
+
+test("stateless generation usage round-trips and follows retention and clear", () => {
+  const db = openTelemetryDb(tempMatter())
+  try {
+    const tokens = { input: 1200, output: 300, reasoning: 50, cache: { read: 400, write: 0 } }
+    recordGeneration(db, { agent: "prepare-changes", model: "google/gemini", tokens, cost: 0.0123, ts: Date.now() - 10 * 86_400_000 })
+    recordGeneration(db, { agent: "comment-replies", tokens, cost: null })
+    expect(readGenerations(db).map((row) => [row.agent, row.model, row.cost, row.tokens])).toEqual([
+      ["prepare-changes", "google/gemini", 0.0123, tokens],
+      ["comment-replies", "", null, tokens],
+    ])
+    applyRetentionPolicy(db, 5)
+    expect(readGenerations(db).map((row) => row.agent)).toEqual(["comment-replies"])
+    clearTelemetry(db)
+    expect(readGenerations(db)).toEqual([])
+  } finally {
+    db.close()
+  }
 })

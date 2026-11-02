@@ -31,6 +31,8 @@ import { FIXTURE_SOURCE, FIXTURE_SOURCE_TEXT, scriptedLeanModel } from "../../..
 import { registerLeanDeliverable } from "./lean-deliverables"
 import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
 import { UNTRUSTED_DOCUMENT_NOTICE } from "../../../dochaus/lib/untrusted"
+import { openTelemetryDb, readGenerations } from "../../../dochaus/lib/telemetry"
+import { PREPARE_CHANGES_AGENT } from "../../../dochaus/lib/usage-agents"
 
 test("two-pass HTTP proposals require approval, preserve atomic revision metadata and refuse stale or unbound writes", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-edit-"))
@@ -52,7 +54,7 @@ test("two-pass HTTP proposals require approval, preserve atomic revision metadat
       const candidates = JSON.parse(body.prompt.match(/<candidates>([\s\S]*)<\/candidates>/)![1]) as Array<{amendment_id:string;target_handle:string}>
       return JSON.stringify({selections:["amendment-1","amendment-2"].map((id) => ({amendment_id:id,target_handle:candidates.find((value) => value.amendment_id === id)!.target_handle}))})
     })()
-    return Response.json({data:{text,model:{providerID:"fixture",id:"isolated"},elapsed_ms:1,usage:null}})
+    return Response.json({data:{text,model:{providerID:"fixture",id:"isolated"},elapsed_ms:1,usage:{tokens:{input:10,output:4,reasoning:2,cache:{read:3,write:0}},cost:0.0005}}})
   }})
   const probe = Bun.serve({port:0,fetch:() => new Response()});const port=probe.port;probe.stop(true)
   const process = Bun.spawn([globalThis.process.execPath,"run","src/server.ts"],{cwd:path.resolve(import.meta.dir,".."),
@@ -79,6 +81,12 @@ test("two-pass HTTP proposals require approval, preserve atomic revision metadat
     expect(proposed.proposed).toBe(2)
     expect(generationRequests.map((row) => row.path)).toEqual(["/api/dochaus/generate","/api/dochaus/generate"])
     expect(generationRequests.every((row) => row.directory === matter.dir)).toBe(true)
+    // Each stateless call's provider usage lands in the matter's usage ledger as Prepare changes.
+    const ledger=openTelemetryDb(matter.dir)
+    try {
+      expect(readGenerations(ledger).map(({ts:_,...row}) => row)).toEqual(Array.from({length:2},() => ({agent:PREPARE_CHANGES_AGENT,model:"fixture/isolated",cost:0.0005,
+        tokens:{input:10,output:4,reasoning:2,cache:{read:3,write:0}}})))
+    } finally {ledger.close()}
     expect(generationRequests[0].prompt).toContain('["Commercial"]')
     expect(generationRequests[0].prompt).toContain("Do not assume any area is the subject of this matter")
     expect(generationRequests[1].prompt).not.toContain("<practice_areas>")

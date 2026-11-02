@@ -9,9 +9,12 @@ const NOT_COMPARED = "Answers to this question are expected to differ by documen
 
 // `documentCount` is the table's: when the targets are every one of its
 // documents for the same questions, the questions are listed once.
-export default function FillPreview({ targets, documentCount, checking, onCancel, onConfirm }: {
+// `compareAfterFill` is off when the lawyer has turned off the automatic
+// comparison; the dialog then promises none.
+export default function FillPreview({ targets, documentCount, compareAfterFill = true, checking, onCancel, onConfirm }: {
   targets: Target[]
   documentCount: number
+  compareAfterFill?: boolean
   checking: boolean
   onCancel: () => void
   onConfirm: () => void
@@ -21,7 +24,7 @@ export default function FillPreview({ targets, documentCount, checking, onCancel
   const grid = documents.length === documentCount && targets.length === documents.length * questions.length
   // A question marked not to compare is filled but never compared; it is
   // marked only beside questions that are.
-  const compared = documentCount > 1 ? questions.filter((question) => question.compare !== false).length : 0
+  const compared = compareAfterFill && documentCount > 1 ? questions.filter((question) => question.compare !== false).length : 0
   const marked = compared > 0 && compared < questions.length
   const item = (column: Target["column"]) => (
     <li key={column.id}>{column.question}{marked && column.compare === false && <>{" "}<Tooltip label={NOT_COMPARED}><span className="fill-preview-note" tabIndex={0}>Not compared</span></Tooltip></>}</li>

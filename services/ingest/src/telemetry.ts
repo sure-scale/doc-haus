@@ -1,23 +1,34 @@
-import { Database, type SQLQueryBindings } from "bun:sqlite"
-import { existsSync, readFileSync, statSync } from "node:fs"
+import { Database } from "bun:sqlite"
+import { existsSync, statSync } from "node:fs"
 import path from "node:path"
-import { computeCost, getRate, PRICING_SOURCE, PRICING_REFERENCE_URL, type RateOverrides } from "../../../dochaus/lib/pricing"
+import { UPKEEP_AGENT, USAGE_GROUP_LABEL, humanize, usageAgent, usageAgentKey, type UsageGroup } from "../../../dochaus/lib/usage-agents"
+import { enginePages, generationUsage, sessionUsage, type UsageEntry, type UsageSession } from "./matter-usage"
+
+// The Usage drawer reports provider cost as OpenCode recorded it per model
+// step (see matter-usage.ts), so its totals match the Dashboard. telemetry.db
+// supplies what live native sessions do not: stateless job and deleted session
+// usage, tool calls and the latest context size check.
 
 export type LeanPayload = {
   current_activity: { cost_usd: number; turns: number; since_ts: number } | null
   today: { cost_usd: number; turns: number }
   matter_total: { cost_usd: number; turns: number; sessions: number; since_ts: number }
-  current_session: { tokens: number; status: "ok" | "warn" | "fail"; agent: string; model: string } | null
-  rate_card_as_of: string | null
-  unknown_models: string[]
+  current_session: { tokens: number; status: "ok" | "warn" | "fail"; agent: string; label: string; model: string } | null
+  // Model calls with tokens but no provider-reported cost.
+  unpriced_turns: number
+  // Some conversations could not be read; totals may be low.
+  partial: boolean
 }
 
 export type DetailPayload = {
-  by_agent: Array<{ agent: string; cost_usd: number; turns: number; tool_calls: number }>
-  by_model: Array<{ model: string; cost_usd: number; turns: number }>
-  by_tool: Array<{ tool: string; calls: number; total_duration_ms: number; avg_duration_ms: number }>
-  recent_turns: Array<{ ts: number; agent: string; model: string; tokens: number; cost_usd: number | null; status: string }>
-  recent_sessions: Array<{ id: string; agent: string; status: string; last_activity_at: number; cost_usd: number }>
+  by_group: Array<{ group: UsageGroup; label: string; cost_usd: number; turns: number }>
+  by_agent: Array<{ agent: string; label: string; group: UsageGroup; cost_usd: number; turns: number; tool_calls: number }>
+  // Upkeep has no model; its row carries a plain label instead, so the rows
+  // sum to the matter total.
+  by_model: Array<{ model: string | null; label?: string; cost_usd: number; turns: number; unpriced_turns: number }>
+  by_tool: Array<{ tool: string; label: string; calls: number; total_duration_ms: number; avg_duration_ms: number }>
+  recent_turns: Array<{ ts: number; agent: string; label: string; group: UsageGroup; model: string | null; tokens: number; cost_usd: number | null }>
+  recent_sessions: Array<{ id: string; title: string; agent: string; label: string; group: UsageGroup; last_activity_at: number; cost_usd: number }>
   sparkline: Array<{ ts: number; cost_usd: number }>
 }
 
@@ -25,351 +36,270 @@ export type StoragePayload = {
   size_bytes: number
   matter_count: number
   oldest_ts: number | null
-  unknown_models: string[]
-  rate_card_as_of: string | null
-  rate_source: string
-  rate_reference_url: string
 }
 
-type SumRow = { turns: number; cost_usd: number | null; since_ts?: number | null }
-type CountRow = { sessions: number }
-type MetaRow = { value: string } | null
-type SessionRow = { id: string; model: string | null; agent: string | null } | null
-type CostRow = {
-  ts?: number
-  session_id?: string
-  agent?: string | null
-  model: string | null
-  estimated_input_tokens: number
-  cost_usd: number | null
-}
-type LegacyContextBudgetRow = {
-  ts: number
-  model: string
-  agent: string
-  context_chars: number
-  estimated_input_tokens: number
-  status: string
-}
-type TurnRow = {
-  ts: number
-  agent: string | null
-  model: string | null
-  tokens: number
-  cost_usd: number | null
-  status: string
-} | null
+type Usage = { sessions: UsageSession[]; entries: UsageEntry[]; unread: boolean }
+type CachedSession = { updated: number; cost: number; entries: UsageEntry[] }
 
-export function readLeanPayload(matterDir: string, opts?: { activityWindowMs?: number; session?: string; rateOverrides?: RateOverrides }): LeanPayload {
-  const db = openReadOnly(matterDir)
-  if (!db) return emptyLeanPayload()
+// The status-bar Usage button polls every 5 s. Listing sessions is one cheap
+// call; reading a session's messages is not, so each matter keeps the last
+// read per session and re-reads only sessions whose update time or cost moved.
+const usageCache = new Map<string, Map<string, CachedSession>>()
+
+export async function readMatterUsage(matterDir: string, signal: AbortSignal): Promise<Usage> {
+  let sessions: UsageSession[]
   try {
-    if (!hasTelemetrySchema(db)) return emptyLeanPayload()
-    const now = Date.now()
-    const activityWindowMs = opts?.activityWindowMs ?? 30 * 60_000
-    const current = summarizeCostRows(readCostRows(db, "WHERE ts >= ?", [now - activityWindowMs]), opts?.rateOverrides)
-    const today = summarizeCostRows(readCostRows(db, "WHERE ts >= ?", [new Date().setHours(0, 0, 0, 0)]), opts?.rateOverrides)
-    const total = summarizeCostRows(readCostRows(db), opts?.rateOverrides)
-    const sessions = db.query("SELECT COUNT(*) AS sessions FROM sessions").get() as CountRow
-    const currentSession = readCurrentSession(db, opts?.session)
-    return {
-      current_activity:
-        current.turns > 0 ? { cost_usd: current.cost_usd ?? 0, turns: current.turns, since_ts: now - activityWindowMs } : null,
-      today: { cost_usd: today.cost_usd ?? 0, turns: today.turns },
-      matter_total: {
-        cost_usd: total.cost_usd ?? 0,
-        turns: total.turns,
-        sessions: sessions.sessions,
-        since_ts: total.since_ts ?? 0,
-      },
-      current_session: currentSession,
-      rate_card_as_of: null,
-      unknown_models: readUnknownModels(db, opts?.rateOverrides),
-    }
+    sessions = await enginePages(matterDir, "/api/session", signal) as UsageSession[]
   } catch {
-    return emptyLeanPayload()
-  } finally {
-    db.close()
+    return { sessions: [], entries: generationUsage(matterDir), unread: true }
   }
+  const previous = usageCache.get(matterDir)
+  const next = new Map<string, CachedSession>()
+  const entries: UsageEntry[] = []
+  let unread = false
+  for (const session of sessions) {
+    const hit = previous?.get(session.id)
+    if (hit && hit.updated === session.time.updated && hit.cost === (session.cost || 0)) {
+      next.set(session.id, hit)
+      entries.push(...hit.entries)
+      continue
+    }
+    const result = await sessionUsage(matterDir, session, signal)
+    entries.push(...result.entries)
+    if (result.unread) unread = true
+    else next.set(session.id, { updated: session.time.updated, cost: session.cost || 0, entries: result.entries })
+  }
+  usageCache.set(matterDir, next)
+  entries.push(...generationUsage(matterDir, sessions))
+  return { sessions, entries: entries.filter(used), unread }
 }
 
-export function readDetailPayload(matterDir: string, rateOverrides?: RateOverrides): DetailPayload {
-  const db = openReadOnly(matterDir)
-  if (!db) return emptyDetailPayload()
-  try {
-    if (!hasTelemetrySchema(db)) return emptyDetailPayload()
-    const turnRows = readCostRows(db, "", [], "agent")
-    const toolCallsByAgent = new Map(
-      (
-        db
-          .query("SELECT COALESCE(agent, 'unknown') AS agent, COUNT(*) AS tool_calls FROM tool_calls GROUP BY COALESCE(agent, 'unknown')")
-          .all() as { agent: string; tool_calls: number }[]
-      ).map((row) => [row.agent, row.tool_calls]),
-    )
-    const byAgent = Array.from(
-      turnRows
-        .reduce((map, row) => {
-          const agent = row.agent ?? "unknown"
-          const current = map.get(agent) ?? { agent, cost_usd: 0, turns: 0, tool_calls: 0 }
-          map.set(agent, { ...current, cost_usd: current.cost_usd + displayCost(row, rateOverrides), turns: current.turns + 1 })
-          return map
-        }, new Map<string, { agent: string; cost_usd: number; turns: number; tool_calls: number }>())
-        .values(),
-    )
-      .map((row) => ({ ...row, tool_calls: toolCallsByAgent.get(row.agent) ?? 0 }))
-      .sort((a, b) => b.cost_usd - a.cost_usd)
-    const byModel = Array.from(
-      turnRows
-        .reduce((map, row) => {
-          const model = row.model ?? "unknown"
-          const current = map.get(model) ?? { model, cost_usd: 0, turns: 0 }
-          map.set(model, { ...current, cost_usd: current.cost_usd + displayCost(row, rateOverrides), turns: current.turns + 1 })
-          return map
-        }, new Map<string, { model: string; cost_usd: number; turns: number }>())
-        .values(),
-    ).sort((a, b) => b.cost_usd - a.cost_usd)
-    const recentSessions = (
-      db
-        .query(`
-          SELECT
-            id,
-            COALESCE(agent, 'unknown') AS agent,
-            status,
-            last_activity_at
-          FROM sessions
-          ORDER BY last_activity_at DESC
-          LIMIT 20
-        `)
-        .all() as Array<{ id: string; agent: string; status: string; last_activity_at: number }>
-    ).map((session) => ({
-      ...session,
-      cost_usd: sumDisplayCost(readCostRows(db, "WHERE session_id = ?", [session.id]), rateOverrides),
-    }))
-    const sparkline = Array.from(
-      readCostRows(db, "WHERE ts >= ?", [Date.now() - 24 * 60 * 60_000])
-        .reduce((map, row) => {
-          const ts = Math.trunc((row.ts ?? 0) / 3_600_000) * 3_600_000
-          map.set(ts, (map.get(ts) ?? 0) + displayCost(row, rateOverrides))
-          return map
-        }, new Map<number, number>())
-        .entries(),
-    )
-      .map(([ts, cost_usd]) => ({ ts, cost_usd }))
-      .sort((a, b) => a.ts - b.ts)
-    const recentTurns = (
-      db
-        .query(`
-          SELECT
-            ts,
-            COALESCE(agent, 'unknown') AS agent,
-            COALESCE(model, 'unknown') AS model,
-            estimated_input_tokens AS tokens,
-            estimated_input_tokens,
-            cost_usd,
-            status
-          FROM turns
-          ORDER BY ts DESC
-          LIMIT 50
-        `)
-        .all() as Array<{
-          ts: number
-          agent: string
-          model: string
-          tokens: number
-          estimated_input_tokens: number
-          cost_usd: number | null
-          status: string
-        }>
-    ).map((row) => ({
-      ts: row.ts,
-      agent: row.agent,
-      model: row.model,
-      tokens: row.tokens,
-      cost_usd: displayCostOrNull(row, rateOverrides),
-      status: row.status,
-    }))
-    return {
-      by_agent: byAgent,
-      by_model: byModel,
-      by_tool: db
-        .query(`
-          SELECT
-            tool,
-            COUNT(*) AS calls,
-            COALESCE(SUM(duration_ms), 0) AS total_duration_ms,
-            COALESCE(AVG(duration_ms), 0) AS avg_duration_ms
-          FROM tool_calls
-          GROUP BY tool
-          ORDER BY calls DESC
-        `)
-        .all() as { tool: string; calls: number; total_duration_ms: number; avg_duration_ms: number }[],
-      recent_turns: recentTurns,
-      recent_sessions: recentSessions,
-      sparkline,
-    }
-  } catch {
-    return emptyDetailPayload()
-  } finally {
-    db.close()
-  }
+export function clearUsageCache() {
+  usageCache.clear()
 }
 
-export function readStoragePayload(matterDirs: string[], rateOverrides?: RateOverrides): StoragePayload {
-  const models = new Set<string>()
-  const payload = matterDirs.reduce(
-    (acc, dir) => {
-      const file = telemetryDbPath(dir)
-      if (!existsSync(file)) return acc
-      const sizeBytes = telemetryDbFiles(dir).reduce((sum, sibling) => sum + statSync(sibling).size, 0)
-      const db = openReadOnly(dir)
-      if (!db)
-        return {
-          ...acc,
-          size_bytes: acc.size_bytes + sizeBytes,
-        }
-      try {
-        if (!hasTelemetrySchema(db))
-          return {
-            ...acc,
-            size_bytes: acc.size_bytes + sizeBytes,
-          }
-        const oldest = db.query("SELECT MIN(ts) AS ts FROM turns").get() as { ts: number | null }
-        for (const model of readUnknownModels(db, rateOverrides)) models.add(model)
-        return {
-          size_bytes: acc.size_bytes + sizeBytes,
-          oldest_ts: acc.oldest_ts === null ? oldest.ts : oldest.ts === null ? acc.oldest_ts : Math.min(acc.oldest_ts, oldest.ts),
-        }
-      } catch {
-        return {
-          ...acc,
-          size_bytes: acc.size_bytes + sizeBytes,
-        }
-      } finally {
-        db.close()
-      }
+export async function readLeanPayload(matterDir: string, opts: { signal: AbortSignal; activityWindowMs?: number; session?: string }): Promise<LeanPayload> {
+  const usage = await readMatterUsage(matterDir, opts.signal)
+  const now = Date.now()
+  const activityWindowMs = opts.activityWindowMs ?? 30 * 60_000
+  const current = summarize(usage.entries.filter((entry) => entry.time >= now - activityWindowMs))
+  const today = summarize(usage.entries.filter((entry) => entry.time >= new Date().setHours(0, 0, 0, 0)))
+  const total = summarize(usage.entries)
+  return {
+    current_activity: current.turns > 0 || current.cost_usd > 0 ? { ...current, since_ts: now - activityWindowMs } : null,
+    today,
+    matter_total: {
+      ...total,
+      sessions: usage.sessions.length,
+      since_ts: usage.entries.length ? Math.min(...usage.entries.map((entry) => entry.time)) : 0,
     },
-    { size_bytes: 0, oldest_ts: null as number | null },
-  )
+    current_session: readCurrentSession(matterDir, usage.sessions, opts.session),
+    unpriced_turns: usage.entries.filter(unpriced).length,
+    partial: usage.unread,
+  }
+}
+
+export async function readDetailPayload(matterDir: string, signal: AbortSignal): Promise<DetailPayload> {
+  const usage = await readMatterUsage(matterDir, signal)
+  const sessions = new Map(usage.sessions.map((session) => [session.id, session]))
+  const { byTool, toolCallsByAgent } = readToolCalls(matterDir, sessions)
+
+  const agents = new Map<string, DetailPayload["by_agent"][number]>()
+  const agentRow = (key: string) => {
+    const existing = agents.get(key)
+    if (existing) return existing
+    const { label, group } = usageAgent(key)
+    const row = { agent: key, label, group, cost_usd: 0, turns: 0, tool_calls: 0 }
+    agents.set(key, row)
+    return row
+  }
+  const models = new Map<string | null, DetailPayload["by_model"][number]>()
+  let upkeep: DetailPayload["by_model"][number] | undefined
+  for (const entry of usage.entries) {
+    const agent = agentRow(entry.agent)
+    agent.cost_usd += entry.cost
+    agent.turns += call(entry) ? 1 : 0
+    if (entry.agent === UPKEEP_AGENT) {
+      upkeep ??= { model: null, label: usageAgent(UPKEEP_AGENT).label, cost_usd: 0, turns: 0, unpriced_turns: 0 }
+      upkeep.cost_usd += entry.cost
+      continue
+    }
+    const model = entry.model ?? null
+    const row = models.get(model) ?? { model, cost_usd: 0, turns: 0, unpriced_turns: 0 }
+    row.cost_usd += entry.cost
+    row.turns += 1
+    row.unpriced_turns += unpriced(entry) ? 1 : 0
+    models.set(model, row)
+  }
+  for (const [key, count] of toolCallsByAgent) agentRow(key).tool_calls += count
+  const byAgent = [...agents.values()].sort((a, b) => b.cost_usd - a.cost_usd || b.turns - a.turns)
+
+  const byGroup = (["background", "work"] as const).map((group) => {
+    const rows = byAgent.filter((row) => row.group === group)
+    return {
+      group,
+      label: USAGE_GROUP_LABEL[group],
+      cost_usd: rows.reduce((sum, row) => sum + row.cost_usd, 0),
+      turns: rows.reduce((sum, row) => sum + row.turns, 0),
+    }
+  })
+
+  // A conversation's cost includes the sub-agents it started.
+  const root = (id: string) => {
+    let current = sessions.get(id)
+    for (let depth = 0; current?.parentID && sessions.has(current.parentID) && depth < 50; depth++) current = sessions.get(current.parentID)
+    return current?.id ?? id
+  }
+  const sessionCost = new Map<string, number>()
+  for (const entry of usage.entries) {
+    if (!entry.session) continue
+    const id = root(entry.session)
+    sessionCost.set(id, (sessionCost.get(id) ?? 0) + entry.cost)
+  }
+  const recentSessions = usage.sessions
+    .filter((session) => !session.parentID || !sessions.has(session.parentID))
+    .sort((a, b) => b.time.updated - a.time.updated)
+    .slice(0, 20)
+    .map((session) => {
+      const agent = usageAgent(session.agent, session)
+      return {
+        id: session.id,
+        // Job sessions carry a system "doc.haus" title; their task name says it.
+        title: /^doc\.haus/i.test(session.title ?? "") ? "" : session.title ?? "",
+        agent: agent.key,
+        label: agent.label,
+        group: agent.group,
+        last_activity_at: session.time.updated,
+        cost_usd: sessionCost.get(session.id) ?? 0,
+      }
+    })
+
+  const since = Date.now() - 24 * 60 * 60_000
+  const hours = new Map<number, number>()
+  for (const entry of usage.entries) {
+    if (entry.time < since) continue
+    const hour = Math.trunc(entry.time / 3_600_000) * 3_600_000
+    hours.set(hour, (hours.get(hour) ?? 0) + entry.cost)
+  }
+
+  const recentTurns = usage.entries
+    .filter(call)
+    .sort((a, b) => b.time - a.time)
+    .slice(0, 50)
+    .map((entry) => {
+      const agent = usageAgent(entry.agent)
+      return {
+        ts: entry.time,
+        agent: agent.key,
+        label: agent.label,
+        group: agent.group,
+        model: entry.model ?? null,
+        tokens: tokenTotal(entry),
+        cost_usd: unpriced(entry) ? null : entry.cost,
+      }
+    })
+
   return {
-    ...payload,
-    matter_count: matterDirs.length,
-    unknown_models: Array.from(models).sort(),
-    rate_card_as_of: null,
-    rate_source: PRICING_SOURCE,
-    rate_reference_url: PRICING_REFERENCE_URL,
+    by_group: byGroup,
+    by_agent: byAgent,
+    by_model: [...models.values(), ...(upkeep ? [upkeep] : [])].sort((a, b) => b.cost_usd - a.cost_usd || b.turns - a.turns),
+    by_tool: byTool,
+    recent_turns: recentTurns,
+    recent_sessions: recentSessions,
+    sparkline: [...hours.entries()].map(([ts, cost_usd]) => ({ ts, cost_usd })).sort((a, b) => a.ts - b.ts),
   }
 }
 
-export function migrateLegacyContextBudget(matterDir: string, rateOverrides?: RateOverrides) {
-  const legacyFile = path.join(matterDir, ".dochaus", "context-budget.jsonl")
-  const dbFile = telemetryDbPath(matterDir)
-  if (!existsSync(dbFile)) return { inserted: 0, skipped: 0, backfilled: 0 }
-  const db = new Database(dbFile)
-  try {
-    if (!hasTelemetrySchema(db)) return { inserted: 0, skipped: 0, backfilled: 0 }
-    const result = readMeta(db, "legacy_context_budget_migrated") || !existsSync(legacyFile)
-      ? { inserted: 0, skipped: 0 }
-      : importLegacyContextBudgetRows(db, legacyFile, rateOverrides)
-    const backfilled = backfillKnownTurnCosts(db, rateOverrides)
-    pruneKnownUnknownModels(db, rateOverrides)
-    db.query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(
-      "pricing_source",
-      PRICING_SOURCE,
-    )
-    db.query("DELETE FROM meta WHERE key = ?").run("pricing_as_of")
-    return { ...result, backfilled }
-  } finally {
-    db.close()
+// Storage covers what Clear removes: tool, context and stateless generation
+// records. Conversation cost lives with conversation history.
+export function readStoragePayload(matterDirs: string[]): StoragePayload {
+  let size = 0
+  let oldest: number | null = null
+  for (const dir of matterDirs) {
+    const files = telemetryDbFiles(dir)
+    if (files.length === 0) continue
+    size += files.reduce((sum, file) => sum + statSync(file).size, 0)
+    const ts = withTelemetryDb(dir, (db) => {
+      const tables = new Set((db.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((row) => row.name))
+      const times = ["turns", "tool_calls", "generations"]
+        .filter((table) => tables.has(table))
+        .map((table) => (db.query(`SELECT MIN(ts) AS ts FROM ${table}`).get() as { ts: number | null }).ts)
+        .filter((value): value is number => typeof value === "number")
+      return times.length ? Math.min(...times) : null
+    })
+    if (typeof ts === "number") oldest = oldest === null ? ts : Math.min(oldest, ts)
   }
+  return { size_bytes: size, matter_count: matterDirs.length, oldest_ts: oldest }
 }
 
-function importLegacyContextBudgetRows(db: Database, legacyFile: string, rateOverrides?: RateOverrides) {
-  const firstTurn = db.query("SELECT MIN(ts) AS ts FROM turns").get() as { ts: number | null }
-  const cutoff = firstTurn.ts ?? Number.POSITIVE_INFINITY
-  const turnIndexes = new Map<string, number>()
-  const result = readFileSync(legacyFile, "utf8")
-    .split("\n")
-    .map(parseLegacyContextBudgetRow)
-    .reduce(
-      (acc, row) => {
-        if (!row) return acc
-        if (row.ts >= cutoff) return { ...acc, skipped: acc.skipped + 1 }
-        const sessionID = legacySessionID(row.agent, row.model)
-        const turnIndex = turnIndexes.get(sessionID) ?? readSessionTurnCount(db, sessionID)
-        turnIndexes.set(sessionID, turnIndex + 1)
-        const rate = getRate(row.model, rateOverrides, row.estimated_input_tokens)
-        db.query(`
-            INSERT INTO sessions (id, parent_id, created_at, last_activity_at, status, model, agent)
-            VALUES (?, NULL, ?, ?, 'finished', ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-              last_activity_at = MAX(last_activity_at, excluded.last_activity_at),
-              model = excluded.model,
-              agent = excluded.agent
-          `).run(sessionID, row.ts, row.ts, row.model, row.agent)
-        db.query(`
-            INSERT INTO turns (
-              session_id,
-              turn_index,
-              ts,
-              model,
-              agent,
-              context_chars,
-              estimated_input_tokens,
-              cost_usd,
-              status
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(
-            sessionID,
-            turnIndex,
-            row.ts,
-            row.model,
-            row.agent,
-            row.context_chars,
-            row.estimated_input_tokens,
-            rate ? computeCost(row.estimated_input_tokens, rate) : null,
-            row.status,
-          )
-        return { ...acc, inserted: acc.inserted + 1 }
-      },
-      { inserted: 0, skipped: 0 },
-    )
-  db.query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(
-    "legacy_context_budget_migrated",
-    JSON.stringify({ ...result, migrated_at: new Date().toISOString() }),
-  )
-  return result
+function readToolCalls(matterDir: string, sessions: Map<string, UsageSession>) {
+  const result = withTelemetryDb(matterDir, (db) => {
+    if (!hasTable(db, "tool_calls")) return undefined
+    const byTool = (db
+      .query(`
+        SELECT
+          tool,
+          COUNT(*) AS calls,
+          COALESCE(SUM(duration_ms), 0) AS total_duration_ms,
+          COALESCE(AVG(duration_ms), 0) AS avg_duration_ms
+        FROM tool_calls
+        GROUP BY tool
+        ORDER BY calls DESC
+      `)
+      .all() as Omit<DetailPayload["by_tool"][number], "label">[])
+      .map((row) => ({ ...row, label: humanize(row.tool) }))
+    const toolCallsByAgent = new Map<string, number>()
+    const rows = db
+      .query("SELECT session_id, agent, COUNT(*) AS calls FROM tool_calls GROUP BY session_id, agent")
+      .all() as { session_id: string; agent: string | null; calls: number }[]
+    for (const row of rows) {
+      const key = usageAgentKey(row.agent ?? undefined, sessions.get(row.session_id))
+      toolCallsByAgent.set(key, (toolCallsByAgent.get(key) ?? 0) + row.calls)
+    }
+    return { byTool, toolCallsByAgent }
+  })
+  return result ?? { byTool: [], toolCallsByAgent: new Map<string, number>() }
 }
 
-function readCurrentSession(db: Database, sessionID?: string) {
-  const session = (
-    sessionID
-      ? db.query("SELECT id, model, agent FROM sessions WHERE id = ?").get(sessionID)
-      : db.query("SELECT id, model, agent FROM sessions ORDER BY last_activity_at DESC LIMIT 1").get()
-  ) as SessionRow
-  if (!session) return null
-  const turn = db
-    .query(`
-      SELECT
-        ts,
-        agent,
-        model,
-        estimated_input_tokens AS tokens,
-        cost_usd,
-        status
-      FROM turns
-      WHERE session_id = ?
-      ORDER BY ts DESC
-      LIMIT 1
-    `)
-    .get(session.id) as TurnRow
-  const tokens = turn?.tokens ?? 0
-  return {
-    tokens,
-    status: tokenStatus(tokens),
-    agent: session.agent ?? turn?.agent ?? "unknown",
-    model: session.model ?? turn?.model ?? "unknown",
-  }
+// Context size is the plugin's per-turn estimate; native sessions record no
+// equivalent. The assistant name comes from the native session when present.
+// Without a requested session this is the lawyer's latest conversation, so
+// background agents, sub-agents and runtime-owned jobs are passed over.
+function readCurrentSession(matterDir: string, sessions: UsageSession[], sessionID?: string): LeanPayload["current_session"] {
+  return withTelemetryDb(matterDir, (db) => {
+    if (!hasTable(db, "sessions") || !hasTable(db, "turns")) return null
+    const rows = (
+      sessionID
+        ? db.query("SELECT id, parent_id, model, agent FROM sessions WHERE id = ?").all(sessionID)
+        : db.query("SELECT id, parent_id, model, agent FROM sessions ORDER BY last_activity_at DESC LIMIT 100").all()
+    ) as { id: string; parent_id: string | null; model: string | null; agent: string | null }[]
+    const natives = new Map(sessions.map((item) => [item.id, item]))
+    const turnQuery = db.query("SELECT agent, model, estimated_input_tokens AS tokens FROM turns WHERE session_id = ? ORDER BY ts DESC LIMIT 1")
+    for (const session of rows) {
+      const turn = turnQuery.get(session.id) as { agent: string | null; model: string | null; tokens: number } | null
+      const native = natives.get(session.id)
+      const agent = usageAgent(session.agent ?? turn?.agent ?? native?.agent, native)
+      if (!sessionID && !conversation(session.parent_id, native, agent.group)) continue
+      const tokens = turn?.tokens ?? 0
+      return {
+        tokens,
+        status: tokenStatus(tokens),
+        agent: agent.key,
+        label: agent.label,
+        model: session.model ?? turn?.model ?? "unknown",
+      }
+    }
+    return null
+  }) ?? null
+}
+
+// The conversation list's rule: a top-level chat the lawyer started, or a
+// drafting run's own conversation; never a background agent or a throwaway
+// job session (review table cells, routing), which carry a "doc.haus" title.
+function conversation(parentID: string | null, native: UsageSession | undefined, group: UsageGroup) {
+  if (group === "background" || parentID || native?.parentID || /^doc\.haus/i.test(native?.title ?? "")) return false
+  const role = native?.metadata?.dochaus_role
+  return role === undefined || role === "lean-drafting-owner"
 }
 
 function tokenStatus(tokens: number): "ok" | "warn" | "fail" {
@@ -378,171 +308,48 @@ function tokenStatus(tokens: number): "ok" | "warn" | "fail" {
   return "ok"
 }
 
-function readMeta(db: Database, key: string) {
-  return (db.query("SELECT value FROM meta WHERE key = ?").get(key) as MetaRow)?.value ?? null
-}
-
-function readUnknownModels(db: Database, rateOverrides?: RateOverrides) {
-  const row = readMeta(db, "unknown_models")
-  const used = db.query("SELECT DISTINCT model, estimated_input_tokens FROM turns WHERE model IS NOT NULL").all() as { model: string; estimated_input_tokens: number }[]
-  const missing = Array.from(new Set(used
-    .filter((turn) => !getRate(turn.model, rateOverrides, turn.estimated_input_tokens))
-    .map((turn) => turn.model)))
-  if (!row) return missing
-  try {
-    const parsed = JSON.parse(row) as unknown
-    if (!Array.isArray(parsed)) return missing
-    return Array.from(new Set([...parsed.filter((value): value is string => typeof value === "string" && !getRate(value, rateOverrides)), ...missing]))
-  } catch {
-    return missing
-  }
-}
-
-function readCostRows(db: Database, clause = "", params: SQLQueryBindings[] = [], extra = "") {
-  const fields = ["ts", "session_id", "model", "estimated_input_tokens", "cost_usd", extra].filter(Boolean).join(", ")
-  return db.query(`SELECT ${fields} FROM turns ${clause}`).all(...params) as CostRow[]
-}
-
-function summarizeCostRows(rows: CostRow[], rateOverrides?: RateOverrides): SumRow {
+function summarize(entries: UsageEntry[]) {
   return {
-    turns: rows.length,
-    cost_usd: sumDisplayCost(rows, rateOverrides),
-    since_ts: rows.reduce<number | null>((min, row) => (row.ts === undefined ? min : min === null ? row.ts : Math.min(min, row.ts)), null),
+    cost_usd: entries.reduce((sum, entry) => sum + entry.cost, 0),
+    turns: entries.filter(call).length,
   }
 }
 
-function sumDisplayCost(rows: CostRow[], rateOverrides?: RateOverrides) {
-  return rows.reduce((sum, row) => sum + displayCost(row, rateOverrides), 0)
+function tokenTotal(entry: UsageEntry) {
+  const tokens = entry.tokens
+  return tokens ? tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write : 0
 }
 
-function displayCost(row: CostRow, rateOverrides?: RateOverrides) {
-  return displayCostOrNull(row, rateOverrides) ?? 0
+// An entry with neither cost nor tokens is an empty conversation.
+function used(entry: UsageEntry) {
+  return entry.cost > 0 || tokenTotal(entry) > 0
 }
 
-function displayCostOrNull(row: CostRow, rateOverrides?: RateOverrides) {
-  // Stored cost_usd values are historical input estimates, including estimates
-  // from the retired rate card. Reprice the view without rewriting those rows.
-  if (!row.model) return null
-  const rate = getRate(row.model, rateOverrides, row.estimated_input_tokens)
-  return rate ? computeCost(row.estimated_input_tokens, rate) : null
+// One model call; title and compaction upkeep is cost, not a call.
+function call(entry: UsageEntry) {
+  return entry.agent !== UPKEEP_AGENT
 }
 
-function readSessionTurnCount(db: Database, sessionID: string) {
-  const row = db.query("SELECT COUNT(*) AS n FROM turns WHERE session_id = ?").get(sessionID) as { n: number } | null
-  return row?.n ?? 0
+function unpriced(entry: UsageEntry) {
+  return entry.cost <= 0 && tokenTotal(entry) > 0
 }
 
-function backfillKnownTurnCosts(db: Database, rateOverrides?: RateOverrides) {
-  return (
-    db
-      .query("SELECT id, model, estimated_input_tokens FROM turns WHERE cost_usd IS NULL")
-      .all() as { id: number; model: string | null; estimated_input_tokens: number }[]
-  ).reduce((count, row) => {
-    if (!row.model) return count
-    const rate = getRate(row.model, rateOverrides, row.estimated_input_tokens)
-    if (!rate) return count
-    db.query("UPDATE turns SET cost_usd = ? WHERE id = ?").run(computeCost(row.estimated_input_tokens, rate), row.id)
-    return count + 1
-  }, 0)
-}
-
-function pruneKnownUnknownModels(db: Database, rateOverrides?: RateOverrides) {
-  const row = readMeta(db, "unknown_models")
-  if (!row) return
+function withTelemetryDb<T>(matterDir: string, read: (db: Database) => T): T | undefined {
+  const file = telemetryDbPath(matterDir)
+  if (!existsSync(file)) return undefined
+  let db: Database | undefined
   try {
-    const parsed = JSON.parse(row) as unknown
-    if (!Array.isArray(parsed)) return
-    const unknown = parsed.filter((value): value is string => typeof value === "string" && !getRate(value, rateOverrides))
-    if (unknown.length === 0) {
-      db.query("DELETE FROM meta WHERE key = ?").run("unknown_models")
-      return
-    }
-    db.query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(
-      "unknown_models",
-      JSON.stringify(unknown),
-    )
-  } catch {
-    return
-  }
-}
-
-function parseLegacyContextBudgetRow(line: string): LegacyContextBudgetRow | undefined {
-  if (!line.trim()) return undefined
-  try {
-    const row = JSON.parse(line) as unknown
-    if (!isRecord(row)) return undefined
-    const ts = Date.parse(stringValue(row.created_at))
-    const model = legacyModel(row.model)
-    const estimatedInputTokens = numberValue(row.estimated_tokens)
-    if (!Number.isFinite(ts) || !model || !Number.isFinite(estimatedInputTokens)) return undefined
-    const contextChars = numberValue(row.chars)
-    return {
-      ts,
-      model,
-      agent: legacyAgent(row.largest_messages),
-      context_chars: Number.isFinite(contextChars) ? contextChars : estimatedInputTokens * 4,
-      estimated_input_tokens: estimatedInputTokens,
-      status: legacyStatus(row.status, estimatedInputTokens),
-    }
+    db = new Database(file, { readonly: true })
+    return read(db)
   } catch {
     return undefined
+  } finally {
+    db?.close()
   }
 }
 
-function legacyModel(value: unknown) {
-  if (typeof value === "string") return value
-  if (!isRecord(value)) return undefined
-  const providerID = stringValue(value.providerID)
-  const modelID = stringValue(value.modelID) || stringValue(value.id)
-  if (!providerID || !modelID) return undefined
-  return `${providerID}/${modelID}`
-}
-
-function legacyAgent(value: unknown) {
-  if (!Array.isArray(value)) return "unknown"
-  const counts = value
-    .map((item) => (isRecord(item) ? stringValue(item.agent) : ""))
-    .filter(Boolean)
-    .reduce((map, agent) => map.set(agent, (map.get(agent) ?? 0) + 1), new Map<string, number>())
-  return Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "unknown"
-}
-
-function legacyStatus(value: unknown, estimatedInputTokens: number) {
-  if (value === "ok" || value === "warn" || value === "fail") return value
-  return tokenStatus(estimatedInputTokens)
-}
-
-function legacySessionID(agent: string, model: string) {
-  return `legacy:${agent}:${model}`.replace(/[^A-Za-z0-9:._-]/g, "_")
-}
-
-function stringValue(value: unknown) {
-  return typeof value === "string" ? value : ""
-}
-
-function numberValue(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : Number.NaN
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null
-}
-
-function openReadOnly(matterDir: string) {
-  const file = telemetryDbPath(matterDir)
-  if (!existsSync(file)) return null
-  try {
-    return new Database(file, { readonly: true })
-  } catch {
-    return null
-  }
-}
-
-function hasTelemetrySchema(db: Database) {
-  const tables = db
-    .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('sessions', 'turns', 'tool_calls', 'meta')")
-    .all() as { name: string }[]
-  return tables.length === 4
+function hasTable(db: Database, name: string) {
+  return Boolean(db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name))
 }
 
 function telemetryDbPath(matterDir: string) {
@@ -552,19 +359,4 @@ function telemetryDbPath(matterDir: string) {
 function telemetryDbFiles(matterDir: string) {
   const file = telemetryDbPath(matterDir)
   return [file, `${file}-wal`, `${file}-shm`].filter((sibling) => existsSync(sibling))
-}
-
-function emptyLeanPayload(): LeanPayload {
-  return {
-    current_activity: null,
-    today: { cost_usd: 0, turns: 0 },
-    matter_total: { cost_usd: 0, turns: 0, sessions: 0, since_ts: 0 },
-    current_session: null,
-    rate_card_as_of: null,
-    unknown_models: [],
-  }
-}
-
-function emptyDetailPayload(): DetailPayload {
-  return { by_agent: [], by_model: [], by_tool: [], recent_turns: [], recent_sessions: [], sparkline: [] }
 }

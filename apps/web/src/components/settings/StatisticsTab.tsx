@@ -52,14 +52,14 @@ export default function StatisticsTab({ onSaved, onError }: { onSaved: (text: st
     }
   }
   async function clearAllTelemetry() {
-    if (!confirm("Clear telemetry for every matter? This removes stored usage and cost rows, but keeps matters and documents.")) return
+    if (!confirm("Clear usage records for every matter? This removes tool and context records and the cost of jobs run outside a conversation. Conversation cost stays with conversation history.")) return
     setClearing(true)
     try {
       await Promise.all((await listMatters()).map((matter) => clearTelemetry(matter.id)))
       setStorage(await getTelemetryStorage())
-      onSaved("Telemetry cleared.")
+      onSaved("Usage records cleared.")
     } catch {
-      onError("Could not clear telemetry.")
+      onError("Could not clear usage records.")
     } finally {
       setClearing(false)
     }
@@ -74,35 +74,21 @@ export default function StatisticsTab({ onSaved, onError }: { onSaved: (text: st
   return (
     <section className="settings-section">
       <p className="settings-hint muted">
-        Local usage telemetry used for cost and token reporting. These controls affect stored telemetry only; they do
-        not change matter documents or drafting instructions.
+        Usage records kept on this computer: tool use, context size and the cost of jobs run outside a conversation,
+        such as Prepare changes. Conversation cost is reported by your model provider and stays with conversation
+        history; clearing here does not remove it.
       </p>
       <dl className="settings-summary">
         <div className="settings-summary-row">
-          <dt>Telemetry storage</dt>
+          <dt>Stored records</dt>
           <dd>{formatBytes(storage.size_bytes)} across {storage.matter_count} matters</dd>
         </div>
         <div className="settings-summary-row">
-          <dt>Oldest telemetry row</dt>
+          <dt>Oldest record</dt>
           <dd>{formatTelemetryDate(storage.oldest_ts)}</dd>
         </div>
-        <div className="settings-summary-row">
-          <dt>Default model rates</dt>
-          <dd><a href={storage.rate_reference_url} target="_blank" rel="noreferrer">{storage.rate_source}</a></dd>
-        </div>
       </dl>
-      <p className="settings-hint muted">
-        Input cost estimates use the bundled catalogue, with saved rate overrides taking precedence. Rates update
-        with the installed doc.haus version; they are not fetched live. Estimates exclude output, cache discounts,
-        subscription fees and hosting charges.
-      </p>
-      {storage.unknown_models.length > 0 && (
-        <p className="settings-hint settings-warning">
-          No input cost estimate: {storage.unknown_models.join(", ")}. These models remain unpriced until the catalogue
-          supplies rates or a complete rate override is saved.
-        </p>
-      )}
-      <FieldRow id="telemetry-retention" label="Keep telemetry (days)" hint="How long to retain usage and cost records. Saved when you leave this field.">
+      <FieldRow id="telemetry-retention" label="Keep usage records (days)" hint="How long to keep these records. Saved when you leave this field.">
         <input
           id="telemetry-retention"
           aria-describedby="telemetry-retention-hint"
@@ -117,7 +103,7 @@ export default function StatisticsTab({ onSaved, onError }: { onSaved: (text: st
       </FieldRow>
       <div className="settings-actions">
         <button className={`danger${clearing ? " btn-loading" : ""}`} disabled={clearing} onClick={clearAllTelemetry}>
-          Clear all telemetry
+          Clear usage records
         </button>
       </div>
     </section>

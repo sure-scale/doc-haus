@@ -41,6 +41,8 @@ export type DraftingPreferences = {
   // ("ask"), starts one without asking ("auto") or always starts the full run
   // ("off"). Never sent to the model.
   quickDraftOffer: "ask" | "auto" | "off"
+  // Settings → Background agents. Optional jobs that start without a click.
+  backgroundAgents: BackgroundAgents
 }
 
 /** How hard negotiated terms lean toward the client: the firm's setting, which
@@ -58,16 +60,22 @@ export function postureLabel(posture: Posture) {
   return POSTURES.find((row) => row.value === posture)?.label ?? posture
 }
 
-export type RateOverride = Partial<{
-  input_per_mtok: number
-  output_per_mtok: number
-  cache_read_per_mtok?: number
-}>
-
 export type TelemetryPreferences = {
   retention_days: number
   retention_days_source?: "user" | "default"
-  rate_overrides: Record<string, RateOverride>
+}
+
+export type BackgroundAgents = { chronologySuggestion: boolean; reviewCompare: boolean; narration: boolean }
+
+/** Current background-agent switches. Missing or unreadable preferences leave
+ * every agent on, matching the server default. */
+export async function getBackgroundAgents(): Promise<BackgroundAgents> {
+  const saved = await getPreferences().then((prefs) => prefs.backgroundAgents, () => undefined)
+  return {
+    chronologySuggestion: saved?.chronologySuggestion !== false,
+    reviewCompare: saved?.reviewCompare !== false,
+    narration: saved?.narration !== false,
+  }
 }
 
 export async function getPreferences(): Promise<DraftingPreferences> {
@@ -84,8 +92,14 @@ export async function savePreferences(prefs: Partial<DraftingPreferences>): Prom
     signal: AbortSignal.timeout(15_000),
   })
   if (!res.ok) throw new Error(`Failed to save preferences (${res.status})`)
-  return res.json()
+  const saved: DraftingPreferences = await res.json()
+  // Settings opens over the matter page; let open pages pick up the change.
+  window.dispatchEvent(new Event(PREFERENCES_SAVED))
+  return saved
 }
+
+/** Window event fired after preferences are saved. */
+export const PREFERENCES_SAVED = "dochaus:preferences-saved"
 
 export async function testResearchConnection(service: "exa" | "courtlistener" | "courtlistener-mcp"): Promise<{ status: "verified" | "failed" | "not-configured"; message: string }> {
   const res = await fetch(`${INGEST_URL}/research/${service}/test`, { method: "POST", signal: AbortSignal.timeout(15_000) })

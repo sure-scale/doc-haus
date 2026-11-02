@@ -5,6 +5,8 @@ import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import type { MarkupComment, MarkupRevision } from "../../../dochaus/lib/docx-markup"
 import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
+import { openTelemetryDb, readGenerations } from "../../../dochaus/lib/telemetry"
+import { REPLY_DRAFTING_AGENT } from "../../../dochaus/lib/usage-agents"
 
 // Reply drafting (#200) through the real ingest route of an isolated service,
 // on the synthetic two-reviewer supply agreement. The engine is scripted: each
@@ -62,6 +64,11 @@ const SCREENING = ["flagged", "injection", "ai-directive", "concealment", "role-
 const named = (where: string, many = false) =>
   `${where[0]!.toUpperCase()}${where.slice(1)} ${many ? "contain" : "contains"} text that looks like an instruction to an AI. Check that the draft does not act on it before approving.`
 const PLAIN = "Forty-five days works for us if [[stock report cadence]] is agreed."
+/** The matter's stateless-generation usage rows, without timestamps. */
+const ledgerRows = async () => {
+  const db = openTelemetryDb(matter.dir)
+  try { return readGenerations(db).map(({ ts: _, ...row }) => row) } finally { db.close() }
+}
 
 beforeAll(async () => {
   temporary = await mkdtemp(path.join(tmpdir(), "dochaus-markup-replies-"))
@@ -280,6 +287,17 @@ test("a failed model call is refused in plain words, and its status stays in the
   const log = path.join(temporary, "ingest.log"), deadline = Date.now() + 5_000
   while (!(await readFile(log, "utf8")).includes("HTTP 500") && Date.now() < deadline) await Bun.sleep(50)
   expect(await readFile(log, "utf8")).toContain("The configured legal generation failed (HTTP 500).")
+}, 60_000)
+
+test("each reply-drafting call's provider usage is recorded in the matter's ledger as Comment replies", async () => {
+  const before = await ledgerRows()
+  generations = []
+  answer = () => Response.json({ data: { text: VALID, model: MODEL, elapsed_ms: 1,
+    usage: { tokens: { input: 20, output: 6, reasoning: 1, cache: { read: 4, write: 2 } }, cost: 0.0012 } } })
+  expect((await draft({ base_sha256: listed.version.sha256, thread: 0 })).status).toBe(200)
+  expect(generations).toHaveLength(1)
+  expect((await ledgerRows()).slice(before.length)).toEqual([{ agent: REPLY_DRAFTING_AGENT, model: "fixture/scripted", cost: 0.0012,
+    tokens: { input: 20, output: 6, reasoning: 1, cache: { read: 4, write: 2 } } }])
 }, 60_000)
 
 test("an unreadable answer gets one correction, then the draft is refused", async () => {

@@ -1,7 +1,6 @@
 import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
-import { computeCost, getRate, PRICING_SOURCE, type RateOverrides } from "./pricing"
 
 export type TurnInput = {
   sessionID: string
@@ -11,7 +10,6 @@ export type TurnInput = {
   agent: string
   contextChars: number
   estimatedInputTokens: number
-  rateOverrides?: RateOverrides
 }
 
 export type ToolCallInput = {
@@ -77,6 +75,19 @@ export function openTelemetryDb(matterDir: string) {
       output_chars INTEGER,
       phase TEXT NOT NULL DEFAULT 'ok'
     );
+    CREATE TABLE IF NOT EXISTS generations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      agent TEXT NOT NULL,
+      model TEXT,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+      cost_usd REAL,
+      session_id TEXT
+    );
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -85,15 +96,43 @@ export function openTelemetryDb(matterDir: string) {
     CREATE INDEX IF NOT EXISTS turns_ts ON turns (ts);
     CREATE INDEX IF NOT EXISTS tool_calls_session_ts ON tool_calls (session_id, ts);
     CREATE INDEX IF NOT EXISTS sessions_last_activity ON sessions (last_activity_at);
+    CREATE INDEX IF NOT EXISTS generations_ts ON generations (ts);
   `)
   db.query("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)").run("schema_version", "1")
   db.query("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)").run("created_at", String(Date.now()))
-  db.query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(
-    "pricing_source",
-    PRICING_SOURCE,
-  )
-  db.query("DELETE FROM meta WHERE key = ?").run("pricing_as_of")
+  // Cost now comes from native sessions; drop the old estimate's metadata.
+  db.query("DELETE FROM meta WHERE key IN ('pricing_source', 'pricing_as_of', 'unknown_models')").run()
   return db
+}
+
+// Provider-reported usage that native sessions no longer carry, kept here for
+// usage reports: stateless generation jobs (Prepare changes, comment replies)
+// have no session, and the engine keeps a deleted session's usage under its id.
+export type GenerationUsage = {
+  agent: string
+  model?: string
+  tokens: { input: number; output: number; reasoning: number; cache: { read: number; write: number } }
+  cost: number | null
+  ts?: number
+  session?: string
+}
+
+export function recordGeneration(db: Database, usage: GenerationUsage) {
+  db.query(`
+    INSERT INTO generations (ts, agent, model, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, cost_usd, session_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(usage.ts ?? Date.now(), usage.agent, usage.model ?? null, usage.tokens.input, usage.tokens.output, usage.tokens.reasoning, usage.tokens.cache.read, usage.tokens.cache.write, usage.cost, usage.session ?? null)
+}
+
+export function readGenerations(db: Database): (Required<Omit<GenerationUsage, "session">> & Pick<GenerationUsage, "session">)[] {
+  const rows = db.query("SELECT ts, agent, model, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, cost_usd, session_id FROM generations ORDER BY ts").all() as {
+    ts: number; agent: string; model: string | null; input_tokens: number; output_tokens: number; reasoning_tokens: number; cache_read_tokens: number; cache_write_tokens: number; cost_usd: number | null; session_id: string | null
+  }[]
+  return rows.map((row) => ({
+    ts: row.ts, agent: row.agent, model: row.model ?? "", cost: row.cost_usd,
+    tokens: { input: row.input_tokens, output: row.output_tokens, reasoning: row.reasoning_tokens, cache: { read: row.cache_read_tokens, write: row.cache_write_tokens } },
+    ...(row.session_id ? { session: row.session_id } : {}),
+  }))
 }
 
 export function touchSession(db: Database, sessionID: string, patch: SessionTouch) {
@@ -113,10 +152,9 @@ export function touchSession(db: Database, sessionID: string, patch: SessionTouc
   `).run(patch.parentID ?? null, now, patch.status ?? null, patch.model ?? null, patch.agent ?? null, sessionID)
 }
 
+// A turn records the context size check only. Cost is read from native
+// sessions (services/ingest/src/matter-usage.ts); cost_usd stays null.
 export function recordTurn(db: Database, input: TurnInput) {
-  const rate = getRate(input.model, input.rateOverrides, input.estimatedInputTokens)
-  const costUsd = rate ? computeCost(input.estimatedInputTokens, rate) : null
-  const unknownModel = !rate
   db.query(`
     INSERT INTO turns (
       session_id,
@@ -138,7 +176,7 @@ export function recordTurn(db: Database, input: TurnInput) {
     input.agent,
     input.contextChars,
     input.estimatedInputTokens,
-    costUsd,
+    null,
     turnStatus(input.estimatedInputTokens),
   )
   touchSession(db, input.sessionID, {
@@ -147,8 +185,6 @@ export function recordTurn(db: Database, input: TurnInput) {
     agent: input.agent,
     status: "active",
   })
-  if (unknownModel) recordUnknownModel(db, input.model)
-  return { costUsd, unknownModel }
 }
 
 export function recordToolCall(db: Database, input: ToolCallInput) {
@@ -176,6 +212,7 @@ export function applyRetentionPolicy(db: Database, retentionDays: number) {
   const cutoff = Date.now() - retentionDays * 86_400_000
   const turns = db.query("DELETE FROM turns WHERE ts < ?").run(cutoff).changes
   const toolCalls = db.query("DELETE FROM tool_calls WHERE ts < ?").run(cutoff).changes
+  db.query("DELETE FROM generations WHERE ts < ?").run(cutoff)
   const sessions = db
     .query("DELETE FROM sessions WHERE last_activity_at < ? AND status = 'finished'")
     .run(cutoff).changes
@@ -185,8 +222,8 @@ export function applyRetentionPolicy(db: Database, retentionDays: number) {
 export function clearTelemetry(db: Database) {
   db.query("DELETE FROM turns").run()
   db.query("DELETE FROM tool_calls").run()
+  db.query("DELETE FROM generations").run()
   db.query("DELETE FROM sessions").run()
-  db.query("DELETE FROM meta WHERE key = ?").run("unknown_models")
 }
 
 export function summarizeMessages(messages: MessageLike[]) {
@@ -194,39 +231,10 @@ export function summarizeMessages(messages: MessageLike[]) {
   return { chars, estimatedTokens: Math.ceil(chars / 4) }
 }
 
-export function getUnknownModels(db: Database, rateOverrides?: RateOverrides) {
-  const row = db.query("SELECT value FROM meta WHERE key = ?").get("unknown_models") as { value: string } | null
-  if (!row) return []
-  const parsed = parseJson(row.value)
-  if (!Array.isArray(parsed)) return []
-  return parsed.filter((value): value is string => typeof value === "string" && !getRate(value, rateOverrides))
-}
-
-export function getPricingSource(db: Database) {
-  const row = db.query("SELECT value FROM meta WHERE key = ?").get("pricing_source") as { value: string } | null
-  return row?.value ?? null
-}
-
 function turnStatus(estimatedInputTokens: number) {
   if (estimatedInputTokens >= 180_000) return "fail"
   if (estimatedInputTokens >= 90_000) return "warn"
   return "ok"
-}
-
-function recordUnknownModel(db: Database, model: string) {
-  const models = Array.from(new Set([...getUnknownModels(db), model])).sort()
-  db.query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(
-    "unknown_models",
-    JSON.stringify(models),
-  )
-}
-
-function parseJson(value: string) {
-  try {
-    return JSON.parse(value) as unknown
-  } catch {
-    return undefined
-  }
 }
 
 function textLength(value: unknown): number {

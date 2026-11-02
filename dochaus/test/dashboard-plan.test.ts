@@ -47,3 +47,15 @@ test("source documents have no date groupings; token charts use session-start pe
   expect(checkPlan({ widgets: [{ ...chart, metric: "documents", period: "month" }] }).errors?.join(" ")).toContain("no reliable dates")
   expect(checkPlan({ widgets: [{ ...chart, metric: "tokens" }] }).plan).toBeDefined()
 })
+
+test("agent groupings and the background filter are spend-only and keep their filter", () => {
+  const agents = { ...chart, groupBy: "agent", form: "list" }
+  expect(checkPlan({ widgets: [agents] }).plan?.widgets[0]).toEqual(agents)
+  const background = { ...chart, groupBy: "matter", form: "bars", agentGroup: "background", limit: 5 }
+  expect(checkPlan({ widgets: [background] }).plan?.widgets[0]).toEqual(background)
+  expect(checkPlan({ widgets: [{ ...background, agentGroup: "work" }, background] }).plan?.widgets).toHaveLength(2)
+  expect(checkPlan({ widgets: [{ ...agents, metric: "tokens" }] }).errors?.join(" ")).toContain("only spend is recorded per agent")
+  expect(checkPlan({ widgets: [{ ...chart, metric: "tokens", agentGroup: "background" }] }).errors?.join(" ")).toContain('agentGroup needs metric "spend"')
+  expect(checkPlan({ widgets: [{ ...agents, groupBy: "agent-group", agentGroup: "background" }] }).errors?.join(" ")).toContain("cannot group by agent-group")
+  expect(checkPlan({ widgets: [{ ...chart, agentGroup: "robots" }] }).errors?.join(" ")).toContain("agentGroup must be one of")
+})

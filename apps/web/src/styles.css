@@ -1473,6 +1473,17 @@ li.list-row {
   text-transform: uppercase;
 }
 
+/* By task: background agents and the lawyer's own work, each under a quiet
+   heading. */
+.telemetry-group + .telemetry-group { margin-top: var(--space-4); }
+
+.telemetry-group-title {
+  margin: 0 0 var(--space-2);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 /* Spend sparkline rendered as flexed CSS bars rather than ASCII glyphs. */
 .telemetry-spark {
   display: flex;
@@ -4324,6 +4335,20 @@ button.linklike:hover:not(:disabled) {
   color: var(--text);
   background: none;
   border: none;
+}
+
+/* A toast that already played its entry keeps still when it moves between a dialog and the page. */
+.toast-settled:not(.toast-leaving) {
+  animation: none;
+}
+
+/* On a narrow screen a modal's header (title and close) fills the top, so toasts shown inside a
+   modal dialog sit at the bottom instead, above its footer actions (--toast-lift, see Toast.tsx). */
+@media (max-width: 700px) {
+  dialog .toast-stack {
+    top: auto;
+    bottom: calc(8px + max(var(--toast-lift, 0px), 8px + env(safe-area-inset-bottom, 0px)));
+  }
 }
 
 @keyframes toast-in {
