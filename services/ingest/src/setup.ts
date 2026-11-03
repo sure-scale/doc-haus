@@ -7,51 +7,56 @@ export const SETUP_STEPS = ["models", "research", "details"] as const
 export type SetupStep = typeof SETUP_STEPS[number]
 export type SetupProgress = { version: 1; completed: SetupStep[]; skipped: SetupStep[]; next: SetupStep | "done"; ready: boolean }
 type Progress = Omit<SetupProgress, "ready" | "next">
-type CatalogModel = { providerID: string; id: string; enabled: boolean; variants?: { id: string }[] }
+export type CatalogModel = { providerID: string; id: string; enabled: boolean; variants?: { id: string }[] }
+
+/** The enabled catalog model a `provider/model[#variant]` reference names. */
+export function catalogModel(reference: string, models: CatalogModel[]) {
+  // Native model references retain an optional, explicitly selected #variant.
+  const [base, variant, extra] = reference.split("#")
+  if (extra !== undefined || variant === "") return undefined
+  return models.find(model => model.enabled && `${model.providerID}/${model.id}` === base &&
+    (variant === undefined || model.variants?.some(candidate => candidate.id === variant)))
+}
 
 export function validModelPair(config: { model?: unknown; small_model?: unknown }, models: CatalogModel[]) {
   if (typeof config.model !== "string" || typeof config.small_model !== "string") return false
-  function available(reference: string) {
-    // Native model references retain an optional, explicitly selected #variant.
-    const [base, variant, extra] = reference.split("#")
-    if (extra !== undefined || variant === "") return undefined
-    return models.find(model => model.enabled && `${model.providerID}/${model.id}` === base &&
-      (variant === undefined || model.variants?.some(candidate => candidate.id === variant)))
-  }
-  const primary = available(config.model)
-  const fast = available(config.small_model)
+  const primary = catalogModel(config.model, models)
+  const fast = catalogModel(config.small_model, models)
   return Boolean(primary && fast && primary.providerID === fast.providerID)
+}
+
+/** Reads the engine's model catalog. */
+export async function engineModelCatalog(): Promise<CatalogModel[]> {
+  const engine = process.env.OPENCODE_URL ?? `http://127.0.0.1:${process.env.DOC_HAUS_ENGINE_PORT ?? "4097"}`
+  const password = process.env.OPENCODE_SERVER_PASSWORD
+  const unavailable = "Could not check the engine model catalog. Retry when the engine is ready."
+  // Saving preferences reloads research consent protection, and the engine
+  // refuses catalog reads until it is active again. Wait out that short reload
+  // inside one 8 s budget, well within the web client's 12 s timeout.
+  const deadline = Date.now() + 8000
+  while (true) {
+    const res = await fetch(`${engine}/api/model`, {
+      signal: AbortSignal.timeout(Math.max(deadline - Date.now(), 1)),
+      ...(password ? { headers: { Authorization: `Basic ${btoa(`opencode:${password}`)}` } } : {}),
+    }).catch(() => { throw new Error(unavailable) })
+    if (res.ok) {
+      const result = await res.json() as { data: CatalogModel[] }
+      if (!Array.isArray(result.data)) throw new Error("The engine returned an invalid model catalog.")
+      return result.data
+    }
+    const readiness = res.status === 503 ? await res.json().catch(() => undefined) as { legalState?: string; consentState?: string } | undefined : undefined
+    const consent = readiness?.legalState === "active" ? readiness.consentState : undefined
+    if (consent === "pending" && Date.now() + 200 < deadline) { await Bun.sleep(200); continue }
+    if (consent === "pending") throw new Error("Research protection is still loading. Retry in a moment.")
+    if (consent) throw new Error("Research protection could not load, so the engine refuses setup checks. Restart doc.haus, then retry.")
+    throw new Error(unavailable)
+  }
 }
 
 export function setupRoutes(options: { directory: string; config?: () => { model?: unknown; small_model?: unknown }; models?: () => Promise<CatalogModel[]> }) {
   const file = path.join(options.directory, "setup.json")
   const config = options.config ?? readEngineConfig
-  const models = options.models ?? (async () => {
-    const engine = process.env.OPENCODE_URL ?? `http://127.0.0.1:${process.env.DOC_HAUS_ENGINE_PORT ?? "4097"}`
-    const password = process.env.OPENCODE_SERVER_PASSWORD
-    const unavailable = "Could not check the engine model catalog. Retry when the engine is ready."
-    // Saving preferences reloads research consent protection, and the engine
-    // refuses catalog reads until it is active again. Wait out that short reload
-    // inside one 8 s budget, well within the web client's 12 s timeout.
-    const deadline = Date.now() + 8000
-    while (true) {
-      const res = await fetch(`${engine}/api/model`, {
-        signal: AbortSignal.timeout(Math.max(deadline - Date.now(), 1)),
-        ...(password ? { headers: { Authorization: `Basic ${btoa(`opencode:${password}`)}` } } : {}),
-      }).catch(() => { throw new Error(unavailable) })
-      if (res.ok) {
-        const result = await res.json() as { data: CatalogModel[] }
-        if (!Array.isArray(result.data)) throw new Error("The engine returned an invalid model catalog.")
-        return result.data
-      }
-      const readiness = res.status === 503 ? await res.json().catch(() => undefined) as { legalState?: string; consentState?: string } | undefined : undefined
-      const consent = readiness?.legalState === "active" ? readiness.consentState : undefined
-      if (consent === "pending" && Date.now() + 200 < deadline) { await Bun.sleep(200); continue }
-      if (consent === "pending") throw new Error("Research protection is still loading. Retry in a moment.")
-      if (consent) throw new Error("Research protection could not load, so the engine refuses setup checks. Restart doc.haus, then retry.")
-      throw new Error(unavailable)
-    }
-  })
+  const models = options.models ?? engineModelCatalog
   function write(progress: Progress) {
     mkdirSync(options.directory, { recursive: true })
     const temporary = `${file}.${crypto.randomUUID()}.tmp`

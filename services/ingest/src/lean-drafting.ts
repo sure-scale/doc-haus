@@ -16,6 +16,7 @@ import { runLean, stageInputSha, stopLeanRun } from "../../../dochaus/workflows/
 import { leanSteps } from "../../../dochaus/workflows/lean/plan"
 import { withSourceSnapshot } from "../../../dochaus/workflows/lean/quotes"
 import { engineSessionPort, type LeanDeps } from "../../../dochaus/workflows/lean/stages"
+import { catalogModel, engineModelCatalog, type CatalogModel } from "./setup"
 import {
   LeanQuestionError,
   answerWith,
@@ -302,8 +303,9 @@ export async function leanDraftingIdle(directory: string, pollMs = 10) {
   while (running.has(directory)) await Bun.sleep(pollMs)
 }
 
-export function leanDraftingRoutes(options: { directory: (id: string) => string; deps?: () => LeanDeps }) {
+export function leanDraftingRoutes(options: { directory: (id: string) => string; deps?: () => LeanDeps; models?: () => Promise<CatalogModel[]> }) {
   const deps = options.deps ?? defaultDeps
+  const models = options.models ?? engineModelCatalog
   const app = new Hono()
   app.post("/:id/lean/checklist/refine", async (c) => {
     const directory = options.directory(c.req.param("id"))
@@ -327,9 +329,15 @@ export function leanDraftingRoutes(options: { directory: (id: string) => string;
   app.post("/:id/lean/resume", async (c) => {
     const directory = options.directory(c.req.param("id"))
     const input: { model?: unknown } | null = await c.req.json().catch(() => null)
-    if (input?.model !== undefined && !isLeanModel(input.model))
-      return c.json({ error: "Continue names a model by its providerID and modelID.", code: "invalid_model" }, 400)
-    const model = isLeanModel(input?.model) ? { providerID: input.model.providerID, modelID: input.model.modelID } : undefined
+    const invalid = { error: "Continue names a model by its providerID and modelID.", code: "invalid_model" }
+    if (input?.model !== undefined && !isLeanModel(input.model)) return c.json(invalid, 400)
+    const model = isLeanModel(input?.model) ? { providerID: input.model.providerID.trim(), modelID: input.model.modelID.trim() } : undefined
+    if (model) {
+      const catalog = await models().catch((error: unknown) => error instanceof Error ? error : new Error(String(error)))
+      if (catalog instanceof Error) return c.json({ error: catalog.message, code: "model_catalog_unavailable" }, 503)
+      if (!catalogModel(`${model.providerID}/${model.modelID}`, catalog))
+        return c.json({ error: "The model selected in Settings is not available. Choose an enabled model in Settings, then Continue.", code: "invalid_model" }, 400)
+    }
     const resumed = guard(() => resumeLeanDraftingRun(directory, deps(), model))
     if (resumed instanceof LeanDraftingConflictError) return c.json({ error: resumed.message, code: resumed.code }, 409)
     if (!resumed) return c.json({ error: "This matter has no lean drafting run.", code: "lean_run_not_found" }, 404)
