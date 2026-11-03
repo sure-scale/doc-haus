@@ -148,15 +148,18 @@ async function markUnverified(directory: string, out: string, document: DocID): 
 /** The marker for an unverified quotation or citation. A citation is named in
  * it whenever the marker still reads as one open item: the open-item pattern
  * takes the whole marker and no other bracket pattern finds anything inside it.
- * A quotation is never repeated. */
+ * A citation whose square brackets break the bracket form is named in the
+ * parenthesis form instead. A quotation is never repeated. */
 export function unverifiedMarker(item: OpenItem) {
   if (item.kind === "quote_miss") return "[open item: quotation not verified against its source]"
   const generic = "[open item: citation not verified against a source]"
   const citation = item.ref.citation?.replace(/\s+/g, " ").trim()
   if (!citation) return generic
-  const named = `[open item: citation not verified against a source: ${citation}]`
-  const whole = [...named.matchAll(new RegExp(OPEN_ITEM_PATTERN.source, "gi"))]
-  return whole.length === 1 && whole[0]![0] === named && !draftingPlaceholders(named).length ? named : generic
+  const whole = (named: string) => {
+    const found = [...named.matchAll(new RegExp(OPEN_ITEM_PATTERN.source, "gi"))]
+    return found.length === 1 && found[0]![0] === named && !draftingPlaceholders(named).length
+  }
+  return [`[open item: citation not verified against a source: ${citation}]`, `(open item: citation not verified against a source: ${citation})`].find(whole) ?? generic
 }
 
 /** Applied amendments as the final body shows them, with any marker the apply

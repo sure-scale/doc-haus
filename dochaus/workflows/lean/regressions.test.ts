@@ -184,11 +184,15 @@ describe("unsupported content in the final body", () => {
     expect(gateOf(directory).disclosed.map(item => item.kind)).toContain("citation_unsupported")
   }, 120_000)
 
-  test("an unverified-citation marker names the citation, parentheses included, unless square brackets would break the marker", () => {
+  test("an unverified-citation marker names the citation, parentheses included; square brackets take the parenthesis form, and both the generic marker", () => {
     const marker = (citation: string) => unverifiedMarker(openItem("apply", "citation_unsupported", "Unsupported.", { citation }))
     expect(marker("section 4(b)(ii) of the Imaginary Trade Act")).toBe("[open item: citation not verified against a source: section 4(b)(ii) of the Imaginary Trade Act]")
     expect(paragraphShowsOpenItem(`The goods are delivered. ${marker("section 4(b)(ii) of the Imaginary Trade Act")}`)).toBe(true)
-    for (const citation of ["Rule 2 [as amended] of the Imaginary Rules", "section [4] of the Imaginary Trade Act"])
+    for (const citation of ["Rule 2 [as amended] of the Imaginary Rules", "section [4] of the Imaginary Trade Act"]) {
+      expect(marker(citation)).toBe(`(open item: citation not verified against a source: ${citation})`)
+      expect(paragraphShowsOpenItem(`The goods are delivered. ${marker(citation)}`)).toBe(true)
+    }
+    for (const citation of ["Rule 2(a) [as amended] of the Imaginary Rules", "section [4] (as amended) of the Imaginary Trade Act"])
       expect(marker(citation)).toBe("[open item: citation not verified against a source]")
     expect(unverifiedMarker(openItem("apply", "quote_miss", "Unverified.", { quote: "deliver (in full) the goods" }))).toBe("[open item: quotation not verified against its source]")
   })
