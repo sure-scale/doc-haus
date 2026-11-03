@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { nativeStageResult } from "./native-stage-result"
+import { nativeStageResult, OutputLimitError } from "./native-stage-result"
 import { runLean } from "./runner"
 import { AGENT, cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
@@ -22,9 +22,25 @@ test("a reply cut off at its output limit before any text stops the step with th
     .toThrow("reached its output limit before giving any answer")
 })
 
-test("a reply cut off at its output limit after some text is still the reply the checker reads", () => {
+test("a reply cut off at its output limit after some text or a tool call is still the reply the checker reads", () => {
   expect(nativeStageResult([USER, reply("length", [REASONING, { type: "text", text: "{\"partial\":" }])], "msg_user", "expander")).toBe("{\"partial\":")
+  expect(nativeStageResult([USER, reply("length", [REASONING, { type: "tool", tool: "write", state: { status: "error", error: "Tool call was cut off." } }])], "msg_user", "expander")).toBe("")
   expect(nativeStageResult([USER, reply("stop", [REASONING])], "msg_user", "expander")).toBe("")
+})
+
+test("without a reasoning count the stop names the output it spent, or no count at all", () => {
+  const counted = (tokens: Record<string, unknown> | undefined) => {
+    const message = reply("length", [])
+    return [USER, { ...message, info: { ...message.info, tokens } }]
+  }
+  expect(() => nativeStageResult(counted({ input: 9_000, output: 4_096, reasoning: 0 }), "msg_user", "expander"))
+    .toThrow("The model's reply reached its output limit before giving any answer (4,096 output tokens).")
+  for (const tokens of [undefined, { input: 9_000 }]) {
+    let thrown: unknown
+    try { nativeStageResult(counted(tokens), "msg_user", "expander") } catch (error) { thrown = error }
+    expect(thrown).toBeInstanceOf(OutputLimitError)
+    expect((thrown as Error).message).toBe("The model's reply reached its output limit before giving any answer.")
+  }
 })
 
 test("the output-limit stop is a runtime stop, not a checker retry, and Continue re-runs the step", async () => {
