@@ -174,6 +174,19 @@ describe("unsupported content in the final body", () => {
     expect(unrelated.text).toBe(`${CITED} [open item: confirm the delivery date]. [open item: citation not verified against a source: section 4 of the Imaginary Trade Act]`)
   }, 120_000)
 
+  test("only the marker apply wrote in a paragraph is passed over; the same words in another paragraph stay a placeholder", async () => {
+    const directory = matter()
+    const marker = "[open item: citation not verified against a source: section 4 of the Imaginary Trade Act]"
+    writeLeanText(directory, "repairs.json", JSON.stringify({ round: 5, substantive_attempts: LEAN_MAX_SUBSTANTIVE_REPAIRS, requested_at: "saved", items: [] }))
+    await runLean(directory, { sessions: scriptedModel({ ...happyPath, ...quiet,
+      [AGENT.draft]: drafter(`# Supply note\n\n## Delivery\n\n${CITED}.\n\n## Payment\n\nPayment is due on delivery ${marker}.\n`) }).port })
+    const rows = readParagraphs(directory, "d1", "paragraphs-applied.json")
+    const delivery = rows.find(row => row.text.startsWith(CITED))!, payment = rows.find(row => row.text.startsWith("Payment is due"))!
+    expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ marked: [{ pid: delivery.pid, markers: [marker] }] })
+    const placeholders = readOpenItems(directory).filter(row => row.stage === "apply" && row.kind === "placeholder")
+    expect(placeholders.map(row => row.ref.pid)).toEqual([payment.pid])
+  }, 120_000)
+
   test("a resume after the allowance is used up re-runs apply, though its change list is unchanged", async () => {
     const directory = matter()
     const model = scriptedModel({ ...happyPath, ...quiet, [AGENT.draft]: citing() })

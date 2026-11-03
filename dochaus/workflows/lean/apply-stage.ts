@@ -96,9 +96,10 @@ export async function runApply(directory: string, state: LeanState, document: Do
     existsSync(previous) ? readFileSync(previous) : undefined))
   writeLeanText(directory, `${document}/apply.json`, `${JSON.stringify({ ...settled.result, ...(marked.length ? { marked } : {}), comments: annotated.comments }, null, 2)}\n`)
   // A marker this step wrote shows its citation or quotation item, which the
-  // notes name; it is not a second open item.
-  const written = new Set(marked.flatMap(row => row.markers.map(marker => normalize(marker).toLowerCase())))
-  const bodyItems = finalBodyItems(directory, rows).filter(item => item.kind !== "placeholder" || !written.has(normalize(item.ref.placeholder ?? "").toLowerCase()))
+  // notes name; it is not a second open item. The same words elsewhere in the
+  // body were not written here and stay open items of their own.
+  const written = new Map(marked.map(row => [row.pid, new Set(row.markers.map(marker => normalize(marker).toLowerCase()))]))
+  const bodyItems = finalBodyItems(directory, rows).filter(item => item.kind !== "placeholder" || !item.ref.pid || !written.get(item.ref.pid)?.has(normalize(item.ref.placeholder ?? "").toLowerCase()))
   return {
     status: "done", outputs: stepOutputs(step),
     openItems: [
