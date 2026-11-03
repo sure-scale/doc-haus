@@ -47,10 +47,15 @@ export function citationRowsForText(directory: string, artifact: string, text: s
 /** Lean authority comes from uploaded sources or the current independently
  * reviewed research, not a historical fetch or a previous pipeline's ledger. */
 export function citationRowsForLeanText(directory: string, artifact: string, text: string): CitationCheckRow[] {
-  const support = buildSupportIndex(directory)
-  if (!readLeanState(directory)?.stages.research) return citationRowsFromText(text, artifact, support)
-  return citationRowsFromText(text, artifact, support.filter(row =>
-    row.support.id.startsWith("lean-research:") || !["official-fetch", "authority-ledger"].includes(row.support.kind) && !row.support.research_row_id))
+  return leanCitationReader(directory, artifact)(text)
+}
+
+/** citationRowsForLeanText for several texts, with one support lookup. */
+export function leanCitationReader(directory: string, artifact: string) {
+  const all = buildSupportIndex(directory)
+  const support = readLeanState(directory)?.stages.research ? all.filter(row =>
+    row.support.id.startsWith("lean-research:") || !["official-fetch", "authority-ledger"].includes(row.support.kind) && !row.support.research_row_id) : all
+  return (text: string) => citationRowsFromText(text, artifact, support)
 }
 
 export function citationRowsForArtifact(
