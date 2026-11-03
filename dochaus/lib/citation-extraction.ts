@@ -14,7 +14,8 @@ type CitationCandidate = {
   kind: CitationCheckRow["kind"]
   start: number
   end: number
-  /** The name as written, when a leading signal was dropped (LEADING_SIGNAL). */
+  /** The name as written, when a leading signal or heading enumerator was
+   * dropped (LEADING_SIGNAL, HEADING_ENUMERATOR). */
   written?: { citation_text: string; normalized_key: string; start: number }
 }
 
@@ -152,9 +153,12 @@ function extractCitations(text: string): CitationCandidate[] {
       /\b[A-Z][A-Za-z0-9&.'-]*(?:[ \t]+[A-Z][A-Za-z0-9&.'-]*){0,8}[ \t]+(?:Act|Code|Rules?|Regulations?|Statutes?)[ \t]*(?:§+|s\.|section|sections|article|art\.|rule|r\.)[ \t]*[A-Za-z0-9][A-Za-z0-9()./-]*(?:[ \t]*(?:-|to|and)[ \t]*[A-Za-z0-9][A-Za-z0-9()./-]*|[ \t]*,[ \t]*\d[A-Za-z0-9()./-]*)?/g,
       "rule-or-statute",
     ),
+    // The second party ends where the next case's first party begins ("Rowan
+    // v. Merrow. Rowan v. Merrow, 1 Synth. 2"; "Down v. Merrow and Ash v.
+    // Kestrel"), so one name never swallows the start of the next.
     ...matchCitations(
       text,
-      /\b[A-Z][A-Za-z0-9&.'-]+(?:[ \t]+(?:of|for|and|the|[A-Z][A-Za-z0-9&.'-]+)){0,8}[ \t]+v\.?[ \t]+[A-Z][A-Za-z0-9&.'-]+(?:[ \t]+(?:of|for|and|the|[A-Z][A-Za-z0-9&.'-]+)){0,8}\b/g,
+      /\b[A-Z][A-Za-z0-9&.'-]+(?:[ \t]+(?:of|for|and|the|[A-Z][A-Za-z0-9&.'-]+)){0,8}[ \t]+v\.?[ \t]+[A-Z][A-Za-z0-9&.'-]+(?:[ \t]+(?!(?:(?:of|for|and|the|[A-Z][A-Za-z0-9&.'-]+)[ \t]+){1,9}v\.?[ \t]+[A-Z])(?:of|for|and|the|[A-Z][A-Za-z0-9&.'-]+)){0,8}\b/g,
       "case",
     ),
     ...matchCitations(
@@ -176,7 +180,9 @@ function matchCitations(text: string, pattern: RegExp, kind: CitationCandidate["
   return [...text.matchAll(pattern)]
     .map((match) => {
       const trimmed = trimCitation(match[0])
-      const citation_text = kind === "url" ? trimmed : trimmed.replace(LEADING_SIGNAL, "")
+      const at = (match.index ?? 0) + match[0].indexOf(trimmed)
+      const opensLine = /^[ \t#>*_]*$/.test(text.slice(text.lastIndexOf("\n", at - 1) + 1, at))
+      const citation_text = kind === "url" ? trimmed : (opensLine ? trimmed.replace(HEADING_ENUMERATOR, "") : trimmed).replace(LEADING_SIGNAL, "")
       const start = (match.index ?? 0) + match[0].indexOf(citation_text)
       const written = citation_text === trimmed ? undefined
         : { citation_text: trimmed, normalized_key: normalizeCitationKey(trimmed), start: (match.index ?? 0) + match[0].indexOf(trimmed) }
@@ -198,6 +204,11 @@ function matchCitations(text: string, pattern: RegExp, kind: CitationCandidate["
  * authority it names. Other words that can open a sentence ("Under", "The")
  * also begin party names and stay. The name as written is tried first. */
 const LEADING_SIGNAL = /^(?:See(?:[ \t]+(?:[Aa]lso|[Gg]enerally))?|Cf\.|Compare|But[ \t]+(?:[Ss]ee|[Cc]f\.)|Accord|Contra|E\.g\.|In(?![ \t]+[Rr][Ee]\b))[ \t]+(?=[A-Z])/
+
+/** The enumerator of a heading or list item ("D. Merrow v. Kestrel", "IV.
+ * Merrow v. Kestrel") is not part of the name it numbers; it is dropped only
+ * where it opens a line, and the name as written is tried first. */
+const HEADING_ENUMERATOR = /^(?:[A-Z]|[IVXLCDM]+)\.[ \t]+(?=[A-Z])/
 
 function rangesOverlap(a: CitationCandidate, b: CitationCandidate) {
   return a.start < b.end && b.start < a.end
