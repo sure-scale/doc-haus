@@ -261,6 +261,34 @@ export function parseJsonObject(content: string): { ok: true; value: Record<stri
       return { ok: false, error: "ambiguous content outside the fenced result; return one JSON object" }
     return record(value) ? { ok: true, value } : { ok: false, error: "the JSON value is not an object" }
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : "invalid JSON" }
+    return { ok: false, error: `${error instanceof Error ? error.message : "invalid JSON"}${syntaxLocation(candidate)}` }
   }
+}
+
+/** Where a JSON syntax error is, so a retry can fix it: the parser's own
+ * message names no position. Finds the first bracket that closes the wrong
+ * opener, or the opener left unclosed, outside strings. Reports only. */
+function syntaxLocation(text: string) {
+  const open: { char: string; at: number }[] = []
+  let quoted = false
+  for (let at = 0; at < text.length; at++) {
+    const char = text[at]!
+    if (quoted) {
+      if (char === "\\") at++
+      else if (char === '"') quoted = false
+      continue
+    }
+    if (char === '"') quoted = true
+    else if (char === "{" || char === "[") open.push({ char, at })
+    else if (char === "}" || char === "]") {
+      const opener = open.pop()
+      if (opener?.char !== (char === "}" ? "{" : "[")) return near(text, at, `unexpected ${char}${opener ? ` before the ${opener.char === "{" ? "object" : "list"} opened at character ${opener.at} is closed` : ""}`)
+    }
+  }
+  const unclosed = open.at(-1)
+  return unclosed ? near(text, text.length, `the ${unclosed.char === "{" ? "object" : "list"} opened at character ${unclosed.at} is never closed`) : ""
+}
+
+function near(text: string, at: number, problem: string) {
+  return ` (at character ${at}: ${problem}; near ${JSON.stringify(`${text.slice(Math.max(0, at - 60), at)} >>> ${text.slice(at, at + 20)}`)})`
 }

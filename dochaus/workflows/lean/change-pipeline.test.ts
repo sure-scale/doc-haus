@@ -110,6 +110,19 @@ test("one wrapped JSON stage result is admitted without a formatting retry, with
   expect(acceptChangePlan(directory, "d1", reply.slice(0, -1)).issues.length).toBeGreaterThan(0)
 }, 120_000)
 
+test("a JSON syntax error is retried with where it is, so the model can find a stray bracket", () => {
+  const directory = matter()
+  const issue = (reply: string) => checkChanges(directory, reply, []).issues.join(" ")
+  // One brace too many closes the object while its list is still open.
+  expect(issue('{"amendments": [{"pid": "p1", "sources": [{"quote": "a"}]} }], "questions": []}'))
+    .toContain("at character 59: unexpected } before the list opened at character 15 is closed; near")
+  expect(issue('{"amendments": [{"pid": "p1", "sources": [{"quote": "a"}]} }], "questions": []}')).toContain(">>> }],")
+  expect(issue('{"amendments": [{"pid": "p1"}, "questions": []}')).toContain("unexpected } before the list opened at character 15 is closed")
+  expect(issue('{"amendments": [], "questions": [], "note": {"a": 1}')).toContain("the object opened at character 0 is never closed")
+  // Brackets inside strings are text, not structure.
+  expect(issue('{"amendments": [{"pid": "p1", "reason": "see [3} and \\"}\\""}], "questions": [] x}')).not.toContain("at character")
+})
+
 test("wrapped review results retain material findings and reject ambiguous alternatives", async () => {
   const directory = matter()
   expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
