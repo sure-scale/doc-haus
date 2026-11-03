@@ -120,13 +120,14 @@ type Progress = (patch: Partial<LeanStageState>) => void
 export { LEAN_MAX_SUBSTANTIVE_REPAIRS } from "./repairs"
 
 export async function runLean(directory: string, deps: LeanDeps): Promise<LeanState> {
-  const initial = readLeanState(directory)
+  let initial = readLeanState(directory)
   if (!initial) throw new Error("This matter has no lean drafting run.")
   // Completed legacy runs keep their original accepted package until the
   // lawyer supplies an update or answer; installing new stages is not a repair.
   if (initial.status === "completed" && !initial.stages.research) {
     const changes = drainLeanRequests(directory, initial)
     if (!changes.answered && !changes.updated) return initial
+    if (changes.model) initial = { ...initial, model: changes.model }
   }
   // The state as last settled; a Continue is applied against it.
   const pass = { state: initial, settled: initial as LeanState | undefined, reinspectChecklist: false }

@@ -310,6 +310,20 @@ test("completed legacy runs remain unchanged and do not claim research", async (
   expect(model.sessions).toEqual([])
 })
 
+test("an update to a completed legacy run continues on the model the Continue selects", async () => {
+  const directory = matter()
+  const current = readLeanState(directory)!
+  const { intake, research, "research-review": review, ...stages } = current.stages
+  writeLeanState(directory, { ...current, status: "completed", stages })
+  const selected = { providerID: "test", modelID: "selected" }
+  enqueueLeanRequest(directory, { kind: "update", text: "Add a short notice clause." })
+  enqueueLeanRequest(directory, { kind: "continue", model: selected })
+  const model = scriptedModel(happyPath)
+  expect((await runLean(directory, { sessions: model.port })).model).toEqual(selected)
+  expect(model.sessions.length).toBeGreaterThan(0)
+  expect(model.sessions.map(session => session.model)).toEqual(model.sessions.map(() => selected))
+}, 120_000)
+
 
 test("long canonical source text is readable beyond JSON clipping with focused source-context locators", () => {
   const directory = matter()
