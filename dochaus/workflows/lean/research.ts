@@ -72,9 +72,12 @@ function citedSource(directory: string, row: { id: string; url: string; quote: s
 }
 
 /** Checks research and records, on each finding, the retrieved source its URL
- * and quotation identify (`snapshot`). */
-function resolveResearch(directory: string, value: unknown): { issues: string[]; findings: ResearchFinding[]; unverified: ResearchFinding[] } {
-  if (!record(value) || !["completed", "limited", "not-needed"].includes(String(value.status)) || !Array.isArray(value.findings) || !strings(value.limitations)) return { issues: ["Return findings and limitations arrays in the specified JSON shape."], findings: [], unverified: [] }
+ * and quotation identify (`snapshot`). A reply to a later research run is
+ * checked with the earlier approved findings it keeps (`prior`, keptFindings):
+ * its status describes the combined set, so a run that finds nothing new still
+ * has the authority it keeps. */
+function resolveResearch(directory: string, value: unknown, prior: ResearchFinding[] = []): { issues: string[]; findings: ResearchFinding[]; unverified: ResearchFinding[]; kept: ResearchFinding[] } {
+  if (!record(value) || !["completed", "limited", "not-needed"].includes(String(value.status)) || !Array.isArray(value.findings) || !strings(value.limitations)) return { issues: ["Return findings and limitations arrays in the specified JSON shape."], findings: [], unverified: [], kept: [] }
   const issues: string[] = []
   const findings: ResearchFinding[] = []
   const unverified: ResearchFinding[] = []
@@ -95,10 +98,12 @@ function resolveResearch(directory: string, value: unknown): { issues: string[];
       issues.push(`${row.id}: disclose that source extraction is partial or its completeness is unknown.`)
     findings.push({ ...(row as ResearchFinding), snapshot: cited.source.id })
   }
-  if (value.status === "completed" && (!value.findings.length || value.limitations.length || value.findings.some(row => record(row) && typeof row.limitations === "string" && row.limitations.trim()))) issues.push("Completed research requires retrieved findings and no unresolved research gaps; use limited when research remains incomplete.")
+  const kept = keptFindings(value, prior)
+  const found = value.findings.length + kept.length
+  if (value.status === "completed" && (!found || value.limitations.length || value.findings.some(row => record(row) && typeof row.limitations === "string" && row.limitations.trim()))) issues.push("Completed research requires retrieved findings and no unresolved research gaps; use limited when research remains incomplete.")
   if (value.status === "not-needed" && value.findings.length) issues.push("Not-needed research cannot include authority findings.")
-  if (!value.findings.length && !value.limitations.length) issues.push("No authority was retrieved: explain why research was unnecessary or unavailable in limitations; do not report research success.")
-  return { issues, findings, unverified }
+  if (!found && !value.limitations.length) issues.push("No authority was retrieved: explain why research was unnecessary or unavailable in limitations; do not report research success.")
+  return { issues, findings, unverified, kept }
 }
 
 /** On the last attempt a finding whose URL was never retrieved, or whose
@@ -290,12 +295,22 @@ function withdrawnIssues(value: unknown, prior: ResearchFinding[]) {
 /** A later research run adds to the reviewed authority the drafts were written
  * from rather than replacing it. Every earlier approved finding is kept unless
  * the new reply returns the same authority (`findingKey`), which replaces it, or
- * withdraws it with a reason because it no longer holds. Kept findings take
- * fresh ids after the new ones; the review covers the combined set again. */
-function withPriorFindings(value: Research, prior: ResearchFinding[]): Research {
-  if (value.status === "not-needed" || !prior.length) return value
-  const replaced = new Set(value.findings.map(findingKey))
-  const kept = prior.filter(row => !replaced.has(findingKey(row)) && !(value.withdrawn ?? []).some(entry => withdrawsFinding(entry, row)))
+ * withdraws it with a reason because it no longer holds. Research that is no
+ * longer needed keeps none. A malformed row or withdrawal replaces nothing; the
+ * checks reject it. */
+function keptFindings(value: Record<string, unknown>, prior: ResearchFinding[]) {
+  if (value.status === "not-needed" || !prior.length) return []
+  const keyed = (row: unknown): row is ResearchFinding => record(row) && ["url", "citation", "quote"].every(key => typeof row[key] === "string")
+  const replaced = new Set((Array.isArray(value.findings) ? value.findings : []).filter(keyed).map(findingKey))
+  const withdrawn = Array.isArray(value.withdrawn) ? value.withdrawn.filter((row): row is WithdrawnFinding => record(row) && typeof row.url === "string" && typeof row.citation === "string") : []
+  return prior.filter(row => !replaced.has(findingKey(row)) && !withdrawn.some(entry => withdrawsFinding(entry, row)))
+}
+
+/** The reply's findings with the earlier ones it keeps (keptFindings). Kept
+ * findings take fresh ids after the new ones; the review covers the combined
+ * set again. */
+function withPriorFindings(value: Research, kept: ResearchFinding[]): Research {
+  if (!kept.length) return value
   const used = new Set(value.findings.map(row => row.id))
   let next = 0
   const fresh = () => { while (used.has(`r${++next}`)); return `r${next}` }
@@ -320,10 +335,10 @@ export function acceptResearchReply(directory: string, stage: ResearchStage, rep
   }
   // Read before this reply replaces research.json.
   const prior = stage === "research" ? approvedResearch(directory) : []
-  let resolved = stage === "research" ? resolveResearch(directory, value) : undefined
+  let resolved = stage === "research" ? resolveResearch(directory, value, prior) : undefined
   if (resolved?.unverified.length && options.final) {
     value = withholdUnverified(value as Research, resolved.unverified)
-    resolved = resolveResearch(directory, value)
+    resolved = resolveResearch(directory, value, prior)
   }
   const issues = resolved ? [...resolved.issues, ...withdrawnIssues(value, prior)] : stage === "intake"
     ? !record(value) || value.ready !== true || typeof value.scope !== "string" || !value.scope.trim() || typeof value.jurisdiction !== "string" || !value.jurisdiction.trim()
@@ -332,7 +347,7 @@ export function acceptResearchReply(directory: string, stage: ResearchStage, rep
   if (stage !== "intake" && !options.final) issues.push(...internalPathIssues(stage, value))
   if (issues.length) return { issues, outputs: [], openItems: [] }
   // Saved with the source each finding cites, as resolved from its URL and quotation.
-  if (resolved) value = withPriorFindings({ ...(value as Research), findings: resolved.findings }, prior)
+  if (resolved) value = withPriorFindings({ ...(value as Research), findings: resolved.findings }, resolved.kept)
   if (stage === "research") writeLeanText(directory, "research-context.txt", readableResearchContext(directory, (value as Research).findings))
   writeLeanText(directory, `${stage}.json`, `${JSON.stringify(value, null, 2)}\n`)
   // The lawyer reads these as open items, so none names a finding by its id.

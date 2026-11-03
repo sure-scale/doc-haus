@@ -638,3 +638,27 @@ test("a later research run keeps earlier approved findings, replaces a re-return
   expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "not-needed", findings: [], limitations: ["No external authority is needed."] })).issues).toEqual([])
   expect((readLeanJson(directory, "research.json") as { findings: unknown[] }).findings).toEqual([])
 })
+
+/** Research accepted with one finding at Rule 1 and approved by its review. */
+function approvedNotice(directory: string) {
+  const notice = retrieved(directory)
+  const finding = { ...notice.findings[0]!, citation: "Rule 1", limitations: "" }
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "completed", limitations: [], findings: [finding] })).issues).toEqual([])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [], gaps: [] })).issues).toEqual([])
+  return finding
+}
+
+test("a later research run that finds nothing new is checked with the findings it keeps", () => {
+  const directory = matter()
+  const finding = approvedNotice(directory)
+  const withdrawn = [{ url: finding.url, citation: "Rule 1", reason: "The retrieved text no longer applies to this matter." }]
+  // Withdrawing the only authority with nothing new and no limitation still fails.
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "limited", findings: [], limitations: [], withdrawn })).issues)
+    .toEqual([expect.stringContaining("No authority was retrieved")])
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "completed", findings: [], limitations: [], withdrawn })).issues)
+    .toEqual([expect.stringContaining("Completed research requires retrieved findings"), expect.stringContaining("No authority was retrieved")])
+  // Was "Completed research requires retrieved findings…" and "No authority was retrieved…".
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "completed", findings: [], limitations: [] })).issues).toEqual([])
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "completed", findings: [finding], limitations: [] })
+  expect(checkResearch(directory, readLeanJson(directory, "research.json"))).toEqual([])
+})
