@@ -20,14 +20,13 @@ import { draftingAttribution, withGeneratedDocxAttribution } from "../../lib/doc
 import { continueListStarts, numberDocxClauses, numberedList } from "../../lib/docx-numbering"
 import { linkCrossReferences, referenceFields } from "../../lib/docx-crossrefs"
 import { paragraphFields, refInstruction, unlink } from "../../lib/docx-fields"
-import { shadeOpenItemsInDocx, unshadeOpenItems } from "../../lib/open-items"
+import { openItemMarkers, shadeOpenItemsInDocx, unshadeOpenItems } from "../../lib/open-items"
 import { assertRedlineRoundTrip } from "../../lib/redline-round-trip"
 import { discloseSourceRevisions } from "../../lib/docx-revision-views"
 import { openItem } from "./quotes"
 import { normalize } from "../../lib/quote-verify"
 import { paragraphSha256, type Amendment } from "../../lib/drafting-amendment"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, repairedUnverified, unverifiedKey } from "./repairs"
-import { paragraphShowsOpenItem } from "./gate"
 import { OPEN_ITEM_PATTERN } from "../../lib/marker-patterns"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 
@@ -129,10 +128,12 @@ async function markUnverified(directory: string, out: string, document: DocID): 
   const texts = new Map(rows.map(row => [row.pid, row.text]))
   const wanted = new Map<string, string[]>()
   for (const item of finalBodyItems(directory, rows)) {
-    // A paragraph that already shows an open item satisfies the gate as it stands.
-    if (item.kind !== "citation_unsupported" && item.kind !== "quote_miss" || !item.ref.pid || !texts.has(item.ref.pid) || paragraphShowsOpenItem(texts.get(item.ref.pid)!)) continue
+    if (item.kind !== "citation_unsupported" && item.kind !== "quote_miss" || !item.ref.pid || !texts.has(item.ref.pid)) continue
     if (!exhausted && !repaired.has(unverifiedKey(item, document))) continue
     const marker = unverifiedMarker(item)
+    // A paragraph already marked for this item is left as it stands; a marker
+    // about something else in it does not tell the lawyer about this one.
+    if (marksItem(texts.get(item.ref.pid)!, item, marker)) continue
     const markers = wanted.get(item.ref.pid) ?? []
     if (!markers.includes(marker)) wanted.set(item.ref.pid, [...markers, marker])
   }
@@ -143,6 +144,16 @@ async function markUnverified(directory: string, out: string, document: DocID): 
   const result = await applyAmendments({ docxPath: out, outPath: out, amendments, ownedMarkerDecoration: true }).catch(() => undefined)
   const applied = new Set(result?.applied.map(row => row.pid) ?? [])
   return [...wanted].flatMap(([pid, markers]) => applied.has(pid) ? [{ pid, markers }] : [])
+}
+
+/** Whether a paragraph already shows an open item for an unverified citation
+ * or quotation: the marker apply would write, or a marker or placeholder that
+ * names the citation or quotation itself. */
+function marksItem(text: string, item: OpenItem, marker: string) {
+  const named = normalize(item.ref.citation ?? item.ref.quote ?? "").toLowerCase()
+  const normalized = normalize(text)
+  return [...openItemMarkers(normalized), ...draftingPlaceholders(normalized)].some(shown =>
+    shown.toLowerCase() === normalize(marker).toLowerCase() || Boolean(named) && shown.toLowerCase().includes(named))
 }
 
 /** The marker for an unverified quotation or citation. A citation is named in

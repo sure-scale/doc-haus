@@ -158,6 +158,22 @@ describe("unsupported content in the final body", () => {
     expect(gateOf(directory)).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
   }, 120_000)
 
+  test("apply leaves a paragraph whose marker names the citation, but marks one whose marker is about something else", async () => {
+    const run = async (marker: string) => {
+      const directory = matter()
+      writeLeanText(directory, "repairs.json", JSON.stringify({ round: 5, substantive_attempts: LEAN_MAX_SUBSTANTIVE_REPAIRS, requested_at: "saved", items: [] }))
+      expect((await runLean(directory, { sessions: scriptedModel({ ...happyPath, ...quiet, [AGENT.draft]: citing(marker) }).port })).status).toBe("completed")
+      expect(gateOf(directory)).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+      return { apply: readLeanJson(directory, "d1/apply.json"), text: readParagraphs(directory, "d1", "paragraphs-applied.json").find(row => row.text.startsWith(CITED))!.text }
+    }
+    const named = await run(" [open item: confirm section 4 of the Imaginary Trade Act]")
+    expect(named.apply).not.toHaveProperty("marked")
+    expect(named.text).toBe(`${CITED} [open item: confirm section 4 of the Imaginary Trade Act].`)
+    const unrelated = await run(" [open item: confirm the delivery date]")
+    expect(unrelated.apply).toMatchObject({ marked: [{ markers: ["[open item: citation not verified against a source: section 4 of the Imaginary Trade Act]"] }] })
+    expect(unrelated.text).toBe(`${CITED} [open item: confirm the delivery date]. [open item: citation not verified against a source: section 4 of the Imaginary Trade Act]`)
+  }, 120_000)
+
   test("a resume after the allowance is used up re-runs apply, though its change list is unchanged", async () => {
     const directory = matter()
     const model = scriptedModel({ ...happyPath, ...quiet, [AGENT.draft]: citing() })
