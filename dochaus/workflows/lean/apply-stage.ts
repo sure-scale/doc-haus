@@ -28,6 +28,8 @@ import { normalize } from "../../lib/quote-verify"
 import { paragraphSha256, type Amendment } from "../../lib/drafting-amendment"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound } from "./repairs"
 import { paragraphShowsOpenItem } from "./gate"
+import { OPEN_ITEM_PATTERN } from "../../lib/marker-patterns"
+import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const BODY = "word/document.xml"
@@ -138,12 +140,18 @@ async function markUnverified(directory: string, out: string): Promise<MarkedPar
   return [...wanted].flatMap(([pid, markers]) => applied.has(pid) ? [{ pid, markers }] : [])
 }
 
-/** The marker for an unverified quotation or citation. A citation is named
- * unless its text would end the marker early; a quotation is never repeated. */
-function unverifiedMarker(item: OpenItem) {
-  const citation = item.ref.citation?.replace(/\s+/g, " ").trim()
+/** The marker for an unverified quotation or citation. A citation is named in
+ * it whenever the marker still reads as one open item: the open-item pattern
+ * takes the whole marker and no other bracket pattern finds anything inside it.
+ * A quotation is never repeated. */
+export function unverifiedMarker(item: OpenItem) {
   if (item.kind === "quote_miss") return "[open item: quotation not verified against its source]"
-  return citation && !/[\[\]()]/.test(citation) ? `[open item: citation not verified against a source: ${citation}]` : "[open item: citation not verified against a source]"
+  const generic = "[open item: citation not verified against a source]"
+  const citation = item.ref.citation?.replace(/\s+/g, " ").trim()
+  if (!citation) return generic
+  const named = `[open item: citation not verified against a source: ${citation}]`
+  const whole = [...named.matchAll(new RegExp(OPEN_ITEM_PATTERN.source, "gi"))]
+  return whole.length === 1 && whole[0]![0] === named && !draftingPlaceholders(named).length ? named : generic
 }
 
 /** Applied amendments as the final body shows them, with any marker the apply

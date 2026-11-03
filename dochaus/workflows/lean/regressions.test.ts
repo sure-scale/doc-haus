@@ -2,12 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { readFileSync, writeFileSync } from "node:fs"
 import { checkChanges } from "./change-checks"
 import { readChangeList, readParagraphs, settleApply } from "./checks"
-import { finalGate, type GateResult } from "./gate"
+import { finalGate, paragraphShowsOpenItem, type GateResult } from "./gate"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
-import { runApply } from "./apply-stage"
+import { runApply, unverifiedMarker } from "./apply-stage"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS } from "./repairs"
-import { inDocument } from "./quotes"
+import { inDocument, openItem } from "./quotes"
 import { stagePrompt } from "./prompts"
 import { parsePlan, writeLeanPlan } from "./plan"
 import { acceptStageReply } from "./stages"
@@ -159,6 +159,15 @@ describe("unsupported content in the final body", () => {
     expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
     expect(gate.disclosed).toContainEqual(expect.objectContaining({ id: item.id, resolution: "marked in the body and named in the drafting notes" }))
   }, 120_000)
+
+  test("an unverified-citation marker names the citation, parentheses included, unless square brackets would break the marker", () => {
+    const marker = (citation: string) => unverifiedMarker(openItem("apply", "citation_unsupported", "Unsupported.", { citation }))
+    expect(marker("section 4(b)(ii) of the Imaginary Trade Act")).toBe("[open item: citation not verified against a source: section 4(b)(ii) of the Imaginary Trade Act]")
+    expect(paragraphShowsOpenItem(`The goods are delivered. ${marker("section 4(b)(ii) of the Imaginary Trade Act")}`)).toBe(true)
+    for (const citation of ["Rule 2 [as amended] of the Imaginary Rules", "section [4] of the Imaginary Trade Act"])
+      expect(marker(citation)).toBe("[open item: citation not verified against a source]")
+    expect(unverifiedMarker(openItem("apply", "quote_miss", "Unverified.", { quote: "deliver (in full) the goods" }))).toBe("[open item: quotation not verified against its source]")
+  })
 
   test("a body placeholder named in the drafting notes is disclosed and the output is a review draft", async () => {
     const directory = matter()
