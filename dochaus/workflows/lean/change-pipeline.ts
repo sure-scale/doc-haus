@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { amendmentParagraphs, amendmentText } from "../../lib/drafting-amendment"
 import { askedQuestions, checkChanges, parseJsonObject, questionIssues } from "./change-checks"
-import { finalBodyParagraphs, readChangeList, readParagraphs, record, type ChangeList, shownText, withoutListLabel } from "./checks"
+import { finalBodyParagraphs, readChangeList, readParagraphs, record, type ChangeList, shownText, withTextSha, withoutListLabel } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { reviewStages, earlierDocuments, readLeanPlan, type DocID } from "./plan"
 import { packageCompositionBlock, revisionPreferenceScope, stagePrompt, retryPrompt } from "./prompts"
@@ -46,9 +46,11 @@ export type ChangeReview = { status: "pass" | "changes-required"; findings: { ta
 
 /** A change-review finding as an open item, on the document it names or else
  * the reviewed one. The runner records it (withholdReviewedChanges) and the
- * gate projects it in this one shape, so their ids agree. */
-export function changeReviewItem(row: ChangeReview["findings"][number], document: DocID) {
-  return openItem("change-review", "omission", row.detail, { document: row.document ?? document, ...(row.pid ? { pid: row.pid } : {}) })
+ * gate projects it in this one shape, so their ids agree; given the matter,
+ * it carries the final-body text it was found on (withTextSha). */
+export function changeReviewItem(row: ChangeReview["findings"][number], document: DocID, directory?: string) {
+  const item = openItem("change-review", "omission", row.detail, { document: row.document ?? document, ...(row.pid ? { pid: row.pid } : {}) })
+  return directory ? withTextSha(directory, item) : item
 }
 
 type Withheld = NonNullable<ChangeList["withheld"]>[number]

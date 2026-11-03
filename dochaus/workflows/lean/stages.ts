@@ -291,7 +291,8 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   // The spine is shown the act record when it plans documents, parties and signatories.
   if (step === "spine") return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), file("discrepancy.json"), file("intake.json"), file("research.json"), file("research-review.json"), file("acts.json")]
   // Applied deletion evidence includes the original paragraph's exact wording.
-  if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(plannedDocument(directory, id)?.playbook_review?.sources.length ? [file(`${id}/review-playbook.json`)] : [])]), file("open-items.json")]
+  if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(plannedDocument(directory, id)?.playbook_review?.sources.length ? [file(`${id}/review-playbook.json`)] : [])]),
+    packageReviewOpenItems(directory)]
   if (step === "research") {
     // Without a gap round the key is unchanged.
     const gaps = options.researchGaps === false ? undefined : currentResearchGaps(directory, researchBasis(directory))
@@ -336,6 +337,15 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   const marking = unverifiedMarkingBasis(directory, document)
   return [at("body.docx"), at("changes.json"), at("change-review.json"), { name: "operative-plan", bytes: JSON.stringify(operativePlan(readLeanPlan(directory))) }, sources, { name: "comparison-original", bytes: comparisonBasis(directory, document) },
     ...(marking ? [{ name: "unverified-marking", bytes: marking }] : [])]
+}
+
+/** The open items that key package review: not its own findings, which it
+ * records once the repair allowance is used up (recordPackageFindings). */
+function packageReviewOpenItems(directory: string) {
+  const name = "open-items.json"
+  const items = readOpenItems(directory)
+  if (!items.some(item => item.stage === "package-review")) return { name, bytes: existsSync(leanFile(directory, name)) ? readFileSync(leanFile(directory, name)) : "" }
+  return { name, bytes: `${JSON.stringify({ items: items.filter(item => item.stage !== "package-review") }, null, 2)}\n` }
 }
 
 function exhaustedReview(directory: string, step: StepID) {

@@ -109,6 +109,10 @@ export type OpenItem = {
   resolution?: string
   /** What the applier reported for an unapplied amendment; not part of the id. */
   applier_detail?: Record<string, string>
+  /** For a review finding, the final-body text it was found on: its
+   * paragraph's sha256, or a hash of its document's body when it names no
+   * paragraph (itemTextSha). Not part of the id. */
+  text_sha?: string
 }
 
 /** What a question asks the lawyer for. A model asking stage names fact,

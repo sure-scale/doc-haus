@@ -5,14 +5,14 @@ import { checkDeliverySelections, deliveryNameAsked, deliveryRowRefusal, selecte
 import { appliedChangeEvidence, nativeExportEvidence } from "./review-evidence"
 import { comparisonDescription } from "./comparison"
 import { combinedDelivery, deliveryArtifactEvidence, plannedRegistration, requestedMemo } from "./deliverables"
-import { finalBodyParagraphs, shownText } from "./checks"
+import { finalBodyParagraphs, findingTextUnchanged, shownText, withTextSha } from "./checks"
 import { readLeanPlan, type DocID } from "./plan"
 import { excerpt, matterSourceIDs, openItem } from "./quotes"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
 import { researchHandoff } from "./research"
 import { reviewText } from "./review-findings"
 import { requestedFilesItemNamed } from "./requested-files"
-import { answeredQuestionsText, readLeanJson, readLeanText, type OpenItem } from "./state"
+import { answeredQuestionsText, readLeanJson, readLeanText, readOpenItems, writeOpenItems, type OpenItem } from "./state"
 
 export type PackageReview = {
   status: "pass" | "changes-required"
@@ -280,6 +280,24 @@ const LEFT_OPEN_RESOLUTION = "package review finding left open once the repair a
  * package review, so the notes delivered with the draft list it (deliveredNotes). */
 export function leftOpenPackageFinding(item: OpenItem): OpenItem {
   return { ...item, status: "disclosed", resolution: LEFT_OPEN_RESOLUTION }
+}
+
+/** A package-review finding as an open item, in the one shape the runner
+ * records once the repair allowance is used up and the gate discloses, with
+ * the final-body text it was found on. */
+export function packageReviewItem(directory: string, row: PackageReview["findings"][number]) {
+  return withTextSha(directory, openItem("package-review", "omission", row.detail, { ...(row.document ? { document: row.document } : {}), ...(row.pid ? { pid: row.pid } : {}) }))
+}
+
+/** Records a package review's findings once the repair allowance is used up.
+ * Like change review's (withholdReviewedChanges), a recorded finding the
+ * current review does not repeat stands while the text it was found on is
+ * unchanged. */
+export function recordPackageFindings(directory: string) {
+  const review = readPackageReview(directory)
+  const items = [...new Map((review?.status === "changes-required" ? review.findings : []).map(row => packageReviewItem(directory, row)).map(item => [item.id, item])).values()]
+  const found = new Set(items.map(item => item.id))
+  writeOpenItems(directory, [...readOpenItems(directory).filter(item => item.stage !== "package-review" || !found.has(item.id) && findingTextUnchanged(directory, item)), ...items])
 }
 
 /** Whether a gate item is such a finding (leftOpenPackageFinding). */

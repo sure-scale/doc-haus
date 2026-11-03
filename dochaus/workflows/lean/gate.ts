@@ -10,7 +10,7 @@ import { normalize } from "../../lib/quote-verify"
 import { CITED, finalBodyParagraphs, paragraphTextHolders, readChangeList, readerIDs, standingIDPattern, type ApplyResult } from "./checks"
 import { memoMode, questionNames, runItemIDs, withoutInternalIDs, withoutRefMarkers } from "./delivered-memo"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
-import { isLeftOpenPackageFinding, isWithheldDeliveryItem, leftOpenPackageFinding, readPackageReview, withheldDeliveryItems } from "./package-review"
+import { isLeftOpenPackageFinding, isWithheldDeliveryItem, leftOpenPackageFinding, packageReviewItem, readPackageReview, withheldDeliveryItems } from "./package-review"
 import { coverageCarries, coverageItems, gateScopeParties } from "./package-coverage"
 import { excerpt, proseQuoteFound, openItem } from "./quotes"
 import { answeredScopeQuestion, GATE_EXCERPT, keyedQuestionID, openScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows } from "./package-scope"
@@ -125,20 +125,22 @@ export function finalGate(directory: string): GateResult {
   // Once it is used up the finding goes with the review draft: one that is the
   // same finding as a recorded change-review item or a withheld amendment's is
   // that item; every other, even on the same paragraph, is disclosed in the
-  // delivered notes (leftOpenPackageFinding, deliveredNotes).
+  // delivered notes (leftOpenPackageFinding, deliveredNotes). The findings it
+  // recorded then (recordPackageFindings) go with the current review's, once.
   const review = readPackageReview(directory)
   const exhausted = (readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
   const sameFinding = (document: DocID, finding: { pid?: string; detail: string }) => withheldFor(document, finding) ||
     current.some(item => item.id === changeReviewItem({ ...finding, document }, document).id)
-  const semantic = review?.status === "changes-required" ? review.findings.flatMap(row => {
-    const item = openItem("package-review", "omission", row.detail, { ...(row.document ? { document: row.document } : {}), ...(row.pid ? { pid: row.pid } : {}) })
+  const packageFindings = new Map([...(review?.status === "changes-required" ? review.findings.map(row => packageReviewItem(directory, row)) : []),
+    ...current.filter(item => item.stage === "package-review")].map(item => [item.id, item]))
+  const semantic = [...packageFindings.values()].flatMap(item => {
     if (!exhausted) return [item]
-    return row.document && sameFinding(row.document, row) ? [] : [leftOpenPackageFinding(item)]
-  }) : []
+    return item.ref.document && sameFinding(item.ref.document, { pid: item.ref.pid, detail: item.detail }) ? [] : [leftOpenPackageFinding(item)]
+  })
   const projected = planned.flatMap(document => {
     const checked = readChangeReview(directory, document)
     return checked?.status === "changes-required" ? checked.findings.flatMap(row => {
-      const item = changeReviewItem(row, document)
+      const item = changeReviewItem(row, document, directory)
       return current.some(recorded => recorded.id === item.id) || (row.document ?? document) === document && row.target !== "research" && withheldFor(document, row) ? [] : [item]
     }) : []
   })
@@ -152,7 +154,7 @@ export function finalGate(directory: string): GateResult {
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
   // A file name in the instructions the package review withheld is disclosed with the
   // draft, never blocking it: the notes were written before that review.
-  const items = [...unresolved, ...[...current, ...undecidedQuestionItems(context.questions, current), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory)].map(item => settle(item, context)),
+  const items = [...unresolved, ...[...current.filter(item => item.stage !== "package-review"), ...undecidedQuestionItems(context.questions, current), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory)].map(item => settle(item, context)),
     ...semantic, ...projected, ...withheldDeliveryItems(directory)]
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete or stale, or a check or its reinspection failed; see checklist/report.md.", {}))
   // Focused checks can correctly preserve a source-dependent open issue
