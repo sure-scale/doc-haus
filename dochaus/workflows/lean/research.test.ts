@@ -699,3 +699,22 @@ test("a null withdrawal list is none; on the last attempt a withdrawal naming no
   expect(readLeanJson(directory, "research.json")).toEqual({ status: "limited", findings: [finding], limitations: [disclosed], withdrawn: [] })
   expect(last.openItems.map(item => [item.kind, item.detail])).toEqual([["research_gap", disclosed]])
 })
+
+test("a withdrawal names a finding without a citation by its quote, by the key that replaces it", () => {
+  const directory = matter()
+  const notice = retrieved(directory, "A party must give written notice before termination. Notice takes effect on delivery.")
+  const finding = (id: string, quote: string) => ({ ...notice.findings[0]!, id, quote, claim: `Claim ${id}`, limitations: "" })
+  const [given, effect] = [finding("r1", "A party must give written notice before termination."), finding("r2", "Notice takes effect on delivery.")]
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "completed", limitations: [], findings: [given, effect] })).issues).toEqual([])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1", "r2"], rejected: [], limitations: [], gaps: [] })).issues).toEqual([])
+  const reply = (withdrawn: unknown[], findings: unknown[] = []) => JSON.stringify({ status: "completed", limitations: [], findings, withdrawn })
+  const reason = "The retrieved text no longer applies to this matter."
+  // Was accepted, withdrawing both findings at the URL.
+  expect(acceptResearchReply(directory, "research", reply([{ url: given.url, citation: "", reason }])).issues)
+    .toEqual([expect.stringContaining("and its quote when it has no citation")])
+  expect(acceptResearchReply(directory, "research", reply([{ url: given.url, citation: "", quote: given.quote, reason }], [given])).issues)
+    .toEqual([expect.stringContaining("withdrawn[0] is also returned as a finding")])
+  expect(acceptResearchReply(directory, "research", reply([{ url: given.url, citation: "", quote: 1, reason }])).issues).toEqual([expect.stringContaining('"withdrawn" must be a list')])
+  expect(acceptResearchReply(directory, "research", reply([{ url: given.url, citation: "", quote: effect.quote, reason }], [given])).issues).toEqual([])
+  expect((readLeanJson(directory, "research.json") as { findings: { quote: string }[] }).findings.map(row => row.quote)).toEqual([given.quote])
+})
