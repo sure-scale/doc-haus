@@ -406,10 +406,12 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       state = updateLeanStage(directory, state, step, { status: "pending", ...unkeyed(step), outputs: [], finished_at: null })
       return { state, restart: true }
     }
-    // With the repair allowance used up, change review's items are settled from
-    // its findings and the recorded ones (settleExhaustedChangeReview).
-    const exhaustedChangeReview = stage === "change-review" && document !== undefined && (readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
-    if (!exhaustedChangeReview) replaceStageOpenItems(directory, stage, document ?? null, document ? result.openItems.map(item => inDocument(item, document)) : result.openItems)
+    // With the repair allowance used up, change and package review's items are
+    // settled from their findings and the recorded ones
+    // (withholdReviewedChanges, recordPackageFindings).
+    const exhaustedReview = (stage === "change-review" && document !== undefined || stage === "package-review") && (readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
+    const exhaustedChangeReview = exhaustedReview && stage === "change-review"
+    if (!exhaustedReview) replaceStageOpenItems(directory, stage, document ?? null, document ? result.openItems.map(item => inDocument(item, document)) : result.openItems)
     if (questions) replaceStageQuestions(directory, stage, document ?? null, questions)
     // A step blocked only by questions its instructions settled runs again,
     // reading the settled answers; a confirmation blocks a ready intake.
@@ -419,6 +421,14 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     }
     const status = confirmations.length ? "blocked" : result.status
     snapshotStage(directory, state.revision, step, result.outputs)
+    const review = stage === "change-review" && document ? readChangeReview(directory, document) : undefined
+    // With the repair allowance used up the run goes on to a review draft, the
+    // findings withheld or disclosed (withholdReviewedChanges) before the review
+    // is recorded as done, so a run stopped in between does not skip them.
+    if (exhaustedChangeReview && review) {
+      withholdReviewedChanges(directory, document!, review)
+      await writeProjectedNumbers(directory, document!)
+    }
     // These steps write some of their own inputs (the gate its question); their key is taken again.
     // So is that of a review run with the repair allowance used up: whether it
     // still asks for changes is part of its key (stageInputs).
@@ -427,11 +437,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     state = updateLeanStage(directory, state, step, { status, input_sha: rekey ? stageInputSha(directory, step) : stage === "draft" ? state.stages[step]?.input_sha ?? null : inputSha, outputs: result.outputs, finished_at: now() })
     // Researchable gaps from the first review of this research go back to it once.
     if (step === "research-review" && result.status === "done" && startResearchGapRound(directory, researchBasis(directory))) return { state, restart: true }
-    const review = stage === "change-review" && document ? readChangeReview(directory, document) : undefined
-    // With the repair allowance used up the run goes on to a review draft, the
-    // findings withheld or disclosed (withholdReviewedChanges).
-    if (exhaustedChangeReview && review) state = await settleExhaustedChangeReview(directory, state, step, document!, review)
-    else if (review?.status === "changes-required") {
+    if (!exhaustedChangeReview && review?.status === "changes-required") {
       startRepairRound(directory, review.findings.map(row => openItem("change-review", "omission", row.detail,
         { repair_target: row.target ?? "body", document: row.document ?? document, ...(row.pid ? { pid: row.pid } : {}) })), true)
       return { state, restart: true }
@@ -478,15 +484,6 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       } })
     }
   }
-}
-
-/** Withholds or discloses an exhausted change review's findings, then keys the
- * review again: withholding rewrites the change list it reads, and with the
- * allowance used up its findings stand until its other inputs change. */
-async function settleExhaustedChangeReview(directory: string, state: LeanState, step: StepID, document: DocID, review: ChangeReview) {
-  withholdReviewedChanges(directory, document, review)
-  await writeProjectedNumbers(directory, document)
-  return updateLeanStage(directory, state, step, { input_sha: stageInputSha(directory, step) })
 }
 
 /** Change review's material findings once the run's repair allowance is used
@@ -539,10 +536,11 @@ async function reconcilePackageReview(directory: string, state: LeanState, deps:
   if (exhausted) recordPackageFindings(directory)
   if (review.status === "pass" && !plan) return
   if (exhausted) {
-    // A delivery selection left unapplied blocks.
+    // A delivery selection is applied without a repair round: the review runs
+    // again on the selected files, then the gate discloses what it finds.
     if (!plan) return
-    await recordLeanDocuments(directory, deps, false)
-    return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: `package-review: material corrections remain after ${LEAN_MAX_SUBSTANTIVE_REPAIRS} substantive repair rounds: ${review.findings.map(row => row.detail).join(" ")}${plan ? " Requested delivery selection remains unapplied." : ""}` }) }
+    writeLeanText(directory, "plan.json", `${JSON.stringify(plan, null, 2)}\n`)
+    return { state, restart: true }
   }
   const findings = review.findings.map(row => openItem("package-review", "omission", row.detail,
     // A separately planned advice/note document has its own editing stages.

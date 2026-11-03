@@ -243,13 +243,16 @@ export async function runChangeReconciliation(directory: string, state: LeanStat
   combined.amendments.sort((a, b) => order.get(a.pid)! - order.get(b.pid)!)
   const knownQuestions = readQuestions(directory)
   const candidate = { ...combined, questions: combined.questions.map(({ id, ...row }) => knownQuestions.some(saved => saved.id === id && saved.question === row.question && saved.pid === row.pid) ? { id, ...row } : row) }
-  const check = checkChanges(directory, JSON.stringify(candidate), readParagraphs(directory, document), { document })
+  // No retry follows the combined check, so, as on a job's last attempt, an
+  // amendment that fails it is withheld and disclosed like the jobs' own.
+  const check = checkChanges(directory, JSON.stringify(candidate), readParagraphs(directory, document), { document, withholdUnverified: true })
   const issues = [...check.issues, ...(check.changes ? uniqueReplacementIssues(check.changes) : []), ...retainedInitialIssues(directory, [...order.keys()], combined as unknown as Record<string, unknown>)]
   if (issues.length || !check.changes) return { status: "failed" as const, reason: `${step}: combined validation: ${issues.join(" ")}` }
+  const withheld = [...combined.withheld ?? [], ...check.changes.withheld ?? []]
   check.changes.retained_initial = combined.retained_initial
-  check.changes.withheld = combined.withheld?.map((row, index) => ({ ...row, amendment: { ...row.amendment, id: `w${index + 1}` } }))
+  check.changes.withheld = withheld.map((row, index) => ({ ...row, amendment: { ...row.amendment, id: `w${index + 1}` } }))
   writeLeanText(directory, `${document}/changes.json`, `${JSON.stringify(check.changes, null, 2)}\n`)
-  const openItems = [...check.openItems, ...(combined.withheld ?? []).map(row => openItem("changes", "unapplied_amendment", `Withheld prepared change: ${row.issues.join(" ")}`, { document, pid: row.amendment.pid }))]
+  const openItems = [...check.openItems.filter(item => item.kind !== "unapplied_amendment"), ...withheld.map(row => openItem("changes", "unapplied_amendment", `Withheld prepared change: ${row.issues.join(" ")}`, { document, pid: row.amendment.pid }))]
   return { status: check.changes.questions.length ? "blocked" as const : "done" as const, outputs: stepOutputs(step), openItems, questions: check.changes.questions, ...(check.changes.questions.length ? { reason: "Waiting for your answers before applying reconciled amendments." } : {}) }
 }
 

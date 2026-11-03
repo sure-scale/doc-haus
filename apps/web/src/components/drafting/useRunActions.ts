@@ -11,9 +11,16 @@ import {
   updateLeanDraftingRun,
   type LeanDraftingStatus,
 } from "../../api/ingest/lean"
-import { getConfig, modelSpec } from "../../api/opencode/config"
+import { getConfig, modelSpec, type Config } from "../../api/opencode/config"
 import { boundedRequest } from "../../api/opencode/client"
 import { runState } from "./model"
+import { useToast } from "../Toast"
+
+/** The model now selected in Settings, or none when it cannot be read in
+ * time: Continue then runs on the run's current model. */
+export async function continueModel(config: Promise<Pick<Config, "model">>, milliseconds = 3_000) {
+  return modelSpec(await boundedRequest(config, milliseconds, "Model configuration").catch(() => undefined))
+}
 
 // Actions queue work for the run's coordinator (or pause or stop it) and show
 // its returned status. A synchronous guard prevents a second submission before
@@ -23,6 +30,7 @@ export default function useRunActions(
   status: LeanDraftingStatus | undefined,
   onStatus: (status: LeanDraftingStatus) => void,
 ) {
+  const toast = useToast()
   const submitting = useRef(false)
   const [busy, setBusy] = useState(false)
   // Pause and Stop settle the run; neither reads as resuming.
@@ -75,13 +83,15 @@ export default function useRunActions(
         ? queue(() => refineLeanChecklist(matterId, status.owner_session_id, parentID))
         : Promise.resolve(false),
     // Continue runs the remaining steps on the model now selected in Settings,
-    // resolved as Start resolves it.
+    // resolved as Start resolves it; when Settings cannot be read, on the
+    // run's current model.
     resume: () =>
       matterId
         ? queue(async () => {
-            const model = modelSpec(await boundedRequest(getConfig(), 3_000, "Model configuration"))
-            if (!model) throw new Error("The configured drafting model could not be resolved.")
-            return resumeLeanDraftingRun(matterId, model)
+            const model = await continueModel(getConfig())
+            const next = await resumeLeanDraftingRun(matterId, model)
+            if (!model) toast("info", "Continued on the run's current model.")
+            return next
           })
         : Promise.resolve(false),
     pause: () =>

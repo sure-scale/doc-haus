@@ -1,5 +1,5 @@
 import { amendmentSchema, amendmentParagraphs, amendmentText, normalizeParagraphText, type Amendment } from "../../lib/drafting-amendment"
-import { citationRowsForLeanText } from "../../lib/citation-extraction"
+import { leanCitationReader } from "../../lib/citation-extraction"
 import { OPEN_ITEM_PATTERN } from "../../lib/marker-patterns"
 import { normalize } from "../../lib/quote-verify"
 import { markerIssues } from "./change-markers"
@@ -185,17 +185,18 @@ function amendmentQuoteIssues(directory: string, amendment: Amendment, index: nu
 
 /** A citation a change adds must have the support a drafted citation needs
  * (the body check at apply): a matter source, an approved research finding or
- * a verified authority. Citations the paragraph already carries are the
- * draft's own, and a citation inside an open-item marker names authority still
- * to be found. One support lookup covers every amendment in the list. */
+ * a verified authority. Citations the paragraph already carries, in any case,
+ * are the draft's own, and a citation inside an open-item marker names
+ * authority still to be found. Each amendment's citations are its own; one
+ * support lookup covers the whole list. */
 function amendmentCitationIssues(directory: string, amendments: Amendment[], rows: Map<string, ParagraphRow>) {
-  const added = amendments.map(amendment => amendmentText(amendment).replace(OPEN_ITEM_PATTERN, " "))
-  const unsupported = [...new Map(citationRowsForLeanText(directory, "changes.md", added.join("\n\n"))
-    .filter(row => row.status === "unsupported").map(row => [row.normalized_key, row.citation_text])).values()]
+  const read = leanCitationReader(directory, "changes.md")
+  const lower = (text: string) => normalize(text).toLowerCase()
   return (amendment: Amendment, index: number) => {
-    const text = normalize(added[index]!)
-    const current = normalize(rows.get(amendment.pid)!.text)
-    return unsupported.filter(citation => text.includes(normalize(citation)) && !current.includes(normalize(citation)))
+    const current = lower(rows.get(amendment.pid)!.text)
+    const unsupported = [...new Map(read(amendmentText(amendment).replace(OPEN_ITEM_PATTERN, " "))
+      .filter(row => row.status === "unsupported").map(row => [row.normalized_key, row.citation_text])).values()]
+    return unsupported.filter(citation => !current.includes(lower(citation)))
       .map(citation => `amendments[${index}] ([${amendment.pid}]).updated cites "${citation}", which no matter source, approved research finding or verified authority supports. Cite an approved authority or a matter source instead, or remove the citation; if the point still needs authority, say so with a visible [open item: ...] marker.`)
   }
 }

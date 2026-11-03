@@ -296,9 +296,11 @@ export function withTextSha(directory: string, item: OpenItem): OpenItem {
 }
 
 /** Whether a recorded finding's text is still the final body's: a finding a
- * later review does not repeat stands while the text it was found on does. */
+ * later review does not repeat stands while the text it was found on does.
+ * One recorded on no final-body text (on no document, or on a paragraph
+ * not in the final body) stands: disclosing it again is the safe failure. */
 export function findingTextUnchanged(directory: string, item: OpenItem) {
-  return item.text_sha !== undefined && item.text_sha === itemTextSha(directory, item)
+  return item.text_sha === undefined || item.text_sha === itemTextSha(directory, item)
 }
 
 export function readParagraphs(directory: string, document: DocID, name = "paragraphs.json"): ParagraphRow[] {

@@ -101,7 +101,9 @@ test("a retained global open question is not silently discarded when it lacks a 
  writeLeanText(dir,"questions.json",JSON.stringify({schema:LEAN_QUESTIONS_SCHEMA,questions:[question]}));writeLeanText(dir,"d1/changes.json",JSON.stringify({...changes(),questions:[question]}));save(dir,input)
  const work=reconciliationWork(dir,"d1",input.plan,input.preparation);expect(work.direct.questions).toHaveLength(1)
  const result=await runChangeReconciliation(dir,readLeanState(dir)!,{sessions:scriptedModel({}).port},"d1",()=>{})
- expect(result.status).toBe("failed");expect("reason" in result&&result.reason).toContain("tied to no paragraph");expect(readChangeList(dir,"d1")!.questions).toHaveLength(1)
+ // As on a job's last attempt, it is recorded as asked and the run waits for the answer.
+ expect(result.status).toBe("blocked");expect(result.status==="blocked"&&result.questions.map(row=>row.id)).toEqual(["q-existing"]);expect(readChangeList(dir,"d1")!.questions).toHaveLength(1)
+ expect(result.status==="blocked"&&result.openItems.map(item=>[item.kind,item.ref.question_id])).toEqual([["question","q-existing"]])
 })
 test("one conflict result plus unaffected prepared operations retain complete operator coverage",async()=>{
  const dir=setup(),input=inputs([{id:"one",pids:[p1]},{id:"two",pids:[p2]}],[changes([amendment(p1,"New correction.")]),changes([amendment(p2,"Independent correction.")])])
@@ -348,4 +350,19 @@ test("a deferred change's reported reasons name other paragraphs by their openin
  const result=await reconcile(dir,model.port),reason=readChangeList(dir,"d1")!.withheld![0]!.issues[0]!
  expect(result.status).toBe("done");expect(reason).not.toMatch(/p[0-9a-f]{12}/)
  expect(reason).toContain('Reason given: Term must match the paragraph beginning "Initial provision 40. The supplier keeps the delivery…"; Cross-reference to the paragraph beginning "Initial provision 39. The supplier keeps the delivery…" moves.')
+})
+
+test("an earlier change that fails the combined check is withheld and disclosed, not a failed stage", async () => {
+  const dir = setup(), input = inputs([{ id: "one", pids: [p1] }], [changes([amendment(p1, "First supplied term.")])])
+  const unsupported = { ...amendment(p3, "Unrelated accepted correction."), sources: [{ ...support[0]!, quote: "A passage no matter document contains." }] }
+  writeLeanText(dir, "d1/changes.json", JSON.stringify(changes([unsupported])))
+  save(dir, input)
+  const result = await runChangeReconciliation(dir, readLeanState(dir)!, { sessions: scriptedModel({}).port }, "d1", () => {})
+  expect(result.status).toBe("done")
+  const accepted = readChangeList(dir, "d1")!
+  expect(accepted.amendments.map(row => row.pid)).toEqual([p1])
+  expect(accepted.withheld?.map(row => [row.amendment.id, row.amendment.pid])).toEqual([["w1", p3]])
+  const items = result.status === "done" ? result.openItems : []
+  expect(items.map(item => [item.kind, item.ref.pid])).toEqual([["unapplied_amendment", p3]])
+  expect(items[0]!.detail).toContain("Withheld prepared change:")
 })

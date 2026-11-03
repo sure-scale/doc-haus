@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, spyOn, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { acceptChangePlan, acceptChangeReview, checkChangePlan, checkChangeReview, projectedChangeParagraphs } from "./change-pipeline"
 import { checkChanges } from "./change-checks"
@@ -10,6 +10,7 @@ import { readRepairRound } from "./repairs"
 import { restoreLeanStage } from "./restore-stage"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, runLean, stageInputSha } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS, stageOutputValid } from "./stages"
+import * as leanState from "./state"
 import { answerQuestion, leanFile, readLeanJson, readLeanState, readLeanText, readOpenItems, readQuestions, updateLeanStage, writeLeanText, writeOpenItems } from "./state"
 import { AGENT, DRAFT, SOURCE, SOURCE_TEXT, SUPPORT, changes, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
 
@@ -259,6 +260,27 @@ test("a material finding on a pending amendment, once the repair allowance is us
   const gate = readLeanJson(directory, "gate.json") as GateResult
   expect(gate).toMatchObject({ status: "pass", delivery: "review_draft" })
   expect(gate.disclosed.map(row => row.id)).toContain(item.id)
+}, 120_000)
+
+test("a run stopped just after an exhausted change review is recorded as done keeps the amendment it withheld", async () => {
+  const directory = matter()
+  const model = scriptedModel({ ...replies(), [AGENT["change-review"]]: prompt => JSON.stringify({ status: "changes-required",
+    findings: [{ pid: pidOf(prompt, "Payment timing remains to be agreed."), detail: "The payment wording changes the agreed effect." }], limitations: [] }) })
+  const update = leanState.updateLeanStage
+  const stop = spyOn(leanState, "updateLeanStage").mockImplementation((...args) => {
+    const state = update(...args)
+    if (args[2] === "d1.change-review" && args[3].status === "done" && (readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS) throw new Error("stopped")
+    return state
+  })
+  expect((await runLean(directory, { sessions: model.port })).stop_reason).toContain("stopped")
+  stop.mockRestore()
+  const reviews = model.count(AGENT["change-review"])
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(model.count(AGENT["change-review"])).toBe(reviews)
+  expect(readChangeList(directory, "d1")?.withheld).toEqual([expect.objectContaining({ amendment: expect.objectContaining({ updated: PAYMENT }) })])
+  expect(readParagraphs(directory, "d1", "paragraphs-applied.json").map(row => row.text)).not.toContain(PAYMENT)
+  const item = readOpenItems(directory).find(row => row.stage === "changes" && row.kind === "unapplied_amendment")!
+  expect((readLeanJson(directory, "gate.json") as GateResult).disclosed.map(row => row.id)).toContain(item.id)
 }, 120_000)
 
 test("a change review re-run after it withheld an amendment records that amendment once", async () => {

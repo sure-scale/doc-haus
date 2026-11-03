@@ -260,7 +260,7 @@ export function deliveredNotes(directory: string, gate: GateResult): string | un
     ...left("## Final review findings left open", LEFT_OPEN_INTRO)].join("\n")
 }
 
-const LEFT_OPEN_INTRO = "The final review of the package found these points, which could not be corrected within the run's correction allowance. They are not corrected in this review draft and need the lawyer's review."
+const LEFT_OPEN_INTRO = "The final review of the package found these points, which could not be corrected within the run's correction allowance. They are not corrected in this review draft and need the lawyer's review. A later review may not have raised a point again; it is kept because the text it was found in is unchanged."
 
 /** The drafting notes as the reader gets them: without their "[ref: …]"
  * markers, and with no id the notes check keeps from the reader (readerIDs,

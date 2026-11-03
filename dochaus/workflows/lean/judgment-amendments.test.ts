@@ -398,4 +398,19 @@ describe("the changes checker holds a citation a change adds to the draft's stan
     const asked = `The supplier shall deliver the goods promptly [open item: confirm whether ${AUTHORITY} applies].`
     expect(checkChanges(matter(), reply([{ pid: P1, updated: asked, reason: "Drafting judgment.", sources: [] }]), PARAGRAPHS).issues).toEqual([])
   })
+
+  test("each amendment's added citations are its own, whatever their case", () => {
+    const P2 = PARAGRAPHS[1]!.pid
+    const CASE = "Harlow Supplies Ltd v. Morven Freight Ltd"
+    const HEADING_CASE = "HARLOW SUPPLIES LTD v. MORVEN FREIGHT LTD"
+    const cites = (index: number, pid: string, citation: string) => UNSUPPORTED(index, pid).replace(`"${AUTHORITY}"`, `"${citation}"`)
+    const amend = (pid: string, updated: string) => ({ pid, updated, reason: "Drafting judgment.", sources: [] })
+    const both = checkChanges(matter(), reply([
+      amend(P1, `The supplier shall deliver the goods as held in ${CASE} [open item: confirm the delivery duty chosen].`),
+      amend(P2, `Payment is due on delivery, as held in ${HEADING_CASE} [open item: confirm the payment term].`),
+    ]), PARAGRAPHS)
+    expect(both.issues).toEqual([cites(0, P1, CASE), cites(1, P2, HEADING_CASE)])
+    const carried = paragraph(`The supplier must deliver goods, as held in ${HEADING_CASE}.`)
+    expect(checkChanges(matter(), reply([amend(P1, `The supplier shall deliver the goods as held in ${CASE} [open item: confirm the delivery duty chosen].`)]), carried).issues).toEqual([])
+  })
 })

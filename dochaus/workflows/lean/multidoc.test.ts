@@ -164,13 +164,52 @@ describe("lean drafting with several documents", () => {
     expect(readOpenItems(directory).filter(row => row.stage === "package-review")).toEqual(items)
     expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft" })
     expect(disclosed()).toEqual([items[0]!.id])
-    expect(readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")).toContain("The supply note names no place of delivery.")
+    const notes = readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")
+    expect(notes).toContain("The supply note names no place of delivery.")
+    expect(notes).toContain("A later review may not have raised a point again; it is kept because the text it was found in is unchanged.")
 
     // Recorded against other text, the finding goes.
     writeOpenItems(directory, readOpenItems(directory).map(row => row.id === items[0]!.id ? { ...row, text_sha: "0".repeat(64) } : row))
     await rerun()
     expect(readOpenItems(directory).filter(row => row.stage === "package-review")).toEqual([])
     expect(disclosed()).toEqual([])
+  }, 120_000)
+
+  test("an exhausted package review's finding on no document stands on a re-run that no longer repeats it", async () => {
+    const directory = matter()
+    let repeat = true
+    const packageReviewer: Reply = () => JSON.stringify(repeat
+      ? { status: "changes-required", findings: [{ target: "memo", detail: "The notes do not explain the delivery period." }], limitations: [], delivery: [] }
+      : { status: "pass", findings: [], limitations: [], delivery: [] })
+    const model = scriptedModel({ ...happyPath, [AGENT.draft]: drafter(DRAFT, LETTER), [AGENT.review]: reviewFirst, [AGENT.changes]: changesFirst, [AGENT["package-review"]]: packageReviewer })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    const items = readOpenItems(directory).filter(row => row.stage === "package-review")
+    expect(items).toEqual([expect.objectContaining({ detail: "The notes do not explain the delivery period." })])
+    expect(items[0]!.text_sha).toBeUndefined()
+    repeat = false
+    updateLeanStage(directory, readLeanState(directory)!, "package-review", { status: "pending", input_sha: null })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(readOpenItems(directory).filter(row => row.stage === "package-review")).toEqual(items)
+    expect((readLeanJson(directory, "gate.json") as GateResult).disclosed.map(row => row.id)).toContain(items[0]!.id)
+  }, 120_000)
+
+  test("an exhausted change review's finding recorded on no final-body text stands on a re-run that no longer repeats it", async () => {
+    const directory = matter()
+    let repeat = true
+    const reviewer: Reply = prompt => repeat && prompt.includes('<earlier_body document="d1">')
+      ? JSON.stringify({ status: "changes-required", findings: [{ document: "d1", pid: pidIn(prompt, "The supplier shall deliver the goods"), detail: "The delivery period does not fit the letter." }], limitations: [] })
+      : JSON.stringify({ status: "pass", findings: [], limitations: [] })
+    const model = scriptedModel({ ...happyPath, [AGENT.draft]: drafter(DRAFT, LETTER), [AGENT.review]: reviewFirst, [AGENT.changes]: changesFirst, [AGENT["change-review"]]: reviewer })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    // As recorded on a paragraph the final body no longer has.
+    writeOpenItems(directory, readOpenItems(directory).map(row => row.stage === "change-review" ? (({ text_sha: _, ...rest }) => rest)(row) : row))
+    const items = readOpenItems(directory).filter(row => row.stage === "change-review")
+    expect(items).toHaveLength(1)
+    repeat = false
+    updateLeanStage(directory, readLeanState(directory)!, "d2.change-review", { status: "pending", input_sha: null })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(readOpenItems(directory).filter(row => row.stage === "change-review")).toEqual(items)
+    expect((readLeanJson(directory, "gate.json") as GateResult).disclosed.map(row => row.id)).toContain(items[0]!.id)
   }, 120_000)
 
   test("a package review finding with repair allowance left still starts a repair round", async () => {
