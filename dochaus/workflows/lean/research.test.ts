@@ -739,6 +739,8 @@ test("the research prompt has an earlier finding withdrawn when the lawyer's lat
   const prompt = researchPrompt(directory, "research", researchBasis(directory))
   expect(prompt).toContain('"citation": "Rule 1"')
   expect(prompt).toContain("or when the lawyer's answers or instructions since it was found take it out of scope (a changed jurisdiction, party or facts).")
+  // Was "the same url and citation", which the code does not use for a finding without a citation.
+  expect(prompt).toContain("Return a finding with the same url and citation (or url and quote when it has no citation) only to replace it,")
 })
 
 test("on the last attempt a withdrawal of an authority the reply also returns is dropped and the returned finding kept", () => {
