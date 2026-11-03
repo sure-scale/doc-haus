@@ -33,7 +33,7 @@ import { delegableQuestion, leanContinueAvailable, leanRunStopped, leanRunTakesU
 import Questions from "../src/components/drafting/Questions"
 import { runOutcome } from "../src/components/narration/outcome"
 import RunHeader, { runHeadline } from "../src/components/drafting/RunHeader"
-import type { RunActions } from "../src/components/drafting/useRunActions"
+import { continueModel, type RunActions } from "../src/components/drafting/useRunActions"
 
 // Response bodies recorded from the real ingest lean start, status, Continue and
 // answer routes with a scripted model (dochaus/workflows/lean/fixtures).
@@ -119,6 +119,15 @@ test("Continue posts the selected model to the lean resume route and answers to 
 
   respond({ error: "This matter has no lean drafting run.", code: "lean_run_not_found" }, 404)
   await expect(resumeLeanDraftingRun("matter-a", model)).rejects.toThrow("This matter has no lean drafting run.")
+})
+
+test("Continue without a readable model in Settings posts no model, so the run keeps its own", async () => {
+  expect(await continueModel(Promise.resolve({ model: "test/selected" }))).toEqual({ providerID: "test", modelID: "selected" })
+  expect(await continueModel(Promise.reject(new Error("offline")))).toBeUndefined()
+  expect(await continueModel(new Promise(() => {}), 10)).toBeUndefined()
+  const resumed = respond(resume, 202)
+  expect(await resumeLeanDraftingRun("matter-a")).toMatchObject({ profile: "lean", mode: "queued" })
+  expect(JSON.parse(String(resumed[0]?.init?.body))).toEqual({})
 })
 
 test("Continue is offered only for a stopped or orphaned run, and delivered documents are listed", () => {
