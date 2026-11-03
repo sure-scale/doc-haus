@@ -156,21 +156,33 @@ describe("package-scope question", () => {
   })
 
   test("on a saved plan, the question asks only which planned document carries the act, and says a document is added by a new draft", () => {
-    const release = act({ act: "release the deposit", source: SOURCE, quote: RELEASE, parties: ["Kestrel Works"], document: "d2" })
-    const documents = [planned("d1", "Advice note", []), planned("d2", "Release letter")]
+    const release = act({ act: "release the deposit", source: SOURCE, quote: RELEASE, parties: ["Kestrel Works"] })
+    const documents = [planned("d1", "Advice note", [])]
     const several = coverageScopeQuestion([act(), release], documents, [], { saved: true })!
     expect(several.question).toBe(
       "The document plan leaves these instructed acts without a document executed by the parties who must take them: " +
       `"approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in d1 "Advice note", executed by no party. ` +
-      `"release the deposit", directed by "${RELEASE}" [source: ${SOURCE}]; to be taken by "Kestrel Works"; planned in d2 "Release letter", executed by parties the plan does not name. ` +
+      `"release the deposit", directed by "${RELEASE}" [source: ${SOURCE}]; to be taken by "Kestrel Works"; planned in d1 "Advice note", executed by no party. ` +
       "For each, which planned document, executed by those parties, should carry it, or is it outside this request?")
     expect(several.context).toBe("Drafting waits for your answer. The saved document plan, including any edits to it, is kept as it stands: " +
       'to add a document, stop this draft with "Stop draft", then start a new one, which plans the package from the start.')
     // The flag changes the wording only: the question keys on the same acts.
     expect(several.id).toBe(coverageScopeQuestion([act(), release], documents)!.id)
-    const one = coverageScopeQuestion([act()], [planned("d1", "Advice note", [])], [], { saved: true })!.question
+    const one = coverageScopeQuestion([act()], documents, [], { saved: true })!.question
     expect(one).toEndWith("executed by no party. Which planned document, executed by those parties, should carry it, or is it outside this request?")
     expect(one).not.toContain("add a document")
+  })
+
+  test("on a saved plan, an act carried by a document whose plan names no signers is not asked about: no answer can name them", () => {
+    const release = act({ act: "release the deposit", source: SOURCE, quote: RELEASE, parties: ["Kestrel Works"], document: "d2" })
+    const documents = [planned("d1", "Advice note", []), planned("d2", "Release letter")]
+    expect(coverageScopeQuestion([release], documents, [], { saved: true })).toBeUndefined()
+    // Still asked: before the plan is saved, and on a saved plan when no planned document carries the act.
+    expect(coverageScopeQuestion([release], documents)!.question).toContain('planned in d2 "Release letter", executed by parties the plan does not name.')
+    expect(coverageScopeQuestion([{ ...release, document: null }], documents, [], { saved: true })).toBeDefined()
+    const mixed = coverageScopeQuestion([act(), release], documents, [], { saved: true })!.question
+    expect(mixed).toContain('"approve the revised schedule"')
+    expect(mixed).not.toContain('"release the deposit"')
   })
 })
 

@@ -664,7 +664,10 @@ function actIssues(act: CoverageAct, documents: PlannedDocument[], acts: Coverag
  * first in that file, as a separate instrument, else in a file of its own, or
  * outside this request; the lawyer may still answer in their own words. */
 export function coverageScopeQuestion(acts: CoverageAct[], documents: PlannedDocument[], answered: Question[] = [], options: { saved?: boolean } = {}): Question | undefined {
-  const { ask: open, id } = actScopeAnswers(acts.filter(act => !act.excluded_by && actIssues(act, documents, acts).length), answered, acts)
+  // On a saved plan no answer can name the signers of a planned document whose
+  // plan names none, so an act it carries is disclosed (coverageItems), not asked.
+  const unnamed = (act: CoverageAct) => options.saved && act.document !== null && documents.find(document => document.id === act.document)?.executed_by === undefined
+  const { ask: open, id } = actScopeAnswers(acts.filter(act => !act.excluded_by && !unnamed(act) && actIssues(act, documents, acts).length), answered, acts)
   if (!open.length) return undefined
   const several = open.length > 1
   const named = documents.filter(document => document.file)
