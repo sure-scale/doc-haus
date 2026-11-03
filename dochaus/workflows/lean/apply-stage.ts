@@ -20,14 +20,13 @@ import { draftingAttribution, withGeneratedDocxAttribution } from "../../lib/doc
 import { continueListStarts, numberDocxClauses, numberedList } from "../../lib/docx-numbering"
 import { linkCrossReferences, referenceFields } from "../../lib/docx-crossrefs"
 import { paragraphFields, refInstruction, unlink } from "../../lib/docx-fields"
-import { shadeOpenItemsInDocx, unshadeOpenItems } from "../../lib/open-items"
+import { openItemMarkers, shadeOpenItemsInDocx, unshadeOpenItems } from "../../lib/open-items"
 import { assertRedlineRoundTrip } from "../../lib/redline-round-trip"
 import { discloseSourceRevisions } from "../../lib/docx-revision-views"
 import { openItem } from "./quotes"
 import { normalize } from "../../lib/quote-verify"
 import { paragraphSha256, type Amendment } from "../../lib/drafting-amendment"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, repairedUnverified, unverifiedKey } from "./repairs"
-import { paragraphShowsOpenItem } from "./gate"
 import { OPEN_ITEM_PATTERN } from "../../lib/marker-patterns"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 
@@ -97,9 +96,10 @@ export async function runApply(directory: string, state: LeanState, document: Do
     existsSync(previous) ? readFileSync(previous) : undefined))
   writeLeanText(directory, `${document}/apply.json`, `${JSON.stringify({ ...settled.result, ...(marked.length ? { marked } : {}), comments: annotated.comments }, null, 2)}\n`)
   // A marker this step wrote shows its citation or quotation item, which the
-  // notes name; it is not a second open item.
-  const written = new Set(marked.flatMap(row => row.markers.map(marker => normalize(marker).toLowerCase())))
-  const bodyItems = finalBodyItems(directory, rows).filter(item => item.kind !== "placeholder" || !written.has(normalize(item.ref.placeholder ?? "").toLowerCase()))
+  // notes name; it is not a second open item. The same words elsewhere in the
+  // body were not written here and stay open items of their own.
+  const written = new Map(marked.map(row => [row.pid, new Set(row.markers.map(marker => normalize(marker).toLowerCase()))]))
+  const bodyItems = finalBodyItems(directory, rows).filter(item => item.kind !== "placeholder" || !item.ref.pid || !written.get(item.ref.pid)?.has(normalize(item.ref.placeholder ?? "").toLowerCase()))
   return {
     status: "done", outputs: stepOutputs(step),
     openItems: [
@@ -129,10 +129,12 @@ async function markUnverified(directory: string, out: string, document: DocID): 
   const texts = new Map(rows.map(row => [row.pid, row.text]))
   const wanted = new Map<string, string[]>()
   for (const item of finalBodyItems(directory, rows)) {
-    // A paragraph that already shows an open item satisfies the gate as it stands.
-    if (item.kind !== "citation_unsupported" && item.kind !== "quote_miss" || !item.ref.pid || !texts.has(item.ref.pid) || paragraphShowsOpenItem(texts.get(item.ref.pid)!)) continue
+    if (item.kind !== "citation_unsupported" && item.kind !== "quote_miss" || !item.ref.pid || !texts.has(item.ref.pid)) continue
     if (!exhausted && !repaired.has(unverifiedKey(item, document))) continue
     const marker = unverifiedMarker(item)
+    // A paragraph already marked for this item is left as it stands; a marker
+    // about something else in it does not tell the lawyer about this one.
+    if (marksItem(texts.get(item.ref.pid)!, item, marker)) continue
     const markers = wanted.get(item.ref.pid) ?? []
     if (!markers.includes(marker)) wanted.set(item.ref.pid, [...markers, marker])
   }
@@ -145,18 +147,31 @@ async function markUnverified(directory: string, out: string, document: DocID): 
   return [...wanted].flatMap(([pid, markers]) => applied.has(pid) ? [{ pid, markers }] : [])
 }
 
+/** Whether a paragraph already shows an open item for an unverified citation
+ * or quotation: the marker apply would write, or a marker or placeholder that
+ * names the citation or quotation itself. */
+function marksItem(text: string, item: OpenItem, marker: string) {
+  const named = normalize(item.ref.citation ?? item.ref.quote ?? "").toLowerCase()
+  const normalized = normalize(text)
+  return [...openItemMarkers(normalized), ...draftingPlaceholders(normalized)].some(shown =>
+    shown.toLowerCase() === normalize(marker).toLowerCase() || Boolean(named) && shown.toLowerCase().includes(named))
+}
+
 /** The marker for an unverified quotation or citation. A citation is named in
  * it whenever the marker still reads as one open item: the open-item pattern
  * takes the whole marker and no other bracket pattern finds anything inside it.
- * A quotation is never repeated. */
+ * A citation whose square brackets break the bracket form is named in the
+ * parenthesis form instead. A quotation is never repeated. */
 export function unverifiedMarker(item: OpenItem) {
   if (item.kind === "quote_miss") return "[open item: quotation not verified against its source]"
   const generic = "[open item: citation not verified against a source]"
   const citation = item.ref.citation?.replace(/\s+/g, " ").trim()
   if (!citation) return generic
-  const named = `[open item: citation not verified against a source: ${citation}]`
-  const whole = [...named.matchAll(new RegExp(OPEN_ITEM_PATTERN.source, "gi"))]
-  return whole.length === 1 && whole[0]![0] === named && !draftingPlaceholders(named).length ? named : generic
+  const whole = (named: string) => {
+    const found = [...named.matchAll(new RegExp(OPEN_ITEM_PATTERN.source, "gi"))]
+    return found.length === 1 && found[0]![0] === named && !draftingPlaceholders(named).length
+  }
+  return [`[open item: citation not verified against a source: ${citation}]`, `(open item: citation not verified against a source: ${citation})`].find(whole) ?? generic
 }
 
 /** Applied amendments as the final body shows them, with any marker the apply
