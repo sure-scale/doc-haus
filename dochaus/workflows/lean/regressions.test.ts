@@ -158,6 +158,23 @@ describe("unsupported content in the final body", () => {
     expect(gateOf(directory)).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
   }, 120_000)
 
+  test("a resume after the allowance is used up re-runs apply, though its change list is unchanged", async () => {
+    const directory = matter()
+    const model = scriptedModel({ ...happyPath, ...quiet, [AGENT.draft]: citing() })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    const before = readLeanState(directory)!.stages["d1.apply"]!.input_sha
+    const changesKey = readLeanState(directory)!.stages["d1.changes"]!.input_sha
+    writeLeanText(directory, "repairs.json", JSON.stringify({ ...readLeanJson(directory, "repairs.json") as object, substantive_attempts: LEAN_MAX_SUBSTANTIVE_REPAIRS }))
+
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(changeRuns(model)).toBe(2)
+    const stages = readLeanState(directory)!.stages
+    expect(stages["d1.changes"]!.input_sha).toBe(changesKey)
+    expect(stages["d1.apply"]!.input_sha).not.toBe(before)
+    expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ marked: [expect.objectContaining({ markers: [expect.stringContaining("section 4 of the Imaginary Trade Act")] })] })
+    expect(gateOf(directory)).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+  }, 120_000)
+
   test("a citation the draft already marks needs no repair round and is disclosed", async () => {
     const directory = matter()
     const model = scriptedModel({ ...happyPath, ...quiet, [AGENT.draft]: citing(" [open item: confirm this authority]") })
