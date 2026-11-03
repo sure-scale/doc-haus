@@ -117,10 +117,18 @@ function withholdUnverified(value: Research, unverified: ResearchFinding[]): Res
     findings: value.findings.filter(row => !rows.has(row)), limitations: [...value.limitations, ...withheld] }
 }
 
+/** On the last attempt a withdrawal of an authority the reply also returns is
+ * dropped: the returned finding, verified against its source, is the reply's
+ * last word on it. */
+function dropReturnedWithdrawals(value: Research): Research {
+  const returned = returnedKeys(value.findings)
+  return value.withdrawn?.some(entry => returned.has(withdrawalKey(entry))) ? { ...value, withdrawn: value.withdrawn.filter(entry => !returned.has(withdrawalKey(entry))) } : value
+}
+
 /** On the last attempt a withdrawal that names no earlier finding is dropped
  * and disclosed as a research limitation: every earlier finding is kept, and
- * the lawyer sees what research meant to withdraw. A malformed withdrawal, or
- * one of an authority also returned, still fails the attempt. */
+ * the lawyer sees what research meant to withdraw. A malformed withdrawal
+ * still fails the attempt. */
 function dropUnmatchedWithdrawals(value: Research, prior: ResearchFinding[]): Research {
   const unmatched = new Set((value.withdrawn ?? []).filter(entry => !prior.some(row => withdrawsFinding(entry, row))))
   if (!unmatched.size) return value
@@ -297,6 +305,11 @@ function findingKey(row: { url: string; citation: string; quote: string }) {
   return `${normalize(row.url).toLowerCase()}\0${row.citation.trim() ? normalize(row.citation).toLowerCase() : `\0${normalize(row.quote)}`}`
 }
 
+/** The keys of a reply's returned findings; a malformed row has none. */
+function returnedKeys(findings: unknown) {
+  return new Set((Array.isArray(findings) ? findings : []).flatMap(row => record(row) && ["url", "citation", "quote"].every(key => typeof row[key] === "string") ? [findingKey(row as ResearchFinding)] : []))
+}
+
 /** A withdrawal names a finding by the same key (findingKey): its quotation
  * counts only for a finding without a citation. */
 const withdrawalKey = (entry: WithdrawnFinding) => findingKey({ ...entry, quote: entry.quote ?? "" })
@@ -315,8 +328,7 @@ function withdrawals(value: Record<string, unknown>): WithdrawnFinding[] | undef
 function withdrawnIssues(value: unknown, prior: ResearchFinding[]) {
   if (!record(value)) return []
   if (!withdrawals(value)) return ['"withdrawn" must be a list of {url, citation, quote, reason} naming previously verified findings that no longer hold.']
-  const returned = new Set((Array.isArray(value.findings) ? value.findings : []).flatMap(row => record(row) && typeof row.url === "string" && typeof row.citation === "string" && typeof row.quote === "string"
-    ? [findingKey(row as ResearchFinding)] : []))
+  const returned = returnedKeys(value.findings)
   return withdrawals(value)!.flatMap((entry, index) => [
     ...(!prior.some(row => withdrawsFinding(entry, row)) ? [`withdrawn[${index}] names no previously verified finding; give the url and citation exactly as listed under previously verified research, and its quote when it has no citation.`] : []),
     ...(returned.has(withdrawalKey(entry)) ? [`withdrawn[${index}] is also returned as a finding; return the authority or withdraw it, not both.`] : []),
@@ -331,8 +343,7 @@ function withdrawnIssues(value: unknown, prior: ResearchFinding[]) {
  * checks reject it. */
 function keptFindings(value: Record<string, unknown>, prior: ResearchFinding[]) {
   if (value.status === "not-needed" || !prior.length) return []
-  const keyed = (row: unknown): row is ResearchFinding => record(row) && ["url", "citation", "quote"].every(key => typeof row[key] === "string")
-  const replaced = new Set((Array.isArray(value.findings) ? value.findings : []).filter(keyed).map(findingKey))
+  const replaced = returnedKeys(value.findings)
   const withdrawn = withdrawals(value) ?? []
   return prior.filter(row => !replaced.has(findingKey(row)) && !withdrawn.some(entry => withdrawsFinding(entry, row)))
 }
@@ -353,8 +364,9 @@ function withPriorFindings(value: Research, kept: ResearchFinding[]): Research {
  * issues, so it costs no extra retry. On the last attempt (`final`) it is not
  * reported: a reply whose only issue is a path is saved as the model wrote it
  * rather than failing the run. Unverifiable findings are withheld on that
- * attempt too (withholdUnverified), and a withdrawal naming no earlier finding
- * is dropped (dropUnmatchedWithdrawals). */
+ * attempt too (withholdUnverified), and a withdrawal of an authority also
+ * returned, or naming no earlier finding, is dropped (dropReturnedWithdrawals,
+ * dropUnmatchedWithdrawals). */
 export function acceptResearchReply(directory: string, stage: ResearchStage, reply: string, options: { final?: boolean } = {}): StageAcceptance {
   if (stage === "intake") {
     const questions = intakeQuestions(directory, reply, "intake")
@@ -370,7 +382,7 @@ export function acceptResearchReply(directory: string, stage: ResearchStage, rep
   let resolved = stage === "research" ? resolveResearch(directory, value, prior) : undefined
   if (resolved && options.final) {
     if (resolved.unverified.length) value = withholdUnverified(value as Research, resolved.unverified)
-    if (record(value) && strings(value.limitations) && withdrawals(value)) value = dropUnmatchedWithdrawals(value as Research, prior)
+    if (record(value) && strings(value.limitations) && withdrawals(value)) value = dropUnmatchedWithdrawals(dropReturnedWithdrawals(value as Research), prior)
     resolved = resolveResearch(directory, value, prior)
   }
   const issues = resolved ? [...resolved.issues, ...withdrawnIssues(value, prior)] : stage === "intake"

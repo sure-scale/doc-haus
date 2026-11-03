@@ -740,3 +740,16 @@ test("the research prompt has an earlier finding withdrawn when the lawyer's lat
   expect(prompt).toContain('"citation": "Rule 1"')
   expect(prompt).toContain("or when the lawyer's answers or instructions since it was found take it out of scope (a changed jurisdiction, party or facts).")
 })
+
+test("on the last attempt a withdrawal of an authority the reply also returns is dropped and the returned finding kept", () => {
+  const directory = matter()
+  const finding = approvedNotice(directory)
+  const returned = { ...finding, claim: "Restated notice requirement" }
+  const reply = JSON.stringify({ status: "completed", limitations: [], findings: [returned], withdrawn: [{ url: finding.url, citation: "Rule 1", reason: "Superseded by a later rule." }] })
+  expect(acceptResearchReply(directory, "research", reply).issues).toEqual([expect.stringContaining("withdrawn[0] is also returned as a finding")])
+  // Was the same issue, failing the run.
+  const last = acceptResearchReply(directory, "research", reply, { final: true })
+  expect(last.issues).toEqual([])
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "completed", findings: [returned], limitations: [], withdrawn: [] })
+  expect(last.openItems).toEqual([])
+})
