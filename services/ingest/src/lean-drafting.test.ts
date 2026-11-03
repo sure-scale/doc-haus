@@ -200,13 +200,17 @@ describe("lean drafting start and Continue", () => {
     })
     expect(model.created[1]).toMatchObject({ parentID: "ses_1", agent: LEAN_STAGE_AGENTS.instructions })
 
-    // A Continue after the run stopped starts it again.
-    const resumed = await routes.request("/m1/lean/resume", { method: "POST" })
+    // A Continue after the run stopped starts it again, on the model now selected.
+    const json = (body: unknown) => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    expect((await routes.request("/m1/lean/resume", json({ model: { providerID: "test", modelID: " " } }))).status).toBe(400)
+    const selected = { providerID: "test", modelID: "selected" }
+    const resumed = await routes.request("/m1/lean/resume", json({ model: selected }))
     expect(resumed.status).toBe(202)
     expect(await resumed.json()).toMatchObject({ mode: "queued", status: { in_flight: true } })
     await leanDraftingIdle(directory)
     expect(model.prompts).toEqual([LEAN_STAGE_AGENTS.instructions, LEAN_STAGE_AGENTS.instructions, LEAN_STAGE_AGENTS.instructions])
-    expect(readLeanState(directory)).toMatchObject({ status: "failed", owner_session_id: "ses_1" })
+    expect(model.created.at(-1)).toMatchObject({ agent: LEAN_STAGE_AGENTS.instructions, model: selected })
+    expect(readLeanState(directory)).toMatchObject({ status: "failed", owner_session_id: "ses_1", model: selected })
     expect(doneRequests(directory)).toHaveLength(3)
   })
 

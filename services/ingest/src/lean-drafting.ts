@@ -11,7 +11,7 @@ import { sha256File } from "../../../dochaus/lib/lineage"
 import { lastLeanEventAt } from "../../../dochaus/workflows/lean/events"
 import { planActingFor, readLeanPlan, runPosture } from "../../../dochaus/workflows/lean/plan"
 import { heldBackCount } from "../../../dochaus/workflows/lean/review-findings"
-import { enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, queuedAnswerIDs, isChecklistRefinement } from "../../../dochaus/workflows/lean/requests"
+import { enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, queuedAnswerIDs, isChecklistRefinement, isLeanModel } from "../../../dochaus/workflows/lean/requests"
 import { runLean, stageInputSha, stopLeanRun } from "../../../dochaus/workflows/lean/runner"
 import { leanSteps } from "../../../dochaus/workflows/lean/plan"
 import { withSourceSnapshot } from "../../../dochaus/workflows/lean/quotes"
@@ -114,11 +114,12 @@ function withChatInstructions(request: string, chatInstructions?: string) {
 
 /** Continue: queues a request for the coordinator and starts it if it is not
  * running. On a blocked gate the coordinator starts one repair round; otherwise
- * it resumes, skipping stages whose inputs are unchanged. */
-export function resumeLeanDraftingRun(directory: string, deps: LeanDeps = defaultDeps()) {
+ * it resumes, skipping stages whose inputs are unchanged. `model`, the model
+ * selected in Settings when the lawyer continued, runs the steps still to run. */
+export function resumeLeanDraftingRun(directory: string, deps: LeanDeps = defaultDeps(), model?: LeanModel) {
   if (!leanStateExists(directory)) return undefined
   refuseStopped(readLeanState(directory))
-  const request = enqueueLeanRequest(directory, { kind: "continue" })
+  const request = enqueueLeanRequest(directory, { kind: "continue", ...(model ? { model } : {}) })
   if (!running.has(directory)) launch(directory, deps)
   return { profile: "lean" as const, mode: "queued" as const, request_id: request.id, status: leanDraftingStatus(directory) }
 }
@@ -323,9 +324,13 @@ export function leanDraftingRoutes(options: { directory: (id: string) => string;
     launch(directory, deps())
     return c.json({ profile: "lean", mode: "queued", request_id: queued.id, status: leanDraftingStatus(directory) }, 202)
   })
-  app.post("/:id/lean/resume", (c) => {
+  app.post("/:id/lean/resume", async (c) => {
     const directory = options.directory(c.req.param("id"))
-    const resumed = guard(() => resumeLeanDraftingRun(directory, deps()))
+    const input: { model?: unknown } | null = await c.req.json().catch(() => null)
+    if (input?.model !== undefined && !isLeanModel(input.model))
+      return c.json({ error: "Continue names a model by its providerID and modelID.", code: "invalid_model" }, 400)
+    const model = isLeanModel(input?.model) ? { providerID: input.model.providerID, modelID: input.model.modelID } : undefined
+    const resumed = guard(() => resumeLeanDraftingRun(directory, deps(), model))
     if (resumed instanceof LeanDraftingConflictError) return c.json({ error: resumed.message, code: resumed.code }, 409)
     if (!resumed) return c.json({ error: "This matter has no lean drafting run.", code: "lean_run_not_found" }, 404)
     return c.json(resumed, 202)

@@ -136,7 +136,10 @@ export async function runLean(directory: string, deps: LeanDeps): Promise<LeanSt
     // not a request to reinspect.
     pass.reinspectChecklist ||= pass.settled?.status === "blocked" && !pass.settled.paused_at && pass.settled.stages["checklist-check"]?.status === "blocked" &&
       pendingLeanRequests(directory).some(name => (readLeanJson(directory, `requests/${name}`) as { kind?: string } | undefined)?.kind === "continue")
-    drainLeanRequests(directory, pass.settled)
+    // A Continue runs the steps still to run on the model now selected in
+    // Settings; finished steps keep their outputs (the model is not in a key).
+    const { model } = drainLeanRequests(directory, pass.settled)
+    if (model) pass.state = { ...pass.state, model }
     const result: PassResult = await runPass(directory, writeLeanState(directory, { ...pass.state, status: "running", stop_reason: null, paused_at: undefined, provider_stop: undefined }), deps, pass.reinspectChecklist)
       .catch((error: unknown) => deps.pause?.aborted
         ? { state: settlePause(directory, pass.state), paused: true }

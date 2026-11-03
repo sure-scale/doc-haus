@@ -264,9 +264,14 @@ export function leanStartRefusal(body: unknown) {
 }
 
 /** Continue: the coordinator resumes from the first stage whose inputs changed,
- * or starts one repair round on a blocked gate. */
-export async function resumeLeanDraftingRun(matterId: string): Promise<LeanDraftingQueued> {
-  const res = await fetch(`${INGEST_URL}/matters/${matterId}/lean/resume`, { method: "POST" })
+ * or starts one repair round on a blocked gate. The steps still to run use
+ * `model`, the one now selected in Settings. */
+export async function resumeLeanDraftingRun(matterId: string, model: { providerID: string; modelID: string }): Promise<LeanDraftingQueued> {
+  const res = await fetch(`${INGEST_URL}/matters/${matterId}/lean/resume`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model }),
+  })
   return leanQueued(res, "Failed to continue the drafting run")
 }
 

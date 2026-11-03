@@ -11,6 +11,8 @@ import {
   updateLeanDraftingRun,
   type LeanDraftingStatus,
 } from "../../api/ingest/lean"
+import { getConfig, modelSpec } from "../../api/opencode/config"
+import { boundedRequest } from "../../api/opencode/client"
 import { runState } from "./model"
 
 // Actions queue work for the run's coordinator (or pause or stop it) and show
@@ -72,7 +74,16 @@ export default function useRunActions(
       matterId && status
         ? queue(() => refineLeanChecklist(matterId, status.owner_session_id, parentID))
         : Promise.resolve(false),
-    resume: () => (matterId ? queue(() => resumeLeanDraftingRun(matterId)) : Promise.resolve(false)),
+    // Continue runs the remaining steps on the model now selected in Settings,
+    // resolved as Start resolves it.
+    resume: () =>
+      matterId
+        ? queue(async () => {
+            const model = modelSpec(await boundedRequest(getConfig(), 3_000, "Model configuration"))
+            if (!model) throw new Error("The configured drafting model could not be resolved.")
+            return resumeLeanDraftingRun(matterId, model)
+          })
+        : Promise.resolve(false),
     pause: () =>
       matterId && status
         ? queue(() => pauseLeanDraftingRun(matterId, status.owner_session_id), "pause")

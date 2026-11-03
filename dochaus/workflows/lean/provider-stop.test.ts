@@ -43,6 +43,29 @@ test.each([
   expect(resumed.provider_stop).toBeUndefined()
 }, 120_000)
 
+test("Continue after the lawyer selects another model runs the remaining steps on it and leaves finished steps as they were", async () => {
+  const directory = matter()
+  const broken = scriptedModel({ ...happyPath, [AGENT.discrepancy]: failing({ type: "provider.no-route", message: "Model unavailable: test/scripted" }) })
+  const stopped = await runLean(directory, { sessions: broken.port })
+  expect(stopped.provider_stop).toBe("model")
+  const finished = stopped.stages.instructions!
+  expect(finished.status).toBe("done")
+
+  const selected = { providerID: "test", modelID: "selected" }
+  enqueueLeanRequest(directory, { kind: "continue", model: selected })
+  const fixed = scriptedModel(happyPath)
+  const resumed = await runLean(directory, { sessions: fixed.port })
+
+  expect(resumed.status).toBe("completed")
+  expect(resumed.model).toEqual(selected)
+  expect(fixed.sessions.length).toBeGreaterThan(0)
+  expect(fixed.sessions.map(session => session.model)).toEqual(fixed.sessions.map(() => selected))
+  expect(fixed.sessions[0]?.agent).toBe(AGENT.discrepancy)
+  // The finished step is neither prompted again nor re-keyed.
+  expect(fixed.count(AGENT.instructions)).toBe(0)
+  expect(resumed.stages.instructions).toEqual(finished)
+}, 120_000)
+
 test("a provider failure a helper records as an issue still stops the step as that failure", async () => {
   const directory = matter()
   const model = scriptedModel({ ...happyPath, "lean-checklist-extract": failing(EXPIRED) })
