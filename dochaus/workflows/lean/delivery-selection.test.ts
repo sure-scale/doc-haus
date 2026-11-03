@@ -248,23 +248,19 @@ test("an accepted cached selection is reconciled before registration after inter
   expect(readRepairRound(directory)?.substantive_attempts).toBe(1)
 }, 120_000)
 
-test("delivery correction preserves the repair ceiling and never registers pending selections", async () => {
+test("with the repair allowance used up a delivery selection is applied once without a repair round", async () => {
   const directory = matter()
   const instruction = "Supply the annotated comparison as limited-review.docx."
   writeLeanText(directory, "request.md", `Prepare a supply note. ${instruction}`)
   for (let index = 0; index < 5; index++) startRepairRound(directory, [], true)
   const registration = registering()
   const model = scriptedModel({ ...happyPath, [AGENT["package-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [], delivery: [{ document: "d1", role: "redline", file: "limited-review.docx", instruction_quote: instruction }] }) })
-  const stopped = await runLean(directory, { sessions: model.port, ...registration })
-  expect(stopped.status).toBe("blocked")
-  expect(stopped.stop_reason).toContain("Requested delivery selection remains unapplied")
+  expect((await runLean(directory, { sessions: model.port, ...registration })).status).toBe("completed")
+  expect(readLeanPlan(directory)?.documents[0]).toMatchObject({ file: "limited-review.docx", deliverable: "redline" })
+  expect(model.count(AGENT.draft)).toBe(3)
+  expect(model.count(AGENT["package-review"])).toBe(2)
   expect(readRepairRound(directory)?.substantive_attempts).toBe(5)
-  expect(registration.names).toEqual([])
-  const resumed = scriptedModel(happyPath)
-  expect((await runLean(directory, { sessions: resumed.port, ...registration })).status).toBe("blocked")
-  expect(resumed.prompts).toEqual([])
-  expect(readRepairRound(directory)?.substantive_attempts).toBe(5)
-  expect(registration.names).toEqual([])
+  expect(readLeanDocuments(directory)?.documents.find(row => row.kind === "redline")?.deliverable).toBe("limited-review.docx")
 }, 120_000)
 
 test("an unchanged grounded selection consumes no repair and preserves a same-named source", async () => {
@@ -455,7 +451,7 @@ for (const memo of [false, true]) test(`notes selection preserves an accepted bo
   expect(readLeanDocuments(directory)?.documents.find(row => row.kind === "drafting_notes")?.deliverable).toBe("supplied-note.docx")
 }, 120_000)
 
-for (const selected of [false, true]) test(`notes selection at the repair ceiling ${selected ? "already matches" : "remains unapplied"}`, async () => {
+for (const selected of [false, true]) test(`notes selection at the repair ceiling ${selected ? "already matches" : "is applied"}`, async () => {
   const directory = matter(), instruction = "Deliver the separate explanatory note as ceiling-note.docx."
   writeLeanText(directory, "request.md", `Prepare a supply note. ${instruction}`)
   const control = scriptedModel(happyPath)
@@ -467,11 +463,11 @@ for (const selected of [false, true]) test(`notes selection at the repair ceilin
   writeLeanState(directory, { ...state, status: "running", stages: { ...state.stages, "package-review": { ...state.stages["package-review"]!, input_sha: stageInputSha(directory, "package-review") } } })
   const model = scriptedModel(happyPath), registration = registering()
   const result = await runLean(directory, { sessions: model.port, ...registration })
-  expect(result.status).toBe(selected ? "completed" : "blocked")
+  expect(result.status).toBe("completed")
   expect(readRepairRound(directory)?.substantive_attempts).toBe(5)
   expect(model.count(AGENT.draft)).toBe(0)
-  if (selected) expect(readLeanDocuments(directory)?.documents.find(row => row.kind === "drafting_notes")?.deliverable).toBe("ceiling-note.docx")
-  else expect(registration.names).toEqual([])
+  expect(readLeanPlan(directory)?.notes_file).toBe("ceiling-note.docx")
+  expect(readLeanDocuments(directory)?.documents.find(row => row.kind === "drafting_notes")?.deliverable).toBe("ceiling-note.docx")
 }, 120_000)
 
 const memoDoc = (title: string, extra: Record<string, unknown> = {}) => ({ title, purpose: "p", parts: [{ heading: "Terms", scope: "s" }], ...extra })

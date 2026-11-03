@@ -539,10 +539,11 @@ async function reconcilePackageReview(directory: string, state: LeanState, deps:
   if (exhausted) recordPackageFindings(directory)
   if (review.status === "pass" && !plan) return
   if (exhausted) {
-    // A delivery selection left unapplied blocks.
+    // A delivery selection is applied without a repair round: the review runs
+    // again on the selected files, then the gate discloses what it finds.
     if (!plan) return
-    await recordLeanDocuments(directory, deps, false)
-    return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: `package-review: material corrections remain after ${LEAN_MAX_SUBSTANTIVE_REPAIRS} substantive repair rounds: ${review.findings.map(row => row.detail).join(" ")}${plan ? " Requested delivery selection remains unapplied." : ""}` }) }
+    writeLeanText(directory, "plan.json", `${JSON.stringify(plan, null, 2)}\n`)
+    return { state, restart: true }
   }
   const findings = review.findings.map(row => openItem("package-review", "omission", row.detail,
     // A separately planned advice/note document has its own editing stages.
