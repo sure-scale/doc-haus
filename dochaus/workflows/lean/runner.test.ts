@@ -6,6 +6,7 @@ import { checkChanges } from "./change-checks"
 import { readParagraphs } from "./checks"
 import type { GateResult } from "./gate"
 import { enqueueLeanRequest } from "./requests"
+import type { RepairRound } from "./repairs"
 import { runLean } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS } from "./stages"
 import { leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText } from "./state"
@@ -140,7 +141,7 @@ describe("lean drafting runner", () => {
     expect(idle.prompts.length + idle.sessions.length).toBe(0)
   }, 120_000)
 
-  test("a draft misquote goes to the changes stage to repair; left in the body it blocks, and Continue starts one repair round", async () => {
+  test("a draft misquote goes to the changes stage to repair; left in the body it starts one automatic repair round, and what that round leaves is marked", async () => {
     const directory = matter()
     const draft = `# Supply note\n\n## Delivery\n\nThe supplier promised delivery "within ten days" [source: ${SOURCE}].\n\n## Payment\n\nPayment is due on delivery.\n`
     const repair: Reply = prompt => JSON.stringify({
@@ -148,40 +149,32 @@ describe("lean drafting runner", () => {
         reason: "The quoted period is not in the supply terms.", sources: SUPPORT }],
       questions: [],
     })
-    const model = scriptedModel({ ...happyPath, [AGENT.draft]: drafter(draft), [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: noChanges })
+    // The first changes run leaves the misquote; the automatic round repairs it.
+    const changes: Reply = (prompt, index) => index ? repair(prompt, index) : noChanges(prompt, index)
+    const model = scriptedModel({ ...happyPath, [AGENT.draft]: drafter(draft), [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: changes })
     const state = await runLean(directory, { sessions: model.port })
 
     const draftItem = readOpenItems(directory).find(item => item.stage === "draft")!
     expect(draftItem).toMatchObject({ kind: "quote_miss", ref: { source_id: SOURCE, quote: "within ten days" } })
-    const redlinerPrompt = model.prompts.find(prompt => prompt.agent === AGENT.changes)!.text
-    expect(redlinerPrompt).toContain("<required_repairs>")
-    expect(redlinerPrompt).toContain(draftItem.id)
+    const prompts = model.prompts.filter(prompt => prompt.agent === AGENT.changes)
+    expect(prompts).toHaveLength(2)
+    expect(prompts[0]!.text).toContain("<required_repairs>")
+    expect(prompts[0]!.text).toContain(draftItem.id)
     expect(model.count(AGENT.draft)).toBe(3)
-    const gate = readLeanJson(directory, "gate.json") as GateResult
-    expect(state.status).toBe("blocked")
-    expect(gate).toMatchObject({ status: "blocked", delivery: null })
-    expect(gate.blocking).toEqual([expect.objectContaining({ stage: "apply", kind: "quote_miss", resolution: "named in the notes, but its paragraph has no visible open-item marker" })])
-    expect(gate.blocking[0]!.ref.pid).toBe(pidOf(redlinerPrompt, "The supplier promised delivery"))
-    expect(readFileSync(leanFile(directory, "drafting-notes.md"), "utf8")).toContain(gate.blocking[0]!.id)
-    expect(state.stop_reason).toBe(`gate: blocked by open items ${gate.blocking[0]!.id}`)
-
-    // Without a request, a resume has nothing to change and stays blocked.
-    const idle = scriptedModel({})
-    expect((await runLean(directory, { sessions: idle.port })).status).toBe("blocked")
-    expect(idle.prompts).toHaveLength(0)
-
-    // Continue on the blocked gate re-runs the changes stage with the blocking item.
-    const request = enqueueLeanRequest(directory, { kind: "continue" })
-    const repaired = scriptedModel({ ...happyPath, [AGENT.changes]: repair })
-    const resumed = await runLean(directory, { sessions: repaired.port })
-    expect(repaired.counts()).toEqual([0, 0, 1, 1])
-    expect(repaired.prompts.find(prompt => prompt.agent === AGENT.changes)!.text).toContain(gate.blocking[0]!.id)
-    expect(readLeanJson(directory, "repairs.json")).toMatchObject({ round: 1, items: [{ id: gate.blocking[0]!.id }] })
-    expect(readLeanJson(directory, `requests/done/${request.id}.json`)).toMatchObject({ kind: "continue", outcome: { status: "repair_round" } })
-    expect(resumed.status).toBe("completed")
+    // The round names the apply-stage item the gate blocked on and is charged to the allowance.
+    const round = readLeanJson(directory, "repairs.json") as RepairRound
+    const roundItem = round.items[0]!.id
+    expect(round).toMatchObject({ round: 1, substantive_attempts: 1, items: [expect.objectContaining({ stage: "apply", kind: "quote_miss", ref: expect.objectContaining({ pid: pidOf(prompts[0]!.text, "The supplier promised delivery") }) })] })
+    expect(prompts[1]!.text).toContain(roundItem)
+    expect(state.status).toBe("completed")
     expect(readLeanJson(directory, "gate.json")).toMatchObject({
       status: "pass", delivery: "review_draft", disclosed: [expect.objectContaining({ stage: "apply", kind: "placeholder" })],
     })
+
+    // An unchanged state starts no further round.
+    const idle = scriptedModel({})
+    expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
+    expect(idle.prompts).toHaveLength(0)
   }, 120_000)
 
   test("overlapping amendments to one paragraph are consolidated before change-review; one that still reaches apply is an open item and opens no session", async () => {

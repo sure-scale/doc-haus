@@ -44,7 +44,7 @@ import { templateSource } from "./template-contract"
 import { INSTRUCTIONS_FILE, instructionsOutputValid } from "./instructions"
 import { completedDocumentsText, delegatedDecisionsText, packageCompositionBlock } from "./prompts"
 import { matterSourceBasis, matterSourceIDs } from "./quotes"
-import { documentRepairs, readRepairRound } from "./repairs"
+import { documentRepairs, readRepairRound, unverifiedMarkingBasis } from "./repairs"
 import {
   isReviewStage,
   answeredQuestionsText,
@@ -329,7 +329,9 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
         (item.stage === "draft" || isReviewStage(item.stage)) && (item.ref.document ?? FIRST_DOCUMENT) === document)) },
       finished, acting, scope, ...composed]
   }
-  return [at("body.docx"), at("changes.json"), at("change-review.json"), { name: "operative-plan", bytes: JSON.stringify(operativePlan(readLeanPlan(directory))) }, sources, { name: "comparison-original", bytes: comparisonBasis(directory, document) }]
+  const marking = unverifiedMarkingBasis(directory, document)
+  return [at("body.docx"), at("changes.json"), at("change-review.json"), { name: "operative-plan", bytes: JSON.stringify(operativePlan(readLeanPlan(directory))) }, sources, { name: "comparison-original", bytes: comparisonBasis(directory, document) },
+    ...(marking ? [{ name: "unverified-marking", bytes: marking }] : [])]
 }
 
 /** Hash of what the outline is built from: the request and the matter's

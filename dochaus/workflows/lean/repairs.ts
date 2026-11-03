@@ -23,7 +23,7 @@ import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
 export const LEAN_MAX_SUBSTANTIVE_REPAIRS = 5
 
 type DocumentRepairContext = { round: number; items: OpenItem[]; basis: string }
-export type RepairRound = { round: number; requested_at: string; items: OpenItem[]; substantive_attempts?: number; checklist_items?: string[]; document_contexts?: Partial<Record<DocID, DocumentRepairContext>> }
+export type RepairRound = { round: number; requested_at: string; items: OpenItem[]; substantive_attempts?: number; checklist_items?: string[]; unverified_items?: string[]; document_contexts?: Partial<Record<DocID, DocumentRepairContext>> }
 
 // A template part the rendered draft falls short on, or carries without its
 // heading, is an omission (draftTemplateItems): the draft is not rewritten for
@@ -66,11 +66,54 @@ export function startRepairRound(directory: string, blocking: OpenItem[], substa
   // Like the allowance, the checklist items submitted so far outlive the round
   // that submitted them, so a later round cannot re-arm their one repair.
   const checklist = new Set([...repairedChecklistItems(previous), ...checklistItemIDs(blocking)])
+  // So do the unverified body items any round has tried (repairedUnverified).
+  const unverified = new Set([...repairedUnverified(previous), ...blocking.filter(isUnverifiedBodyItem).map(item => unverifiedKey(item))])
   const round: RepairRound = { round: (previous?.round ?? 0) + 1, requested_at: new Date().toISOString(), items: blocking, substantive_attempts: (previous?.substantive_attempts ?? 0) + (substantive ? 1 : 0),
     ...(checklist.size ? { checklist_items: [...checklist] } : {}),
+    ...(unverified.size ? { unverified_items: [...unverified] } : {}),
     ...(Object.keys(contexts).length ? { document_contexts: contexts } : {}) }
   writeLeanText(directory, "repairs.json", `${JSON.stringify(round, null, 2)}\n`)
   return round
+}
+
+/** An unsupported citation or unverified quotation in a final body, keyed by
+ * its kind, document and text rather than its id: a repair that rewrites or
+ * moves the paragraph does not make it a new item. */
+export function unverifiedKey(item: OpenItem, document = item.ref.document ?? FIRST_DOCUMENT) {
+  return [item.kind, document, normalize(item.ref.citation ?? item.ref.quote ?? "").toLowerCase()].join("\0")
+}
+
+export function isUnverifiedBodyItem(item: OpenItem) {
+  return item.stage === "apply" && (item.kind === "citation_unsupported" || item.kind === "quote_miss")
+}
+
+/** The unverified body items any repair round of this run was asked to fix. */
+export function repairedUnverified(round: RepairRound | undefined) {
+  return new Set([...round?.unverified_items ?? [], ...(round?.items ?? []).filter(isUnverifiedBodyItem).map(item => unverifiedKey(item))])
+}
+
+/** What decides which unverified items apply marks in this document
+ * (markUnverified), so a round that leaves its change list as it was still
+ * re-runs apply. Undefined until a round tries such an item or the allowance is
+ * used up, so a run without either keeps its key. */
+export function unverifiedMarkingBasis(directory: string, document: DocID) {
+  const round = readRepairRound(directory)
+  const exhausted = (round?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
+  const repaired = [...repairedUnverified(round)].filter(key => key.split("\0")[1] === document).sort()
+  return exhausted || repaired.length ? JSON.stringify({ exhausted, repaired }) : undefined
+}
+
+/** A gate blocked by unverified body items starts one repair round itself,
+ * the round a Continue would start, charged to the substantive allowance. It
+ * does so only while the allowance lasts and only for items no current round
+ * has tried, so an unchanged state never starts another; apply marks
+ * what that round leaves (markUnverified). */
+export function startUnverifiedRepairRound(directory: string, blocking: OpenItem[]) {
+  const round = readRepairRound(directory)
+  const tried = repairedUnverified(round)
+  if ((round?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
+    || !blocking.some(item => isUnverifiedBodyItem(item) && !tried.has(unverifiedKey(item)))) return
+  return startRepairRound(directory, blocking, true)
 }
 
 /** Checklist item IDs any repair round of this run submitted. */

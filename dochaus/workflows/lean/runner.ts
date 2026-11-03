@@ -20,7 +20,7 @@ import { selectedDeliveryPlan } from "./delivery-selection"
 import { changePlanPrompt, changeReviewItem, changeReviewPrompt, readChangeReview, reviewWithheldFinding, reviewWithheldItem, runChangePreparation, unadjudicatedFindings, type ChangeReview } from "./change-pipeline"
 import { readChangeList } from "./checks"
 import { packageReviewPrompt, readPackageReview } from "./package-review"
-import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, repairedChecklistItems, startRepairRound } from "./repairs"
+import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, repairedChecklistItems, startRepairRound, startUnverifiedRepairRound } from "./repairs"
 import { acceptEvidenceReply, evidencePrompt } from "./evidence"
 import { checkAdoptedAgainstResearch } from "./research-check"
 import { researchPermissions, acceptResearchReply, researchPrompt, startResearchGapRound } from "./research"
@@ -34,7 +34,7 @@ import { issueRegister } from "./register"
 import { leanPlanIssue, readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type DocID, type StepID } from "./plan"
 import { retryPrompt, stagePrompt } from "./prompts"
 import { excerpt, inDocument, openItem, withSourceSnapshot } from "./quotes"
-import { checklistRefinementSelections, drainLeanRequests, pendingLeanRequests, withheldChecklistRepair } from "./requests"
+import { blockedGateItems, checklistRefinementSelections, drainLeanRequests, pendingLeanRequests, withheldChecklistRepair } from "./requests"
 import { LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, readRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesWords, writeRequestedFiles } from "./requested-files"
 import {
   LEAN_CHILD_PERMISSIONS,
@@ -431,6 +431,10 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       const repair = await reconcilePackageReview(directory, state, deps)
       if (repair) return repair
     }
+    // A gate blocked by an unsupported citation or unverified quotation in a
+    // final body starts the round a Continue would, once per set of such items
+    // and charged to the allowance; apply then marks what it leaves.
+    if (stage === "gate" && status === "blocked" && startUnverifiedRepairRound(directory, blockedGateItems(directory))) return { state, restart: true }
     if (status === "blocked") {
       await recordLeanDocuments(directory, deps, false)
       if (preferencesChanged()) return { state, restart: true }

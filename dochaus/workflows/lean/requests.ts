@@ -166,7 +166,8 @@ function humanContextSince(directory: string, since: string) {
     typeof value.processed_at === "string" && value.processed_at > since)
 }
 
-function blockedGateItems(directory: string): OpenItem[] {
+/** The items a blocked gate.json blocks on; none for a passing gate. */
+export function blockedGateItems(directory: string): OpenItem[] {
   const gate = readLeanJson(directory, "gate.json")
   if (!record(gate) || gate.status !== "blocked" || !Array.isArray(gate.blocking)) return []
   return gate.blocking.filter(record) as OpenItem[]

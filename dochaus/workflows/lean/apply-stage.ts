@@ -26,7 +26,7 @@ import { discloseSourceRevisions } from "../../lib/docx-revision-views"
 import { openItem } from "./quotes"
 import { normalize } from "../../lib/quote-verify"
 import { paragraphSha256, type Amendment } from "../../lib/drafting-amendment"
-import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound } from "./repairs"
+import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, repairedUnverified, unverifiedKey } from "./repairs"
 import { paragraphShowsOpenItem } from "./gate"
 import { OPEN_ITEM_PATTERN } from "../../lib/marker-patterns"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
@@ -62,7 +62,7 @@ export async function runApply(directory: string, state: LeanState, document: Do
     .then((value): ApplyResult => value, (error: unknown) => ({ error: message(directory, error) }))
   const settled = "error" in result ? settleApply(changes, undefined, false, result.error) : settleApply(changes, result, existsSync(out))
   if (settled.bodyUnchanged) copyFileSync(body, out)
-  const marked = await markUnverified(directory, out)
+  const marked = await markUnverified(directory, out, document)
   const identity = draftingAttribution()
   // A changed paragraph whose text now carries a clause number the body's list
   // supplies is numbered by the list, as at drafting. The later parts of a
@@ -113,26 +113,31 @@ export async function runApply(directory: string, state: LeanState, document: Do
 
 type MarkedParagraph = { pid: string; markers: string[] }
 
-/** Once the run's substantive repair rounds are used up, no later round can
- * correct an unverified quotation or an unsupported citation left in the final
- * body, so each is marked where it stands: its paragraph gets a visible open-item
- * marker, written before the body is numbered, shaded and compared, and the
- * item itself, named in the drafting notes, goes with a review draft. While
- * rounds remain the gate blocks on it and Continue starts a repair round. */
-async function markUnverified(directory: string, out: string): Promise<MarkedParagraph[]> {
-  if ((readRepairRound(directory)?.substantive_attempts ?? 0) < LEAN_MAX_SUBSTANTIVE_REPAIRS || !existsSync(out)) return []
+/** An unverified quotation or an unsupported citation left in the final body
+ * after a repair round aimed at it, or once the run's substantive repair rounds
+ * are used up, is marked where it stands: its paragraph gets a visible
+ * open-item marker, written before the body is numbered, shaded and compared,
+ * and the item itself, named in the drafting notes, goes with a review draft.
+ * Before that the gate starts one repair round for it
+ * (startUnverifiedRepairRound). */
+async function markUnverified(directory: string, out: string, document: DocID): Promise<MarkedParagraph[]> {
+  const round = readRepairRound(directory)
+  const exhausted = (round?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
+  const repaired = repairedUnverified(round)
+  if (!exhausted && !repaired.size || !existsSync(out)) return []
   const rows = await paragraphRows(out)
   const texts = new Map(rows.map(row => [row.pid, row.text]))
   const wanted = new Map<string, string[]>()
   for (const item of finalBodyItems(directory, rows)) {
     // A paragraph that already shows an open item satisfies the gate as it stands.
     if (item.kind !== "citation_unsupported" && item.kind !== "quote_miss" || !item.ref.pid || !texts.has(item.ref.pid) || paragraphShowsOpenItem(texts.get(item.ref.pid)!)) continue
+    if (!exhausted && !repaired.has(unverifiedKey(item, document))) continue
     const marker = unverifiedMarker(item)
     const markers = wanted.get(item.ref.pid) ?? []
     if (!markers.includes(marker)) wanted.set(item.ref.pid, [...markers, marker])
   }
   const amendments: Amendment[] = [...wanted].map(([pid, markers], index) => ({ id: `m${index + 1}`, pid, existing_sha256: paragraphSha256(texts.get(pid)!),
-    updated: `${texts.get(pid)!.trimEnd()} ${markers.join(" ")}`, reason: "Marked as an open item: it could not be verified against a source after the repair rounds were used up.", sources: [] }))
+    updated: `${texts.get(pid)!.trimEnd()} ${markers.join(" ")}`, reason: "Marked as an open item: it could not be verified against a source after a repair round.", sources: [] }))
   if (!amendments.length) return []
   // A paragraph the applier could not mark keeps its item unmarked, and the gate blocks on it.
   const result = await applyAmendments({ docxPath: out, outPath: out, amendments, ownedMarkerDecoration: true }).catch(() => undefined)
