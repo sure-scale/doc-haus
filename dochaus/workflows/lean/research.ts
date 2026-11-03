@@ -390,8 +390,12 @@ export function acceptResearchReply(directory: string, stage: ResearchStage, rep
   // Disclosed like limitations; a review after the gap round replaces them.
   const gaps = stage === "research-review" ? ((value as ResearchReview).gaps ?? []).map(gapText) : []
   const sourceLimits = stage === "research" ? (value as Research).findings.flatMap(row => row.limitations.trim() ? [`Research finding limitation: ${withoutFindingIDs(row.limitations, ids)}`] : []) : []
+  // Why an authority the drafts may rely on was dropped. Its reason may name the earlier finding's id.
+  const earlier = [...new Set([...ids, ...prior.flatMap(row => /^r\d+$/.test(row.id) ? [row.id] : [])])]
+  const withdrawn = stage === "research" ? ((value as Research).withdrawn ?? []).flatMap(entry => prior.filter(row => withdrawsFinding(entry, row))
+    .map(row => `Withdrawn research finding: ${row.title}${row.citation.trim() ? ` (${row.citation})` : ""}, ${row.url}. Reason: ${withoutFindingIDs(entry.reason, earlier)}`)) : []
   return { issues: [], outputs: [`${stage}.json`, ...(stage === "research" ? ["research-context.txt"] : [])],
-    openItems: [...limitations.map(text => withoutFindingIDs(text, ids)), ...rejected, ...gaps.map(text => withoutFindingIDs(text, ids)), ...sourceLimits].map(detail => openItem(stage, "research_gap", detail, {})) }
+    openItems: [...limitations.map(text => withoutFindingIDs(text, ids)), ...rejected, ...gaps.map(text => withoutFindingIDs(text, ids)), ...sourceLimits, ...withdrawn].map(detail => openItem(stage, "research_gap", detail, {})) }
 }
 
 function checkReview(directory: string, value: unknown, saved = false) {

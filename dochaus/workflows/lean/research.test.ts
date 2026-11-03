@@ -718,3 +718,17 @@ test("a withdrawal names a finding without a citation by its quote, by the key t
   expect(acceptResearchReply(directory, "research", reply([{ url: given.url, citation: "", quote: effect.quote, reason }], [given])).issues).toEqual([])
   expect((readLeanJson(directory, "research.json") as { findings: { quote: string }[] }).findings.map(row => row.quote)).toEqual([given.quote])
 })
+
+test("a withdrawn finding's reason becomes a research open item the lawyer reads, naming no finding id", () => {
+  const directory = matter()
+  const finding = approvedNotice(directory)
+  const reason = "r1 no longer applies: the lawyer's answer changed the governing jurisdiction."
+  const accepted = acceptResearchReply(directory, "research", JSON.stringify({ status: "limited", findings: [], limitations: ["No authority applies in the new jurisdiction."], withdrawn: [{ url: finding.url, citation: "Rule 1", reason }] }))
+  expect(accepted.issues).toEqual([])
+  expect((readLeanJson(directory, "research.json") as { findings: unknown[] }).findings).toEqual([])
+  expect(accepted.openItems.map(item => [item.stage, item.kind, item.detail])).toEqual([
+    ["research", "research_gap", "No authority applies in the new jurisdiction."],
+    // Was not disclosed.
+    ["research", "research_gap", `Withdrawn research finding: Notice provision (Rule 1), ${finding.url}. Reason: A research finding no longer applies: the lawyer's answer changed the governing jurisdiction.`],
+  ])
+})
