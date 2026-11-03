@@ -86,7 +86,8 @@ export function drainLeanRequests(directory: string, stopped?: LeanState): Drain
       answered: total.answered + (outcome.status === "answered" ? 1 : 0),
       updated: total.updated + (["included", "clarification_included"].includes(outcome.status) ? 1 : 0),
       repairRound: total.repairRound || outcome.status === "repair_round",
-      ...(isContinue(request) && isLeanModel(request.model) ? { model: request.model } : total.model ? { model: total.model } : {}),
+      // Only an accepted Continue changes the model the run continues on.
+      ...(isContinue(request) && outcome.status !== "rejected" && isLeanModel(request.model) ? { model: request.model } : total.model ? { model: total.model } : {}),
     }
   }, { answered: 0, updated: 0, repairRound: false })
 }

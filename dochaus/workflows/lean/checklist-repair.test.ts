@@ -176,13 +176,17 @@ test("explicit Continue admits one substantive round and refuses another after t
   state.status = "blocked"
   state.stages["checklist-check"] = { ...state.stages["checklist-check"]!, status: "blocked", input_sha: stageInputSha(directory, "checklist-check") }
   expect(readRepairRound(directory)).toBeUndefined()
-  enqueueLeanRequest(directory, { kind: "continue" })
-  expect(drainLeanRequests(directory, state).repairRound).toBe(true)
+  const selected = { providerID: "test", modelID: "selected" }
+  enqueueLeanRequest(directory, { kind: "continue", model: selected })
+  expect(drainLeanRequests(directory, state)).toMatchObject({ repairRound: true, model: selected })
   expect(readRepairRound(directory)?.substantive_attempts).toBe(1)
   const exhausted = { ...readRepairRound(directory)!, substantive_attempts: LEAN_MAX_SUBSTANTIVE_REPAIRS }
   writeLeanText(directory, "repairs.json", JSON.stringify(exhausted))
-  enqueueLeanRequest(directory, { kind: "continue" })
-  expect(drainLeanRequests(directory, state).repairRound).toBe(false)
+  // A refused Continue changes nothing, including the model the run uses.
+  enqueueLeanRequest(directory, { kind: "continue", model: { providerID: "test", modelID: "other" } })
+  const refused = drainLeanRequests(directory, state)
+  expect(refused.repairRound).toBe(false)
+  expect(refused.model).toBeUndefined()
   expect(readRepairRound(directory)).toEqual(exhausted)
 })
 
