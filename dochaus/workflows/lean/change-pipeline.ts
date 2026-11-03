@@ -44,6 +44,13 @@ export type ChangePlan = { shared_decisions: string[]; groups: ChangeGroup[]; di
 export type ChangePreparation = { groups: { group: string; changes: ChangeList }[] }
 export type ChangeReview = { status: "pass" | "changes-required"; findings: { target?: "body" | "research"; document?: DocID; pid?: string; detail: string }[]; limitations: string[] }
 
+/** A change-review finding as an open item, on the document it names or else
+ * the reviewed one. The runner records it (withholdReviewedChanges) and the
+ * gate projects it in this one shape, so their ids agree. */
+export function changeReviewItem(row: ChangeReview["findings"][number], document: DocID) {
+  return openItem("change-review", "omission", row.detail, { document: row.document ?? document, ...(row.pid ? { pid: row.pid } : {}) })
+}
+
 /** Adjudication supplies goals and dependencies, never replacement wording. */
 export function changePlanPrompt(directory: string, document: DocID) {
   const findings = findingsFor(directory, document)

@@ -2,7 +2,7 @@ import type { ChecklistFindingClass } from "./checklist-classify"
 import type { ChecklistFinding, ChecklistItem } from "./checklist-contract"
 import { CHECKLIST_COVERAGE_ISSUES, type ChecklistCoverageIssue } from "./checklist-flow"
 import { checklistOutputState, type ChecklistOpenFinding, type ChecklistUnresolvedFinding, type ChecklistUnresolvedParent } from "./stages"
-import { readChangeReview, deferredFindingItems } from "./change-pipeline"
+import { changeReviewItem, readChangeReview, deferredFindingItems } from "./change-pipeline"
 import { renderNotesCoverage } from "../../lib/notes-coverage-report"
 import { hasOpenItemMarker } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
@@ -121,7 +121,7 @@ export function finalGate(directory: string): GateResult {
   const projected = planned.flatMap(document => {
     const checked = readChangeReview(directory, document)
     return checked?.status === "changes-required" ? checked.findings.flatMap(row => {
-      const item = openItem("change-review", "omission", row.detail, { document, ...(row.pid ? { pid: row.pid } : {}) })
+      const item = changeReviewItem(row, document)
       return current.some(recorded => recorded.id === item.id) || (row.document ?? document) === document && row.pid && withheld(document, row.pid) ? [] : [item]
     }) : []
   })

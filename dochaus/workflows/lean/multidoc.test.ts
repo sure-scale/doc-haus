@@ -60,10 +60,17 @@ describe("lean drafting with several documents", () => {
     expect(model.count(AGENT.changes)).toBe(1 + 1 + LEAN_MAX_SUBSTANTIVE_REPAIRS)
     expect((readLeanJson(directory, "d1/changes.json") as { withheld?: unknown[] }).withheld ?? []).toEqual([])
     expect((readLeanJson(directory, "d2/changes.json") as { withheld?: unknown[] }).withheld ?? []).toEqual([])
+    // Found at the letter's review, it is the supply note's item.
     const items = readOpenItems(directory).filter(row => row.stage === "change-review")
-    expect(items).toEqual([expect.objectContaining({ kind: "omission", detail: "The delivery period does not fit the letter.", ref: expect.objectContaining({ document: "d2" }) })])
+    expect(items).toEqual([expect.objectContaining({ kind: "omission", detail: "The delivery period does not fit the letter.", ref: expect.objectContaining({ document: "d1" }) })])
     expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft" })
     expect((readLeanJson(directory, "gate.json") as GateResult).disclosed.map(row => row.id)).toContain(items[0]!.id)
+    expect(stagePrompt(directory, "finalize")).toMatch(new RegExp(`<document id="d1"[^>]*>[\\s\\S]*${items[0]!.id}[\\s\\S]*<document id="d2"`))
+
+    // A Continue re-runs the letter's review; its finding is recorded once.
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(readOpenItems(directory).filter(row => row.stage === "change-review")).toEqual(items)
+    expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft" })
   }, 120_000)
 
   test("later document writers remain scoped while semantic review can identify an earlier owned body", async () => {

@@ -261,6 +261,24 @@ test("a material finding on a pending amendment, once the repair allowance is us
   expect(gate.disclosed.map(row => row.id)).toContain(item.id)
 }, 120_000)
 
+test("a change review re-run after it withheld an amendment records that amendment once", async () => {
+  const directory = matter()
+  const model = scriptedModel({ ...replies(), [AGENT["change-review"]]: prompt => JSON.stringify({ status: "changes-required",
+    findings: [{ pid: pidOf(prompt, "Payment timing remains to be agreed."), detail: "The payment wording changes the agreed effect." }], limitations: [] }) })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  const recorded = () => readOpenItems(directory).filter(row => row.stage === "change-review" || row.kind === "unapplied_amendment")
+  const before = recorded()
+  expect(before).toEqual([expect.objectContaining({ stage: "changes", kind: "unapplied_amendment" })])
+  const reviews = model.count(AGENT["change-review"])
+
+  // A Continue re-runs the change review, which names the withheld amendment's paragraph again.
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(model.count(AGENT["change-review"])).toBe(reviews + 1)
+  expect(recorded()).toEqual(before)
+  expect(readChangeList(directory, "d1")?.withheld).toHaveLength(1)
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft" })
+}, 120_000)
+
 test("a repaired intermediate withheld proposal is not falsely described as unapplied at the final gate", async () => {
   const directory = matter()
   const model = scriptedModel({ ...replies(), [AGENT["change-prepare"]]: preparing(true) })

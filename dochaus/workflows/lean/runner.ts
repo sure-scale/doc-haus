@@ -17,7 +17,7 @@ import { checklistFindingRecovery } from "./checklist-contract"
 import { buildChecklistRefinementContext } from "./checklist-refinement-context"
 import { runChecklistRefinementFlow, readEffectiveChecklistItems, runChecklistExtractionFlow, runChecklistCheckFlow, type ChecklistCheckResult } from "./checklist-flow"
 import { selectedDeliveryPlan } from "./delivery-selection"
-import { changePlanPrompt, changeReviewPrompt, readChangeReview, runChangePreparation, unadjudicatedFindings, type ChangeReview } from "./change-pipeline"
+import { changePlanPrompt, changeReviewItem, changeReviewPrompt, readChangeReview, runChangePreparation, unadjudicatedFindings, type ChangeReview } from "./change-pipeline"
 import { readChangeList } from "./checks"
 import { amendmentText } from "../../lib/drafting-amendment"
 import { packageReviewPrompt, readPackageReview } from "./package-review"
@@ -471,16 +471,28 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
  * unapplied, the paragraph keeping its drafted text, each an open item of the
  * changes step. Every other finding (on an earlier document, on no paragraph,
  * or on a paragraph with no pending amendment) is an open item of change
- * review. The drafting notes disclose both, so the gate passes a review draft. */
+ * review on the document it is about (changeReviewItem). The drafting notes
+ * disclose both, so the gate passes a review draft. */
 function withholdReviewedChanges(directory: string, document: DocID, review: ChangeReview) {
   const changes = readChangeList(directory, document)
-  const pending = new Set(changes?.amendments.map(row => row.pid))
+  // An amendment an earlier run of this review withheld is named again, not
+  // recorded a second time as an omission when the review re-runs.
+  const pending = new Set([...changes?.amendments ?? [], ...(changes?.withheld ?? []).map(row => row.amendment)].map(row => row.pid))
   const named = (row: ChangeReview["findings"][number]) => (row.document ?? document) === document && row.target !== "research" && row.pid !== undefined && pending.has(row.pid)
-  replaceStageOpenItems(directory, "change-review", document, review.findings.filter(row => !named(row))
-    .map(row => openItem("change-review", "omission", row.detail, { document, ...(row.pid ? { pid: row.pid } : {}) })))
+  // A finding is recorded on the document it is about. Each change-review item
+  // stands while a current review finds it, so this review's items replace its
+  // earlier ones, on whichever document, and other reviews' items are kept.
+  const items = [...new Map(review.findings.filter(row => !named(row)).map(row => changeReviewItem(row, document)).map(item => [item.id, item])).values()]
+  const found = new Set(items.map(item => item.id))
+  const others = new Set((readLeanPlan(directory)?.documents ?? []).filter(row => row.id !== document).flatMap(row => {
+    const checked = readChangeReview(directory, row.id)
+    return checked?.status === "changes-required" ? checked.findings.map(finding => changeReviewItem(finding, row.id).id) : []
+  }))
+  writeOpenItems(directory, [...readOpenItems(directory).filter(item => item.stage !== "change-review" || others.has(item.id) && !found.has(item.id)), ...items])
   const problems = Map.groupBy(review.findings.filter(named), row => row.pid!)
   if (!changes || !problems.size) return
   const withheld = changes.amendments.filter(row => problems.has(row.pid)).map(amendment => ({ amendment, issues: problems.get(amendment.pid)!.map(row => row.detail) }))
+  if (!withheld.length) return
   writeLeanText(directory, `${document}/changes.json`, `${JSON.stringify({ ...changes, amendments: changes.amendments.filter(row => !problems.has(row.pid)), withheld: [...changes.withheld ?? [], ...withheld] }, null, 2)}\n`)
   replaceStageOpenItems(directory, "changes", document, [...readOpenItems(directory).filter(item => item.stage === "changes" && item.ref.document === document),
     ...withheld.map(row => inDocument(openItem("changes", "unapplied_amendment", [
