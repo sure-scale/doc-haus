@@ -164,7 +164,9 @@ describe("lean drafting with several documents", () => {
     expect(readOpenItems(directory).filter(row => row.stage === "package-review")).toEqual(items)
     expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft" })
     expect(disclosed()).toEqual([items[0]!.id])
-    expect(readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")).toContain("The supply note names no place of delivery.")
+    const notes = readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")
+    expect(notes).toContain("The supply note names no place of delivery.")
+    expect(notes).toContain("A later review may not have raised a point again; it is kept because the text it was found in is unchanged.")
 
     // Recorded against other text, the finding goes.
     writeOpenItems(directory, readOpenItems(directory).map(row => row.id === items[0]!.id ? { ...row, text_sha: "0".repeat(64) } : row))
