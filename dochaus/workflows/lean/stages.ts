@@ -44,7 +44,7 @@ import { templateSource } from "./template-contract"
 import { INSTRUCTIONS_FILE, instructionsOutputValid } from "./instructions"
 import { completedDocumentsText, delegatedDecisionsText, packageCompositionBlock } from "./prompts"
 import { matterSourceBasis, matterSourceIDs } from "./quotes"
-import { documentRepairs, readRepairRound, unverifiedMarkingBasis } from "./repairs"
+import { documentRepairs, LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, unverifiedMarkingBasis } from "./repairs"
 import {
   isReviewStage,
   answeredQuestionsText,
@@ -243,6 +243,10 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     ...(["finalize", "package-review", "gate"].includes(step) ? [{ name: "review-dispositions", bytes: JSON.stringify((readLeanPlan(directory)?.documents ?? []).map(row => reviewDispositionText(directory, row.id))) }] : []),
     ...(["finalize", "package-review"].includes(step) ? [{ name: "delivery-review-contract", bytes: DELIVERY_REVIEW_CONTRACT }] : []),
     ...(step === "gate" ? [{ name: "gate-contract", bytes: GATE_CONTRACT }] : []),
+    // A review asking for changes that ran with the repair allowance used up
+    // started no round: its findings stand, so a resume on unchanged inputs
+    // does not run it again. One that last started a round runs once more.
+    ...(exhaustedReview(directory, step) ? [{ name: "repair-allowance", bytes: "used-up" }] : []),
     ...(!["instructions", "discrepancy", "intake", "research", "research-review", "acts"].includes(step) ? ["research.json", "research-review.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
     ...(!["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine"].includes(step) ? ["discrepancy.json", "spine.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
     ...(clarifications.length && ["checklist-check", "package-review", "gate"].includes(step) ? [{ name: "inspection-clarifications", bytes: JSON.stringify(clarifications) }] : []),
@@ -332,6 +336,13 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   const marking = unverifiedMarkingBasis(directory, document)
   return [at("body.docx"), at("changes.json"), at("change-review.json"), { name: "operative-plan", bytes: JSON.stringify(operativePlan(readLeanPlan(directory))) }, sources, { name: "comparison-original", bytes: comparisonBasis(directory, document) },
     ...(marking ? [{ name: "unverified-marking", bytes: marking }] : [])]
+}
+
+function exhaustedReview(directory: string, step: StepID) {
+  const stage = stepStage(step), document = stepDocument(step)
+  if ((readRepairRound(directory)?.substantive_attempts ?? 0) < LEAN_MAX_SUBSTANTIVE_REPAIRS) return false
+  if (stage === "package-review") return readPackageReview(directory)?.status === "changes-required"
+  return stage === "change-review" && Boolean(document) && readChangeReview(directory, document!)?.status === "changes-required"
 }
 
 /** Hash of what the outline is built from: the request and the matter's

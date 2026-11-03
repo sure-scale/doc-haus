@@ -77,6 +77,21 @@ test("repeated unresolved semantic correction is disclosed with a review draft o
   expect(finalGate(directory).status).toBe("blocked")
 })
 
+test("with the repair allowance used up, a package review still asking for changes is not run again on unchanged inputs", async () => {
+  const directory = matter()
+  const model = scriptedModel({ ...happyPath,
+    [AGENT["package-review"]]: () => JSON.stringify({ status: "changes-required", delivery: [], findings: [{ target: "memo", detail: "Memo contradicts the final body." }], limitations: [] }),
+  })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  const reviews = model.count(AGENT["package-review"])
+  const disclosed = finalGate(directory).disclosed.filter(row => row.stage === "package-review").map(row => row.id)
+  expect(disclosed).toHaveLength(1)
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(model.count(AGENT["package-review"])).toBe(reviews)
+  expect(finalGate(directory)).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+  expect(finalGate(directory).disclosed.filter(row => row.stage === "package-review").map(row => row.id)).toEqual(disclosed)
+})
+
 test("a previously charged document-owned memo repair resumes without resetting the allowance", async () => {
   const directory = matter()
   const original = "The goods will be delivered as the supply note states."

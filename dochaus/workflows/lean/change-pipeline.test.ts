@@ -10,7 +10,7 @@ import { readRepairRound } from "./repairs"
 import { restoreLeanStage } from "./restore-stage"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, runLean, stageInputSha } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS, stageOutputValid } from "./stages"
-import { answerQuestion, leanFile, readLeanJson, readLeanState, readLeanText, readOpenItems, readQuestions, writeLeanText, writeOpenItems } from "./state"
+import { answerQuestion, leanFile, readLeanJson, readLeanState, readLeanText, readOpenItems, readQuestions, updateLeanStage, writeLeanText, writeOpenItems } from "./state"
 import { AGENT, DRAFT, SOURCE, SOURCE_TEXT, SUPPORT, changes, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
 
 afterEach(cleanupMatters)
@@ -303,7 +303,7 @@ test("a change review finding on a paragraph the change checks withheld is recor
   expect(gate.disclosed.map(row => row.id)).toContain(item.id)
 }, 120_000)
 
-test("a new change review finding on an already withheld paragraph is recorded on a Continue re-run", async () => {
+test("a new change review finding on an already withheld paragraph is recorded when the review runs again", async () => {
   const directory = matter()
   let detail = "The payment wording changes the agreed effect."
   const model = scriptedModel({ ...replies(), [AGENT["change-review"]]: prompt => JSON.stringify({ status: "changes-required",
@@ -311,7 +311,10 @@ test("a new change review finding on an already withheld paragraph is recorded o
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
   expect(readOpenItems(directory).filter(row => row.stage === "change-review")).toEqual([])
 
+  // With the allowance used up a resume on unchanged inputs does not run the
+  // review again (a re-run is forced here); when it runs, its new finding is recorded.
   detail = "The drafted payment wording leaves the due date open."
+  updateLeanStage(directory, readLeanState(directory)!, "d1.change-review", { status: "pending", input_sha: null })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
   const item = readOpenItems(directory).find(row => row.stage === "change-review")!
   expect(item).toMatchObject({ kind: "omission", detail, ref: { document: "d1" } })
