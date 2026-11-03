@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { checkAnswerClass, classifyAnswers } from "./answer-class"
 import { checkDraftingNotes } from "./checks"
+import { OutputLimitError } from "./native-stage-result"
 import { finalGate, type GateResult } from "./gate"
 import { writeLeanPlan } from "./plan"
 import { delegatedDecisionsText } from "./prompts"
@@ -191,6 +192,16 @@ test("each unread answer in the lawyer's words is read once by its own job; a re
   const unreadable = port(() => '{"class":"maybe"}')
   await classifyAnswers(directory, state, { sessions: unreadable.sessions })
   expect(unreadable.prompts).toHaveLength(4)
+  expect(readQuestions(directory).find(question => question.id === "q-late")).toMatchObject({ answer: DELEGATION, answer_class: "answered" })
+})
+
+test("an answer read whose reply is cut off at its output limit stands as the lawyer's answer, as a reply never passing its check does", async () => {
+  const directory = matter()
+  const state = readLeanJson(directory, "state.json") as Parameters<typeof classifyAnswers>[1]
+  writeQuestions(directory, [answered(ASKED)])
+  const cutOff = port(() => { throw new OutputLimitError("The model's reply reached its output limit before giving any answer.") })
+  await classifyAnswers(directory, state, { sessions: cutOff.sessions })
+  expect(cutOff.prompts).toHaveLength(1)
   expect(readQuestions(directory).find(question => question.id === "q-late")).toMatchObject({ answer: DELEGATION, answer_class: "answered" })
 })
 

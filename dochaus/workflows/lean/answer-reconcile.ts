@@ -2,6 +2,7 @@ import { adviseQuestions } from "./advise"
 import { parseJsonObject } from "./change-checks"
 import { record } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
+import { OutputLimitError } from "./native-stage-result"
 import { keyedQuestionID } from "./package-scope"
 import { retryPrompt, tagged } from "./prompts"
 import { excerpt } from "./quotes"
@@ -58,8 +59,9 @@ export function answersToReconcile(directory: string) {
   return answeredQuestions(directory).filter(question => !undecidedQuestion(question))
 }
 
-/** The conflicts the job finds, none when its retries run out, or undefined
- * on a runtime error, a pause or a settings change, which the runner acts on. */
+/** The conflicts the job finds, none when its retries run out or its reply is
+ * cut off at the output limit, or undefined on any other runtime error, a
+ * pause or a settings change, which the runner acts on. */
 async function findConflicts(directory: string, state: LeanState, deps: LeanDeps, answered: Question[], request: string, updates: string): Promise<AnswerConflict[] | undefined> {
   const agent = LEAN_STAGE_AGENTS.reconcile
   const at = { stage: "intake" as const, step: "reconcile answers" }
@@ -78,7 +80,9 @@ async function findConflicts(directory: string, state: LeanState, deps: LeanDeps
       if (checked.conflicts) return checked.conflicts
     }
     return []
-  } catch {
+  } catch (error) {
+    // A reply cut off before any answer finds no conflict, like one that never passes its check.
+    if (error instanceof OutputLimitError) return []
     // A runtime error, a pause or a settings change: the runner acts on it.
     return undefined
   }
