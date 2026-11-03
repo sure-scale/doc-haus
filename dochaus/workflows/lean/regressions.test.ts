@@ -6,6 +6,8 @@ import { finalGate, type GateResult } from "./gate"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { runApply } from "./apply-stage"
+import { LEAN_MAX_SUBSTANTIVE_REPAIRS } from "./repairs"
+import { inDocument } from "./quotes"
 import { stagePrompt } from "./prompts"
 import { parsePlan, writeLeanPlan } from "./plan"
 import { acceptStageReply } from "./stages"
@@ -128,6 +130,34 @@ describe("unsupported content in the final body", () => {
     expect(state.status).toBe("completed")
     expect(gateOf(marked)).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
     expect(gateOf(marked).disclosed.map(item => item.kind)).toContain("citation_unsupported")
+  }, 120_000)
+
+  test("once the repair rounds are used up, apply marks an unverified citation in its paragraph and the gate discloses it", async () => {
+    const directory = matter()
+    const cited = "The supplier shall deliver the goods as required by section 4 of the Imaginary Trade Act"
+    await runLean(directory, { sessions: scriptedModel({ ...happyPath, ...quiet, [AGENT.draft]: drafter(`# Supply note\n\n## Delivery\n\n${cited}.\n\n## Payment\n\nPayment is due on delivery.\n`) }).port })
+    const item = gateOf(directory).blocking.find(row => row.kind === "citation_unsupported")!
+    expect(item).toBeDefined()
+
+    // With rounds left, apply leaves the paragraph as drafted.
+    expect((await runApply(directory, readLeanState(directory)!, "d1")).status).toBe("done")
+    expect(readLeanJson(directory, "d1/apply.json")).not.toHaveProperty("marked")
+
+    writeLeanText(directory, "repairs.json", JSON.stringify({ round: 5, substantive_attempts: LEAN_MAX_SUBSTANTIVE_REPAIRS, requested_at: "saved", items: [] }))
+    const applied = await runApply(directory, readLeanState(directory)!, "d1")
+    if (applied.status !== "done") throw new Error(applied.reason)
+    const items = applied.openItems.map(row => inDocument(row, "d1"))
+    replaceStageOpenItems(directory, "apply", "d1", items)
+    const paragraph = readParagraphs(directory, "d1", "paragraphs-applied.json").find(row => row.text.startsWith(cited))!
+    expect(paragraph.text).toMatch(/\[open item: citation not verified against a source: [^\]]+\]$/)
+    expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ marked: [{ pid: paragraph.pid }] })
+    // The marker apply wrote is not reported again as a placeholder of its own.
+    expect(items.filter(row => row.kind === "placeholder")).toEqual([])
+    expect(items.find(row => row.kind === "citation_unsupported")?.id).toBe(item.id)
+
+    const gate = finalGate(directory)
+    expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+    expect(gate.disclosed).toContainEqual(expect.objectContaining({ id: item.id, resolution: "marked in the body and named in the drafting notes" }))
   }, 120_000)
 
   test("a body placeholder named in the drafting notes is disclosed and the output is a review draft", async () => {
