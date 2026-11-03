@@ -55,7 +55,7 @@ export function checklistRefinableParents(directory: string) {
 /** The existing runner remains the sole caller/writer. Only completed job
  * outputs are cached; an explicit rerun retries failures with unchanged input. */
 export async function runChecklistExtractionFlow(directory: string, deps: ChecklistJobDeps) {
-  const jobs = extractionInputs(directory, deps)
+  const jobs = extractionInputs(directory)
   const prior = readLeanJson(directory, EXTRACTION)
   const cached = prior === undefined ? undefined : extractionSchema.parse(prior)
   const records: (ChecklistSourceResult | undefined)[] = jobs.map(job => cached?.sources.find(row => row.key === job.key && row.input_sha === job.input_sha))
@@ -86,7 +86,7 @@ const UNFINISHED_REINSPECTION = "Reinspection did not complete; no result overri
 export async function runChecklistCheckFlow(directory: string, deps: ChecklistJobDeps, options: { reinspectAdverse?: boolean; reinspectItems?: ReadonlySet<string>; pause?: AbortSignal } = {}) {
   // Preparing the checks is synchronous: every key it takes shares one source read.
   const { extractionComplete, originals, effective, clarifications, artifacts, missing, jobs } = withSourceSnapshot(() => {
-    const current = extractionInputs(directory, deps)
+    const current = extractionInputs(directory)
     const saved = readLeanJson(directory, EXTRACTION)
     if (saved === undefined) throw new Error("Checklist extraction has no saved output; run source extraction before checking.")
     const extraction = extractionSchema.parse(saved)
@@ -124,7 +124,7 @@ export async function runChecklistCheckFlow(directory: string, deps: ChecklistJo
         ...(row.context.workflow.length ? [row.context.workflow] : []),
         ...(row.record.assignment ? [row.record.assignment] : []),
         ...(row.context.delivery ? [row.context.delivery] : [])]), 40),
-      input_sha: shortHash(JSON.stringify(["checklist-check-2", deps.model, sourceBasis, buildChecklistCheckerPrompt(row.context.input), row.context.artifacts, row.context.workflow]), 40) }))
+      input_sha: shortHash(JSON.stringify(["checklist-check-3", sourceBasis, buildChecklistCheckerPrompt(row.context.input), row.context.artifacts, row.context.workflow]), 40) }))
     return { extractionComplete, originals, effective, clarifications, artifacts, missing, jobs }
   })
   const prior = readLeanJson(directory, CHECKS)
@@ -189,10 +189,10 @@ export async function runChecklistCheckFlow(directory: string, deps: ChecklistJo
   return { parent_coverage, refinement_complete: effective.complete, status: extractionComplete && effective.complete && checks.length === jobs.length && checks.every(row => row.status === "succeeded") ? "succeeded" as const : "incomplete" as const, extraction_complete: extractionComplete, checks, outputs: [CHECKS, ...[...new Set([...artifacts.keys(), ...missing.keys()])].map(file => file.slice(".dochaus/lean/".length))] }
 }
 
-function extractionInputs(directory: string, deps: ChecklistJobDeps) {
+function extractionInputs(directory: string) {
   const jobs = checklistProducerInputs(directory)
   const basis = shortHash(JSON.stringify([matterSourceBasis(directory), jobs.map(job => job.input)]), 40)
-  return jobs.map(job => ({ ...job, input_sha: shortHash(JSON.stringify(["checklist-extraction-1", deps.model, basis, buildChecklistProducerPrompt(job.input)]), 40) }))
+  return jobs.map(job => ({ ...job, input_sha: shortHash(JSON.stringify(["checklist-extraction-2", basis, buildChecklistProducerPrompt(job.input)]), 40) }))
 }
 
 /** Runs `work` over `jobs` using the configured workflow pool size. */
@@ -262,7 +262,7 @@ export async function runChecklistRefinementFlow(directory: string, deps: Checkl
   }
   const jobs = selection.units.map(source_unit => {
     const input = { parent_id: original.id, parent: original.item, source_unit, instructions: selection.instructions, targets: selection.targets, retrieval: selection.retrieval }
-    return { input, input_sha: shortHash(JSON.stringify(["checklist-refinement-1", basis, deps.model, selection.scope, buildChecklistRefinementPrompt(input)]), 40) }
+    return { input, input_sha: shortHash(JSON.stringify(["checklist-refinement-2", basis, selection.scope, buildChecklistRefinementPrompt(input)]), 40) }
   })
   const records = jobs.map(job => cached?.units.find(row => row.unit_id === job.input.source_unit.id && row.input_sha === job.input_sha))
   const save = () => {
