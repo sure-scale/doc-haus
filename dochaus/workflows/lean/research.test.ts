@@ -662,3 +662,22 @@ test("a later research run that finds nothing new is checked with the findings i
   expect(readLeanJson(directory, "research.json")).toEqual({ status: "completed", findings: [finding], limitations: [] })
   expect(checkResearch(directory, readLeanJson(directory, "research.json"))).toEqual([])
 })
+
+test("research that runs again before its review keeps the findings that review has not covered; a current review's rejection is kept", () => {
+  const directory = matter()
+  const notice = approvedNotice(directory)
+  const finding = (url: string, quote: string, citation: string) => { fetched(directory, quote, url); return { ...notice, id: "r1", url, quote, citation, snapshot: "", title: `Provision ${citation}` } }
+  const form = finding("https://example.gov/form", "Notice must be given in writing to the stated address.", "Rule 3")
+  const cure = finding("https://example.gov/cure", "A defaulting party may cure within ten days of notice.", "Rule 2")
+  const citations = () => (readLeanJson(directory, "research.json") as { findings: { citation: string }[] }).findings.map(row => row.citation)
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "completed", limitations: [], findings: [form] })).issues).toEqual([])
+  expect(citations()).toEqual(["Rule 3", "Rule 1"])
+  // Research runs again before the combined set is reviewed: the saved review covers only the first research.
+  expect(researchPrompt(directory, "research", researchBasis(directory))).toContain('"citation": "Rule 3"')
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "completed", limitations: [], findings: [cure] })).issues).toEqual([])
+  // Was ["Rule 2"]: the approved Rule 1 and the unreviewed Rule 3 were lost.
+  expect(citations()).toEqual(["Rule 2", "Rule 3", "Rule 1"])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1", "r3"], rejected: [{ id: "r2", reason: "The provision does not support the claim." }], limitations: [], gaps: [] })).issues).toEqual([])
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "limited", limitations: ["Nothing further was found."], findings: [] })).issues).toEqual([])
+  expect(citations()).toEqual(["Rule 2", "Rule 1"])
+})
