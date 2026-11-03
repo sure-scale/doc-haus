@@ -2,12 +2,12 @@ import type { ChecklistFindingClass } from "./checklist-classify"
 import type { ChecklistFinding, ChecklistItem } from "./checklist-contract"
 import { CHECKLIST_COVERAGE_ISSUES, type ChecklistCoverageIssue } from "./checklist-flow"
 import { checklistOutputState, type ChecklistOpenFinding, type ChecklistUnresolvedFinding, type ChecklistUnresolvedParent } from "./stages"
-import { changeReviewItem, readChangeReview, deferredFindingItems } from "./change-pipeline"
+import { changeReviewItem, readChangeReview, reviewWithheldFinding, deferredFindingItems } from "./change-pipeline"
 import { renderNotesCoverage } from "../../lib/notes-coverage-report"
 import { hasOpenItemMarker } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 import { normalize } from "../../lib/quote-verify"
-import { CITED, finalBodyParagraphs, paragraphTextHolders, readerIDs, standingIDPattern, type ApplyResult } from "./checks"
+import { CITED, finalBodyParagraphs, paragraphTextHolders, readChangeList, readerIDs, standingIDPattern, type ApplyResult } from "./checks"
 import { memoMode, questionNames, runItemIDs, withoutInternalIDs, withoutRefMarkers } from "./delivered-memo"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { isLeftOpenPackageFinding, isWithheldDeliveryItem, leftOpenPackageFinding, readPackageReview, withheldDeliveryItems } from "./package-review"
@@ -38,8 +38,8 @@ import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanSt
 // - a change-review finding left once the repair allowance is used up is
 //   disclosed by the notes naming it, or by the withheld amendment it faults;
 // - a package-review finding left once the repair allowance is used up is
-//   disclosed in the notes delivered with the draft, unless it is about a
-//   paragraph such a change-review finding or withheld amendment discloses;
+//   disclosed in the notes delivered with the draft, unless it is the same
+//   finding as such a change-review finding or withheld amendment discloses;
 // - a template part the final body leaves out with no recorded reason is
 //   disclosed by the notes naming it;
 // - a template part left out on purpose (by the outline, or by an applied
@@ -116,28 +116,30 @@ export function finalGate(directory: string): GateResult {
   }
   const current = currentOpenItems(directory)
   // A finding left once the repair allowance was used up is recorded as an open
-  // item, or as the withheld amendment to its own paragraph, and settled with
-  // the other open items (withholdReviewedChanges). Any other finding blocks.
-  const withheld = (document: DocID, pid: string) => current.some(item => item.stage === "changes" && item.kind === "unapplied_amendment" && item.ref.document === document && item.ref.pid === pid)
+  // item, or as the amendment change review withheld for that very finding,
+  // and settled with the other open items (withholdReviewedChanges). Any
+  // other finding blocks.
+  const lists = new Map(planned.map(document => [document, readChangeList(directory, document)]))
+  const withheldFor = (document: DocID, finding: { pid?: string; detail: string }) => reviewWithheldFinding(lists.get(document), document, finding, current)
   // A package-review finding starts a repair round while the allowance lasts.
-  // Once it is used up the finding goes with the review draft: one on a
-  // paragraph a change-review item or a withheld amendment already discloses
-  // is that item; every other is disclosed in the delivered notes
-  // (leftOpenPackageFinding, deliveredNotes).
+  // Once it is used up the finding goes with the review draft: one that is the
+  // same finding as a recorded change-review item or a withheld amendment's is
+  // that item; every other, even on the same paragraph, is disclosed in the
+  // delivered notes (leftOpenPackageFinding, deliveredNotes).
   const review = readPackageReview(directory)
   const exhausted = (readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
-  const disclosedAt = (document: DocID, pid: string) => withheld(document, pid) ||
-    current.some(item => item.stage === "change-review" && item.ref.document === document && item.ref.pid === pid)
+  const sameFinding = (document: DocID, finding: { pid?: string; detail: string }) => withheldFor(document, finding) ||
+    current.some(item => item.id === changeReviewItem({ ...finding, document }, document).id)
   const semantic = review?.status === "changes-required" ? review.findings.flatMap(row => {
     const item = openItem("package-review", "omission", row.detail, { ...(row.document ? { document: row.document } : {}), ...(row.pid ? { pid: row.pid } : {}) })
     if (!exhausted) return [item]
-    return row.document && row.pid && disclosedAt(row.document, row.pid) ? [] : [leftOpenPackageFinding(item)]
+    return row.document && sameFinding(row.document, row) ? [] : [leftOpenPackageFinding(item)]
   }) : []
   const projected = planned.flatMap(document => {
     const checked = readChangeReview(directory, document)
     return checked?.status === "changes-required" ? checked.findings.flatMap(row => {
       const item = changeReviewItem(row, document)
-      return current.some(recorded => recorded.id === item.id) || (row.document ?? document) === document && row.pid && withheld(document, row.pid) ? [] : [item]
+      return current.some(recorded => recorded.id === item.id) || (row.document ?? document) === document && row.target !== "research" && withheldFor(document, row) ? [] : [item]
     }) : []
   })
   const leanState = readLeanState(directory)
@@ -256,7 +258,7 @@ export function deliveredNotes(directory: string, gate: GateResult): string | un
     ...left("## Final review findings left open", LEFT_OPEN_INTRO)].join("\n")
 }
 
-const LEFT_OPEN_INTRO = "The final review of the package found these points still needing correction after the allowed correction rounds. They are not corrected in this review draft and need the lawyer's review."
+const LEFT_OPEN_INTRO = "The final review of the package found these points, which could not be corrected within the run's correction allowance. They are not corrected in this review draft and need the lawyer's review."
 
 /** The drafting notes as the reader gets them: without their "[ref: …]"
  * markers, and with no id the notes check keeps from the reader (readerIDs,

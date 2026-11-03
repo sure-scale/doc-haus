@@ -78,9 +78,10 @@ describe("lean drafting with several documents", () => {
     const reviewer: Reply = prompt => prompt.includes('<earlier_body document="d1">')
       ? JSON.stringify({ status: "changes-required", findings: [{ document: "d1", pid: pidIn(prompt, "The supplier shall deliver the goods"), detail: "The delivery period does not fit the letter." }], limitations: [] })
       : JSON.stringify({ status: "pass", findings: [], limitations: [] })
-    // One finding repeats the change review's on the same paragraph; the other is new.
+    // One finding repeats the change review's; another differs on the same paragraph; the third is new.
     const packageReviewer: Reply = prompt => JSON.stringify({ status: "changes-required", findings: [
-      { target: "body", document: "d1", pid: pidIn(prompt, "The supplier shall deliver the goods"), detail: "The supply note's delivery period still conflicts with the letter." },
+      { target: "body", document: "d1", pid: pidIn(prompt, "The supplier shall deliver the goods"), detail: "The delivery period does not fit the letter." },
+      { target: "body", document: "d1", pid: pidIn(prompt, "The supplier shall deliver the goods"), detail: "The supply note names no place of delivery." },
       { target: "body", document: "d2", detail: "The letter does not say who signs for the supplier." },
     ], limitations: [], delivery: [] })
     const model = scriptedModel({ ...happyPath, [AGENT.draft]: drafter(DRAFT, LETTER), [AGENT.review]: reviewFirst, [AGENT.changes]: changesFirst,
@@ -93,13 +94,17 @@ describe("lean drafting with several documents", () => {
     const gate = readLeanJson(directory, "gate.json") as GateResult
     expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
     const reviewed = gate.items.filter(row => row.stage === "package-review")
-    expect(reviewed).toEqual([expect.objectContaining({ status: "disclosed", detail: "The letter does not say who signs for the supplier.", ref: { document: "d2" } })])
+    expect(reviewed).toEqual([
+      expect.objectContaining({ status: "disclosed", detail: "The supply note names no place of delivery.", ref: expect.objectContaining({ document: "d1" }) }),
+      expect.objectContaining({ status: "disclosed", detail: "The letter does not say who signs for the supplier.", ref: { document: "d2" } }),
+    ])
     const change = gate.disclosed.find(row => row.stage === "change-review")!
     expect(change.ref).toMatchObject({ document: "d1" })
     const notes = readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")
     expect(notes).toContain("# Final review findings left open")
     expect(notes).toContain("- Covering letter: The letter does not say who signs for the supplier.")
-    expect(notes).not.toContain("still conflicts with the letter")
+    expect(notes).toContain("The supply note names no place of delivery.")
+    expect(notes.split("The delivery period does not fit the letter.").length - 1).toBeLessThanOrEqual(1)
   }, 120_000)
 
   test("a package review finding with repair allowance left still starts a repair round", async () => {
