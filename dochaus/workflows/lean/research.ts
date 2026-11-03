@@ -21,7 +21,7 @@ export const researchPermissions: PermissionRule[] = [
 
 type ResearchStage = "intake" | "research" | "research-review"
 export type ResearchFinding = { id: string; claim: string; title: string; citation: string; url: string; snapshot: string; quote: string; jurisdiction: string; currentness: string; limitations: string }
-type Research = { status: "completed" | "limited" | "not-needed"; findings: ResearchFinding[]; limitations: string[]; withdrawn?: WithdrawnFinding[] }
+type Research = { status: "completed" | "limited" | "not-needed"; findings: ResearchFinding[]; limitations: string[]; withdrawn?: WithdrawnFinding[] | null }
 type WithdrawnFinding = { url: string; citation: string; reason: string }
 type ResearchGap = { issue: string; affects: string }
 // Reviews saved before gaps were reported have none.
@@ -115,6 +115,18 @@ function withholdUnverified(value: Research, unverified: ResearchFinding[]): Res
   const withheld = unverified.map(row => `Authority withheld because its quotation could not be verified against text retrieved from its source: ${row.title}${row.citation.trim() ? ` (${row.citation})` : ""}, ${row.url}, cited for: ${row.claim}`)
   return { ...value, status: value.status === "completed" ? "limited" : value.status,
     findings: value.findings.filter(row => !rows.has(row)), limitations: [...value.limitations, ...withheld] }
+}
+
+/** On the last attempt a withdrawal that names no earlier finding is dropped
+ * and disclosed as a research limitation: every earlier finding is kept, and
+ * the lawyer sees what research meant to withdraw. A malformed withdrawal, or
+ * one of an authority also returned, still fails the attempt. */
+function dropUnmatchedWithdrawals(value: Research, prior: ResearchFinding[]): Research {
+  const unmatched = new Set((value.withdrawn ?? []).filter(entry => !prior.some(row => withdrawsFinding(entry, row))))
+  if (!unmatched.size) return value
+  const dropped = [...unmatched].map(entry => `Research asked to withdraw an authority that matches no earlier finding, so every earlier finding was kept: ${entry.citation.trim() ? `${entry.citation}, ` : ""}${entry.url}. Reason given: ${entry.reason}`)
+  return { ...value, status: value.status === "completed" ? "limited" : value.status,
+    withdrawn: value.withdrawn!.filter(entry => !unmatched.has(entry)), limitations: [...value.limitations, ...dropped] }
 }
 
 export function checkResearch(directory: string, value: unknown): string[] {
@@ -289,14 +301,21 @@ function withdrawsFinding(entry: WithdrawnFinding, row: ResearchFinding) {
   return normalize(entry.url).toLowerCase() === normalize(row.url).toLowerCase() && normalize(entry.citation).toLowerCase() === normalize(row.citation).toLowerCase()
 }
 
+/** The reply's withdrawals: none when it omits them or gives null, undefined
+ * when they are not in the specified shape. */
+function withdrawals(value: Record<string, unknown>): WithdrawnFinding[] | undefined {
+  if (value.withdrawn === undefined || value.withdrawn === null) return []
+  return Array.isArray(value.withdrawn) && value.withdrawn.every(row => record(row) && typeof row.url === "string" && row.url.trim() && typeof row.citation === "string" && typeof row.reason === "string" && row.reason.trim())
+    ? value.withdrawn as WithdrawnFinding[] : undefined
+}
+
 /** A withdrawal names an earlier approved finding by its url and citation. */
 function withdrawnIssues(value: unknown, prior: ResearchFinding[]) {
-  if (!record(value) || value.withdrawn === undefined) return []
-  if (!Array.isArray(value.withdrawn) || !value.withdrawn.every(row => record(row) && typeof row.url === "string" && row.url.trim() && typeof row.citation === "string" && typeof row.reason === "string" && row.reason.trim()))
-    return ['"withdrawn" must be a list of {url, citation, reason} naming previously verified findings that no longer hold.']
+  if (!record(value)) return []
+  if (!withdrawals(value)) return ['"withdrawn" must be a list of {url, citation, reason} naming previously verified findings that no longer hold.']
   const returned = new Set((Array.isArray(value.findings) ? value.findings : []).flatMap(row => record(row) && typeof row.url === "string" && typeof row.citation === "string" && typeof row.quote === "string"
     ? [`${normalize(row.url).toLowerCase()}\0${normalize(row.citation).toLowerCase()}`] : []))
-  return (value.withdrawn as WithdrawnFinding[]).flatMap((entry, index) => [
+  return withdrawals(value)!.flatMap((entry, index) => [
     ...(!prior.some(row => withdrawsFinding(entry, row)) ? [`withdrawn[${index}] names no previously verified finding; give the url and citation exactly as listed under previously verified research.`] : []),
     ...(returned.has(`${normalize(entry.url).toLowerCase()}\0${normalize(entry.citation).toLowerCase()}`) ? [`withdrawn[${index}] is also returned as a finding; return the authority or withdraw it, not both.`] : []),
   ])
@@ -332,7 +351,8 @@ function withPriorFindings(value: Research, kept: ResearchFinding[]): Research {
  * issues, so it costs no extra retry. On the last attempt (`final`) it is not
  * reported: a reply whose only issue is a path is saved as the model wrote it
  * rather than failing the run. Unverifiable findings are withheld on that
- * attempt too (withholdUnverified). */
+ * attempt too (withholdUnverified), and a withdrawal naming no earlier finding
+ * is dropped (dropUnmatchedWithdrawals). */
 export function acceptResearchReply(directory: string, stage: ResearchStage, reply: string, options: { final?: boolean } = {}): StageAcceptance {
   if (stage === "intake") {
     const questions = intakeQuestions(directory, reply, "intake")
@@ -346,8 +366,9 @@ export function acceptResearchReply(directory: string, stage: ResearchStage, rep
   // Read before this reply replaces research.json.
   const prior = stage === "research" ? priorResearch(directory) : []
   let resolved = stage === "research" ? resolveResearch(directory, value, prior) : undefined
-  if (resolved?.unverified.length && options.final) {
-    value = withholdUnverified(value as Research, resolved.unverified)
+  if (resolved && options.final) {
+    if (resolved.unverified.length) value = withholdUnverified(value as Research, resolved.unverified)
+    if (record(value) && strings(value.limitations) && withdrawals(value)) value = dropUnmatchedWithdrawals(value as Research, prior)
     resolved = resolveResearch(directory, value, prior)
   }
   const issues = resolved ? [...resolved.issues, ...withdrawnIssues(value, prior)] : stage === "intake"

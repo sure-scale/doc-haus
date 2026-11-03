@@ -681,3 +681,21 @@ test("research that runs again before its review keeps the findings that review 
   expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "limited", limitations: ["Nothing further was found."], findings: [] })).issues).toEqual([])
   expect(citations()).toEqual(["Rule 2", "Rule 1"])
 })
+
+test("a null withdrawal list is none; on the last attempt a withdrawal naming no earlier finding is dropped and disclosed, keeping the earlier finding", () => {
+  const directory = matter()
+  const finding = approvedNotice(directory)
+  const reply = (withdrawn: unknown) => JSON.stringify({ status: "completed", limitations: [], findings: [], withdrawn })
+  // Was '"withdrawn" must be a list of {url, citation, reason}…'.
+  expect(acceptResearchReply(directory, "research", reply(null)).issues).toEqual([])
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "completed", findings: [finding], limitations: [], withdrawn: null })
+  const unknown = [{ url: "https://example.gov/unknown", citation: "Rule 9", reason: "Superseded by a later rule." }]
+  expect(acceptResearchReply(directory, "research", reply(unknown)).issues).toEqual([expect.stringContaining("withdrawn[0] names no previously verified finding")])
+  // A malformed withdrawal still fails the last attempt.
+  expect(acceptResearchReply(directory, "research", reply([{ url: finding.url }]), { final: true }).issues).toEqual([expect.stringContaining('"withdrawn" must be a list')])
+  const last = acceptResearchReply(directory, "research", reply(unknown), { final: true })
+  expect(last.issues).toEqual([])
+  const disclosed = "Research asked to withdraw an authority that matches no earlier finding, so every earlier finding was kept: Rule 9, https://example.gov/unknown. Reason given: Superseded by a later rule."
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "limited", findings: [finding], limitations: [disclosed], withdrawn: [] })
+  expect(last.openItems.map(item => [item.kind, item.detail])).toEqual([["research_gap", disclosed]])
+})
