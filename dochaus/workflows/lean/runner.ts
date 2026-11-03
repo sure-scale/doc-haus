@@ -295,7 +295,10 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       const key = stageInputSha(directory, step)
       // Done from these very inputs; the saved output decides whether it is skipped.
       const current = recorded?.status === "done" && recorded.input_sha === key
-      return { key, unchanged: current && stageOutputValid(directory, step) && (step !== "package-review" || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || readChangeReview(directory, document)?.status === "pass") }
+      // A review that still asks for changes runs again for a repair round; once
+      // the allowance is used up its findings stand as recorded and disclosed.
+      const exhausted = (readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
+      return { key, unchanged: current && stageOutputValid(directory, step) && (step !== "package-review" || exhausted || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || exhausted || readChangeReview(directory, document)?.status === "pass") }
     })
     if (!decision) return { state, restart: true }
     settled.push(step)

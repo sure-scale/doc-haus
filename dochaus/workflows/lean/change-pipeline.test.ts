@@ -271,9 +271,9 @@ test("a change review re-run after it withheld an amendment records that amendme
   expect(before).toEqual([expect.objectContaining({ stage: "changes", kind: "unapplied_amendment" })])
   const reviews = model.count(AGENT["change-review"])
 
-  // A Continue re-runs the change review, which names the withheld amendment's paragraph again.
+  // With the allowance used up, a resume on unchanged inputs does not run the change review again.
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
-  expect(model.count(AGENT["change-review"])).toBe(reviews + 1)
+  expect(model.count(AGENT["change-review"])).toBe(reviews)
   expect(recorded()).toEqual(before)
   expect(readChangeList(directory, "d1")?.withheld).toHaveLength(1)
   expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft" })
