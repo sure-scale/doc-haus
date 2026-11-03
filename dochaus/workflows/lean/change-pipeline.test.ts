@@ -360,7 +360,9 @@ test("pre-apply and package semantic failures consume one shared repair allowanc
     [AGENT["change-review"]]: (_, index) => JSON.stringify(index ? { status: "pass", findings: [], limitations: [] } : { status: "changes-required", findings: [{ detail: "One material body correction." }], limitations: [] }),
     [AGENT["package-review"]]: () => JSON.stringify({ status: "changes-required", delivery: [], findings: [{ target: "memo", detail: "Explanation still disagrees with final wording." }], limitations: [] }),
   })
-  expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
+  // The allowance used up, the package review's finding goes with a review draft.
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft" })
   expect(model.count(AGENT["change-review"])).toBe(2)
   expect(model.count(AGENT["package-review"])).toBe(LEAN_MAX_SUBSTANTIVE_REPAIRS)
   expect(readRepairRound(directory)?.substantive_attempts).toBe(LEAN_MAX_SUBSTANTIVE_REPAIRS)

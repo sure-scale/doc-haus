@@ -512,6 +512,9 @@ async function reconcilePackageReview(directory: string, state: LeanState, deps:
   if (review.status === "pass" && !plan) return
   const prior = readRepairRound(directory)
   if ((prior?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS) {
+    // With the allowance used up the gate discloses the findings with a
+    // review draft (finalGate). A delivery selection left unapplied blocks.
+    if (!plan) return
     await recordLeanDocuments(directory, deps, false)
     return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: `package-review: material corrections remain after ${LEAN_MAX_SUBSTANTIVE_REPAIRS} substantive repair rounds: ${review.findings.map(row => row.detail).join(" ")}${plan ? " Requested delivery selection remains unapplied." : ""}` }) }
   }

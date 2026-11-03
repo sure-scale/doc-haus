@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 import { finalGate } from "./gate"
 import { finalBodyParagraphs } from "./checks"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, runLean } from "./runner"
-import { readLeanState, writeLeanState, writeLeanText } from "./state"
+import { readLeanState, readLeanText, writeLeanState, writeLeanText } from "./state"
 import { readRepairRound } from "./repairs"
 import { enqueueLeanRequest } from "./requests"
 import { AGENT, APPLIED, DRAFT, LETTER, NO_FINDINGS, SUPPORT, changesFirst, cleanupMatters, drafter, happyPath, matter, pidOf, reviewFirst, sameSession, scriptedModel } from "./test-support"
@@ -60,15 +60,20 @@ test("a memo finding with a document owner repairs that deliverable, not the run
   expect(readRepairRound(directory)?.items[0]?.ref).toMatchObject({ document: "d2", repair_target: "body" })
 }, 120_000)
 
-test("repeated unresolved semantic correction stays blocked and cannot be disclosed away", async () => {
+test("repeated unresolved semantic correction is disclosed with a review draft once the repair allowance is used up, never passed as ready", async () => {
   const directory = matter()
   const model = scriptedModel({ ...happyPath,
     [AGENT["package-review"]]: () => JSON.stringify({ status: "changes-required", delivery: [], findings: [{ target: "memo", detail: "Memo contradicts the final body." }], limitations: [] }),
   })
   const state = await runLean(directory, { sessions: model.port })
-  expect(state.status).toBe("blocked")
-  expect(state.stop_reason).toContain(`${LEAN_MAX_SUBSTANTIVE_REPAIRS} substantive repair rounds`)
+  expect(state.status).toBe("completed")
   expect(model.count(AGENT["package-review"])).toBe(LEAN_MAX_SUBSTANTIVE_REPAIRS + 1)
+  const gate = finalGate(directory)
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+  expect(gate.disclosed.filter(row => row.stage === "package-review")).toEqual([expect.objectContaining({ detail: "Memo contradicts the final body." })])
+  expect(readLeanText(directory, "delivered-notes.md")).toContain("- Memo contradicts the final body.")
+  // With repair allowance left the same finding is open: it starts a repair round.
+  writeLeanText(directory, "repairs.json", `${JSON.stringify({ ...readRepairRound(directory), substantive_attempts: LEAN_MAX_SUBSTANTIVE_REPAIRS - 1 }, null, 2)}\n`)
   expect(finalGate(directory).status).toBe("blocked")
 })
 

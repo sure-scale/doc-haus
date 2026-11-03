@@ -6,7 +6,7 @@ import { checklistItemSchema, type ChecklistFinding, type ChecklistItem } from "
 import { classifyChecklistFinding, type ChecklistFindingClass } from "./checklist-classify"
 import { acceptChangePlan, acceptChangeReview, preparationOutputValid, readChangePlan, readChangeReview, deferredFindingItems, reviewDispositionText, uniqueReplacementIssues } from "./change-pipeline"
 import { comparisonBasis } from "./comparison"
-import { checkPackageReview, isWithheldDeliveryItem, readPackageReview, withholdUngroundedDelivery } from "./package-review"
+import { checkPackageReview, isLeftOpenPackageFinding, isWithheldDeliveryItem, readPackageReview, withholdUngroundedDelivery } from "./package-review"
 import { coverageItems, planCoverageCurrent } from "./package-coverage"
 import { readActRecord } from "./act-record"
 import { requestedFilesItems } from "./requested-files"
@@ -571,11 +571,11 @@ export function stageOutputValid(directory: string, step: StepID) {
   // re-run them; any other failed check does.
   if (stage === "finalize") return !checkDraftingNotes(directory, text("drafting-notes.md"), disclosableItems(directory), { final: true }).issues.length
   // A passed gate delivers the drafting notes, and any unresolved checklist
-  // findings, disclosed requirements left open and file names in the instructions not
-  // applied, in its own notes (deliveredNotes).
+  // findings, disclosed requirements left open, file names in the instructions not
+  // applied and package-review findings left open, in its own notes (deliveredNotes).
   if (stage === "gate") return !(existsSync(leanFile(directory, "drafting-notes.md")) ||
     (readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined)?.items?.some(item => item.kind === "checklist_unresolved" ||
-      item.kind === "checklist_open" && item.status === "disclosed" || isWithheldDeliveryItem(item))) ||
+      item.kind === "checklist_open" && item.status === "disclosed" || isWithheldDeliveryItem(item) || isLeftOpenPackageFinding(item))) ||
     [DELIVERED_NOTES.docx, DELIVERED_NOTES.markdown].every(name => existsSync(leanFile(directory, name)))
   return true
 }

@@ -268,10 +268,23 @@ export function withheldDeliveryItems(directory: string): OpenItem[] {
 
 const WITHHELD_RESOLUTION = "file name in the instructions not applied; disclosed with the review draft"
 
-/** Whether a gate item is a withheld delivery row's (withheldDeliveryItems):
- * the only package-review item disclosed rather than open. */
+/** Whether a gate item is a withheld delivery row's (withheldDeliveryItems). */
 export function isWithheldDeliveryItem(item: OpenItem) {
-  return item.stage === "package-review" && item.status === "disclosed"
+  return item.stage === "package-review" && item.resolution === WITHHELD_RESOLUTION
+}
+
+const LEFT_OPEN_RESOLUTION = "package review finding left open once the repair allowance was used up; disclosed with the review draft"
+
+/** A package-review finding the gate discloses with the review draft once the
+ * repair allowance is used up (finalGate). The drafting notes come before the
+ * package review, so the notes delivered with the draft list it (deliveredNotes). */
+export function leftOpenPackageFinding(item: OpenItem): OpenItem {
+  return { ...item, status: "disclosed", resolution: LEFT_OPEN_RESOLUTION }
+}
+
+/** Whether a gate item is such a finding (leftOpenPackageFinding). */
+export function isLeftOpenPackageFinding(item: OpenItem) {
+  return item.stage === "package-review" && item.resolution === LEFT_OPEN_RESOLUTION
 }
 
 export function readPackageReview(directory: string): PackageReview | undefined {
