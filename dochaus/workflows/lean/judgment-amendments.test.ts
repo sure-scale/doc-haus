@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { writeFileSync } from "node:fs"
+import { join } from "node:path"
 import { paragraphSha256 } from "../../lib/drafting-amendment"
 import { checkChanges } from "./change-checks"
 import { finalBodyItems, readChangeList, type ParagraphRow } from "./checks"
@@ -364,4 +366,36 @@ describe("prompt version", () => {
     expect((await runLean(directory, { sessions: rerun.port })).status).toBe("completed")
     expect(rerun.counts().map(count => count > 0)).toEqual([true, true, true, true])
   }, 120_000)
+})
+
+describe("the changes checker holds a citation a change adds to the draft's standard", () => {
+  const AUTHORITY = "section 4 of the Imaginary Trade Act"
+  const CITING = `The supplier shall deliver the goods as required by ${AUTHORITY} [open item: confirm the delivery duty chosen].`
+  const UNSUPPORTED = (index: number, pid = P1) =>
+    `amendments[${index}] ([${pid}]).updated cites "${AUTHORITY}", which no matter source, approved research finding or verified authority supports. ` +
+    "Cite an approved authority or a matter source instead, or remove the citation; if the point still needs authority, say so with a visible [open item: ...] marker."
+  const citing = (directory = matter(), paragraphs = PARAGRAPHS, options = {}) =>
+    checkChanges(directory, reply([{ pid: P1, updated: CITING, reason: "Drafting judgment.", sources: [] }]), paragraphs, options)
+
+  test("an added citation nothing supports is retry feedback naming it", () => {
+    const check = citing()
+    expect(check.issues).toEqual([UNSUPPORTED(0)])
+    expect(check.changes).toBeUndefined()
+  })
+
+  test("on the last attempt the change is withheld and recorded as an open item with the same problem", () => {
+    const check = citing(matter(), PARAGRAPHS, { withholdUnverified: true })
+    expect(check.issues).toEqual([])
+    expect(check.changes?.amendments).toEqual([])
+    expect(check.openItems).toEqual([expect.objectContaining({ kind: "unapplied_amendment", ref: { amendment_id: "a1", pid: P1 }, detail: expect.stringContaining(UNSUPPORTED(0)) })])
+  })
+
+  test("a citation a matter source supports, one the paragraph already carries, or one inside an open-item marker is admitted", () => {
+    const supported = matter()
+    writeFileSync(join(supported, "source-map.md"), `# Source map\n\n- supply-terms.docx: delivery as required by ${AUTHORITY}.\n`)
+    expect(citing(supported).issues).toEqual([])
+    expect(citing(matter(), paragraph(`The supplier must deliver goods as required by ${AUTHORITY}.`)).issues).toEqual([])
+    const asked = `The supplier shall deliver the goods promptly [open item: confirm whether ${AUTHORITY} applies].`
+    expect(checkChanges(matter(), reply([{ pid: P1, updated: asked, reason: "Drafting judgment.", sources: [] }]), PARAGRAPHS).issues).toEqual([])
+  })
 })

@@ -1,4 +1,6 @@
 import { amendmentSchema, amendmentParagraphs, amendmentText, normalizeParagraphText, type Amendment } from "../../lib/drafting-amendment"
+import { citationRowsForLeanText } from "../../lib/citation-extraction"
+import { OPEN_ITEM_PATTERN } from "../../lib/marker-patterns"
 import { normalize } from "../../lib/quote-verify"
 import { markerIssues } from "./change-markers"
 import { draftStatusAmendmentIssues } from "./draft-status"
@@ -10,14 +12,15 @@ import { FIRST_DOCUMENT, type DocID } from "./plan"
 import { questionKindIssues, readQuestions, shortHash, type Question, type QuestionKind } from "./state"
 
 // Admission of the changes step's reply: the change list is parsed, checked
-// against the draft's paragraphs, its quotations and its markers, and either
+// against the draft's paragraphs, its quotations, citations and markers, and either
 // fed back to the model or, on the last attempt, admitted with what still
 // fails withheld as open items.
 
 
 /** Parses and validates the model's change list. Values code can derive (the
  * amendment id and the paragraph's current hash) are filled in here; the model
- * never restates them. A quotation that the named source does not contain, or
+ * never restates them. A quotation that the named source does not contain, a
+ * citation it adds that nothing supports (`amendmentCitationIssues`), or
  * markers that do not show the lawyer the change (`markerIssues`), or wording
  * that states an agreement's own draft status (draft-status.ts), are retry
  * feedback; on the last allowed attempt (`withholdUnverified`) that amendment is
@@ -67,10 +70,11 @@ export function checkChanges(directory: string, content: string, paragraphs: Par
   if (!contract.success)
     return { issues: contract.error.issues.slice(0, 10).map(issue => `amendments.${issue.path.join(".")}: ${issue.message}`), openItems: [] }
   const statusIssues = draftStatusAmendmentIssues(directory, options.document ?? FIRST_DOCUMENT)
+  const citationIssues = amendmentCitationIssues(directory, filled, rows)
   const unverified = filled.map((amendment, index) => ({
     amendment,
     issues: [...markerIssues(amendment, index, rows.get(amendment.pid)!.text, questionPids), ...amendmentQuoteIssues(directory, amendment, index),
-      ...statusIssues(amendment, index, rows.get(amendment.pid)!.text)],
+      ...citationIssues(amendment, index), ...statusIssues(amendment, index, rows.get(amendment.pid)!.text)],
   })).filter(row => row.issues.length)
   const proposed = askedQuestions(questions.filter(record), asked, options.document)
   const unmarked = proposed.flatMap((question, index) => question ? questionMarkerIssues(question, index, filled, rows) : [])
@@ -177,6 +181,23 @@ function amendmentQuoteIssues(directory: string, amendment: Amendment, index: nu
       .map(source => quoteMissIssue(directory, `${at}.sources`, source, "json")),
     ...proseQuoteIssues(directory, `${at}.updated`, amendmentText(amendment), { format: "plain" }),
   ]
+}
+
+/** A citation a change adds must have the support a drafted citation needs
+ * (the body check at apply): a matter source, an approved research finding or
+ * a verified authority. Citations the paragraph already carries are the
+ * draft's own, and a citation inside an open-item marker names authority still
+ * to be found. One support lookup covers every amendment in the list. */
+function amendmentCitationIssues(directory: string, amendments: Amendment[], rows: Map<string, ParagraphRow>) {
+  const added = amendments.map(amendment => amendmentText(amendment).replace(OPEN_ITEM_PATTERN, " "))
+  const unsupported = [...new Map(citationRowsForLeanText(directory, "changes.md", added.join("\n\n"))
+    .filter(row => row.status === "unsupported").map(row => [row.normalized_key, row.citation_text])).values()]
+  return (amendment: Amendment, index: number) => {
+    const text = normalize(added[index]!)
+    const current = normalize(rows.get(amendment.pid)!.text)
+    return unsupported.filter(citation => text.includes(normalize(citation)) && !current.includes(normalize(citation)))
+      .map(citation => `amendments[${index}] ([${amendment.pid}]).updated cites "${citation}", which no matter source, approved research finding or verified authority supports. Cite an approved authority or a matter source instead, or remove the citation; if the point still needs authority, say so with a visible [open item: ...] marker.`)
+  }
 }
 
 export function questionIssues(item: unknown, index: number, rows: Map<string, ParagraphRow>, asked: Map<string, Question>) {
