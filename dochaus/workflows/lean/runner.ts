@@ -17,7 +17,9 @@ import { checklistFindingRecovery } from "./checklist-contract"
 import { buildChecklistRefinementContext } from "./checklist-refinement-context"
 import { runChecklistRefinementFlow, readEffectiveChecklistItems, runChecklistExtractionFlow, runChecklistCheckFlow, type ChecklistCheckResult } from "./checklist-flow"
 import { selectedDeliveryPlan } from "./delivery-selection"
-import { changePlanPrompt, changeReviewPrompt, readChangeReview, runChangePreparation, unadjudicatedFindings } from "./change-pipeline"
+import { changePlanPrompt, changeReviewPrompt, readChangeReview, runChangePreparation, unadjudicatedFindings, type ChangeReview } from "./change-pipeline"
+import { readChangeList } from "./checks"
+import { amendmentText } from "../../lib/drafting-amendment"
 import { packageReviewPrompt, readPackageReview } from "./package-review"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, repairedChecklistItems, startRepairRound } from "./repairs"
 import { acceptEvidenceReply, evidencePrompt } from "./evidence"
@@ -30,7 +32,7 @@ import { runActRecordStage } from "./act-record"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { checklistFindingLabel, deliveredNotes, finalGate, notesCoverageReport } from "./gate"
 import { issueRegister } from "./register"
-import { leanPlanIssue, readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
+import { leanPlanIssue, readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type DocID, type StepID } from "./plan"
 import { retryPrompt, stagePrompt } from "./prompts"
 import { excerpt, inDocument, openItem, withSourceSnapshot } from "./quotes"
 import { checklistRefinementSelections, drainLeanRequests, pendingLeanRequests, withheldChecklistRepair } from "./requests"
@@ -414,11 +416,14 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     if (step === "research-review" && result.status === "done" && startResearchGapRound(directory, researchBasis(directory))) return { state, restart: true }
     if (stage === "change-review" && document && readChangeReview(directory, document)?.status === "changes-required") {
       const review = readChangeReview(directory, document)!
-      if ((readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS)
-        return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: `${step}: material corrections remain after ${LEAN_MAX_SUBSTANTIVE_REPAIRS} substantive repair rounds: ${review.findings.map(row => row.detail).join(" ")}` }) }
-      startRepairRound(directory, review.findings.map(row => openItem("change-review", "omission", row.detail,
-        { repair_target: row.target ?? "body", document: row.document ?? document, ...(row.pid ? { pid: row.pid } : {}) })), true)
-      return { state, restart: true }
+      // With the repair allowance used up the run goes on to a review draft,
+      // its findings withheld or disclosed (withholdReviewedChanges).
+      if ((readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS) withholdReviewedChanges(directory, document, review)
+      else {
+        startRepairRound(directory, review.findings.map(row => openItem("change-review", "omission", row.detail,
+          { repair_target: row.target ?? "body", document: row.document ?? document, ...(row.pid ? { pid: row.pid } : {}) })), true)
+        return { state, restart: true }
+      }
     }
     if (stage === "package-review") {
       const repair = await reconcilePackageReview(directory, state, deps)
@@ -458,6 +463,31 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       } })
     }
   }
+}
+
+/** Change review's material findings once the run's repair allowance is used
+ * up. As on the changes step's last attempt (checkChanges), the pending
+ * amendments to a paragraph of this document a finding names are withheld:
+ * unapplied, the paragraph keeping its drafted text, each an open item of the
+ * changes step. Every other finding (on an earlier document, on no paragraph,
+ * or on a paragraph with no pending amendment) is an open item of change
+ * review. The drafting notes disclose both, so the gate passes a review draft. */
+function withholdReviewedChanges(directory: string, document: DocID, review: ChangeReview) {
+  const changes = readChangeList(directory, document)
+  const pending = new Set(changes?.amendments.map(row => row.pid))
+  const named = (row: ChangeReview["findings"][number]) => (row.document ?? document) === document && row.target !== "research" && row.pid !== undefined && pending.has(row.pid)
+  replaceStageOpenItems(directory, "change-review", document, review.findings.filter(row => !named(row))
+    .map(row => openItem("change-review", "omission", row.detail, { document, ...(row.pid ? { pid: row.pid } : {}) })))
+  const problems = Map.groupBy(review.findings.filter(named), row => row.pid!)
+  if (!changes || !problems.size) return
+  const withheld = changes.amendments.filter(row => problems.has(row.pid)).map(amendment => ({ amendment, issues: problems.get(amendment.pid)!.map(row => row.detail) }))
+  writeLeanText(directory, `${document}/changes.json`, `${JSON.stringify({ ...changes, amendments: changes.amendments.filter(row => !problems.has(row.pid)), withheld: [...changes.withheld ?? [], ...withheld] }, null, 2)}\n`)
+  replaceStageOpenItems(directory, "changes", document, [...readOpenItems(directory).filter(item => item.stage === "changes" && item.ref.document === document),
+    ...withheld.map(row => inDocument(openItem("changes", "unapplied_amendment", [
+      `Amendment ${row.amendment.id} to paragraph [${row.amendment.pid}] was withheld and not applied: change review still found it materially wrong after the allowed repair rounds.`,
+      `Proposed text: "${excerpt(amendmentText(row.amendment))}" Reason given: ${excerpt(row.amendment.reason)}`,
+      `Problems: ${row.issues.join(" ")} The paragraph keeps its drafted text.`,
+    ].join(" "), { amendment_id: row.amendment.id, pid: row.amendment.pid }), document))])
 }
 
 /** The existing semantic review selects the requested artifact. The sole
@@ -708,7 +738,8 @@ function roundPlanned(directory: string, state: LeanState, recorded: LeanStageSt
 
 /** One child session; the first prompt carries the step's inputs, each retry the
  * checker's issues. On the last attempt the changes step withholds amendments
- * whose quotations still fail (they become open items), research withholds
+ * whose quotations still fail (they become open items; so do those change
+ * review still faults once the repair allowance is used up, withholdReviewedChanges), research withholds
  * findings it cannot verify (disclosed as research limitations), and package review
  * withholds delivery rows its check still refuses, or reads a missing delivery
  * list as none (the planned names stand);

@@ -35,6 +35,8 @@ import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanSt
 // - an amendment that was not applied leaves the body unchanged, so the notes
 //   naming it is enough; so is a question whose paragraph only that withheld
 //   amendment would have marked;
+// - a change-review finding left once the repair allowance is used up is
+//   disclosed by the notes naming it, or by the withheld amendment it faults;
 // - a template part the final body leaves out with no recorded reason is
 //   disclosed by the notes naming it;
 // - a template part left out on purpose (by the outline, or by an applied
@@ -111,10 +113,17 @@ export function finalGate(directory: string): GateResult {
   }
   const review = readPackageReview(directory)
   const semantic = review?.status === "changes-required" ? review.findings.map(row => openItem("package-review", "omission", row.detail, { ...(row.document ? { document: row.document } : {}), ...(row.pid ? { pid: row.pid } : {}) })) : []
+  const current = currentOpenItems(directory)
+  // A finding left once the repair allowance was used up is recorded as an open
+  // item, or as the withheld amendment to its own paragraph, and settled with
+  // the other open items (withholdReviewedChanges). Any other finding blocks.
+  const withheld = (document: DocID, pid: string) => current.some(item => item.stage === "changes" && item.kind === "unapplied_amendment" && item.ref.document === document && item.ref.pid === pid)
   const projected = planned.flatMap(document => {
     const checked = readChangeReview(directory, document)
-    return checked?.status === "changes-required" ? checked.findings.map(row => openItem("change-review", "omission", row.detail,
-      { document, ...(row.pid ? { pid: row.pid } : {}) })) : []
+    return checked?.status === "changes-required" ? checked.findings.flatMap(row => {
+      const item = openItem("change-review", "omission", row.detail, { document, ...(row.pid ? { pid: row.pid } : {}) })
+      return current.some(recorded => recorded.id === item.id) || (row.document ?? document) === document && row.pid && withheld(document, row.pid) ? [] : [item]
+    }) : []
   })
   const leanState = readLeanState(directory)
   const checklistState = leanState?.stages["checklist-check"]
@@ -126,7 +135,6 @@ export function finalGate(directory: string): GateResult {
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
   // A file name in the instructions the package review withheld is disclosed with the
   // draft, never blocking it: the notes were written before that review.
-  const current = currentOpenItems(directory)
   const items = [...unresolved, ...[...current, ...undecidedQuestionItems(context.questions, current), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory)].map(item => settle(item, context)),
     ...semantic, ...projected, ...withheldDeliveryItems(directory)]
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete or stale, or a check or its reinspection failed; see checklist/report.md.", {}))

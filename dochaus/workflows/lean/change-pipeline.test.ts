@@ -4,13 +4,13 @@ import { acceptChangePlan, acceptChangeReview, checkChangePlan, checkChangeRevie
 import { checkChanges } from "./change-checks"
 import { readChangeList, readParagraphs } from "./checks"
 import { readLeanEvents } from "./events"
-import { finalGate } from "./gate"
+import { finalGate, type GateResult } from "./gate"
 import { enqueueLeanRequest } from "./requests"
 import { readRepairRound } from "./repairs"
 import { restoreLeanStage } from "./restore-stage"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, runLean, stageInputSha } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS, stageOutputValid } from "./stages"
-import { answerQuestion, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText } from "./state"
+import { answerQuestion, leanFile, readLeanJson, readLeanState, readLeanText, readOpenItems, readQuestions, writeLeanText, writeOpenItems } from "./state"
 import { AGENT, DRAFT, SOURCE, SOURCE_TEXT, SUPPORT, changes, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
 
 afterEach(cleanupMatters)
@@ -197,19 +197,55 @@ test("projected repair retains prior amendment A while correcting missing effect
   expect(repair).toContain(DELIVERY)
   expect(repair).toContain("Restore accepted payment timing")
   expect(readChangeList(directory, "d1")?.amendments).toHaveLength(2)
+  // With allowance left the finding starts a repair round: nothing is withheld or left open.
+  expect(readChangeList(directory, "d1")?.withheld ?? []).toEqual([])
+  expect(readOpenItems(directory).filter(row => row.stage === "change-review" || row.kind === "unapplied_amendment")).toEqual([])
 }, 120_000)
 
-test("material projected defects consume the shared bound and cannot pass through limitations", async () => {
+test("material projected defects consume the shared bound, then are disclosed with a review draft rather than passing through limitations", async () => {
   const directory = matter()
   const model = scriptedModel({ ...replies(), [AGENT["change-review"]]: () => JSON.stringify({ status: "changes-required", findings: [{ detail: "Material operative defect remains." }], limitations: ["Recorded in notes"] }) })
   const state = await runLean(directory, { sessions: model.port })
-  expect(state.status).toBe("blocked")
-  expect(state.stop_reason).toContain(`${LEAN_MAX_SUBSTANTIVE_REPAIRS} substantive repair rounds`)
+  expect(state.status).toBe("completed")
   expect(model.count(AGENT["change-review"])).toBe(LEAN_MAX_SUBSTANTIVE_REPAIRS + 1)
   expect(readRepairRound(directory)?.substantive_attempts).toBe(LEAN_MAX_SUBSTANTIVE_REPAIRS)
-  expect(existsSync(leanFile(directory, "d1/body-applied.docx"))).toBe(false)
-  expect(model.count(AGENT.finalize)).toBe(0)
+  // The finding names no paragraph: nothing is withheld, and it stays open for the lawyer.
+  expect(readChangeList(directory, "d1")?.withheld ?? []).toEqual([])
+  expect(readChangeList(directory, "d1")?.amendments).toHaveLength(2)
+  const item = readOpenItems(directory).find(row => row.stage === "change-review")!
+  expect(item).toMatchObject({ kind: "omission", detail: "Material operative defect remains.", ref: { document: "d1" } })
+  expect(readLeanText(directory, "drafting-notes.md")).toContain(`[ref: ${item.id}]`)
+  const gate = readLeanJson(directory, "gate.json") as GateResult
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft" })
+  expect(gate.disclosed.map(row => row.id)).toContain(item.id)
+  // A finding recorded nowhere still blocks the gate.
+  writeOpenItems(directory, readOpenItems(directory).filter(row => row.id !== item.id))
+  expect(finalGate(directory).status).toBe("blocked")
   expect(checkChangeReview(directory, "d1", { status: "pass", findings: [{ detail: "Still material" }], limitations: [] })).not.toEqual([])
+}, 120_000)
+
+test("a material finding on a pending amendment, once the repair allowance is used up, withholds that amendment for a review draft", async () => {
+  const directory = matter()
+  const model = scriptedModel({ ...replies(), [AGENT["change-review"]]: prompt => JSON.stringify({ status: "changes-required",
+    findings: [{ pid: pidOf(prompt, "Payment timing remains to be agreed."), detail: "The payment wording changes the agreed effect." }], limitations: [] }) })
+  const state = await runLean(directory, { sessions: model.port })
+  expect(state.status).toBe("completed")
+  expect(model.count(AGENT["change-review"])).toBe(LEAN_MAX_SUBSTANTIVE_REPAIRS + 1)
+  const pid = readParagraphs(directory, "d1").find(row => row.text === "Payment timing remains to be agreed.")!.pid
+  const list = readChangeList(directory, "d1")!
+  expect(list.amendments.map(row => row.updated)).toEqual([DELIVERY])
+  expect(list.withheld).toEqual([expect.objectContaining({ amendment: expect.objectContaining({ pid, updated: PAYMENT }), issues: ["The payment wording changes the agreed effect."] })])
+  const applied = readParagraphs(directory, "d1", "paragraphs-applied.json").map(row => row.text)
+  expect(applied).toContain(DELIVERY)
+  expect(applied).toContain("Payment timing remains to be agreed.")
+  expect(applied).not.toContain(PAYMENT)
+  expect(readOpenItems(directory).filter(row => row.stage === "change-review")).toEqual([])
+  const item = readOpenItems(directory).find(row => row.stage === "changes" && row.kind === "unapplied_amendment")!
+  expect(item.ref).toMatchObject({ document: "d1", pid, amendment_id: list.withheld![0]!.amendment.id })
+  expect(item.detail).toContain("The payment wording changes the agreed effect.")
+  const gate = readLeanJson(directory, "gate.json") as GateResult
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft" })
+  expect(gate.disclosed.map(row => row.id)).toContain(item.id)
 }, 120_000)
 
 test("a repaired intermediate withheld proposal is not falsely described as unapplied at the final gate", async () => {

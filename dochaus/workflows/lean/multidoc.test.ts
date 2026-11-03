@@ -7,7 +7,8 @@ import { readLeanPlan, type StepID } from "./plan"
 import { enqueueLeanRequest } from "./requests"
 import { restoreLeanStage } from "./restore-stage"
 import { stagePrompt } from "./prompts"
-import { runLean } from "./runner"
+import { LEAN_MAX_SUBSTANTIVE_REPAIRS, runLean } from "./runner"
+import { readRepairRound } from "./repairs"
 import { LEAN_PROMPT_VERSION, LEAN_STAGE_AGENTS, stageInputs } from "./stages"
 import { hashStageInputs, leanFile, readLeanJson, readOpenItems, readQuestions, writeLeanText } from "./state"
 import {
@@ -43,6 +44,26 @@ describe("lean drafting with several documents", () => {
       "body:d1:Supply note.docx", "redline:d1:Supply note - redline.docx", "drafting_notes:null:Supply note - drafting notes.docx", "drafting_notes_markdown:null:null",
     ])
     expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "execution_ready", disclosed: [], blocking: [] })
+  }, 120_000)
+
+  test("a material finding on an earlier document, once the repair allowance is used up, stays open without editing that document", async () => {
+    const directory = matter()
+    const reviewer: Reply = prompt => prompt.includes('<earlier_body document="d1">')
+      ? JSON.stringify({ status: "changes-required", findings: [{ document: "d1", pid: pidIn(prompt, "The supplier shall deliver the goods"), detail: "The delivery period does not fit the letter." }], limitations: [] })
+      : JSON.stringify({ status: "pass", findings: [], limitations: [] })
+    const model = scriptedModel({ ...happyPath, [AGENT.draft]: drafter(DRAFT, LETTER), [AGENT.review]: reviewFirst, [AGENT.changes]: changesFirst, [AGENT["change-review"]]: reviewer })
+    const state = await runLean(directory, { sessions: model.port })
+
+    expect(state.status).toBe("completed")
+    expect(readRepairRound(directory)?.substantive_attempts).toBe(LEAN_MAX_SUBSTANTIVE_REPAIRS)
+    expect(readParagraphs(directory, "d1", "paragraphs-applied.json").map(row => row.text)).toContain(APPLIED)
+    expect(model.count(AGENT.changes)).toBe(1 + 1 + LEAN_MAX_SUBSTANTIVE_REPAIRS)
+    expect((readLeanJson(directory, "d1/changes.json") as { withheld?: unknown[] }).withheld ?? []).toEqual([])
+    expect((readLeanJson(directory, "d2/changes.json") as { withheld?: unknown[] }).withheld ?? []).toEqual([])
+    const items = readOpenItems(directory).filter(row => row.stage === "change-review")
+    expect(items).toEqual([expect.objectContaining({ kind: "omission", detail: "The delivery period does not fit the letter.", ref: expect.objectContaining({ document: "d2" }) })])
+    expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft" })
+    expect((readLeanJson(directory, "gate.json") as GateResult).disclosed.map(row => row.id)).toContain(items[0]!.id)
   }, 120_000)
 
   test("later document writers remain scoped while semantic review can identify an earlier owned body", async () => {
