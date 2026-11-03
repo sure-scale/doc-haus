@@ -406,10 +406,12 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       state = updateLeanStage(directory, state, step, { status: "pending", ...unkeyed(step), outputs: [], finished_at: null })
       return { state, restart: true }
     }
-    // With the repair allowance used up, change review's items are settled from
-    // its findings and the recorded ones (settleExhaustedChangeReview).
-    const exhaustedChangeReview = stage === "change-review" && document !== undefined && (readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
-    if (!exhaustedChangeReview) replaceStageOpenItems(directory, stage, document ?? null, document ? result.openItems.map(item => inDocument(item, document)) : result.openItems)
+    // With the repair allowance used up, change and package review's items are
+    // settled from their findings and the recorded ones
+    // (settleExhaustedChangeReview, recordPackageFindings).
+    const exhaustedReview = (stage === "change-review" && document !== undefined || stage === "package-review") && (readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
+    const exhaustedChangeReview = exhaustedReview && stage === "change-review"
+    if (!exhaustedReview) replaceStageOpenItems(directory, stage, document ?? null, document ? result.openItems.map(item => inDocument(item, document)) : result.openItems)
     if (questions) replaceStageQuestions(directory, stage, document ?? null, questions)
     // A step blocked only by questions its instructions settled runs again,
     // reading the settled answers; a confirmation blocks a ready intake.
