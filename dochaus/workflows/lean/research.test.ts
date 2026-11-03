@@ -732,3 +732,11 @@ test("a withdrawn finding's reason becomes a research open item the lawyer reads
     ["research", "research_gap", `Withdrawn research finding: Notice provision (Rule 1), ${finding.url}. Reason: A research finding no longer applies: the lawyer's answer changed the governing jurisdiction.`],
   ])
 })
+
+test("the research prompt has an earlier finding withdrawn when the lawyer's later answers or instructions take it out of scope", () => {
+  const directory = matter()
+  approvedNotice(directory)
+  const prompt = researchPrompt(directory, "research", researchBasis(directory))
+  expect(prompt).toContain('"citation": "Rule 1"')
+  expect(prompt).toContain("or when the lawyer's answers or instructions since it was found take it out of scope (a changed jurisdiction, party or facts).")
+})
