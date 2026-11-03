@@ -303,9 +303,10 @@ export async function leanDraftingIdle(directory: string, pollMs = 10) {
   while (running.has(directory)) await Bun.sleep(pollMs)
 }
 
-export function leanDraftingRoutes(options: { directory: (id: string) => string; deps?: () => LeanDeps; models?: () => Promise<CatalogModel[]> }) {
+export function leanDraftingRoutes(options: { directory: (id: string) => string; deps?: () => LeanDeps; models?: (directory: string) => Promise<CatalogModel[]>; catalogWaitMs?: number }) {
   const deps = options.deps ?? defaultDeps
   const models = options.models ?? engineModelCatalog
+  const catalogWaitMs = options.catalogWaitMs ?? 500
   const app = new Hono()
   app.post("/:id/lean/checklist/refine", async (c) => {
     const directory = options.directory(c.req.param("id"))
@@ -333,9 +334,18 @@ export function leanDraftingRoutes(options: { directory: (id: string) => string;
     if (input?.model !== undefined && !isLeanModel(input.model)) return c.json(invalid, 400)
     const model = isLeanModel(input?.model) ? { providerID: input.model.providerID.trim(), modelID: input.model.modelID.trim() } : undefined
     if (model) {
-      const catalog = await models().catch((error: unknown) => error instanceof Error ? error : new Error(String(error)))
-      if (catalog instanceof Error) return c.json({ error: catalog.message, code: "model_catalog_unavailable" }, 503)
-      if (!catalogModel(`${model.providerID}/${model.modelID}`, catalog))
+      // The engine's first catalog may precede its plugins' settlement, so a
+      // model it does not list yet is read again for a few seconds first.
+      const offered = () => models(directory).then(catalog => catalogModel(`${model.providerID}/${model.modelID}`, catalog),
+        (error: unknown) => error instanceof Error ? error : new Error(String(error)))
+      const deadline = Date.now() + 6 * catalogWaitMs
+      let found = await offered()
+      while (found === undefined && Date.now() < deadline) {
+        await Bun.sleep(catalogWaitMs)
+        found = await offered()
+      }
+      if (found instanceof Error) return c.json({ error: found.message, code: "model_catalog_unavailable" }, 503)
+      if (!found)
         return c.json({ error: "The model selected in Settings is not available. Choose an enabled model in Settings, then Continue.", code: "invalid_model" }, 400)
     }
     const resumed = guard(() => resumeLeanDraftingRun(directory, deps(), model))

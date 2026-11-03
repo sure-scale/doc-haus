@@ -25,8 +25,8 @@ export function validModelPair(config: { model?: unknown; small_model?: unknown 
   return Boolean(primary && fast && primary.providerID === fast.providerID)
 }
 
-/** Reads the engine's model catalog. */
-export async function engineModelCatalog(): Promise<CatalogModel[]> {
+/** Reads the engine's model catalog, for a matter's directory when given. */
+export async function engineModelCatalog(directory?: string): Promise<CatalogModel[]> {
   const engine = process.env.OPENCODE_URL ?? `http://127.0.0.1:${process.env.DOC_HAUS_ENGINE_PORT ?? "4097"}`
   const password = process.env.OPENCODE_SERVER_PASSWORD
   const unavailable = "Could not check the engine model catalog. Retry when the engine is ready."
@@ -37,7 +37,10 @@ export async function engineModelCatalog(): Promise<CatalogModel[]> {
   while (true) {
     const res = await fetch(`${engine}/api/model`, {
       signal: AbortSignal.timeout(Math.max(deadline - Date.now(), 1)),
-      ...(password ? { headers: { Authorization: `Basic ${btoa(`opencode:${password}`)}` } } : {}),
+      headers: {
+        ...(password ? { Authorization: `Basic ${btoa(`opencode:${password}`)}` } : {}),
+        ...(directory ? { "x-opencode-directory": directory } : {}),
+      },
     }).catch(() => { throw new Error(unavailable) })
     if (res.ok) {
       const result = await res.json() as { data: CatalogModel[] }
@@ -56,7 +59,7 @@ export async function engineModelCatalog(): Promise<CatalogModel[]> {
 export function setupRoutes(options: { directory: string; config?: () => { model?: unknown; small_model?: unknown }; models?: () => Promise<CatalogModel[]> }) {
   const file = path.join(options.directory, "setup.json")
   const config = options.config ?? readEngineConfig
-  const models = options.models ?? engineModelCatalog
+  const models = options.models ?? (() => engineModelCatalog())
   function write(progress: Progress) {
     mkdirSync(options.directory, { recursive: true })
     const temporary = `${file}.${crypto.randomUUID()}.tmp`
