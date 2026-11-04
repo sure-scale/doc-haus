@@ -57,7 +57,7 @@ test("an already answered intake question gets correction feedback instead of be
   writeQuestions(directory, [{ id: "q-existing", stage: "draft", question: "Which law should govern?", context: "Legal basis.", status: "answered", answer: "Singapore law." }])
   const model = scriptedModel({ ...quiet, [AGENT.intake]: (prompt, index) => index === 0
     ? JSON.stringify({ questions: [{ question: "Which law should govern?", kind: "instruction", context: "Legal basis." }] })
-    : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" }) })
+    : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms", acting_for: { party: "", basis: "none" }, dates: { document_date: { date: "", basis: "today" }, operative_dates: [] } }) })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
   expect(model.prompts.filter(row => row.agent === AGENT.intake)[1]!.text).toContain("already has an answer")
   expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: "q-existing", status: "answered" })])

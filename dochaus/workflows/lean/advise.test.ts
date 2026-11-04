@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import path from "node:path"
-import { adviseQuestions, checkAdvice } from "./advise"
+import { adviseQuestions, advisePrompt, checkAdvice } from "./advise"
 import { questionIssues } from "./change-checks"
 import { openItem } from "./quotes"
 import { runLean, stageInputSha } from "./runner"
@@ -255,4 +255,15 @@ describe("advising asked questions", () => {
     const kept = keepAskedQuestions([{ ...FILES, advice }], [openItem("changes", "question", FILES.question, { question_id: FILES.id, pid: "p000000000001", document: "d2" })], () => false)
     expect(kept).toEqual([{ ...FILES, stage: "changes", pid: "p000000000001", document: "d2", advice }])
   })
+})
+
+test("advice on how far the drafting qualifies names the points it applies to", () => {
+  expect(advisePrompt(matter(), QUESTION)).toContain("An option on how far the drafting qualifies or hedges names the points it applies to: a document's register is not a choice between blanket modes.")
+})
+
+test("advice reads the matter's dates, so a deadline option does not run from the drafting day", () => {
+  const directory = matter()
+  expect(advisePrompt(directory, QUESTION)).not.toContain("<matter_dates>")
+  writeLeanText(directory, "intake.json", JSON.stringify({ ready: true, dates: { document_date: { date: "2026-03-01", basis: "request", source_id: "request", quote: "dated 1 March 2026" }, operative_dates: [] } }))
+  expect(advisePrompt(directory, QUESTION)).toContain("<matter_dates>\nDate the document 2026-03-01")
 })

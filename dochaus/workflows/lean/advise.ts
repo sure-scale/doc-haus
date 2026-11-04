@@ -4,6 +4,7 @@ import { parseJsonObject } from "./change-checks"
 import { parallel } from "./checklist-flow"
 import { readParagraphs, record, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
+import { intakeActingFor, matterDatesBlock } from "./intake"
 import { FIRST_DOCUMENT, planActingFor, readLeanPlan, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, tagged } from "./prompts"
 import { REQUEST_SOURCE, isAnswerSource, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
@@ -157,7 +158,7 @@ function confirmationPrompt(directory: string, question: Question, document: Ins
   const opening = text.slice(0, OPENING_CHARS)
   const close = text.length > OPENING_CHARS ? text.slice(Math.max(OPENING_CHARS, text.length - CLOSE_CHARS)) : ""
   const updates = readLeanText(directory, "updated-notes.md")
-  const basis = '"basis":[{"source_id":"request (the request, a later instruction or the lawyer\'s answers) or the exact document name","quote":"words copied exactly from that source","relevance":"how this passage shows who wrote the document, to whom or for which work, or what the lawyer said about following it"}]'
+  const basis = '"basis":[{"source_id":"request or the exact document name","quote":"words copied exactly from that source","relevance":"how this passage shows who wrote the document, to whom or for which work, or what the lawyer said about following it"}]'
   return [
     `Advise the lawyer on ONE open question raised while drafting: whether to follow ${document.source_id} as the lawyer's instructions for this work. You do not answer it; the lawyer decides. Judge it from the document itself: who wrote it, to whom, and for which work. Recommend following it when the document shows that the lawyer's client or the lawyer's own firm wrote it for this work, and treating it as evidence when it shows that someone else wrote it or that it was written for other work, or when it does not show who wrote it. The request seldom names the lawyer or their firm; that alone is no reason to treat the document as evidence. Where the request, a later instruction or an answer says whether to follow this document, recommend what it says; asking to draft from the attached documents does not say that. Quote each supporting passage exactly. The document's opening and close are below; use a targeted read-document lookup of ${document.source_id} only if they do not show who wrote it, to whom or for which work. Give a short group topic in group.`,
     tagged("question", `Kind: ${question.kind ?? "not stated"}\n${question.question}`),
@@ -173,15 +174,20 @@ function confirmationPrompt(directory: string, question: Question, document: Ins
 }
 
 // The outline records whom the lawyer acts for in the plan: the party the request
-// names, else the matter's client. Questions asked before the outline get the
-// same precedence from the request and matter.json directly.
+// names, else the matter's client, else the side intake took from the sources.
+// Questions asked before the outline get the same precedence from the request,
+// matter.json and intake.json directly.
 function actingForAdvice(directory: string) {
   const acting = planActingFor(directory)
-  if (acting.stated) return `The lawyer acts for: ${acting.party}.`
-  if (readLeanPlan(directory)) return "The request does not say whom the lawyer acts for; recommend what is even-handed between the parties."
+  if (acting.basis === "inferred") return `The lawyer acts for: ${acting.party}, as taken from the sources; the request names no side.`
+  if (acting.basis !== "none") return `The lawyer acts for: ${acting.party}.`
+  if (readLeanPlan(directory)) return "The request does not say whom the lawyer acts for and no side was taken; recommend what is even-handed between the parties."
   const client = matterClient(directory)
+  const inferred = intakeActingFor(directory)
   return client
     ? `The lawyer acts for: ${client} (the client recorded on the matter), unless the request, instructions or answers above name another party.`
+    : inferred.basis !== "none"
+    ? `The lawyer acts for: ${inferred.party}${inferred.basis === "inferred" ? ", as taken from the sources" : ""}, unless the request, instructions or answers above name another party.`
     : "Whom the lawyer acts for is not recorded yet; take it from the request, instructions or answers above where they say, otherwise recommend what is even-handed between the parties."
 }
 
@@ -192,9 +198,9 @@ export function advisePrompt(directory: string, question: Question) {
   const paragraph = row && shownText(row)
   const updates = readLeanText(directory, "updated-notes.md")
   const provenanceLine = provenanceMapLine(matterSourceIDs(directory), sourceProvenance(directory))
-  const basis = '"basis":[{"source_id":"request (the request, a later instruction or the lawyer\'s answers), an exact matter source name or an approved research URL","quote":"words copied exactly from that source","relevance":"why this passage applies to this question, party, document and conditions"}]'
+  const basis = '"basis":[{"source_id":"request, an exact matter source name or an approved research URL","quote":"words copied exactly from that source","relevance":"why this passage applies to this question, party, document and conditions"}]'
   return [
-    "Advise the lawyer on ONE open question raised while drafting. You do not answer it; the lawyer decides. Set out the options the lawyer could realistically choose and recommend one only where the request, the lawyer's answers, the matter sources or approved research support it, quoting each supporting passage exactly. Where an explicit instruction for this work (in the request, the lawyer's later instructions or answers, or a matter source written as instructions for it) already decides the point, recommend the option that follows it as far as it can lawfully and practically be followed, with its risks stated in the rationale; a differing source, caution or even-handedness is no reason to follow less of it. An instruction does not decide whether it can validly be carried out as given: a part that the sources or research show may be invalid, unauthorised or unenforceable as instructed cannot lawfully be followed, so it is not a risk to accept and state. Where some of it cannot be followed, recommend the option that keeps the rest of it, and include such an option when you set out the options. Where no instruction decides the point, advise from the sources as above. Use targeted search-document or read-document lookups for the evidence the question needs; do not read the whole matter. Check that every passage applies to the affected document, represented party, version and conditions, including contrary passages and playbook exceptions; quotation existence alone is not support. State that connection in each basis passage's relevance. Reuse a matching topic from existing_topics when one exists. Give a short group topic in group (for example a neutral description of the matter point) so related questions can be considered together; never combine distinct decisions or change the question's meaning.",
+    "Advise the lawyer on ONE open question raised while drafting. You do not answer it; the lawyer decides. Set out the options the lawyer could realistically choose and recommend one only where the request, the lawyer's answers, the matter sources or approved research support it, quoting each supporting passage exactly. Where an explicit instruction for this work (in the request, the lawyer's later instructions or answers, or a matter source written as instructions for it) already decides the point, recommend the option that follows it as far as it can lawfully and practically be followed, with its risks stated in the rationale; a differing source, caution or even-handedness is no reason to follow less of it. An instruction does not decide whether it can validly be carried out as given: a part that the sources or research show may be invalid, unauthorised or unenforceable as instructed cannot lawfully be followed, so it is not a risk to accept and state. Where some of it cannot be followed, recommend the option that keeps the rest of it, and include such an option when you set out the options. Where no instruction decides the point, advise from the sources as above. An option on how far the drafting qualifies or hedges names the points it applies to: a document's register is not a choice between blanket modes. Use targeted search-document or read-document lookups for the evidence the question needs; do not read the whole matter. Check that every passage applies to the affected document, represented party, version and conditions, including contrary passages and playbook exceptions; quotation existence alone is not support. State that connection in each basis passage's relevance. Reuse a matching topic from existing_topics when one exists. Give a short group topic in group (for example a neutral description of the matter point) so related questions can be considered together; never combine distinct decisions or change the question's meaning.",
     tagged("existing_topics", [...new Set(readQuestions(directory).flatMap(row => row.group ? [row.group] : []))].join("\n") || "None. Reuse the same short topic for questions about the same point."),
     tagged("question", `Kind: ${question.kind ?? "not stated"}\n${question.question}`),
     ...(question.context ? [tagged("context", question.context)] : []),
@@ -205,6 +211,7 @@ export function advisePrompt(directory: string, question: Question) {
     tagged("answers", answeredQuestionsText(directory) || "None."),
     ...(readLeanText(directory, INSTRUCTIONS_FILE) ? [tagged("instructions", readLeanText(directory, INSTRUCTIONS_FILE)!)] : []),
     tagged("acting_for", actingForAdvice(directory)),
+    ...[matterDatesBlock(directory)].filter(Boolean),
     tagged("legal_research", researchHandoff(directory)),
     `Matter source names (use these exact names with search-document and read-document): ${JSON.stringify(matterSourceIDs(directory))}`,
     ...(provenanceLine ? [provenanceLine] : []),

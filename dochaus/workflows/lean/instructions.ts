@@ -134,6 +134,13 @@ export function documentStanding(directory: string, document: InstructionDocumen
   return asked.option_id === FOLLOW.id && asked.answer_kind !== "instruction" ? "follow" : "evidence"
 }
 
+/** Whether the drafting follows `source_id` as instructions: a listed document
+ * the lawyer designated or chose to follow. */
+export function followsDocument(directory: string, source_id: string) {
+  const document = readInstructionList(directory)?.documents.find(row => row.source_id === source_id)
+  return document !== undefined && documentStanding(directory, document) === "follow"
+}
+
 /** The current list: items from the lawyer's own words and from followed
  * documents, then those awaiting confirmation; a document read as evidence
  * contributes none. */

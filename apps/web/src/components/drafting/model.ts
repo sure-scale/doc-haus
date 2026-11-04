@@ -217,6 +217,7 @@ const KIND_LABELS: Record<string, string> = {
   checklist_open: "Requirements left open by the checklist check",
   checklist_unresolved: "Unresolved checklist findings",
   draft_status: "Draft-status wording in the agreement",
+  drafted_default: "Choices made for you to confirm",
 }
 
 /** Where a disclosed item is recorded for the lawyer. An open checklist finding

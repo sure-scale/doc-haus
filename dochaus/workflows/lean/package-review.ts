@@ -13,6 +13,7 @@ import { researchHandoff } from "./research"
 import { reviewText } from "./review-findings"
 import { requestedFilesItemNamed } from "./requested-files"
 import { answeredQuestionsText, readLeanJson, readLeanText, readOpenItems, writeOpenItems, type OpenItem } from "./state"
+import { matterDatesBlock } from "./intake"
 
 export type PackageReview = {
   status: "pass" | "changes-required"
@@ -59,6 +60,7 @@ export function packageReviewPrompt(directory: string) {
     boundPlaybookContext(directory),
     `<request>\n${readLeanText(directory, "request.md") ?? ""}\n${readLeanText(directory, "updated-notes.md") ?? ""}\n</request>`,
     ...(leanClarifications(directory).length ? [`<inspection_clarifications>\n${JSON.stringify(leanClarifications(directory))}\n</inspection_clarifications>`, "These later human clarifications were admitted for inspection, not document editing. Check their source/applicability explanation against actual artifacts. Do not assume requested changes occurred or infer approval; retain material corrections as findings."] : []),
+    ...[matterDatesBlock(directory)].filter(Boolean),
     `<drafting_spine>\n${readLeanText(directory, "spine.json") ?? ""}\n</drafting_spine>`,
     `<discrepancies>\n${readLeanText(directory, "discrepancy.json") ?? ""}\n</discrepancies>`,
     `<answers>\n${answeredQuestionsText(directory)}\n</answers>`,

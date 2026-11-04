@@ -22,7 +22,7 @@ function prepare() {
     mkdirSync(path.dirname(path.join(directory, relative)), { recursive: true })
     writeFileSync(path.join(directory, relative), text)
   }
-  put(".dochaus/lean/plan.json", JSON.stringify({ schema: "dochaus.lean.plan/1", documents: [
+  put(".dochaus/lean/plan.json", JSON.stringify({ schema: "dochaus.lean.plan/2", documents: [
     { id: "d1", title: "Agreement", purpose: "Record agreed terms", parts: [{ heading: "Terms", scope: "Terms" }], file: "agreement.docx" },
     { id: "d2", title: "Advice", purpose: "Explain decisions", parts: [{ heading: "Advice", scope: "Decisions" }], file: "advice.docx" },
   ] }))

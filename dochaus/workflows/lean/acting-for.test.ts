@@ -3,12 +3,14 @@ import { writeFileSync } from "node:fs"
 import path from "node:path"
 import { matterClient } from "../../lib/matter-client"
 import { coveragePlanHash, planCoverageCurrent, readLeanCoverage } from "./package-coverage"
-import { NOT_STATED, nameKey, namedIn, operativeDocument, parsePlan, planActingFor, readLeanPlan, writeLeanPlan, type StepID } from "./plan"
+import { NOT_STATED, nameKey, namedIn, operativeDocument, parsePlan, planActingFor, readLeanPlan, writeLeanPlan, type ActingFor, type StepID } from "./plan"
 import { stagePrompt } from "./prompts"
 import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES, LEAN_PROMPT_VERSION, stageInputs } from "./stages"
-import { hashStageInputs, writeLeanText } from "./state"
-import { AGENT, DRAFT, cleanupMatters, drafter, happyPath, matter, scriptedModel, type Reply } from "./test-support"
+import { checkIntakeActingFor, intakeActingFor } from "./intake"
+import { researchPrompt } from "./research"
+import { hashStageInputs, readLeanJson, writeLeanText, type OpenItem } from "./state"
+import { AGENT, DRAFT, SOURCE, cleanupMatters, drafter, happyPath, matter, scriptedModel, type Reply } from "./test-support"
 
 // Whom the lawyer acts for: read once by the outline, kept in the plan, shown to
 // every model stage and keyed into their inputs. Real coordinator; only the
@@ -16,7 +18,7 @@ import { AGENT, DRAFT, cleanupMatters, drafter, happyPath, matter, scriptedModel
 
 afterEach(cleanupMatters)
 
-const NEUTRAL = "The request does not say whom the lawyer acts for."
+const NEUTRAL = "The request does not say whom the lawyer acts for, and no side was taken."
 const SIDED_REVIEW = "Assess each provision as the reviewing lawyer for the party the lawyer acts for"
 const NEUTRAL_REVIEW = "Assess each provision as a reviewing lawyer who acts for neither party"
 const actingFor = (party: string): Reply => {
@@ -52,7 +54,7 @@ describe("whom the lawyer acts for", () => {
     const model = scriptedModel({ ...happyPath, [AGENT.draft]: actingFor("the supplier") })
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
-    expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the supplier", stated: true })
+    expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the supplier", basis: "stated" })
     const block = "<acting_for>\nThe lawyer acts for: the supplier.\n</acting_for>"
     expect(promptsOf(model, AGENT.draft)[1]).toContain(block)
     const review = promptsOf(model, AGENT.review)[0]!
@@ -80,7 +82,7 @@ describe("whom the lawyer acts for", () => {
     const model = scriptedModel(happyPath)
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
-    const client = { party: "Northwind Traders Ltd", stated: true }
+    const client: ActingFor = { party: "Northwind Traders Ltd", basis: "matter" }
     const plan = readLeanPlan(directory)!
     expect(plan.acting_for).toEqual(client)
     // The coverage record is keyed on the side the plan saves.
@@ -104,7 +106,7 @@ describe("whom the lawyer acts for", () => {
     const model = scriptedModel({ ...happyPath, [AGENT.draft]: actingFor("the supplier") })
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
-    expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the supplier", stated: true })
+    expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the supplier", basis: "stated" })
     expect(promptsOf(model, AGENT.draft)[1]).toContain("<acting_for>\nThe lawyer acts for: the supplier.\n</acting_for>")
     expect(promptsOf(model, AGENT.review)[0]).not.toContain("Northwind Traders Ltd")
   }, 120_000)
@@ -115,7 +117,7 @@ describe("whom the lawyer acts for", () => {
     const model = scriptedModel({ ...happyPath, [AGENT.draft]: actingFor("the distributor") })
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
-    expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "Northwind Traders Ltd", stated: true })
+    expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "Northwind Traders Ltd", basis: "matter" })
     expect(promptsOf(model, AGENT.draft).filter(text => text.includes('"Acting for:" line names "the distributor"'))).toHaveLength(LEAN_MAX_RETRIES)
   }, 120_000)
 
@@ -148,11 +150,11 @@ describe("whom the lawyer acts for", () => {
       expect(parsePlan(outline(line), request)).toEqual({ issues: [], value: expect.objectContaining({ acting_for: NOT_STATED }) })
     for (const [line, party] of [["the supplier", "the supplier"], ["ABC (UK) Ltd", "ABC (UK) Ltd"], ["\u201Cthe Supplier\u201D", "the Supplier"],
       ["the supplier (as the request states)", "the supplier"], ["ABC (UK) Ltd \u2014 the supplier", "ABC (UK) Ltd"]])
-      expect(parsePlan(outline(line), request).value?.acting_for).toEqual({ party, stated: true })
+      expect(parsePlan(outline(line), request).value?.acting_for).toEqual({ party, basis: "stated" })
     const ungrounded = parsePlan(outline("the buyer"), request)
     expect(ungrounded.issues.join(" ")).toContain('names "the buyer", but the request does not name that party')
     expect(ungrounded.value?.acting_for).toEqual(NOT_STATED)
-    expect(parsePlan(outline("the buyer")).value?.acting_for).toEqual({ party: "the buyer", stated: true })
+    expect(parsePlan(outline("the buyer")).value?.acting_for).toEqual({ party: "the buyer", basis: "stated" })
     // Curly double quotes do not ground a party the request does not name.
     const quoted = parsePlan(outline("\u201CKestrel Works\u201D"), request)
     expect(quoted.issues.join(" ")).toContain('names "Kestrel Works", but the request does not name that party')
@@ -204,8 +206,8 @@ describe("whom the lawyer acts for", () => {
     const steps: StepID[] = ["d1.draft", "d1.review", "d1.changes", "finalize", "d1.apply", "gate"]
     const keys = () => steps.map(step => hashStageInputs(step, LEAN_PROMPT_VERSION, stageInputs(directory, step)))
     const before = keys()
-    writeLeanText(directory, "plan.json", `${JSON.stringify({ ...readLeanPlan(directory)!, acting_for: { party: "the buyer", stated: true } }, null, 2)}\n`)
-    expect(planActingFor(directory)).toEqual({ party: "the buyer", stated: true })
+    writeLeanText(directory, "plan.json", `${JSON.stringify({ ...readLeanPlan(directory)!, acting_for: { party: "the buyer", basis: "stated" } }, null, 2)}\n`)
+    expect(planActingFor(directory)).toEqual({ party: "the buyer", basis: "stated" })
     expect(stagePrompt(directory, "d1.review")).toContain(SIDED_REVIEW)
     // The accepted draft is keyed on the outline contract and its own plan entry, not
     // on whom the lawyer acts for. Apply keys on
@@ -259,8 +261,8 @@ describe("who executes each planned document", () => {
       ["Wren Atelier Ltd (UK) (as buyer)", "Wren Atelier Ltd (UK)"], ["(Wren Atelier Ltd (UK))", "Wren Atelier Ltd (UK)"], ["“Wren Atelier Ltd (UK)”.", "Wren Atelier Ltd (UK)"]])
       expect(executedBy(answer!)).toEqual([name])
     const request = "We act for Heron – Vale LLP; the other side is Wren Atelier Ltd (UK)."
-    expect(parsePlan("Acting for: Heron – Vale LLP\n# Title\nForm: other\n## One", request)).toEqual({ issues: [], value: expect.objectContaining({ acting_for: { party: "Heron – Vale LLP", stated: true } }) })
-    expect(parsePlan("Acting for: Wren Atelier Ltd (UK) — the other side\n# Title\nForm: other\n## One", request)).toEqual({ issues: [], value: expect.objectContaining({ acting_for: { party: "Wren Atelier Ltd (UK)", stated: true } }) })
+    expect(parsePlan("Acting for: Heron – Vale LLP\n# Title\nForm: other\n## One", request)).toEqual({ issues: [], value: expect.objectContaining({ acting_for: { party: "Heron – Vale LLP", basis: "stated" } }) })
+    expect(parsePlan("Acting for: Wren Atelier Ltd (UK) — the other side\n# Title\nForm: other\n## One", request)).toEqual({ issues: [], value: expect.objectContaining({ acting_for: { party: "Wren Atelier Ltd (UK)", basis: "stated" } }) })
   })
 
   test("the Executed by label is matched loosely, and only under a title", () => {
@@ -288,5 +290,119 @@ describe("who executes each planned document", () => {
     expect(readLeanPlan(directory)).toBeUndefined()
     writeLeanText(directory, "plan.json", JSON.stringify({ ...plan, documents: [{ ...plan.documents[0]!, executed_by: "Kestrel Works" }] }))
     expect(readLeanPlan(directory)).toBeUndefined()
+  })
+})
+
+// When neither the lawyer's words nor the matter name the side, intake takes it
+// from what the requested document does and whom the sources show instructing
+// it, with one quotation; the plan keeps it, every stage drafts for it, and the
+// drafting notes disclose it once.
+describe("a side taken from the sources", () => {
+  const INSTRUCTED = "Kestrel Works asks for a supply note on these terms. The supplier shall deliver the goods within thirty days of the order date."
+  const SHOWN = "Kestrel Works asks for a supply note"
+  const intakeFor = (acting: Record<string, unknown>): Reply => () => JSON.stringify({ ready: true, jurisdiction: "None needed", scope: "Supplied terms", acting_for: acting, dates: { document_date: { date: "", basis: "today" }, operative_dates: [] } })
+  const inferred = (quote = SHOWN) => intakeFor({ party: "Kestrel Works", basis: "inferred", source_id: SOURCE, quote })
+  const KESTREL: ActingFor = { party: "Kestrel Works", basis: "inferred", reason: `"${SHOWN}" [source: ${SOURCE}]` }
+
+  test("the plan takes intake's party, every stage drafts for it, and the notes disclose it once", async () => {
+    const directory = matter(INSTRUCTED)
+    const model = scriptedModel({ ...happyPath, [AGENT.intake]: inferred() })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    expect(readLeanPlan(directory)?.acting_for).toEqual(KESTREL)
+    const side = "The lawyer acts for: Kestrel Works. This side is taken from what the requested document does and whom the sources show instructing it"
+    expect(promptsOf(model, AGENT.draft)[1]).toContain(side)
+    const review = promptsOf(model, AGENT.review)[0]!
+    expect(review).toContain(side)
+    expect(review).toContain(SIDED_REVIEW)
+    expect(review).not.toContain(NEUTRAL)
+    expect(promptsOf(model, AGENT.changes)[0]).not.toContain(NEUTRAL)
+    const items = (readLeanJson(directory, "gate.json") as { items: OpenItem[] }).items.filter(item => item.kind === "drafted_default")
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ status: "disclosed", detail: expect.stringContaining("drafted for Kestrel Works") })
+    expect(promptsOf(model, AGENT.finalize)[0]).toContain(items[0]!.id)
+  }, 120_000)
+
+  test("the client recorded on the matter prevails over a side taken from the sources", async () => {
+    const directory = matter(INSTRUCTED)
+    recordMatter(directory, { client: "Northwind Traders Ltd" })
+    const model = scriptedModel({ ...happyPath, [AGENT.intake]: inferred() })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "Northwind Traders Ltd", basis: "matter" })
+    expect((readLeanJson(directory, "gate.json") as { items: OpenItem[] }).items.some(item => item.kind === "drafted_default")).toBe(false)
+  }, 120_000)
+
+  test("a side whose quotation is not in its source is retried, and on the last attempt intake takes no side", async () => {
+    const directory = matter(INSTRUCTED)
+    const model = scriptedModel({ ...happyPath, [AGENT.intake]: inferred("Kestrel Works instructs the firm") })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    expect(promptsOf(model, AGENT.intake).filter(text => text.includes('acting_for quotes "Kestrel Works instructs the firm"'))).toHaveLength(LEAN_MAX_RETRIES)
+    expect(readLeanJson(directory, "intake.json")).toMatchObject({ acting_for: { party: "", basis: "none" } })
+    expect(readLeanPlan(directory)?.acting_for).toEqual(NOT_STATED)
+    expect(promptsOf(model, AGENT.review)[0]).toContain(NEUTRAL_REVIEW)
+  }, 120_000)
+
+  test("the readiness record is checked: a party needs its evidence, and a matter party must be the matter's client", () => {
+    const directory = matter(INSTRUCTED)
+    expect(checkIntakeActingFor(directory, undefined).issues[0]).toContain('"acting_for":{')
+    expect(checkIntakeActingFor(directory, { party: "", basis: "none" })).toEqual({ issues: [], value: { party: "", basis: "none" } })
+    expect(checkIntakeActingFor(directory, { party: "Kestrel Works", basis: "inferred" }).issues[0]).toContain("without the source_id and exact quote")
+    expect(checkIntakeActingFor(directory, { party: "Kestrel Works", basis: "inferred", source_id: SOURCE, quote: SHOWN }))
+      .toEqual({ issues: [], value: { party: "Kestrel Works", basis: "inferred", source_id: SOURCE, quote: SHOWN } })
+    expect(checkIntakeActingFor(directory, { party: "Kestrel Works", basis: "matter" }).issues[0]).toContain("the matter records no client")
+    recordMatter(directory, { client: "Kestrel Works" })
+    expect(checkIntakeActingFor(directory, { party: "Kestrel Works", basis: "matter" })).toEqual({ issues: [], value: { party: "Kestrel Works", basis: "matter" } })
+  })
+
+  test("an outline that names intake's party, with its reason, keeps it as taken from the sources", () => {
+    const outline = "Acting for: Kestrel Works (inferred: it instructs the work)\n# Title\nForm: other\n## One"
+    expect(parsePlan(outline, "Draft a supply note.", KESTREL)).toEqual({ issues: [], value: expect.objectContaining({ acting_for: KESTREL }) })
+    expect(parsePlan(outline, "Draft a supply note.").issues.join(" ")).toContain('names "Kestrel Works", but the request does not name that party')
+  })
+
+  test("a side named in a document the lawyer said to follow is stated and not disclosed as a choice", async () => {
+    const directory = matter(INSTRUCTED, "Draft a short supply note; follow the supply terms as my instructions.")
+    const designated = () => JSON.stringify({ items: [], documents: [{ source_id: SOURCE, from: "Kestrel Works, the client", quote: SHOWN, designated_by: "follow the supply terms" }] })
+    const model = scriptedModel({ ...happyPath, [AGENT.instructions]: designated, [AGENT.intake]: intakeFor({ party: "Kestrel Works", basis: "stated", source_id: SOURCE, quote: SHOWN }) })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    expect(intakeActingFor(directory)).toEqual({ ...KESTREL, basis: "stated" })
+    expect(readLeanPlan(directory)?.acting_for).toEqual({ ...KESTREL, basis: "stated" })
+    expect(promptsOf(model, AGENT.review)[0]).toContain(SIDED_REVIEW)
+    expect((readLeanJson(directory, "gate.json") as { items: OpenItem[] }).items.some(item => item.kind === "drafted_default")).toBe(false)
+  }, 120_000)
+
+  test("a side quoted as stated from a source the lawyer never said to follow is inferred, without a retry, and disclosed once", async () => {
+    const directory = matter(INSTRUCTED)
+    const model = scriptedModel({ ...happyPath, [AGENT.intake]: intakeFor({ party: "Kestrel Works", basis: "stated", source_id: SOURCE, quote: SHOWN }) })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    expect(promptsOf(model, AGENT.intake)).toHaveLength(1)
+    expect(readLeanPlan(directory)?.acting_for).toEqual(KESTREL)
+    const items = (readLeanJson(directory, "gate.json") as { items: OpenItem[] }).items.filter(item => item.kind === "drafted_default")
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ status: "disclosed", detail: expect.stringContaining("drafted for Kestrel Works") })
+  }, 120_000)
+
+  test("a side the request names is stated", () => {
+    const directory = matter(INSTRUCTED, "Draft a short supply note for Kestrel Works.")
+    expect(checkIntakeActingFor(directory, { party: "Kestrel Works", basis: "stated", source_id: "request", quote: "for Kestrel Works" }))
+      .toEqual({ issues: [], value: { party: "Kestrel Works", basis: "stated", source_id: "request", quote: "for Kestrel Works" } })
+  })
+
+  test("an outline that names a party intake quoted as stated, which the request does not name, keeps it as stated", () => {
+    const outline = "Acting for: Kestrel Works\n# Title\nForm: other\n## One"
+    const STATED: ActingFor = { ...KESTREL, basis: "stated" }
+    expect(parsePlan(outline, "Draft a supply note.", STATED)).toEqual({ issues: [], value: expect.objectContaining({ acting_for: STATED }) })
+    expect(parsePlan(outline, "Draft a supply note.", NOT_STATED).issues.join(" ")).toContain('names "Kestrel Works", but the request does not name that party')
+  })
+
+  test("intake determines the side rather than asking only because the request is silent", () => {
+    const prompt = researchPrompt(matter(INSTRUCTED), "intake", "basis")
+    expect(prompt).toContain('basis "inferred", quoting the source that shows it')
+    expect(prompt).toContain("Ask whom the lawyer acts for only when the sources support more than one candidate, as a judgment question naming them")
+    expect(prompt).not.toContain("Do not infer these from a document title")
   })
 })

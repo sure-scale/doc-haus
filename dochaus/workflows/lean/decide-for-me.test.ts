@@ -186,7 +186,9 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // same pins hold for typed or picked words; an adopted recommendation reads as
 // delegated, which moves every key that reads the answers and no other. The
 // instructions step was added, and intake and spine were re-pinned when they
-// began keying the instruction list (instructions.md).
+// began keying the instruction list (instructions.md). Every key that reads
+// plan.json was re-pinned when whom the lawyer acts for gained its basis
+// (dochaus.lean.plan/2).
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", `  A (${ADOPTED_ANSWER}): Singapore law.`)
 // A draft keys its outline contract and plan entry, never answers.
@@ -200,18 +202,18 @@ const INPUTS: Record<string, string> = {
   "acts": "ff830f3d37f64416362401fa66710c9fc8e770429b6bc5f2af84baffd3f35a3c",
   "spine": "2202a864334a3d94bdc8736e01051643ef15f12485641538cf68eac856dc7b89",
   "d1.draft": "68f34f0d87312276c4f5d676b490753a5050865d40c0448aaae368a7d6252376",
-  "d1.review": "e80f5bbe084c8ef90d2864358d2caafa09139822584fb0f12cb14d0976e76416",
-  "d1.review-independent": "9f1fe22f3e0db01ef5fffe96a09ddf917b5e371a89c58988eb875bcfbbae4aa4",
-  "d1.review-wording": "7f86222090d292207f576968b1171dab74bedab8cf5dbc4e3593752d2584b6f5",
-  "d1.review-client-disadvantage": "be6786003165e1b19571bc525b2d6dd3ba4afad3a7f707c7f2e58fe4f69ffac1",
-  "d1.change-plan": "64bc4586e950cb2aaee6d57179adf09500aee75e27b358e054ae5076f770d7d8",
-  "d1.change-prepare": "0e65f05f5cdbac92e874b5150ac1dd21f355a34be5b6a1b918b1be46f580591f",
-  "d1.changes": "6c1572e8f947889bf8dcb84f6bb75ba8380fbade2de920ba3a2dcb28c2cf3449",
-  "d1.change-review": "bad88376987d831cb3260d6afa264eb7195f1390460502fa489f277f94727cc4",
-  "d1.apply": "3fc66df6877ed50af811c9f7a5bbdf1ccb1c269dc8b176cf392941cd2da83149",
-  "finalize": "fcb7ded51c54fad4bb3fd616ba57fbdfe8aa15a2dc1becf5ec5df4e69b537793",
-  "checklist-check": "725f51d8b50889f0f431847a3299d55942561e8fabc2bece75410442fd0fa5a7",
-  "package-review": "dde115af0ba46b8cb1ecf9bf7eb0c40aff3b78f4d6be9e0f0da3dff2d5d4066f",
+  "d1.review": "f92e8b2f697df753f08ff89503d1c092d84fd980a5649ffa77627092541a4a74",
+  "d1.review-independent": "d6b17a179c121993a0115e9cb582a88041569779f0b458d6092ef4d7917dd477",
+  "d1.review-wording": "a26d07fa11c6809f348701b39e3d4e22536470e85610e12e28aebdc0e5c7cebc",
+  "d1.review-client-disadvantage": "4c18d2beccef061120fd2ec812cbd37bd20f5520d490dc96e9b96b18e39b5d89",
+  "d1.change-plan": "505763faece914783109529ec3705c4be1a809d1503f433d368b8e455e14934f",
+  "d1.change-prepare": "b8c5bca696f6179fd04dcdc29b565be8804eac116fd7af6dfecd2baf9fbcde7c",
+  "d1.changes": "d5a641fd10fc180ec24955810f08868b68df08fba766824adff29bc38c618e39",
+  "d1.change-review": "d36fb4ee8463bcfda8c0fdad2c3aef05de8a6801ac65742ea3cbd336f6ed7711",
+  "d1.apply": "be634fcb03591aca6f952d8f756bc599cb4ef5b014ec37f1b37e38c2afaa27a4",
+  "finalize": "ede5a86d8ac5fb23776eb8d8a3a3018f04bc92f827998d6b5f1ef5a189f7f7b8",
+  "checklist-check": "593362745da684a2b335a4f33deb1e581b7bb97a0c652ab4c305ae7151e90423",
+  "package-review": "50e84f8ca0e182baec5a3abc41021134e95069b6fcea956220192846e017784e",
   "gate": "0950183c873a0bd663d5367c064a7013025084deb8884311b2f38a54fcb8e229",
 }
 

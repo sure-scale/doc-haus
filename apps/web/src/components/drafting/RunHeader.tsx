@@ -132,7 +132,7 @@ export default function RunHeader({
   // Posture says. With no side stated the stages still take the Posture, so only
   // a Balanced (or unreported) one reads as neutral drafting.
   const actingLine = !acting ? null
-    : acting.stated ? `Acting for: ${acting.party}${posture ? ` · ${postureLabel(posture)}` : ""}`
+    : acting.basis !== "none" ? `Acting for: ${acting.party}${acting.basis === "inferred" ? " (to confirm)" : ""}${posture ? ` · ${postureLabel(posture)}` : ""}`
     : posture && posture !== "balanced" ? `Acting for: not stated · ${postureLabel(posture)}`
     : "Acting for: not stated — drafting is neutral"
   // Review suggestions the Posture kept out of the drafts as one-sided, each
@@ -140,7 +140,7 @@ export default function RunHeader({
   const heldBack = status.plan?.held_back ?? 0
   const notesFile = status.documents?.status === "completed"
     ? status.documents.documents.find((row) => row.kind === "drafting_notes" && row.deliverable)?.deliverable : undefined
-  const heldText = `${heldBack} one-sided suggestion${heldBack === 1 ? "" : "s"} held back (${acting?.stated && posture ? postureLabel(posture) : "neutral drafting"}) — `
+  const heldText = `${heldBack} one-sided suggestion${heldBack === 1 ? "" : "s"} held back (${acting && acting.basis !== "none" && posture ? postureLabel(posture) : "neutral drafting"}) — `
   const seeNotes = `see ${notesWording(status.memo).phrase}`
   const heldLine = heldBack === 0 ? null
     : notesFile ? <>{heldText}<button type="button" className="linklike" onClick={() => onOpen(notesFile)}>{seeNotes}</button></>

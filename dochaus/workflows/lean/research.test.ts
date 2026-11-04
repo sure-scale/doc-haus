@@ -755,3 +755,34 @@ test("on the last attempt a withdrawal of an authority the reply also returns is
   expect(readLeanJson(directory, "research.json")).toEqual({ status: "completed", findings: [returned], limitations: [], withdrawn: [] })
   expect(last.openItems).toEqual([])
 })
+
+test("research text that directs the drafter to leave a point out is retried, and kept as written on the last attempt", () => {
+  const directory = matter()
+  const research = retrieved(directory)
+  const directive = "The rate appears only on a summary page; do not cite it in the draft."
+  const omits = (issues: string[]) => issues.filter(issue => issue.includes("directs the drafter to leave content out"))
+  expect(omits(acceptResearchReply(directory, "research", JSON.stringify({ ...research, findings: [{ ...research.findings[0], limitations: directive }] })).issues))
+    .toEqual([expect.stringContaining("findings[0].limitations directs the drafter")])
+  expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])
+  for (const text of [directive, "Draft the letter without stating the rate.", "Omit the rate until verified.", "The rate should be omitted."])
+    expect(omits(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [text], gaps: [] })).issues)).toHaveLength(1)
+  expect(omits(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [], gaps: [{ issue: "The official text of the rate.", affects: "Do not state the rate." }] })).issues))
+    .toEqual([expect.stringContaining("gaps[0].affects")])
+  // Words that describe the evidence are not directions.
+  for (const text of ["The retrieved sources do not include the rate.", "The source does not state the effective date.", "The extraction omitted the schedule.", "Only a summary page gives the rate, effective 1 April 2026; its official text was not retrieved."])
+    expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [text], gaps: [] })).issues).toEqual([])
+  const final = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [directive], gaps: [] }), { final: true })
+  expect(final.issues).toEqual([])
+  expect(final.openItems.map(item => item.detail)).toEqual([directive])
+})
+
+test("research and its review read the finding's version against the matter's dates", () => {
+  const directory = matter()
+  retrieved(directory)
+  writeLeanText(directory, "intake.json", JSON.stringify({ ready: true, dates: { document_date: { date: "", basis: "today" }, operative_dates: [] } }))
+  for (const stage of ["research", "research-review"] as const) expect(researchPrompt(directory, stage, "basis")).toContain("<matter_dates>")
+  expect(researchPrompt(directory, "research", "basis")).toContain('"currentness":"the version in force at the dates in matter_dates (else today)')
+  const review = researchPrompt(directory, "research-review", "basis")
+  expect(review).toContain("check each finding's version against the dates in matter_dates, else today")
+  expect(review).toContain("it never directs the drafter to leave content out")
+})

@@ -16,6 +16,7 @@ import { excerpt, proseQuoteFound, openItem } from "./quotes"
 import { answeredScopeQuestion, GATE_EXCERPT, keyedQuestionID, openScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows } from "./package-scope"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, repairedChecklistItems } from "./repairs"
 import { requestedFilesItems } from "./requested-files"
+import { draftedDefaultItems } from "./drafted-defaults"
 import { combinedFileItems } from "./deliverables"
 import { withheldChecklistRepair } from "./requests"
 import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, undecidedQuestion, type LeanState, type OpenItem, type Question } from "./state"
@@ -154,7 +155,7 @@ export function finalGate(directory: string): GateResult {
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
   // A file name in the instructions the package review withheld is disclosed with the
   // draft, never blocking it: the notes were written before that review.
-  const items = [...unresolved, ...[...current.filter(item => item.stage !== "package-review"), ...undecidedQuestionItems(context.questions, current), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory)].map(item => settle(item, context)),
+  const items = [...unresolved, ...[...current.filter(item => item.stage !== "package-review"), ...undecidedQuestionItems(context.questions, current), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory), ...draftedDefaultItems(directory)].map(item => settle(item, context)),
     ...semantic, ...projected, ...withheldDeliveryItems(directory)]
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete or stale, or a check or its reinspection failed; see checklist/report.md.", {}))
   // Focused checks can correctly preserve a source-dependent open issue
@@ -807,6 +808,7 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
   // Drafting and review findings are re-derived from the final body at apply.
   if (item.stage === "draft" || isReviewStage(item.stage)) return resolved("superseded by the check of the final body")
   if (item.kind === "research_gap") return named ? disclosed("legal research limitation named in the drafting notes") : open("the drafting notes do not disclose this legal research limitation")
+  if (item.kind === "drafted_default") return named ? disclosed("drafted default named in the drafting notes") : open("the drafting notes do not disclose this drafted default")
   const document = item.ref.document ?? FIRST_DOCUMENT
   const final = context.documents.get(document)
   if (!final) return open("its document is no longer planned")

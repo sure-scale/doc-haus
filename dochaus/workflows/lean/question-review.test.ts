@@ -14,7 +14,7 @@ const FINDING = { source_fact: { kind: "fact", fact: "Delivery is within thirty 
 test("source evidence returns to the asking stage, without creating a lawyer answer", async () => {
   const directory = matter()
   const model = scriptedModel({ ...happyPath, [AGENT.intake]: (_prompt, index) => JSON.stringify(index
-    ? { ready: true, jurisdiction: "Supplied-source note only", scope: "Reproduce the supplied delivery terms." }
+    ? { ready: true, jurisdiction: "Supplied-source note only", scope: "Reproduce the supplied delivery terms.", acting_for: { party: "", basis: "none" }, dates: { document_date: { date: "", basis: "today" }, operative_dates: [] } }
     : { questions: [FACT] }), [AGENT.advise]: () => JSON.stringify(FINDING) })
   const state = await runLean(directory, { sessions: model.port })
   expect(state.status).toBe("completed")
