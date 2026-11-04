@@ -414,7 +414,7 @@ export function acceptResearchReply(directory: string, stage: ResearchStage, rep
  * should describe the evidence: the drafting stages state such a point from
  * its best lead with a verify marker. Retry feedback only, like
  * internalPathIssues: saved research is not re-checked for it. */
-const OMISSION = /\b(?:do not|don't|never|should not|must not)\s+(?:state|include|mention|assert|cite)\b|\bwithout stating\b|(?:^|[.;:]\s*)omit\b|\b(?:should|must)\s+(?:be\s+)?omit/i
+const OMISSION = /(?:^|[.;:]\s*)(?:do not|don't|never)\s+(?:state|include|mention|assert|cite)\b|\bwithout stating\b|(?:^|[.;:]\s*)omit\b|\b(?:should|must)\s+(?:be\s+)?omit/i
 function omissionIssues(stage: "research" | "research-review", value: unknown) {
   if (!record(value)) return []
   const rows = (list: unknown) => Array.isArray(list) ? list : []
