@@ -54,6 +54,21 @@ describe("placement across planned documents", () => {
   })
 })
 
+describe("where the feedback places a template part", () => {
+  test("a document whose labels print as headings names a template part in a scope line, never in its label", () => {
+    const outline = (...lines: string[]) => [TITLE, ...lines, ...[PARTS.scope, PARTS.charges, PARTS.credits, PARTS.duration, PARTS.annexA].map(heading)].join("\n")
+    const [unheaded] = outlineCoverageIssues(...pair(contractOf(TEMPLATE_TEXT, outline())))
+    expect(unheaded).toContain('Name each in the "## " heading or scope line of the part that carries it')
+    const [shown] = outlineCoverageIssues(...pair(contractOf(TEMPLATE_TEXT, outline("Headings: shown"))))
+    expect(shown).toContain("prints its \"## \" labels as its headings, so name each in the scope line of the part that carries it, never in the label")
+    expect(shown).toContain('add a line "Left out:')
+  })
+})
+
+function pair(built: ReturnType<typeof contractOf>) {
+  return [built.directory, built.documents] as const
+}
+
 describe("left out parts", () => {
   test("a part both left out and headed in the plan is an outline issue", () => {
     const own = contractOf(TEMPLATE_TEXT, [TITLE, 'Left out: "3. Service Credits" – no response times are agreed.', ...Object.values(PARTS).map(heading)].join("\n"))

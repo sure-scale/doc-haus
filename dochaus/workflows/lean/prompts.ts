@@ -138,7 +138,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
         "under that document's title. File and Deliverable map the requested output artifact; Compare against and Template identify inputs. A source filename mentioned for revision is not itself an output naming instruction. The \"# \" line is the document's own title as it will read in the document: no file name and no Markdown.",
         "- Where the request expressly asks to revise a supplied original and deliver a comparison against it, add \"Compare against: <exact matter DOCX document name>\" under the title. This is the redline baseline, separate from a reusable Template; do not infer it from template use alone.",
         "- Where a document is drafted from one of the matter documents as its template, add the line \"Template: <exact matter document name>\" " +
-        "under its title, and name each top-level part of the template in the \"## \" heading or scope line of the part that carries it. " +
+        "under its title, and name each top-level part of the template in the \"## \" heading or scope line of the part that carries it (only in the scope line where \"Headings: shown\" prints the labels). " +
         "For a template part left out on purpose, add a line \"Left out: \"<template part>\" – <reason>\" under the title instead. " +
         "Documents drafted from the same template each have the Template line, and together carry its parts.",
         "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks each reply.",

@@ -128,6 +128,15 @@ export function plannedContract(directory: string, document: DocID) {
   return at < 0 ? undefined : templateContract(directory, documents, at)
 }
 
+/** Where a document's "## " labels print as its headings ("Headings: shown"),
+ * a label is document text: the template part a part carries is named in its
+ * scope line, so no planning note is printed as a heading. */
+const PRINTED_LABEL_PLACE = "This document prints its \"## \" labels as its headings, so name each in the scope line of the part that carries it, never in the label"
+
+function labelsPrint(document: OutlinedDocument) {
+  return document.parts.some(part => part.display_heading === undefined)
+}
+
 /** Retry feedback for the outline: each "Template:" line names a matter
  * document, each "Left out:" line names a part of the template and gives a
  * reason, and every top-level part of the template is accounted for. */
@@ -152,7 +161,7 @@ export function outlineCoverageIssues(directory: string, documents: OutlinedDocu
       ...(contract.unaccounted.length
         ? [`The outline of "${document.title}" does not account for these parts of its template "${contract.source}": ${quoted(contract.unaccounted.slice(0, MAX_LISTED))}` +
           `${contract.unaccounted.length > MAX_LISTED ? ` and ${contract.unaccounted.length - MAX_LISTED} more` : ""}. ` +
-          "Name each in the \"## \" heading or scope line of the part that carries it, or, for a part left out on purpose, " +
+          `${labelsPrint(document) ? PRINTED_LABEL_PLACE : "Name each in the \"## \" heading or scope line of the part that carries it"}, or, for a part left out on purpose, ` +
           "add a line \"Left out: \"<template part>\" – <reason>\" under the title."]
         : []),
     ]
