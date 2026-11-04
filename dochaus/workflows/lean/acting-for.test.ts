@@ -362,9 +362,10 @@ describe("a side taken from the sources", () => {
     expect(parsePlan(outline, "Draft a supply note.").issues.join(" ")).toContain('names "Kestrel Works", but the request does not name that party')
   })
 
-  test("a side an instructions document states keeps its basis in the plan and is not disclosed as a choice", async () => {
-    const directory = matter(INSTRUCTED)
-    const model = scriptedModel({ ...happyPath, [AGENT.intake]: intakeFor({ party: "Kestrel Works", basis: "stated", source_id: SOURCE, quote: SHOWN }) })
+  test("a side named in a document the lawyer said to follow is stated and not disclosed as a choice", async () => {
+    const directory = matter(INSTRUCTED, "Draft a short supply note; follow the supply terms as my instructions.")
+    const designated = () => JSON.stringify({ items: [], documents: [{ source_id: SOURCE, from: "Kestrel Works, the client", quote: SHOWN, designated_by: "follow the supply terms" }] })
+    const model = scriptedModel({ ...happyPath, [AGENT.instructions]: designated, [AGENT.intake]: intakeFor({ party: "Kestrel Works", basis: "stated", source_id: SOURCE, quote: SHOWN }) })
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
     expect(intakeActingFor(directory)).toEqual({ ...KESTREL, basis: "stated" })
@@ -372,6 +373,24 @@ describe("a side taken from the sources", () => {
     expect(promptsOf(model, AGENT.review)[0]).toContain(SIDED_REVIEW)
     expect((readLeanJson(directory, "gate.json") as { items: OpenItem[] }).items.some(item => item.kind === "drafted_default")).toBe(false)
   }, 120_000)
+
+  test("a side quoted as stated from a source the lawyer never said to follow is inferred, without a retry, and disclosed once", async () => {
+    const directory = matter(INSTRUCTED)
+    const model = scriptedModel({ ...happyPath, [AGENT.intake]: intakeFor({ party: "Kestrel Works", basis: "stated", source_id: SOURCE, quote: SHOWN }) })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    expect(promptsOf(model, AGENT.intake)).toHaveLength(1)
+    expect(readLeanPlan(directory)?.acting_for).toEqual(KESTREL)
+    const items = (readLeanJson(directory, "gate.json") as { items: OpenItem[] }).items.filter(item => item.kind === "drafted_default")
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ status: "disclosed", detail: expect.stringContaining("drafted for Kestrel Works") })
+  }, 120_000)
+
+  test("a side the request names is stated", () => {
+    const directory = matter(INSTRUCTED, "Draft a short supply note for Kestrel Works.")
+    expect(checkIntakeActingFor(directory, { party: "Kestrel Works", basis: "stated", source_id: "request", quote: "for Kestrel Works" }))
+      .toEqual({ issues: [], value: { party: "Kestrel Works", basis: "stated", source_id: "request", quote: "for Kestrel Works" } })
+  })
 
   test("an outline that names a party intake quoted as stated, which the request does not name, keeps it as stated", () => {
     const outline = "Acting for: Kestrel Works\n# Title\nForm: other\n## One"

@@ -1,7 +1,8 @@
 import { matterClient } from "../../lib/matter-client"
 import { normalize } from "../../lib/quote-verify"
 import { NOT_STATED, nameKey, readLeanPlan, type ActingFor, type ActingForBasis, type DocumentDateBasis, type MatterDate, type MatterDates } from "./plan"
-import { quoteFound, quoteMissIssue } from "./quotes"
+import { followsDocument } from "./instructions"
+import { REQUEST_SOURCE, isAnswerSource, quoteFound, quoteMissIssue } from "./quotes"
 import { questionKindIssues, readLeanJson, readQuestions, shortHash, type Question } from "./state"
 
 type Checked<T> = { issues: string[]; value?: T }
@@ -40,7 +41,9 @@ const NO_SIDE: IntakeActingFor = { party: "", basis: "none" }
 
 /** The readiness reply's acting_for record, checked: a stated or inferred party
  * carries one quotation found in its source, a matter party is the client the
- * matter records. `value` is the record to save, or no side when it fails. */
+ * matter records. A party is stated only in the lawyer's words or a document the
+ * lawyer said to follow; one quoted from any other source is inferred, and so
+ * disclosed. `value` is the record to save, or no side when it fails. */
 export function checkIntakeActingFor(directory: string, value: unknown): Checked<IntakeActingFor> & { value: IntakeActingFor } {
   const fail = (issue: string) => ({ issues: [issue], value: NO_SIDE })
   if (!record(value) || typeof value.party !== "string" || !BASES.includes(value.basis as ActingForBasis))
@@ -56,7 +59,8 @@ export function checkIntakeActingFor(directory: string, value: unknown): Checked
   const quote = { source_id: typeof value.source_id === "string" ? value.source_id.trim() : "", quote: typeof value.quote === "string" ? value.quote.trim() : "" }
   if (!quote.source_id || !quote.quote) return fail(`acting_for names ${party} without the source_id and exact quote that show it.`)
   if (!quoteFound(directory, quote)) return fail(quoteMissIssue(directory, "acting_for", quote, "json"))
-  return { issues: [], value: { party, basis: value.basis as ActingForBasis, ...quote } }
+  const stated = quote.source_id === REQUEST_SOURCE || isAnswerSource(quote.source_id) || followsDocument(directory, quote.source_id)
+  return { issues: [], value: { party, basis: value.basis === "stated" && stated ? "stated" : "inferred", ...quote } }
 }
 
 /** A saved intake.json that records whom the lawyer acts for. */
