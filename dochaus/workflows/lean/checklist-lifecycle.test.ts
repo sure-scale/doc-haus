@@ -49,8 +49,9 @@ const deferChecklistRepair = (text: string) => text.includes("ONE supplied check
 // one notes correction.
 // The checker cites every row it is supplied, the target's delivery_artifacts
 // rows included; `delivery` cites only those rows: a finding about a delivered
-// file's name, format or composition.
-function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[]; indeterminate_cause?: "missing_inspection" | "not_inspectable" } = {}, options: { broken?: boolean; second?: boolean; pair?: boolean; regress?: boolean; departure?: boolean; review?: boolean; notes?: boolean; notesReview?: boolean; delivery?: boolean } = {}, replies: Record<string, Reply> = {}) {
+// file's name, format or composition. `observation` extracts the requirements
+// as source observations rather than directives.
+function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[]; indeterminate_cause?: "missing_inspection" | "not_inspectable" } = {}, options: { broken?: boolean; second?: boolean; pair?: boolean; regress?: boolean; departure?: boolean; review?: boolean; notes?: boolean; notesReview?: boolean; delivery?: boolean; observation?: boolean } = {}, replies: Record<string, Reply> = {}) {
   let extractedBeforeBody = false
   let checkedAfterNotes = false
   let reviewed = false
@@ -72,7 +73,7 @@ function model(directory: string, status: "satisfied" | "open" | "unsatisfied" |
     [CHECKLIST_JOB_AGENTS.extract]: text => {
       const input = JSON.parse(text.split("SOURCE_INPUT:\n\n")[1]!) as ChecklistProducerInput
       extractedBeforeBody = !existsSync(leanFile(directory, "d1/body.docx"))
-      const item = { check: "The requested supply note is drafted.", basis: "directive", source_refs: input.passages, qualifications: [],
+      const item = { check: "The requested supply note is drafted.", basis: options.observation ? "observation" : "directive", source_refs: input.passages, qualifications: [],
         target: options.notes ? { ...input.targets.find(target => target.document === "notes")!, treatment: "advice" } : { ...input.targets[0], treatment: "operative" } }
       return JSON.stringify({ items: input.source.document === "request" ? [item, ...(options.broken || options.second || options.pair || options.regress ? [{ ...item, check: "Payment remains due on delivery." }] : [])] : [] })
     },
@@ -586,7 +587,7 @@ test("an inspected applicability decision left open completes as a review draft 
   const state = await runLean(directory, { sessions: scripted.port })
   expect(state.status).toBe("completed")
   expect(state.stages["checklist-check"]?.status).toBe("done")
-  expect(scripted.prompts.find(row => row.agent === CHECKLIST_JOB_AGENTS.check)?.text).toContain("report open, name that decision in open_decisions")
+  expect(scripted.prompts.find(row => row.agent === CHECKLIST_JOB_AGENTS.check)?.text).toContain("is open: name that inclusion decision in open_decisions")
   expect(readLeanJson(directory, "checklist/checks.json")).toMatchObject({ checks: [{ finding: { status: "open", open_decisions: [scopeDecision] } }] })
   const gate = readLeanJson(directory, "gate.json") as any
   expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
@@ -615,6 +616,40 @@ test("the one reinspection of an indeterminate finding may settle on an open app
     disclosed: [{ kind: "checklist_open", detail: expect.stringContaining(`Open decisions: ${scopeDecision}.`) }] })
 }, 120000)
 
+
+// A source observation the target's purpose covers is expected coverage: the
+// checker's verdict routes it exactly as a directive's, except that an open one
+// is disclosed without a question.
+test("an observation left open as an inclusion decision is disclosed in the notes without a question", async () => {
+  const directory = matter()
+  const decision = "Whether the draft states the observed fact"
+  const scripted = model(directory, "open", { open_decisions: [decision] }, { observation: true })
+  expect((await runLean(directory, { sessions: scripted.port })).status).toBe("completed")
+  expect(focusedRepairs(scripted)).toBe(0)
+  const gate = readLeanJson(directory, "gate.json") as any
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [],
+    disclosed: [{ stage: "checklist-check", kind: "checklist_open", status: "disclosed", ref: { document: "d1" } }] })
+  expect(readQuestions(directory).filter(question => question.status === "open")).toEqual([])
+  const delivered = readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")
+  expect(delivered).toContain("# Checklist requirements left open")
+  expect(delivered).toContain(decision)
+}, 120000)
+
+test("an observation missing from its planned part is repaired once, and a later regression gets its own repair", async () => {
+  const once = matter()
+  const scripted = model(once, "unsatisfied", {}, { observation: true })
+  expect((await runLean(once, { sessions: scripted.port })).status).toBe("completed")
+  expect(focusedRepairs(scripted)).toBe(1)
+  expect(readRepairRound(once)).toMatchObject({ round: 1, items: [{ stage: "checklist-check", ref: { document: "d1", repair_target: "body" } }] })
+  expect(readLeanJson(once, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  const twice = matter()
+  const regressing = model(twice, "unsatisfied", {}, { observation: true, regress: true }, { [AGENT["change-plan"]]: (text: string, index: number) =>
+    deferChecklistRepair(text).replace("still needs a supported correction.", `still needs a supported correction (call ${index}).`) })
+  expect((await runLean(twice, { sessions: regressing.port })).status).toBe("completed")
+  expect(focusedRepairs(regressing)).toBe(2)
+  expect(readRepairRound(twice)).toMatchObject({ round: 2, checklist_items: checklistIDs(twice) })
+  expect(readLeanJson(twice, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+}, 180000)
 
 test("redline-only native comment edits invalidate completed checklist checks", async () => {
   const directory = matter()

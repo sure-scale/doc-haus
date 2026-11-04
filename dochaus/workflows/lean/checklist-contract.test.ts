@@ -79,7 +79,7 @@ test("producer and checker share treatment meanings without promoting source aut
     const observation = { ...item, basis: "observation" as const, target: { ...item.target, treatment } }
     const unchanged = parseChecklistCheckerInput({ ...packet, item: parseChecklistExtraction({ items: [observation] }).items[0] }).item
     expect(unchanged).toEqual(observation)
-    expect(buildChecklistCheckerPrompt({ ...packet, item: observation })).toContain("an observation alone imposes no revision or disclosure duty")
+    expect(buildChecklistCheckerPrompt({ ...packet, item: observation })).toContain("an observation is not a directive: neither makes the draft retain, reproduce or keep open its wording")
   }
 })
 
@@ -167,10 +167,10 @@ test("text measures can disprove but never establish a rendered-length directive
 // Applicability left unsettled by the request's scope after inspection is a
 // decision for the lawyer, not missing evidence; directed requirements stay decided.
 test("an inspected scope-only applicability question is an open decision in plain, component and reinspection prompts", () => {
-  const rule = "If the needed evidence was inspected and the only unresolved question is whether the request's scope covers this requirement for this deliverable, report open, name that decision in open_decisions, and state what the target contains and which elements would be missing. Use indeterminate only when evidence or inspection is missing."
+  const rule = "like an inspected requirement whose only unresolved question is whether the request's scope covers it for this deliverable, is open: name that inclusion decision in open_decisions and state what the target contains and which elements would be missing. Use indeterminate only when evidence or inspection is missing."
   const directed = "A requirement directed by the request or a current human instruction is applicable: decide its compliance."
   const component = "Every component applies the applicability rule below exactly as a whole-item check does. Content in unassigned ranges or records is neither evidence nor a gap for this component"
-  const binding = "A term binding the parties in a source is source content, not by itself a directive for the deliverable to cover; unless the request or a current human instruction directs that coverage, whether the deliverable must cover it is an applicability question."
+  const binding = "An observation is what a source establishes, never an instruction. Whether the target states it is a coverage question decided by the target's declared purpose and parts, not by the observation's provenance."
   const previous = { item_id: packet.item_id, status: "indeterminate" as const, reason: "Applicability was not established.", evidence: [], source_refs: item.source_refs, inspection_scope: "Assigned range.", limitation: "" }
   const plain = buildChecklistCheckerPrompt(packet)
   const components = (["target_body", "process_records", "document_properties"] as const).map(kind => buildChecklistCheckerPrompt({ ...packet, assignment: { kind, ranges: [] } }))
@@ -219,4 +219,30 @@ test("disclosure fields are optional typed finding fields, each named once in th
     'Only when status is unsatisfied, open or indeterminate, add "departure_disclosure" (evidence shape) for exact current draft or notes text stating that the draft deliberately departs from this item; otherwise omit it.',
   ]) expect(instructions.split(line)).toHaveLength(2)
   expect(buildChecklistProducerPrompt({ source: { document: "instruction.txt", role: "client instructions" }, passages: item.source_refs, instructions: [], targets: [{ document: "agreement.docx", role: "operative agreement" }], retrieval: "Use targeted lookup." })).not.toContain("indeterminate_cause")
+})
+
+// An observation never directs the deliverable; whether the target states it is
+// a coverage question decided by the target's declared purpose and parts.
+test("observations are coverage, decided by the target's purpose and parts, never directives", () => {
+  const producer = buildChecklistProducerPrompt({ source: { document: "memo.txt", role: "investigation memo" }, passages: item.source_refs, instructions: [], targets: [{ document: "d1", role: "Letter: Explain the position. Parts: Background (the facts)" }], retrieval: "Use targeted lookup." })
+  expect(producer).toContain("Do not create a duty merely to retain an observation. Phrase an observation's check as what the source establishes and which target purpose or part it falls in; never as a directive.")
+  const refinement = buildChecklistRefinementPrompt({ parent_id: "parent", parent: item, source_unit: { id: "unit", role: "Assigned unit.", passages: item.source_refs }, instructions: [], targets: [{ document: "agreement.docx", role: "operative agreement" }], retrieval: "Use targeted lookup." })
+  for (const prompt of [producer, refinement]) expect(prompt).not.toContain("An observation alone creates no inclusion, revision or disclosure duty.")
+  expect(refinement).toContain("An observation creates no adopt duty by itself; within the target's declared purpose it is expected coverage, reported as a coverage gap when absent.")
+  expect(refinement).toContain("Original draft text alone does not impose retention or memo duties.")
+  const observation = { ...item, basis: "observation" as const, target: { ...item.target, treatment: "operative" as const } }
+  for (const prompt of [buildChecklistCheckerPrompt({ ...packet, item: observation }), buildChecklistReinspectionPrompt({ ...packet, item: observation }, { item_id: packet.item_id, status: "not_applicable", reason: "No directive.", evidence: [], source_refs: item.source_refs, inspection_scope: "Target.", limitation: "" })]) {
+    const paragraphs = prompt.split("CHECK_INPUT:")[0]!.split("\n\n")
+    // The coverage verdicts sit in the paragraph that limits not_applicable.
+    const verdicts = paragraphs.find(paragraph => paragraph.startsWith("Report not_applicable"))!
+    expect(verdicts).toContain("only when the sources do not support the item's stated scope or treatment, or for content outside the target's declared purpose and parts, original draft wording in a revision, or a proposal or question that controlling sources or instructions have settled")
+    expect(verdicts).toContain("A coverage gap within a declared part's scope, read as written and not widened to reach the item, is unsatisfied.")
+    expect(verdicts).toContain("A coverage gap within the purpose that no part names or that the notes record as a deliberate omission")
+    expect(prompt).toContain("its absence, or its topic present without its substance, is a coverage gap, never not_applicable")
+    expect(prompt).toContain("Satisfied means the item's substance is evidenced in the target in its applicable stated treatment, not a mention of its topic")
+    expect(prompt).not.toContain("Missing presentation alone cannot establish unsatisfied")
+    // The authority guard stays: original draft wording is still no instruction.
+    expect(prompt).toContain("Original draft wording is an observation, not by itself an instruction to retain, revise or disclose it.")
+    expect(prompt).toContain("A term binding the parties in a source is an observation, not a directive, however imperative its wording.")
+  }
 })
