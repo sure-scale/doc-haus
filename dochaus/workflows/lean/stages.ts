@@ -74,7 +74,7 @@ import {
 // goes to the pointer applier as data, addressed by paragraph pointer. Steps of
 // one planned document keep their files under that document's id (d1/, d2/...).
 
-export const LEAN_PROMPT_VERSION = "lean-28-numbered-headings-revise-scope"
+export const LEAN_PROMPT_VERSION = "lean-29-discrepancy-gaps"
 const OUTLINE_CONTRACT = "document-form-unheaded-labels-9"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
@@ -282,7 +282,8 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   if (step === "checklist-check") return [{ name: "checklist-refinement-contract", bytes: "source-unit-refinement-1" }, { name: "checklist-refinement-selection", bytes: JSON.stringify(checklistRefinementSelections(directory)) }, file("checklist/refinements.json"), file("request.md"), file("plan.json"), file("checklist/extraction.json"), file("drafting-notes.docx"), file("research-context.txt"), ...planned.flatMap(id => [file(`${id}/body.docx`), file(`${id}/body-applied.docx`), file(`${id}/redline.docx`), file(`${id}/review-independent.json`), file(`${id}/changes.json`), file(`${id}/apply.json`)])]
   // What an instruction settled is not an input of the list it was settled by.
   if (step === "instructions") return outlineInputs(directory, { settled: false })
-  if (step === "discrepancy") return outlineInputs(directory)
+  // The discrepancy job reads the instruction list to find what the sources leave silent.
+  if (step === "discrepancy") return [...outlineInputs(directory), file(INSTRUCTIONS_FILE)]
   if (step === "intake") {
     // Only with a client recorded on the matter, so a matter without one keeps its key.
     const client = matterClient(directory)

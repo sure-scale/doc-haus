@@ -1,5 +1,5 @@
 ---
-description: Assesses source discrepancies before material clarification.
+description: Assesses source discrepancies and gaps before material clarification.
 mode: subagent
 hidden: true
 temperature: 0.1

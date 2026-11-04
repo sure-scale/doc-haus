@@ -186,7 +186,8 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // same pins hold for typed or picked words; an adopted recommendation reads as
 // delegated, which moves every key that reads the answers and no other. The
 // instructions step was added, and intake and spine were re-pinned when they
-// began keying the instruction list (instructions.md). Every key that reads
+// began keying the instruction list (instructions.md), and the discrepancy
+// step when it began reading that list to list gaps. Every key that reads
 // plan.json was re-pinned when whom the lawyer acts for gained its basis
 // (dochaus.lean.plan/2).
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
@@ -195,7 +196,7 @@ const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", `  A (${ADOPTED_A
 const UNANSWERED_STEPS = ["d1.draft"]
 const INPUTS: Record<string, string> = {
   "instructions": "7db0182116d00b86390816e69312620dff6c36a8920d47b9190fb725b72906b6",
-  "discrepancy": "8dac7eefaf1e988e35ffbe6c7f765a951943e9b1299546a9b94dc10e99950a72",
+  "discrepancy": "4f29d28d6244e9ca5dd67e4b4a28c44838724ede511eea72e9ab3f0cdb1245f6",
   "intake": "097361ef1ee9a3958bc6d602d33eac98ff61d441ea7aa050c405152bf241c65d",
   "research": "64a0d22c3dd780907955b2e56b3122b94ea72101092d694f899a15e2af0cb13b",
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
@@ -253,8 +254,9 @@ const QUESTION = "Should late delivery carry a remedy?"
 const LAW = "Which law should govern the supply note?"
 const spine = (...entries: object[]) => ({ entries, limitations: [] })
 const FACT = { kind: "fact", detail: "Delivery is within thirty days.", evidence: SUPPORT, limitations: [] }
-// Pinned on the code before hand-backs reached the spine.
-const SPINE_PROMPT = "aa0471af46a44d8b7a3ccc78fbfb1d1f647d5a746a00e934ca36b8886ea6a283"
+// Pinned on the code before hand-backs reached the spine; re-pinned when the
+// spine began carrying unsettled discrepancy gaps as open items.
+const SPINE_PROMPT = "495828d2f70b3dc96d2e5f1584315afdd678f845afd3382b77ff3236cf97ea36"
 
 function spineMatter(late: "open" | "answered" | "adopted") {
   const directory = matter()
@@ -282,7 +284,7 @@ test("the spine takes its five entry kinds and refuses a drafting choice or a qu
     if (late === "open") expect(createHash("sha256").update(prompt).digest("hex")).toBe(SPINE_PROMPT)
   }
   // The discrepancy assessment never took one either.
-  expect(checkEvidence(spineMatter("adopted"), "discrepancy", { entries: [], limitations: [] })).toEqual([])
+  expect(checkEvidence(spineMatter("adopted"), "discrepancy", { entries: [], gaps: [], limitations: [] })).toEqual([])
 })
 
 test("intake told a question is answered is told so however it was answered", () => {
