@@ -471,7 +471,7 @@ test("the HTTP answer flow holds a run until every intake question is answered",
           { question: "Whose position should this protect?", kind: "instruction", context: "The drafting approach depends on it." },
         ] })
       }
-      return JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" })
+      return JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms", acting_for: { party: "", basis: "none" }, dates: { document_date: { date: "", basis: "today" }, operative_dates: [] } })
     },
     [LEAN_STAGE_AGENTS.review]: () => NO_FINDINGS,
     [LEAN_STAGE_AGENTS.changes]: noChanges,
@@ -1115,10 +1115,10 @@ test("status reports whom the plan says the lawyer acts for, and not stated for 
   const directory = leanFixtureMatter("lean-acting-for-status-")
   directories.push(directory)
   expect(leanDraftingStatus(directory)?.plan).toBeNull()
-  writeLeanPlan(directory, [SUPPLY_NOTE], undefined, { party: "Northwind Traders Ltd", stated: true })
-  expect(leanDraftingStatus(directory)?.plan?.acting_for).toEqual({ party: "Northwind Traders Ltd", stated: true })
+  writeLeanPlan(directory, [SUPPLY_NOTE], undefined, { party: "Northwind Traders Ltd", basis: "stated" })
+  expect(leanDraftingStatus(directory)?.plan?.acting_for).toEqual({ party: "Northwind Traders Ltd", basis: "stated" })
   writeLeanPlan(directory, [SUPPLY_NOTE])
-  expect(leanDraftingStatus(directory)?.plan?.acting_for).toEqual({ party: "", stated: false })
+  expect(leanDraftingStatus(directory)?.plan?.acting_for).toEqual({ party: "", basis: "none" })
 })
 
 test("status reports the Posture the run drafts to: the plan's, else the matter's", () => {
@@ -1134,7 +1134,7 @@ test("status reports the Posture the run drafts to: the plan's, else the matter'
 test("status counts the review findings the run's Posture held back as beyond market, and none under Client-favorable", () => {
   const directory = leanFixtureMatter("lean-held-back-status-")
   directories.push(directory)
-  const northwind = { party: "Northwind Traders Ltd", stated: true }
+  const northwind = { party: "Northwind Traders Ltd", basis: "stated" as const }
   const finding = (balance: string, origin: string) =>
     ({ id: `f-${balance}-${origin}`, document: "d1", origin, balance, favours: northwind.party, finding: `A ${balance} ${origin} point.`, sources: [] })
   writeLeanPlan(directory, [SUPPLY_NOTE], undefined, northwind, undefined, "balanced")

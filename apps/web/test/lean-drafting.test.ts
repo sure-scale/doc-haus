@@ -360,12 +360,15 @@ test("the run's Details say whom the lawyer acts for once the plan records it, a
   const withActingFor = (acting_for: unknown) => ({ ...completed, plan: { ...completed.plan, acting_for } })
   const render = (value: unknown) =>
     renderToStaticMarkup(createElement(RunHeader, { status: lean(value), actions: idle, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
-  expect(render(withActingFor({ party: "Northwind Traders Ltd", stated: true }))).toContain("Acting for: Northwind Traders Ltd")
-  expect(render(withActingFor({ party: "", stated: false }))).toContain("Acting for: not stated — drafting is neutral")
+  expect(render(withActingFor({ party: "Northwind Traders Ltd", basis: "stated" }))).toContain("Acting for: Northwind Traders Ltd</span>")
+  expect(render(withActingFor({ party: "Northwind Traders Ltd", basis: "matter" }))).toContain("Acting for: Northwind Traders Ltd</span>")
+  expect(render(withActingFor({ party: "Northwind Traders Ltd", basis: "inferred" }))).toContain("Acting for: Northwind Traders Ltd (to confirm)</span>")
+  expect(render(withActingFor({ party: "", basis: "none" }))).toContain("Acting for: not stated — drafting is neutral")
   expect(completed.plan).not.toHaveProperty("acting_for")
   expect(render(completed)).not.toContain("Acting for")
   expect(render({ ...completed, plan: null })).not.toContain("Acting for")
-  expect(isLeanDraftingStatus(withActingFor({ party: "Northwind Traders Ltd", stated: "yes" }))).toBe(false)
+  expect(isLeanDraftingStatus(withActingFor({ party: "Northwind Traders Ltd", basis: "yes" }))).toBe(false)
+  expect(isLeanDraftingStatus(withActingFor({ party: "Northwind Traders Ltd", stated: true }))).toBe(false)
   expect(isLeanDraftingStatus(withActingFor("Northwind Traders Ltd"))).toBe(false)
 })
 
@@ -374,13 +377,13 @@ test("the run header shows the Posture the run drafts to beside whom the lawyer 
   const withPlan = (fields: Record<string, unknown>) => ({ ...completed, plan: { ...completed.plan, ...fields } })
   const render = (value: unknown) =>
     renderToStaticMarkup(createElement(RunHeader, { status: lean(value), actions: idle, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
-  const northwind = { party: "Northwind Traders Ltd", stated: true }
+  const northwind = { party: "Northwind Traders Ltd", basis: "stated" }
   expect(render(withPlan({ acting_for: northwind, posture: "balanced" }))).toContain("Acting for: Northwind Traders Ltd · Balanced")
   expect(render(withPlan({ acting_for: northwind, posture: "client-favorable" }))).toContain("Acting for: Northwind Traders Ltd · Client-favorable")
   expect(render(withPlan({ acting_for: northwind, posture: "conservative" }))).toContain("Acting for: Northwind Traders Ltd · Conservative")
   // With no side stated the stages still take the Posture: only Balanced, or an
   // older ingest that sends none, reads as neutral drafting.
-  const unstated = { party: "", stated: false }
+  const unstated = { party: "", basis: "none" }
   expect(render(withPlan({ acting_for: unstated, posture: "client-favorable" }))).toContain("Acting for: not stated · Client-favorable</span>")
   expect(render(withPlan({ acting_for: unstated, posture: "conservative" }))).toContain("Acting for: not stated · Conservative</span>")
   for (const posture of ["balanced", undefined]) {
@@ -399,8 +402,8 @@ test("the run header counts the one-sided suggestions the Posture held back and 
   const withPlan = (fields: Record<string, unknown>, base: Record<string, unknown> = completed) => ({ ...base, plan: { ...completed.plan, ...fields } })
   const render = (value: unknown) =>
     renderToStaticMarkup(createElement(RunHeader, { status: lean(value), actions: idle, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
-  const northwind = { party: "Northwind Traders Ltd", stated: true }
-  const unstated = { party: "", stated: false }
+  const northwind = { party: "Northwind Traders Ltd", basis: "stated" }
+  const unstated = { party: "", basis: "none" }
   // Delivered: the pointer opens the drafting notes, where each is disclosed.
   const two = render(withPlan({ acting_for: northwind, posture: "balanced", held_back: 2 }))
   expect(two).toContain("2 one-sided suggestions held back (Balanced) — ")
