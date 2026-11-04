@@ -29,7 +29,7 @@ function matter(sources = 0) {
   writeFileSync(path.join(directory, "source-index.json"), JSON.stringify({ sources: rows }))
   return directory
 }
-function port(directory: string, options: { failSource?: string; failCheck?: boolean; finding?: "open" | "indeterminate" | "unsatisfied" | "satisfied"; required_action?: "propose"; action_status?: "fulfilled" | "not_fulfilled" | "indeterminate"; delay?: number } = {}) {
+function port(directory: string, options: { failSource?: string; failCheck?: boolean; finding?: "open" | "indeterminate" | "unsatisfied" | "satisfied"; required_action?: "propose"; action_status?: "fulfilled" | "not_fulfilled" | "indeterminate"; delay?: number; role?: string } = {}) {
   const counts = { prompts: 0, active: 0, peak: 0, created: 0, artifactsSeen: true, incrementalSeen: false }
   const sessions: StageSessionPort = {
     async createSession() {
@@ -45,7 +45,7 @@ function port(directory: string, options: { failSource?: string; failCheck?: boo
           const packet: ChecklistProducerInput = JSON.parse(input.text.split("SOURCE_INPUT:\n\n")[1])
           if (packet.source.document === options.failSource) throw new Error("source worker failed")
           const ref = packet.source.document === "request" ? packet.passages[0] : packet.instructions[0]
-          return JSON.stringify({ items: [{ ...(options.required_action ? { required_action: options.required_action } : {}), check: "Check the proposed arrangement is kept open.", basis: "proposal", source_refs: [ref], qualifications: ["Requires confirmation."], target: { ...packet.targets[0], treatment: "open_issue" } }] })
+          return JSON.stringify({ items: [{ ...(options.required_action ? { required_action: options.required_action } : {}), check: "Check the proposed arrangement is kept open.", basis: "proposal", source_refs: [ref], qualifications: ["Requires confirmation."], target: { ...packet.targets[0], ...(options.role ? { role: options.role } : {}), treatment: "open_issue" } }] })
         }
         if (options.failCheck) throw new Error("checker worker failed")
         const packet: ChecklistCheckerInput = JSON.parse(input.text.split("CHECK_INPUT:\n\n")[1])
@@ -74,6 +74,12 @@ test("source completion is incremental and respects the limit; items and IDs sur
   await runChecklistExtractionFlow(directory, deps)
   expect(deps.counts.created).toBeGreaterThan(7)
 }))
+
+test("an extracted item keeps its target's declared role, with the planned parts", async () => {
+  const directory = matter(), deps = port(directory, { role: "Record" })
+  const result = await runChecklistExtractionFlow(directory, deps)
+  expect(result.items.map(row => row.item.target.role)).toEqual(result.items.map(() => "Record: Record instructions. Parts: Record (Record)"))
+})
 
 test("failed source remains explicit and consumer cannot claim complete coverage", async () => {
   const directory = matter(1), deps = port(directory, { failSource: "source-0.txt" })

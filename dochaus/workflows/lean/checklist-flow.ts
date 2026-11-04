@@ -65,7 +65,7 @@ export async function runChecklistExtractionFlow(directory: string, deps: Checkl
     try {
       const result = await runChecklistExtractionJob(directory, deps, job.input)
       records[index] = result.status === "succeeded"
-        ? { key: job.key, input_sha: job.input_sha, status: "succeeded", items: result.value.items.map((item, ordinal) => ({ id: `source-${shortHash(job.key, 12)}-${ordinal + 1}`, item })), issues: [], sessionID: result.sessionID, attempts: result.attempts }
+        ? { key: job.key, input_sha: job.input_sha, status: "succeeded", items: result.value.items.map((item, ordinal) => ({ id: `source-${shortHash(job.key, 12)}-${ordinal + 1}`, item: withDeclaredRole(item, job.input.targets) })), issues: [], sessionID: result.sessionID, attempts: result.attempts }
         : { key: job.key, input_sha: job.input_sha, status: "failed", items: [], issues: result.issues, sessionID: result.sessionID, attempts: result.attempts }
     } catch (error) {
       records[index] = { key: job.key, input_sha: job.input_sha, status: "failed", items: [], issues: [message(error)] }
@@ -75,6 +75,13 @@ export async function runChecklistExtractionFlow(directory: string, deps: Checkl
   save()
   const sources = records.filter((row): row is ChecklistSourceResult => !!row)
   return { status: sources.length === jobs.length && sources.every(row => row.status === "succeeded") ? "succeeded" as const : "incomplete" as const, sources, items: sources.flatMap(row => row.items), outputs: [EXTRACTION] }
+}
+
+/** The checker reads a target's purpose and parts from its declared role, so
+ * a role the model shortened or reworded is replaced by the declared one. */
+function withDeclaredRole<T extends { target: { document: string; role: string } }>(item: T, targets: { document: string; role: string }[]): T {
+  const role = targets.find(target => target.document === item.target.document)?.role
+  return role === undefined ? item : { ...item, target: { ...item.target, role } }
 }
 
 const UNFINISHED_REINSPECTION = "Reinspection did not complete; no result overrides the original finding."
@@ -279,7 +286,7 @@ export async function runChecklistRefinementFlow(directory: string, deps: Checkl
     try {
       const result = await runChecklistRefinementJob(directory, deps, job.input)
       records[index] = result.status === "succeeded"
-        ? { ...base, status: "succeeded", result: result.value, children: result.value.items.map((item, ordinal) => ({ id: `${original.id}-refined-${shortHash(job.input.source_unit.id, 12)}-${ordinal + 1}`, item })), issues: [], sessionID: result.sessionID, attempts: result.attempts }
+        ? { ...base, status: "succeeded", result: result.value, children: result.value.items.map((item, ordinal) => ({ id: `${original.id}-refined-${shortHash(job.input.source_unit.id, 12)}-${ordinal + 1}`, item: withDeclaredRole(item, job.input.targets) })), issues: [], sessionID: result.sessionID, attempts: result.attempts }
         : { ...base, status: "failed", children: [], issues: result.issues, sessionID: result.sessionID, attempts: result.attempts }
     } catch (error) { records[index] = { ...base, status: "failed", children: [], issues: [message(error)] } }
     save()
