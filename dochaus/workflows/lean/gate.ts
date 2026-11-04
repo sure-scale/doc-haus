@@ -13,6 +13,7 @@ import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { isLeftOpenPackageFinding, isWithheldDeliveryItem, leftOpenPackageFinding, packageReviewItem, readPackageReview, withheldDeliveryItems } from "./package-review"
 import { coverageCarries, coverageItems, gateScopeParties } from "./package-coverage"
 import { excerpt, proseQuoteFound, openItem } from "./quotes"
+import { citationSources, readerCitations, sourceName } from "./reader-citations"
 import { answeredScopeQuestion, GATE_EXCERPT, keyedQuestionID, openScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows } from "./package-scope"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, repairedChecklistItems } from "./repairs"
 import { requestedFilesItems } from "./requested-files"
@@ -220,6 +221,13 @@ export function finalGate(directory: string): GateResult {
  * item, conflict list, source locator or paragraph pointer; a question the
  * run asked is named by its asking. */
 export function deliveredNotes(directory: string, gate: GateResult): string | undefined {
+  const notes = readerNotes(directory, gate)
+  return notes === undefined ? undefined : readerCitations(notes, citationSources(directory))
+}
+
+/** The delivered notes before their source markers take reader form
+ * (readerCitations): every section below cites as the notes check reads it. */
+function readerNotes(directory: string, gate: GateResult): string | undefined {
   const drafted = readLeanText(directory, "drafting-notes.md")
   const read = drafted === undefined ? undefined : titled(directory, notesForReader(directory, drafted, gate.items))
   const unresolved = gate.items.filter(item => item.kind === "checklist_unresolved")
@@ -384,12 +392,6 @@ function findingEntries(directory: string, findings: OpenItem[], known: string[]
  * name, the request as "request", and the bound firm playbook (its
  * "playbook:" source id) by the label the matter shows for it, its name
  * without "playbook-" in capitals, as a playbook. */
-function sourceName(document: string) {
-  if (!document.startsWith("playbook:")) return document
-  const label = document.slice("playbook:".length).replace(/^playbook-/, "").toUpperCase()
-  return label ? `${label} playbook` : "firm playbook"
-}
-
 /** What a memo finding's class means for the reader and what the lawyer should
  * check, in place of the workflow's own label, which names its stages. */
 const MEMO_STATUS: Record<ChecklistFindingClass, string> = {
