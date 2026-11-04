@@ -37,7 +37,14 @@ export function restoreLeanStage(directory: string, step: StepID) {
   if (upTo < 0) throw new Error(`Unknown step "${step}". Steps: ${steps.join(", ")}.`)
   const kept = steps.slice(0, upTo + 1)
   const snapshots = chooseSnapshots(directory, kept)
-  steps.slice(upTo + 1).flatMap(stepOutputs).forEach(name => rmSync(leanFile(directory, name), { force: true }))
+  // The checklist extraction is listed under the checklist step but written before
+  // the first draft, and each source's record is keyed by its own inputs; from the
+  // first draft on, the next run reuses what still matches and re-extracts the rest.
+  const firstDraft = steps.findIndex(row => stepStage(row) === "draft")
+  const keepExtraction = firstDraft >= 0 && upTo >= firstDraft
+  steps.slice(upTo + 1).flatMap(stepOutputs)
+    .filter(name => !(keepExtraction && name === "checklist/extraction.json"))
+    .forEach(name => rmSync(leanFile(directory, name), { force: true }))
   if (step !== "gate") rmSync(leanFile(directory, "documents.json"), { force: true })
   // An optional output the kept step's snapshot lacks belongs to a later run of that step.
   kept.forEach(row => stepOutputs(row).forEach(name => {
