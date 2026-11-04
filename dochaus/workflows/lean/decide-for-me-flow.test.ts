@@ -40,7 +40,7 @@ test("an adopted recommendation runs through the queue as the lawyer's answer, r
         { question: QUESTION, kind: "judgment", context: "The supplied terms are silent on late delivery." },
         { question: LAW, kind: "instruction", context: "The terms name no governing law." },
       ] })
-      : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" }),
+      : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms", acting_for: { party: "", basis: "none" } }),
     [AGENT.advise]: prompt => prompt.includes(QUESTION)
       ? JSON.stringify({ options: [{ text: CHOSEN }, { text: OTHER }], recommendation: { option: 0, rationale: "The terms fix the delivery period and add no remedy.", basis: BASIS } })
       : JSON.stringify({ unavailable: { reason: "The sources name no governing law." } }),

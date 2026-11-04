@@ -143,7 +143,7 @@ export function raisedFindings(directory: string): RaisedFinding[] {
 /** Whether the run holds back beyond-market findings: it does unless it acts
  * for a side under the Client-favorable Posture frozen into its plan. */
 export function holdsBeyondMarket(directory: string) {
-  return !planActingFor(directory).stated || runPosture(directory) !== "client-favorable"
+  return planActingFor(directory).basis === "none" || runPosture(directory) !== "client-favorable"
 }
 
 /** Origins the Posture never holds back: an instruction, a source the draft
@@ -203,7 +203,7 @@ export function heldBackDispositions(directory: string, document: DocID) {
 
 /** Why a held-back finding was not drafted: the side it favours and the run's Posture. */
 export function heldBackReason(directory: string, row: RaisedFinding) {
-  return `Not drafted: it favours ${row.favours ?? "one party"} beyond market practice, and ${planActingFor(directory).stated
+  return `Not drafted: it favours ${row.favours ?? "one party"} beyond market practice, and ${planActingFor(directory).basis !== "none"
     ? `the run's Posture is ${runPosture(directory) === "conservative" ? "Conservative" : "Balanced"}` : "the run acts for neither party"}.`
 }
 

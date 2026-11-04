@@ -11,7 +11,7 @@ afterEach(cleanupMatters)
 const quiet = { ...happyPath, [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: noChanges }
 const REQUEST = "Draft a short supply note from the supply terms under Singapore law."
 const LAW = { question: "Which law should govern the supply note?", kind: "instruction", context: "The governing law clause depends on it." }
-const READY = JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms only" })
+const READY = JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms only", acting_for: { party: "", basis: "none" } })
 const DELIVERY = { question: "Which delivery period should the note state?", kind: "judgment", context: "The delivery clause depends on it." }
 
 /** An advisor naming instruction `id` as deciding every question it is asked

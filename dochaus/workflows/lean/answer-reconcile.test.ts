@@ -38,7 +38,7 @@ function twoQuestions(reconcile: (ids: [string, string]) => Reply) {
         { question: LATE, kind: "judgment", context: "The supplied terms are silent on late delivery." },
         { question: PRICE, kind: "judgment", context: "The supplied terms fix the price but not the effect of a delay." },
       ] })
-      : JSON.stringify({ ready: true, jurisdiction: "No external legal determination needed for this supplied-source fixture", scope: "Supplied terms" }),
+      : JSON.stringify({ ready: true, jurisdiction: "No external legal determination needed for this supplied-source fixture", scope: "Supplied terms", acting_for: { party: "", basis: "none" } }),
     [AGENT.advise]: prompt => prompt.includes("cannot all be followed together")
       ? recommend(NO_REMEDY, REDUCTION)
       : prompt.includes(`<question>\nKind: judgment\n${LATE}`) ? recommend(NO_REMEDY, REDUCTION) : recommend(REDUCTION, NO_REMEDY),

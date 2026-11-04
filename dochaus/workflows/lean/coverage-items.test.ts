@@ -8,7 +8,7 @@ import { PLAN_COVERAGE_REVISIONS } from "./draft-sections"
 import { finalGate, type GateResult } from "./gate"
 import { PACKAGE_SCOPE_QUESTION } from "./package-scope"
 import { LEAN_COVERAGE_SCHEMA, coverageCarries, coveragePlanHash, coverageScopeQuestion, planCoverageCurrent, planCoverageIssues, readLeanCoverage, type CoverageAct, type LeanCoverage } from "./package-coverage"
-import { readLeanPlan, writeLeanPlan, type LeanPlan, type PlannedDocument } from "./plan"
+import { readLeanPlan, writeLeanPlan, type ActingFor, type LeanPlan, type PlannedDocument } from "./plan"
 import { openItem } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
@@ -423,7 +423,7 @@ describe("plan coverage open items", () => {
     const plan = writeLeanPlan(directory, [RELEASE], "0".repeat(64))
     recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
     expect(planCoverageCurrent(directory)).toBe(true)
-    const acting = { party: "Kestrel Works", stated: true }
+    const acting: ActingFor = { party: "Kestrel Works", basis: "stated" }
     expect(coveragePlanHash(directory, plan.documents, acting)).not.toBe(coveragePlanHash(directory, plan.documents, plan.acting_for))
     writeLeanPlan(directory, [RELEASE], plan.basis, acting)
     expect(planCoverageCurrent(directory)).toBe(false)

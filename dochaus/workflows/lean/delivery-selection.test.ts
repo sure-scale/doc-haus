@@ -284,7 +284,7 @@ test("an unchanged grounded selection consumes no repair and preserves a same-na
 
 test("delivery instructions require user provenance and cannot alter source foundations", () => {
   const directory = matter()
-  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Operative terms", parts: [{ heading: "Terms", scope: "Preserve" }], mode: "revise", comparison: SOURCE }], "basis", { party: "Buyer", stated: true })
+  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Operative terms", parts: [{ heading: "Terms", scope: "Preserve" }], mode: "revise", comparison: SOURCE }], "basis", { party: "Buyer", basis: "stated" })
   const instruction = "Deliver the annotated comparison as supply-review.docx."
   writeLeanText(directory, "request.md", instruction)
   const selection = { document: "d1" as const, role: "redline" as const, file: "supply-review.docx", instruction_quote: instruction }
@@ -312,16 +312,16 @@ test("delivery metadata refreshes notes and package review while operative sourc
   db.query("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)").run("another-source.docx", "1", SOURCE_TEXT, 0, SOURCE_TEXT.length)
   db.close()
   const document = { title: "Supply note", purpose: "Preserve source terms", parts: [{ heading: "Terms", scope: "Terms" }], comparison: SOURCE, file: "before.docx", deliverable: "body" as const }
-  writeLeanPlan(directory, [document], "stable-basis", { party: "Buyer", stated: true })
+  writeLeanPlan(directory, [document], "stable-basis", { party: "Buyer", basis: "stated" })
   const steps = [...DOC_STAGES.map(stage => `d1.${stage}` as const), "finalize" as const, "package-review" as const]
   const before = new Map(steps.map(step => [step, stageInputSha(directory, step)]))
   const context = stagePrompt(directory, "d1.change-plan", { contextOnly: true })
-  writeLeanPlan(directory, [{ ...document, file: "after.docx", deliverable: "redline" }], "stable-basis", { party: "Buyer", stated: true })
+  writeLeanPlan(directory, [{ ...document, file: "after.docx", deliverable: "redline" }], "stable-basis", { party: "Buyer", basis: "stated" })
   for (const stage of DOC_STAGES) expect(stageInputSha(directory, `d1.${stage}`)).toBe(before.get(`d1.${stage}`)!)
   expect(stagePrompt(directory, "d1.change-plan", { contextOnly: true })).toBe(context)
   expect(stageInputSha(directory, "finalize")).not.toBe(before.get("finalize")!)
   expect(stageInputSha(directory, "package-review")).not.toBe(before.get("package-review")!)
-  writeLeanPlan(directory, [{ ...document, comparison: "another-source.docx" }], "stable-basis", { party: "Buyer", stated: true })
+  writeLeanPlan(directory, [{ ...document, comparison: "another-source.docx" }], "stable-basis", { party: "Buyer", basis: "stated" })
   // A new-mode draft does not read the comparison, so its key stands; the change steps carry the new comparison.
   expect(stageInputSha(directory, "d1.draft")).toBe(before.get("d1.draft")!)
   for (const stage of ["change-plan", "change-prepare", "changes", "change-review", "apply"] as const)

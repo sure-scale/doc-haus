@@ -4,6 +4,7 @@ import { parseJsonObject } from "./change-checks"
 import { parallel } from "./checklist-flow"
 import { readParagraphs, record, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
+import { intakeActingFor } from "./intake"
 import { FIRST_DOCUMENT, planActingFor, readLeanPlan, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, tagged } from "./prompts"
 import { REQUEST_SOURCE, isAnswerSource, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
@@ -173,15 +174,20 @@ function confirmationPrompt(directory: string, question: Question, document: Ins
 }
 
 // The outline records whom the lawyer acts for in the plan: the party the request
-// names, else the matter's client. Questions asked before the outline get the
-// same precedence from the request and matter.json directly.
+// names, else the matter's client, else the side intake took from the sources.
+// Questions asked before the outline get the same precedence from the request,
+// matter.json and intake.json directly.
 function actingForAdvice(directory: string) {
   const acting = planActingFor(directory)
-  if (acting.stated) return `The lawyer acts for: ${acting.party}.`
-  if (readLeanPlan(directory)) return "The request does not say whom the lawyer acts for; recommend what is even-handed between the parties."
+  if (acting.basis === "inferred") return `The lawyer acts for: ${acting.party}, as taken from the sources; the request names no side.`
+  if (acting.basis !== "none") return `The lawyer acts for: ${acting.party}.`
+  if (readLeanPlan(directory)) return "The request does not say whom the lawyer acts for and no side was taken; recommend what is even-handed between the parties."
   const client = matterClient(directory)
+  const inferred = intakeActingFor(directory)
   return client
     ? `The lawyer acts for: ${client} (the client recorded on the matter), unless the request, instructions or answers above name another party.`
+    : inferred.basis === "inferred"
+    ? `The lawyer acts for: ${inferred.party}, as taken from the sources, unless the request, instructions or answers above name another party.`
     : "Whom the lawyer acts for is not recorded yet; take it from the request, instructions or answers above where they say, otherwise recommend what is even-handed between the parties."
 }
 

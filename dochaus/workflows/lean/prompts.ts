@@ -28,7 +28,7 @@ const REVIEW_FOCUS = {
   "review-independent": "Source and legal-commercial fidelity: verify the actual evidence for facts, agreed terms and authority. Identify unintended changes in rights, obligations, remedies and risk. Do not assume a drafting spine or another stage has verified them.",
   "review-playbook": "Playbook adherence: read the complete selected guidance, not only the planning quotes or spine. Check each position against this document, retaining its scope, conditions, exceptions, fallbacks and cross-clause dependencies. Record coverage by position: conforms, explicit instruction override, correction required, unresolved applicability, or not applicable. Give the actual source basis and draft location for each material conclusion. Locate required corrections at an existing paragraph pointer. A deferred recommendation alone does not fulfill a request for proposed wording. Preserve supplied settled decisions; preferred terms are proposals, not agreement. Do not invent legal risk to justify a policy preference. Check unresolved material conflicts against instructions and answers before raising a focused human question.",
   "review-wording": "Problematic wording: identify ambiguity, inconsistency or imprecision that changes how a provision operates. Explain the competing readings and their material effect. Separately assess supplied date/number preference warnings as presentation feedback, preserving exact quotations and expressly retained wording.",
-  "review-client-disadvantage": "Client disadvantage: assess concrete adverse effects on the stated client's position within the requested purpose. Distinguish a defect from an agreed allocation of risk and an optional negotiating improvement. When no client is stated, assess the parties even-handedly without selecting one.",
+  "review-client-disadvantage": "Client disadvantage: assess concrete adverse effects on the stated client's position within the requested purpose. Distinguish a defect from an agreed allocation of risk and an optional negotiating improvement. When no side is determined, assess the parties even-handedly without selecting one.",
 }
 
 const SOURCE_RULES = [
@@ -114,7 +114,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
         "- Write one line \"Memo: <its name in the request's own words>\" before the first \"# \" title only when the request asks for a memo or note to accompany the documents; otherwise leave it out. Do not also plan the memo it names as a \"# \" document.",
         "- These rules apply to every part you draft later.",
         "- Begin the outline with one line \"Acting for: <party>\" when the request says which party the lawyer acts for, naming that party; " +
-        "otherwise write \"Acting for: not stated\". Do not infer the party from the sources.",
+        "otherwise write \"Acting for: not stated\". The run takes the side from the matter and its sources itself.",
         "- Reply now with the outline only, in Markdown. For each substantive body the request asks for or clearly implies, in the order to draft them " +
         "(a document that refers to or depends on another comes after it): one \"# \" line with that document's title, then one line saying what " +
         "the document is for, then one \"## \" line per top-level part of that document in order, each followed by one line saying what the part covers. " +
@@ -164,7 +164,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
         ...(planned ? ["- Where a problem concerns another planned document rather than this one, report it with that document's id as its document; the run carries it to that document. Content the request assigns to another planned document is not missing from this one."] : []),
         ...(composition ? [`- Where a point belongs in the accompanying memo rather than in a document body, report it with the document "${MEMO_TARGET}"; the run carries it to the memo.`] : []),
         "- Report each problem as a finding with the pids of the paragraphs it affects, or where missing wording belongs, saying what is wrong and why, and in instead what those paragraphs should say.",
-        actingFor.stated
+        actingFor.basis !== "none"
           ? sidedReviewStandard(directory)
           : "- Assess each provision as a reviewing lawyer who acts for neither party: whether it works under the governing law the request and sources point to, and whether wording a careful drafter would include is missing. Where an essential provision needs a new drafting choice on which the parties' interests diverge, propose balanced wording within the requested scope and mark that new choice for confirmation; retain decisions already supplied without another confirmation.",
         "- Ask for governing law only when an unresolved jurisdiction is necessary for the requested document function or legal analysis. A factual record or other work whose stated purpose does not require that analysis needs no governing-law question; never assume a jurisdiction for legal conclusions.",
@@ -239,13 +239,16 @@ export function sidedReviewStandard(directory: string) {
     : `${assess}whether it has a real adverse effect on that party's position, and whether it lacks a protection for that party that a neutral, mid-market document of this kind, prepared for neither party, would contain.`
 }
 
-/** Whom the lawyer acts for, as data every model stage reads. When neither the
- * request nor the matter's recorded client says, the stages take no side. */
+/** Whom the lawyer acts for, as data every model stage reads. A side taken
+ * from the sources says so, once, with its evidence; when no side was
+ * determined the stages take none. */
 export function actingForBlock(directory: string) {
   const actingFor = planActingFor(directory)
-  return tagged("acting_for", actingFor.stated
+  return tagged("acting_for", actingFor.basis === "inferred"
+    ? `The lawyer acts for: ${actingFor.party}. This side is taken from what the requested document does and whom the sources show instructing it${actingFor.reason ? ` (${actingFor.reason})` : ""}, as the request names none. Draft for that party; the drafting notes disclose this once, for the lawyer to confirm.`
+    : actingFor.basis !== "none"
     ? `The lawyer acts for: ${actingFor.party}.`
-    : "The request does not say whom the lawyer acts for. Work even-handedly: where the parties' interests diverge, draft wording balanced between them " +
+    : "The request does not say whom the lawyer acts for, and no side was taken. Work even-handedly: where the parties' interests diverge, draft wording balanced between them " +
       "marking only a new substantive choice not already settled by instructions or answers for confirmation, rather than favouring either party. " +
       "Ask the lawyer only for information the request and the sources do not give.")
 }
@@ -345,7 +348,7 @@ function draftingNotesSections(directory: string, request: string) {
       "- delivery_artifacts projects the bodies, comparisons and generated drafting-notes Word file from the same naming logic registration uses. planned_file, planned_role and planned_filename are the model's selections, not proof of what the user requested; compare them with the instructions. The notes file is the output you are writing, so its pending rendering is normal. A generated note can fulfill an explanatory-note request when its audience, content and naming fit that instruction; a distinct client advice function must be fulfilled by its own appropriate body. Do not describe an explanatory artifact as missing merely because it has no separately planned body. Registration may suffix names to preserve existing matter documents.",
       "- The final body is clean accepted text; native_export describes the separate comparison file, naming plan (registration occurs after package review; this internal phase is not a client open item or outstanding lawyer action), and actual review-amendment application counts and separate withheld-proposal counts. Use that record for artifact presence and applied/unapplied review-amendment counts and the separate withheld-proposal count, and keep source support and legal effect separate. Do not infer export absence from clean body text or fabricate application status from an empty list of explanatory records.\n- Describe each delivered redline using its stated comparison baseline below. Do not imply that template reuse selects an original comparison source. Identify any requested comparison not covered by that baseline as outstanding.",
       "- Explain what each drafted document does. Use change_origin to distinguish source-to-initial-draft revisions from later review amendments; an initial revision is not a change made during review.",
-      "- State whom the documents were drafted for or, where the prompt says the request does not say whom the lawyer acts for, that it did not and the drafting is even-handed.",
+      "- State whom the documents were drafted for. Where acting_for says the side was taken from the sources, say so once, with that evidence, and that the lawyer must confirm it. Where it says no side was taken, say that the request did not say whom the lawyer acts for and the drafting is even-handed.",
       ...(memo ? ["- These notes are the requested memo; title it as that memo. Lead with the discrepancies found and the choices made, then give the recommendations and the open points, in plain language. The memo carries only what these records show."] : []),
       "- Say what each open item is and what the lawyer needs to do about it, and end that statement with the item's exact id as a trailing \"[ref: <id>]\". Write internal ids only in these markers, and name each document by its title or file name, never by its internal id; describe each change by what it does, never by its change id.",
       "- For each marked drafted default, say what was chosen and that the lawyer must confirm it.",

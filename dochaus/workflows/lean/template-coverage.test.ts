@@ -81,7 +81,7 @@ describe("template coverage in a lean run", () => {
     const retry = model.prompts.filter(row => row.agent === AGENT.draft)[1]!.text
     expect(retry).toContain('The outline has no "Acting for:" line.')
     expect(retry).toContain(`does not account for these parts of its template "${TEMPLATE}": "ANNEX B – CHARGING SCHEDULE".`)
-    expect(readLeanPlan(directory)).toMatchObject({ documents: [{ template: TEMPLATE }], acting_for: { party: "", stated: false } })
+    expect(readLeanPlan(directory)).toMatchObject({ documents: [{ template: TEMPLATE }], acting_for: { party: "", basis: "none" } })
   }, 120_000)
 
   test("a template part the rendered draft falls short on is a draft open item change-plan receives; the draft step asks for nothing more and rewrites nothing", async () => {

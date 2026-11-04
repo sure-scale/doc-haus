@@ -10,6 +10,7 @@ import { checkPackageReview, isLeftOpenPackageFinding, isWithheldDeliveryItem, r
 import { coverageItems, planCoverageCurrent } from "./package-coverage"
 import { readActRecord } from "./act-record"
 import { requestedFilesItems } from "./requested-files"
+import { draftedDefaultItems } from "./drafted-defaults"
 import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
 import { currentResearchGaps, researchOutputValid } from "./research"
@@ -607,7 +608,7 @@ export function stageOutputValid(directory: string, step: StepID) {
 
 /** Open items the drafting notes must disclose. */
 export function disclosableItems(directory: string): OpenItem[] {
-  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory)]
+  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory), ...draftedDefaultItems(directory)]
 }
 
 function ensureNewline(text: string) {

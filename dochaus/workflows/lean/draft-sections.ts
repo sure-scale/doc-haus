@@ -34,6 +34,7 @@ import {
 } from "./stages"
 import { answeredQuestionsText, leanFile, readLeanText, readQuestions, writeLeanText, type LeanStageState, type LeanState, type OpenItem, type Question } from "./state"
 import { stageInputSha } from "./runner"
+import { intakeActingFor } from "./intake"
 import { outlineCoverageIssues, partCarries, plannedContract } from "./template-contract"
 import { draftStatusItems } from "./draft-status"
 import { draftTemplateItems } from "./template-coverage"
@@ -249,15 +250,17 @@ export async function runDraftStage(
     // The lawyer's own words ground requested file names and the memo.
     const request = [readLeanText(directory, "request.md"), readLeanText(directory, "updated-notes.md"), answeredQuestionsText(directory)].filter(Boolean).join("\n\n")
     // A party the lawyer's words name prevails; when they name none, the plan
-    // takes the client recorded on the matter.
+    // takes the client recorded on the matter, else the side intake took from
+    // the sources.
     const client = matterClient(directory)
+    const inferred = intakeActingFor(directory)
     // The Posture the stages so far drafted to; the plan freezes it for the rest of the run.
     const posture = runPosture(directory)
     const best: { value?: LeanOutline } = {}
     const checkOutline = (reply: string): Checked<LeanOutline> => {
-      const parsed = parsePlan(reply, request)
+      const parsed = parsePlan(reply, request, inferred)
       if (!parsed.value) return parsed
-      if (!parsed.value.acting_for.stated && client) parsed.value.acting_for = { party: client, stated: true }
+      if (parsed.value.acting_for.basis === "none") parsed.value.acting_for = client ? { party: client, basis: "matter" } : inferred
       const selectionIssues = playbookSelectionIssues(directory, parsed.value.documents)
       if (selectionIssues.length) { delete best.value; return { issues: selectionIssues } }
       best.value = parsed.value

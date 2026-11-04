@@ -61,17 +61,24 @@ export type PlannedDocument = {
   id: DocID; title: string; purpose: string; parts: PlannedPart[]; playbook_review?: PlaybookReview; mode?: "new" | "revise"; deliverable?: "body" | "redline" | "combined"; template?: string; comparison?: string; left_out?: LeftOutPart[]; file?: string; executed_by?: string[]; form?: DocumentForm
   furniture?: { legend?: string; page_numbers?: false }
 }
-export type ActingFor = { party: string; stated: boolean }
+/** Whom the lawyer acts for and why: the party the lawyer's words name
+ * ("stated"), the client recorded on the matter ("matter"), the party intake
+ * took from what the requested document does and whom the sources show
+ * instructing the work ("inferred", with its source evidence as `reason`), or
+ * no side ("none"). */
+export type ActingForBasis = "stated" | "matter" | "inferred" | "none"
+export type ActingFor = { party: string; basis: ActingForBasis; reason?: string }
 /** `memo` is the name of the memo the request asks for and `notes_file` the
  * file the notes are delivered as; both are delivery metadata. */
-export type LeanPlan = { schema: "dochaus.lean.plan/1"; documents: PlannedDocument[]; acting_for?: ActingFor; posture?: Posture; basis?: string; memo?: string; notes_file?: string }
+export type LeanPlan = { schema: "dochaus.lean.plan/2"; documents: PlannedDocument[]; acting_for?: ActingFor; posture?: Posture; basis?: string; memo?: string; notes_file?: string }
 /** `memo` is the request's own words for a memo that accompanies the documents,
  * from a "Memo:" line; the run writes and names the drafting notes as that memo. */
 export type LeanOutline = { documents: Omit<PlannedDocument, "id">[]; acting_for: ActingFor; memo?: string }
 
-export const LEAN_PLAN_SCHEMA = "dochaus.lean.plan/1"
+export const LEAN_PLAN_SCHEMA = "dochaus.lean.plan/2"
 export const FIRST_DOCUMENT: DocID = "d1"
-export const NOT_STATED: ActingFor = { party: "", stated: false }
+export const NOT_STATED: ActingFor = { party: "", basis: "none" }
+const ACTING_FOR_BASES: ActingForBasis[] = ["stated", "matter", "inferred", "none"]
 
 type Checked<T> = { issues: string[]; value?: T }
 
@@ -164,13 +171,18 @@ export function operativePlan(plan: LeanPlan | undefined) {
   return { ...operative, documents: plan.documents.map(operativeDocument) }
 }
 
-/** Whom the lawyer acts for. A plan without it, or with no party named, says
- * the request did not state it. */
+/** Whom the lawyer acts for. A plan without it, or with no party named, takes
+ * no side. */
 export function planActingFor(directory: string): ActingFor {
-  const value: unknown = readLeanPlan(directory)?.acting_for
+  return actingForValue(readLeanPlan(directory)?.acting_for)
+}
+
+/** A saved acting-for record, or no side when it names no party or basis. */
+export function actingForValue(value: unknown): ActingFor {
   if (typeof value !== "object" || value === null) return NOT_STATED
   const row = value as Partial<ActingFor>
-  return typeof row.party === "string" && row.party.trim() && row.stated !== false ? { party: row.party.trim(), stated: true } : NOT_STATED
+  if (typeof row.party !== "string" || !row.party.trim() || !ACTING_FOR_BASES.includes(row.basis as ActingForBasis) || row.basis === "none") return NOT_STATED
+  return { party: row.party.trim(), basis: row.basis!, ...(typeof row.reason === "string" && row.reason.trim() ? { reason: row.reason.trim() } : {}) }
 }
 
 /** How far the run's drafts lean toward the party the lawyer acts for: the
@@ -228,7 +240,7 @@ export function earlierDocuments(directory: string, id: DocID): PlannedDocument[
  * "Deliverable: combined" puts one document and that memo in one file: it needs
  * the memo and only one document may have it; otherwise it is retry feedback
  * and, on the last attempt, the document is delivered as "body". */
-export function parsePlan(reply: string, request?: string): Checked<LeanOutline> {
+export function parsePlan(reply: string, request?: string, inferred?: ActingFor): Checked<LeanOutline> {
   if (!reply.trim()) return { issues: [`The reply was empty. ${OUTLINE_SHAPE}`] }
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
   const documents: {
@@ -310,7 +322,9 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
   ]
   if (issues.length) return { issues }
   const party = statedParty(acting[0] ?? "")
-  const ungrounded = party !== undefined && request !== undefined && !namedIn(request, party)
+  // The party intake took from the sources, named again by the outline, stands as inferred.
+  const asInferred = party !== undefined && inferred?.basis === "inferred" && nameKey(party) === nameKey(inferred.party)
+  const ungrounded = party !== undefined && request !== undefined && !namedIn(request, party) && !asInferred
   const files = documents.map(document => requestedFile(document.title, document.file, request))
   const repeatedFiles = duplicates(files.flatMap(file => file.name ?? []))
   const memo = outlineMemo(memos[0], request)
@@ -354,7 +368,7 @@ export function parsePlan(reply: string, request?: string): Checked<LeanOutline>
         ...(forms[index] ? { form: forms[index] } : {}),
         ...(furniture[index]?.value ? { furniture: furniture[index].value } : {}),
       })),
-      acting_for: party !== undefined && !ungrounded ? { party, stated: true } : NOT_STATED,
+      acting_for: party === undefined || ungrounded ? NOT_STATED : request !== undefined && namedIn(request, party) || !asInferred ? { party, basis: "stated" } : inferred!,
       ...(memoName ? { memo: memoName } : {}),
     },
   }
@@ -607,7 +621,7 @@ export function namedIn(text: string, party: string) {
 
 const actingForUngrounded = (party: string) =>
   `The "Acting for:" line names "${party}", but the request does not name that party. When the request says whom the lawyer acts for, ` +
-  "name that party in the request's own words; otherwise write \"Acting for: not stated\". Do not infer the party from the sources."
+  "name that party in the request's own words; otherwise write \"Acting for: not stated\". The run takes the side from the matter and its sources itself."
 
 function duplicates(names: string[]) {
   const seen = names.map(normalizedHeading)

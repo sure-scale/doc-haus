@@ -414,7 +414,7 @@ describe("sectioned draft stage", () => {
 
   test("the outline records whom the lawyer acts for from one line before the first title", () => {
     const stated = parsePlan("Acting for: the buyer\n# Title\nForm: other\n## One")
-    expect(stated).toEqual({ issues: [], value: { documents: [expect.objectContaining({ title: "Title" })], acting_for: { party: "the buyer", stated: true } } })
+    expect(stated).toEqual({ issues: [], value: { documents: [expect.objectContaining({ title: "Title" })], acting_for: { party: "the buyer", basis: "stated" } } })
     expect(parsePlan("- **Acting for:** Not stated.\n# Title\nForm: other\n## One")).toEqual({ issues: [], value: expect.objectContaining({ acting_for: NOT_STATED }) })
     // Without the line the outline is retried; its value stands as not stated if the last attempt still lacks it.
     for (const reply of ["# Title\nForm: other\n## One", "# Title\nForm: other\nActing for: the buyer\n## One"]) {
@@ -437,7 +437,7 @@ describe("sectioned draft stage", () => {
     const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
     expect(result.status).toBe("done")
     expect(model.prompts[1]!.text).toContain('The outline has no "Acting for:" line.')
-    expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the sender", stated: true })
+    expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the sender", basis: "stated" })
     expect(model.prompts[2]!.text).toContain("<acting_for>\nThe lawyer acts for: the sender.\n</acting_for>")
     expect(model.prompts[3]!.text).not.toContain("<acting_for>")
   }, 60_000)
@@ -449,7 +449,7 @@ describe("sectioned draft stage", () => {
     const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
     expect(result.status).toBe("done")
     expect(readLeanPlan(directory)?.acting_for).toEqual(NOT_STATED)
-    expect(model.prompts[4]!.text).toContain("The request does not say whom the lawyer acts for.")
+    expect(model.prompts[4]!.text).toContain("The request does not say whom the lawyer acts for, and no side was taken.")
   }, 60_000)
 
   test("a part reply is checked against its outlined heading", () => {

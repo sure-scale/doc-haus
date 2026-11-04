@@ -145,7 +145,7 @@ test("every review takes the frozen Posture's standard for the side the lawyer a
   save({ posture: "client-favorable" })
   recordMatter(directory, { posture: "client-favorable" })
   for (const posture of ["client-favorable", "balanced", "conservative"] as const) {
-    writeLeanPlan(directory, documents, undefined, { party: "Northwind Traders Ltd", stated: true }, undefined, posture)
+    writeLeanPlan(directory, documents, undefined, { party: "Northwind Traders Ltd", basis: "stated" }, undefined, posture)
     expect(reviews().length).toBeGreaterThan(1)
     for (const step of reviews()) {
       const prompt = stagePrompt(directory, step)
@@ -180,7 +180,7 @@ test("every review takes the frozen Posture's standard for the side the lawyer a
 // A review finding that gives one party more than market practice is held back
 // unless the run acts for a side under Client-favorable: it reaches no change
 // plan and is disclosed as a recommendation naming the side it favours.
-const NORTHWIND: ActingFor = { party: "Northwind Traders Ltd", stated: true }
+const NORTHWIND: ActingFor = { party: "Northwind Traders Ltd", basis: "matter" }
 const PID = "p111111111111"
 const BEYOND = "Delivery gives the buyer no right to cancel the whole contract for any late delivery."
 const MARKET_GAP = "Delivery gives the buyer no remedy for late delivery."

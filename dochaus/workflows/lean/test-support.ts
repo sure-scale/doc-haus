@@ -83,7 +83,7 @@ export function scriptedModel(replies: Record<string, Reply>) {
         [AGENT["review-wording"]]: () => NO_FINDINGS,
         [AGENT["review-client-disadvantage"]]: () => NO_FINDINGS,
         [AGENT["package-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [], delivery: [] }),
-        [AGENT.intake]: () => JSON.stringify({ ready: true, jurisdiction: "No external legal determination needed for this supplied-source fixture", scope: "Reproduce supplied terms only" }),
+        [AGENT.intake]: () => JSON.stringify({ ready: true, jurisdiction: "No external legal determination needed for this supplied-source fixture", scope: "Reproduce supplied terms only", acting_for: { party: "", basis: "none" } }),
         [AGENT.research]: () => JSON.stringify({ status: "not-needed", findings: [], limitations: ["This fixture requests a note from supplied terms only."] }),
         [AGENT["research-review"]]: () => JSON.stringify({ approved: [], rejected: [], limitations: [], gaps: [] }),
         // Every asked question is advised; the fixture's advisor recommends nothing.

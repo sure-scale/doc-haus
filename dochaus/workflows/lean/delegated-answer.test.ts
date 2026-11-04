@@ -213,7 +213,7 @@ test("a question delegated in the lawyer's own words runs through the queue as a
     [AGENT.changes]: noChanges,
     [AGENT.intake]: (_prompt, index) => index === 0
       ? JSON.stringify({ questions: [{ question: QUESTION, kind: "judgment", context: "The supplied terms are silent on late delivery." }] })
-      : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" }),
+      : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms", acting_for: { party: "", basis: "none" } }),
     [AGENT.advise]: () => JSON.stringify({ options: [{ text: RECOMMENDED }, { text: OTHER }], recommendation: { option: 0, rationale: RATIONALE, basis: BASIS } }),
     [AGENT.answer]: prompt => JSON.stringify({ class: prompt.includes(DELEGATION) ? "delegated" : "answered" }),
   })
