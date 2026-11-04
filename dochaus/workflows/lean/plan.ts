@@ -329,8 +329,8 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
   ]
   if (issues.length) return { issues }
   const party = statedParty(acting[0] ?? "")
-  // The party intake took from the sources, named again by the outline, stands as inferred.
-  const asInferred = party !== undefined && inferred?.basis === "inferred" && nameKey(party) === nameKey(inferred.party)
+  // The party intake quoted, named again by the outline, keeps intake's basis.
+  const asInferred = party !== undefined && inferred !== undefined && inferred.basis !== "none" && nameKey(party) === nameKey(inferred.party)
   const ungrounded = party !== undefined && request !== undefined && !namedIn(request, party) && !asInferred
   const files = documents.map(document => requestedFile(document.title, document.file, request))
   const repeatedFiles = duplicates(files.flatMap(file => file.name ?? []))

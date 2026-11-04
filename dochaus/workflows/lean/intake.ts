@@ -64,13 +64,13 @@ export function intakeRecordsActingFor(value: unknown) {
   return record(value) && record(value.acting_for) && BASES.includes(value.acting_for.basis as ActingForBasis)
 }
 
-/** The party intake took from the sources, with its evidence; otherwise no side.
- * A party the lawyer's words name, and the matter's client, reach the plan
- * through the outline and the matter record. */
+/** The party intake quoted, stated in the lawyer's words or an instructions
+ * document or inferred from the sources, with its evidence and basis; otherwise
+ * no side. The matter's client reaches the plan through the matter record. */
 export function intakeActingFor(directory: string): ActingFor {
   const value = (readLeanJson(directory, "intake.json") as { acting_for?: IntakeActingFor } | undefined)?.acting_for
-  if (!record(value) || value.basis !== "inferred" || typeof value.party !== "string" || !value.party.trim()) return NOT_STATED
-  return { party: value.party.trim(), basis: "inferred", ...(value.quote ? { reason: `"${value.quote}" [source: ${value.source_id}]` } : {}) }
+  if (!record(value) || !["stated", "inferred"].includes(value.basis) || typeof value.party !== "string" || !value.party.trim()) return NOT_STATED
+  return { party: value.party.trim(), basis: value.basis, ...(value.quote ? { reason: `"${value.quote}" [source: ${value.source_id}]` } : {}) }
 }
 
 export const INTAKE_DATES_SHAPE = '"dates":{"document_date":{"date":"YYYY-MM-DD, or empty for the drafting day","basis":"request|sources|today","source_id":"source name, or request","quote":"exact words that show it"},"operative_dates":[{"label":"what happens on the date","date":"YYYY-MM-DD","source_id":"source name, or request","quote":"exact words that show it"}]}'

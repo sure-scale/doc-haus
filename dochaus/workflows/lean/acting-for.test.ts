@@ -7,7 +7,7 @@ import { NOT_STATED, nameKey, namedIn, operativeDocument, parsePlan, planActingF
 import { stagePrompt } from "./prompts"
 import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES, LEAN_PROMPT_VERSION, stageInputs } from "./stages"
-import { checkIntakeActingFor } from "./intake"
+import { checkIntakeActingFor, intakeActingFor } from "./intake"
 import { researchPrompt } from "./research"
 import { hashStageInputs, readLeanJson, writeLeanText, type OpenItem } from "./state"
 import { AGENT, DRAFT, SOURCE, cleanupMatters, drafter, happyPath, matter, scriptedModel, type Reply } from "./test-support"
@@ -360,6 +360,24 @@ describe("a side taken from the sources", () => {
     const outline = "Acting for: Kestrel Works (inferred: it instructs the work)\n# Title\nForm: other\n## One"
     expect(parsePlan(outline, "Draft a supply note.", KESTREL)).toEqual({ issues: [], value: expect.objectContaining({ acting_for: KESTREL }) })
     expect(parsePlan(outline, "Draft a supply note.").issues.join(" ")).toContain('names "Kestrel Works", but the request does not name that party')
+  })
+
+  test("a side an instructions document states keeps its basis in the plan and is not disclosed as a choice", async () => {
+    const directory = matter(INSTRUCTED)
+    const model = scriptedModel({ ...happyPath, [AGENT.intake]: intakeFor({ party: "Kestrel Works", basis: "stated", source_id: SOURCE, quote: SHOWN }) })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    expect(intakeActingFor(directory)).toEqual({ ...KESTREL, basis: "stated" })
+    expect(readLeanPlan(directory)?.acting_for).toEqual({ ...KESTREL, basis: "stated" })
+    expect(promptsOf(model, AGENT.review)[0]).toContain(SIDED_REVIEW)
+    expect((readLeanJson(directory, "gate.json") as { items: OpenItem[] }).items.some(item => item.kind === "drafted_default")).toBe(false)
+  }, 120_000)
+
+  test("an outline that names a party intake quoted as stated, which the request does not name, keeps it as stated", () => {
+    const outline = "Acting for: Kestrel Works\n# Title\nForm: other\n## One"
+    const STATED: ActingFor = { ...KESTREL, basis: "stated" }
+    expect(parsePlan(outline, "Draft a supply note.", STATED)).toEqual({ issues: [], value: expect.objectContaining({ acting_for: STATED }) })
+    expect(parsePlan(outline, "Draft a supply note.", NOT_STATED).issues.join(" ")).toContain('names "Kestrel Works", but the request does not name that party')
   })
 
   test("intake determines the side rather than asking only because the request is silent", () => {

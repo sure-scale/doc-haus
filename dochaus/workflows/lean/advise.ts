@@ -186,8 +186,8 @@ function actingForAdvice(directory: string) {
   const inferred = intakeActingFor(directory)
   return client
     ? `The lawyer acts for: ${client} (the client recorded on the matter), unless the request, instructions or answers above name another party.`
-    : inferred.basis === "inferred"
-    ? `The lawyer acts for: ${inferred.party}, as taken from the sources, unless the request, instructions or answers above name another party.`
+    : inferred.basis !== "none"
+    ? `The lawyer acts for: ${inferred.party}${inferred.basis === "inferred" ? ", as taken from the sources" : ""}, unless the request, instructions or answers above name another party.`
     : "Whom the lawyer acts for is not recorded yet; take it from the request, instructions or answers above where they say, otherwise recommend what is even-handed between the parties."
 }
 
