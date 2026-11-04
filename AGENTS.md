@@ -37,11 +37,16 @@ architectural requirement for product model jobs and development agents alike.
 - Keep context concise. Send a job only what its question needs, unless there
   is a stated reason for more; extra material dilutes attention and causes
   context rot.
-- Separate each kind of context clearly in the prompt, preferably in XML-style
-  tags (`<request>`, `<source>`, `<question>`), so the model never confuses
+- Separate each kind of context in the prompt with XML-style tags
+  (`<request>`, `<source>`, `<question>`), so the model never confuses
   instructions, evidence and the question it must answer.
 - Keep extraction, drafting, linking, verification and reconciliation in
   separate jobs, not in one drafting prompt or one final reviewer.
+- Split a job wherever it can be split. Never merge jobs, keep one broad, or
+  prefer a less decomposed design to save calls or tokens: repeated context is
+  cached, and quality is never traded for cost. Long documents confuse a job
+  that has too much going on: split by part or passage so each job holds only
+  what its question needs.
 - Decompose an oversized job before raising its prompt, context window,
   reasoning budget or retries. Run jobs in parallel within the concurrency
   limit, with explicit handoffs and bounded reconciliation.
