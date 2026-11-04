@@ -7,7 +7,7 @@ import { comparisonBaseline } from "./comparison"
 import { compareDocxWithPointers, paragraphPointers, withStableRevisionDates } from "../../lib/drafting-amendment"
 import { amendmentParagraphs } from "../../lib/drafting-amendment"
 import { applyAmendments } from "../../lib/drafting-amendment-apply"
-import { finalBodyItems, readChangeList, readParagraphs, settleApply, type ApplyResult, type ChangeList } from "./checks"
+import { finalBodyItems, readChangeList, readParagraphs, settleApply, withoutListLabel, type ApplyResult, type ChangeList } from "./checks"
 import type { DocID } from "./plan"
 import { draftedReferences, paragraphRows, stepOutputs } from "./stages"
 import { leanFile, matterRelative, readLeanJson, writeLeanBytes, writeLeanText, type LeanState, type OpenItem } from "./state"
@@ -207,27 +207,73 @@ function renumberApplied(body: Uint8Array, applied: Uint8Array, result: ApplyRes
 export async function writeProjectedNumbers(directory: string, document: DocID) {
   const file = `${document}/paragraphs-projected.json`
   const changes = readChangeList(directory, document)
-  const body = leanFile(directory, `${document}/body.docx`)
   rmSync(leanFile(directory, file), { force: true })
-  if (!changes || !existsSync(body)) return
+  const rows = changes && await projectedRows(directory, document, changes.amendments)
+  if (rows) writeLeanText(directory, file, `${JSON.stringify(rows, null, 2)}\n`)
+}
+
+// `amendments` applied to a scratch copy of the drafted body and numbered as
+// apply numbers it (writeProjectedNumbers); undefined when one would not apply.
+async function projectedRows(directory: string, document: DocID, amendments: Amendment[]) {
+  const body = leanFile(directory, `${document}/body.docx`)
+  if (!existsSync(body)) return
   const scratch = mkdtempSync(join(tmpdir(), "dochaus-projected-"))
   try {
     const out = join(scratch, "body.docx")
-    const result = await applyAmendments({ docxPath: body, outPath: out, amendments: changes.amendments }).catch(() => undefined)
-    const settled = settleApply(changes, result, existsSync(out))
+    const result = await applyAmendments({ docxPath: body, outPath: out, amendments }).catch(() => undefined)
+    const settled = settleApply({ amendments, questions: [] }, result, existsSync(out))
     if (settled.result.unapplied.length) return
     writeFileSync(out, renumberApplied(readFileSync(body), readFileSync(out), settled.result))
     const labels = new Map((await paragraphRows(out)).map(row => [row.pid, row.label]))
     const outcomes = new Map(settled.result.applied.map(row => [row.pid, row]))
-    const amendments = new Map(changes.amendments.map(row => [row.pid, amendmentParagraphs(row)]))
-    const rows = readParagraphs(directory, document).flatMap(row => (amendments.get(row.pid) ?? [row.text]).map((text, at) => {
+    const parts = new Map(amendments.map(row => [row.pid, amendmentParagraphs(row)]))
+    return readParagraphs(directory, document).flatMap(row => (parts.get(row.pid) ?? [row.text]).map((text, at) => {
       const label = labels.get(outcomes.get(row.pid)?.result_pids?.[at] ?? row.pid)
       return { pid: row.pid, text, ...(label ? { label } : {}) }
     }))
-    writeLeanText(directory, file, `${JSON.stringify(rows, null, 2)}\n`)
   } finally {
     rmSync(scratch, { recursive: true, force: true })
   }
+}
+
+// A clause number typed at the start of a paragraph ("4.", "2.3").
+const TYPED_NUMBER = /^\s*(\d{1,3}(?:\.\d{1,3})*\.?)[ \t\u00a0]+(?=\S)/
+const typedNumber = (text: string) => {
+  const number = TYPED_NUMBER.exec(text)?.[1]
+  return number?.includes(".") ? number : undefined
+}
+
+/** Retry feedback for a split of a numbered paragraph whose parts type a
+ * clause number the list will not show, so it would print as text: the first
+ * part keeps the paragraph's own number, and a later part takes only the
+ * number the list shows next at the paragraph's level or a deeper one
+ * (renumberApplied). Later parts are numbered with the document's other
+ * current changes; nothing is said when that projection does not apply. A
+ * later part without a typed number is an unnumbered paragraph, as intended. */
+export async function splitNumberingIssues(directory: string, document: DocID, amendments: Amendment[]) {
+  const rows = new Map(readParagraphs(directory, document).map(row => [row.pid, row]))
+  const splits = amendments.flatMap((amendment, index) => {
+    const row = rows.get(amendment.pid)
+    return amendment.operation === "split" && row?.label ? [{ at: `amendments[${index}] ([${row.pid}], numbered ${row.label})`, parts: amendmentParagraphs(amendment), row }] : []
+  })
+  const issues = splits.flatMap(({ at, parts, row }) => {
+    const typed = typedNumber(parts[0]!)
+    return typed && typed !== row.label && typedNumber(row.text) !== typed
+      ? [`${at}.updated[0] begins with "${typed}", but the first paragraph of a split keeps the paragraph's own number ${row.label}, so "${typed}" would print as text after it. Keep the number out of the first paragraph; to start a new numbered paragraph, put the number at the start of a later paragraph of the split.`]
+      : []
+  })
+  const later = splits.filter(({ parts }) => parts.slice(1).some(text => typedNumber(text)))
+  if (!later.length) return issues
+  const others = readChangeList(directory, document)?.amendments
+    .filter(row => rows.get(row.pid)?.sha256 === row.existing_sha256 && !amendments.some(own => own.pid === row.pid)) ?? []
+  const projected = await projectedRows(directory, document, [...others, ...amendments])
+  if (!projected) return issues
+  return [...issues, ...later.flatMap(({ at, row }) => projected.filter(part => part.pid === row.pid).flatMap((part, index) => {
+    const typed = index ? typedNumber(part.text) : undefined
+    return typed && withoutListLabel(part.text, part.label) === part.text
+      ? [`${at}.updated[${index}] begins with "${typed}", which the list will not give it${part.label ? ` (it shows ${part.label})` : ""}, so "${typed}" would print as text. A later paragraph of a split is numbered only when it opens with the number the list shows next at the split paragraph's level or a deeper one; type that number, split a paragraph at the new paragraph's own or a higher level (a new section splits a section heading), or leave the number out for an unnumbered paragraph.`]
+      : []
+  }))]
 }
 
 /** A document's redline: its comparison baseline (comparisonBaseline) compared

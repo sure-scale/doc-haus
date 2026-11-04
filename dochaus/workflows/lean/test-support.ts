@@ -29,10 +29,10 @@ export function cleanupMatters() {
   directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true }))
 }
 
-export function matter(sourceText = SOURCE_TEXT) {
+export function matter(sourceText = SOURCE_TEXT, request = "Draft a short supply note from the supply terms.") {
   const directory = createMatter("lean-runner-", sourceText)
   directories.push(directory)
-  initLeanState(directory, { request: "Draft a short supply note from the supply terms.", ownerSessionID: "ses_owner", model: { providerID: "test", modelID: "scripted" } })
+  initLeanState(directory, { request, ownerSessionID: "ses_owner", model: { providerID: "test", modelID: "scripted" } })
   return directory
 }
 

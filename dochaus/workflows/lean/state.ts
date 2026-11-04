@@ -522,7 +522,10 @@ export const SHORT_HASH_LENGTH = 10
 /** How every step reads an answer: a delegated decision or a point still open
  * is marked as such, so no step reads it as the lawyer's own answer. A point
  * still open was already put to the lawyer, so no step asks it again, however
- * reworded; the gate discloses it. */
+ * reworded; the gate discloses it. Its paragraph shows it as an unanswered
+ * question's does, with a visible open-item marker: a step that reads the
+ * delegation as leave to pick a value from the sources and drop the marker
+ * would leave the body silent on a point only the lawyer can settle. */
 function answerLabel(question: Question) {
   if (question.answer_kind === "instruction") return `A (settled by the lawyer's instruction "${question.decided_by?.text}"${question.decided_by ? `, from their words "${question.decided_by.quote}" in ${question.decided_by.source_id}` : ""}; not asked; the lawyer may change it)`
   if (question.answer_kind === "adopted") return `A (${ADOPTED_ANSWER})`
@@ -536,7 +539,7 @@ function answerLabel(question: Question) {
  * it on the research or sources, and the notes disclose the departure. */
 export const ADOPTED_ANSWER = "the lawyer delegated this, so the recommended option was adopted before legal research; it is the drafter's judgment, not the lawyer's answer. Follow it unless the legal research or the sources show it cannot work as stated; then do what they support and disclose the departure in the notes. Do not ask it again"
 
-const STILL_OPEN = "it stays open as a disclosed placeholder or open item; do not ask it again"
+const STILL_OPEN = "it stays open: every paragraph that depends on it keeps a visible [open item: what the lawyer must supply or confirm] marker, also where its wording is drafted from the sources; never remove that marker or treat the point as settled, and do not ask it again"
 
 export function shortHash(text: string, length = SHORT_HASH_LENGTH) {
   return createHash("sha1").update(text).digest("hex").slice(0, length)

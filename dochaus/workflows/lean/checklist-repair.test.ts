@@ -144,6 +144,23 @@ test("a drafting-notes finding resting on the notes file's properties gets no no
   expect(packetFinding(repairs[0]!).evidence).toEqual([text])
 })
 
+test("an open issue missing from the drafting notes or a body gets its repair; a native-comment item does not", async () => {
+  const { directory, finding } = await setup()
+  writeLeanText(directory, "drafting-notes.md", "# Drafting notes\n\nTiming is missing.")
+  const target = (document: string, treatment: ChecklistItem["target"]["treatment"]) => {
+    const extraction = JSON.parse(readFileSync(leanFile(directory, "checklist/extraction.json"), "utf8"))
+    extraction.sources[0].items[0].item = { ...item, basis: "proposal", target: { ...item.target, document, treatment } }
+    writeLeanText(directory, "checklist/extraction.json", JSON.stringify(extraction))
+  }
+  target("notes", "open_issue")
+  expect(checklistRepairItems(directory).map(row => row.ref)).toEqual([{ repair_target: "memo" }])
+  target("advice.docx", "open_issue")
+  expect(checklistRepairItems(directory).map(row => row.ref)).toEqual([expect.objectContaining({ document: "d2", repair_target: "body" })])
+  expect(packetFinding(checklistRepairItems(directory)[0]!)).toEqual(finding)
+  target("advice.docx", "comment")
+  expect(checklistRepairItems(directory)).toEqual([])
+})
+
 test("Continue at a blocked checklist admits no text repair for a delivered file's properties, and admits one for text cited beside them", async () => {
   const { directory, finding, save } = await setup()
   save({ ...finding, reason: "The delivered file does not have the requested name.", evidence: deliveryRows(directory, item) })

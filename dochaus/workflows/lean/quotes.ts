@@ -3,7 +3,7 @@ import { approvedResearch, researchSource } from "./research"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
-import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearestGap, normalize, quotePlaces, verifyQuote } from "../../lib/quote-verify"
+import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearestGap, normalize, normalizeWithMap, quotePlaces, verifyQuote } from "../../lib/quote-verify"
 import type { DocID } from "./plan"
 import { INSTRUCTIONS_FILE } from "./instructions"
 import { leanUserUpdates } from "./requests"
@@ -151,7 +151,9 @@ export function sourceQuotes(text: string, options: SourceQuoteScanOptions = { f
 export function proseQuoteIssues(directory: string, where: string, text: string, options: SourceQuoteScanOptions = { format: "markdown" }) {
   const scanned = scanSourceQuotes(text, options)
   return [
-    ...scanned.issues.map(issue => `${where} could not read a cited quotation: ${issue.message}. Write the exact quoted words followed by [source: exact source name].`),
+    // Name the passage: told only that some marker is unreadable, a writer
+    // cannot find it and rewrites the citations that were sound.
+    ...new Set(scanned.issues.map(issue => `${where} could not read a cited quotation in "${excerptEnd(issue.statement)}": ${issue.message}. Write the exact quoted words followed by [source: exact source name].`)),
     ...scanned.quotes.filter(quote => !proseQuoteFound(directory, quote)).map(quote => quoteMissIssue(directory, where, quote)),
   ]
 }
@@ -175,9 +177,12 @@ export function instructionFound(directory: string, quote: string) {
   return lawyerWordsHold(lawyerWords(directory), quote)
 }
 
+// The lawyer writes in the chat's Markdown, so their words are also read past
+// its formatting ("`draft.docx`" holds the quote "draft.docx").
 function lawyerWordsHold(texts: string[], quote: string) {
   const words = normalize(quote).toLowerCase()
-  return words.length > 0 && texts.some(text => quotePlaces(normalize(text).toLowerCase(), words, { first: true }).places.length > 0)
+  return words.length > 0 && texts.some(text => [normalize(text), normalizeWithMap(text, { markdown: true }).text]
+    .some(reading => quotePlaces(reading.toLowerCase(), words, { first: true }).places.length > 0))
 }
 
 /** Where the lawyer wrote `quote`: "request" when the request or an included
@@ -352,4 +357,10 @@ export function quoteMissItems(directory: string, stage: StageID, text: string, 
 export function excerpt(text: string, length = EXCERPT) {
   const flat = text.replace(/\s+/g, " ").trim()
   return flat.length > length ? `${flat.slice(0, length - 1)}…` : flat
+}
+
+/** The end of a statement, where its source marker sits. */
+function excerptEnd(text: string, length = EXCERPT) {
+  const flat = text.replace(/\s+/g, " ").trim()
+  return flat.length > length ? `…${flat.slice(1 - length)}` : flat
 }

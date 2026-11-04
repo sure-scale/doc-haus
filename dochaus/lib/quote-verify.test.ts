@@ -92,6 +92,18 @@ test("single emphasis marks and link targets are not part of the quoted words, b
   })
 })
 
+test("a code span's backticks are not part of the quoted words, but a lone or doubled backtick is", () => {
+  const check = fixture([chunk("Send `notice.docx` to the Agent. A lone ` mark and ``x`` stay. Use `a`.", 0, "first")], "terms.md")
+  expect({
+    span: check("Send notice.docx to the Agent").found,
+    asTyped: check("Send `notice.docx` to").found,
+    lone: check("A lone mark").found,
+    doubled: check("and x stay").found,
+    single: check("Use a.").found,
+    word: fixture([chunk("Send `notice.docx` to the Agent.", 0, "first")])("Send notice.docx to the Agent").found,
+  }).toEqual({ span: true, asTyped: true, lone: false, doubled: false, single: true, word: false })
+})
+
 test("a rule line between PDF pages reads as a space, in whole and elided quotations alike, but not in a Word document or a form", () => {
   const text = "The Tenant shall pay within fourteen days of the date of\n\n-----\n\nthe invoice, without set-off. Signed for the Tenant:\n---\nDate of signature."
   const check = fixture([chunk(text, 0, "first")], "statement.pdf")

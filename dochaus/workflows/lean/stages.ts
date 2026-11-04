@@ -28,6 +28,7 @@ import { withTemplateStyleIds } from "../../lib/template-seed"
 import { presentDraft, type DraftPresentation } from "./draft-presentation"
 import { carryRevisionParagraphs, carryRevisionTables, draftedTablesNotes } from "./original-tables"
 import { checkChanges, parseJsonObject } from "./change-checks"
+import { splitNumberingIssues } from "./apply-stage"
 import {
   checkDraft,
   finalBodyParagraphs,
@@ -453,7 +454,8 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   }
   if (stage === "changes") {
     const check = checkChanges(directory, reply, readParagraphs(directory, document), { withholdUnverified: options.final, document })
-    const issues = [...check.issues, ...(check.changes ? uniqueReplacementIssues(check.changes) : [])]
+    const issues = [...check.issues, ...(check.changes ? uniqueReplacementIssues(check.changes) : []),
+      ...(check.changes && !options.final ? await splitNumberingIssues(directory, document, check.changes.amendments) : [])]
     if (issues.length || !check.changes) return { issues, openItems: [], outputs: [] }
     writeLeanText(directory, `${document}/changes.json`, `${JSON.stringify(check.changes, null, 2)}\n`)
     return { issues: [], openItems: check.openItems, outputs: stepOutputs(step), questions: check.changes.questions }

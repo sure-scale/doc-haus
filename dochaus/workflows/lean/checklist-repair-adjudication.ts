@@ -129,7 +129,8 @@ export function mergeRepairAdjudications(previous: ChangePlan, adjudications: Re
     const merged = [...overlap, group]
     for (const row of overlap) groups.splice(groups.indexOf(row), 1)
     const resolves = [...new Set(merged.flatMap(row => row.resolves ?? []))]
-    groups.push({ id: merged.map(row => row.id).join(" + "), pids: [...new Set(merged.flatMap(row => row.pids))], goal: merged.map(row => row.goal).join("\n"), sources: merged.flatMap(row => row.sources), limitations: merged.flatMap(row => row.limitations), ...(resolves.length ? { resolves } : {}) })
+    const parts = merged.flatMap(({ parts, ...row }) => parts ?? [row])
+    groups.push({ id: merged.map(row => row.id).join(" + "), pids: [...new Set(merged.flatMap(row => row.pids))], goal: merged.map(row => row.goal).join("\n"), sources: merged.flatMap(row => row.sources), limitations: merged.flatMap(row => row.limitations), ...(resolves.length ? { resolves } : {}), parts })
   }
   return { shared_decisions: [...new Set([...previous.shared_decisions.filter((_, index) => !removedDecisions.has(index)), ...results.flatMap(row => row.shared_decisions)])], groups,
     // Earlier groups are not prepared again, but keep the review findings they resolve.

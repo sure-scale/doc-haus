@@ -274,7 +274,9 @@ export function checklistRepairItems(directory: string, skip: (item_id: string, 
     if (rows.length !== 1) return []
     const parsed = checklistFindingSchema.safeParse(rows[0]!.finding)
     if (!parsed.success || parsed.data.item_id !== record.id || checklistFindingRecovery(record.item, parsed.data) !== "repair") return []
-    if (!["operative", "advice"].includes(record.item.target.treatment)) return []
+    // An open issue missing from its target is text the target's writer can
+    // add, as a visible open item; only a native annotation is out of reach.
+    if (!["operative", "advice", "open_issue"].includes(record.item.target.treatment)) return []
     const matches = plan.documents.filter(document => document.id === record.item.target.document || document.file === record.item.target.document)
     const notes = !matches.length && ["notes", plan.notes_file ?? "drafting-notes.docx"].includes(record.item.target.document)
     // Code sets a delivered file's name, Word format and composition, so no

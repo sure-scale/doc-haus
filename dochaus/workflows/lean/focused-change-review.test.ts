@@ -107,6 +107,36 @@ test("oversized assignments and conflicting same-PID operations fail before a mo
   expect(plan.groups).toHaveLength(1)
 })
 
+test("a merged repair group reviews each target with only the goals touching it", async () => {
+  const { directory, delivery, payment, plan } = await fixture()
+  const part = (id: string, pids: string[], goal: string) => ({ id, pids, goal, sources: SUPPORT, limitations: [] })
+  const parts = [part("timing", [delivery.pid], "TIMING_GOAL " + "Keep the delivery timing. ".repeat(700)), part("payment", [payment.pid], "PAYMENT_GOAL " + "Keep payment on delivery. ".repeat(700)), part("shared", [delivery.pid, payment.pid], "SHARED_GOAL Conform delivery and payment.")]
+  const merged = { id: "timing + payment + shared", pids: [delivery.pid, payment.pid], goal: parts.map(row => row.goal).join("\n"), sources: SUPPORT, limitations: [], resolves: plan.groups[0]!.resolves, parts }
+  expect(acceptChangePlan(directory, "d1", JSON.stringify({ ...plan, groups: [merged] })).issues).toEqual([])
+  const inputs = focusedChangeReviewInputs(directory, "d1")
+  const own = (pid: string) => inputs.filter(row => row.id.startsWith("group:") && row.pids.includes(pid))
+  expect(own(delivery.pid).map(row => row.text).join()).toContain("TIMING_GOAL")
+  expect(own(delivery.pid).map(row => row.text).join()).not.toContain("PAYMENT_GOAL")
+  expect(own(payment.pid).map(row => row.text).join()).toContain("PAYMENT_GOAL")
+  expect(own(payment.pid).map(row => row.text).join()).not.toContain("TIMING_GOAL")
+  for (const pid of [delivery.pid, payment.pid]) expect(own(pid).map(row => row.text).join()).toContain("SHARED_GOAL")
+  for (const input of inputs) expect(input.text.length).toBeLessThan(32_001)
+})
+
+test("several large goals on one paragraph are each reviewed against it in their own packet", async () => {
+  const { directory, delivery, plan } = await fixture()
+  const parts = ["first", "second", "third"].map(id => ({ id, pids: [delivery.pid], goal: `${id.toUpperCase()}_GOAL ` + "Keep the delivery timing. ".repeat(700), sources: SUPPORT, limitations: [] }))
+  const merged = { id: "first + second + third", pids: [delivery.pid], goal: parts.map(row => row.goal).join("\n"), sources: SUPPORT, limitations: [], resolves: plan.groups[0]!.resolves, parts }
+  expect(acceptChangePlan(directory, "d1", JSON.stringify({ ...plan, groups: [merged] })).issues).toEqual([])
+  const inputs = focusedChangeReviewInputs(directory, "d1").filter(row => row.id.startsWith("group:"))
+  expect(inputs.map(row => row.id)).toEqual(parts.map(row => `group:${merged.id}:goal:${row.id}`))
+  for (const [index, input] of inputs.entries()) {
+    expect(input.text).toContain(`${parts[index]!.id.toUpperCase()}_GOAL`)
+    expect(input.text).toContain("left out of this packet for size")
+    expect(input.text.length).toBeLessThan(32_001)
+  }
+})
+
 test("an actual input change during review restarts without accepting a stale union", async () => {
   const { directory } = await fixture()
   const before = readLeanText(directory, "d1/change-review.json")
