@@ -539,7 +539,7 @@ describe("sectioned draft stage", () => {
 // Each planned document's form, from its "Form:" line: page furniture follows
 // it, and a letter reads as one letter, its planning labels unheaded.
 describe("a planned document's form", () => {
-  const FORMS = '"Form: agreement", "Form: advice", "Form: letter", "Form: advice letter", "Form: other"'
+  const FORMS = '"Form: agreement", "Form: advice", "Form: letter", "Form: advice letter", "Form: statement", "Form: other"'
   const outline = (lines: string) => `Acting for: not stated\n# Notice letter\n${lines}\n## Opening\nWhy we write.\n## Terms\nDisplay heading: Terms of notice\nThe notice.\n## Closing\nDisplay heading: none\nWhat follows.`
   const shown = (lines: string) => parsePlan(outline(lines)).value?.documents[0]?.parts.map(part => part.display_heading)
 
@@ -547,16 +547,22 @@ describe("a planned document's form", () => {
     const prompt = stagePrompt(matter().directory, "d1.draft", { outline: true })
     expect(prompt).toContain('- Under each title write its form: "Form: agreement" for')
     expect(prompt).toContain('"Form: advice letter" for a letter giving the client legal advice, "Form: letter" for other correspondence addressed to a recipient')
-    expect(prompt).toContain('otherwise "Form: other".')
+    expect(prompt).toContain('"Form: statement" for a record of facts given by a named person under their signature, otherwise "Form: other".')
     expect(prompt).toContain("Each part's ## label identifies the drafting job and is not printed; the part's text carries the document's own headings in its style. " +
       "To print a heading in a label's place, add Display heading: <publication heading> immediately under that label.")
     expect(prompt).toContain('For a letter whose text uses headings, write "Headings: shown" under its title to print its labels as its headings.')
     expect(prompt).toContain("print a heading they change as its part's Display heading.")
   })
 
+  test("the outline prompt gives a purpose line the document's own purpose and a statement every subject its purpose names", () => {
+    const prompt = stagePrompt(matter().directory, "d1.draft", { outline: true })
+    expect(prompt).toContain("- A document's purpose line says what that document is for in its own right; what another document relies on it for belongs in that other document's scope. " +
+      'The parts of a "Form: statement" cover every subject within the declarant\'s knowledge that its purpose names, not only what other documents rely on.')
+  })
+
   test("is read from one line under each title, ignoring case and list, bold or code marks, and an advice letter's hyphen or underscore", () => {
     for (const [line, form] of [["Form: agreement", "agreement"], ["- **Form:** Advice", "advice"], ["Form: `letter`.", "letter"], ["FORM:   other", "other"],
-      ["Form: advice letter", "advice letter"], ["- **Form:** Advice-Letter.", "advice letter"], ["Form: `advice_letter`", "advice letter"]] as const) {
+      ["Form: advice letter", "advice letter"], ["- **Form:** Advice-Letter.", "advice letter"], ["Form: `advice_letter`", "advice letter"], ["Form: Statement", "statement"]] as const) {
       const parsed = parsePlan(outline(line))
       expect(parsed.issues).toEqual([])
       expect(parsed.value?.documents[0]?.form).toBe(form)

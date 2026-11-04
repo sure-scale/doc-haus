@@ -60,6 +60,9 @@ describe("pageFurniture", () => {
     expect(pageFurniture("advice letter", legends, DRAFTED)?.header).toEqual(["Privileged & confidential", "Draft: October 20, 2026"])
     expect(pageFurniture("letter", legends, DRAFTED)?.header).toEqual(["Draft: October 20, 2026"])
     expect(pageFurniture("other", legends, DRAFTED)?.header).toEqual([])
+    // A statement carries what "other" carries, under every setting.
+    for (const settings of [prefs(), legends, prefs({ pageNumbers: "dashed", numberFirstPage: false, draftLineFirm: true, firm: "Firm" })])
+      expect(pageFurniture("statement", settings, DRAFTED, { legend: "Sworn copy" })).toEqual(pageFurniture("other", settings, DRAFTED, { legend: "Sworn copy" }))
     expect(pageFurniture("notes", legends, DRAFTED)?.header).toEqual([NOTES_MARKING])
   })
 

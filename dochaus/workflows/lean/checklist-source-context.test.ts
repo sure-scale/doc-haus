@@ -50,6 +50,14 @@ test("one job per original source plus request uses exact source bytes and plann
   expect(JSON.stringify(jobs)).not.toContain('"pid"')
 })
 
+test("a planned form is part of the target's role, so a statement's purpose is read as the subjects it records", () => {
+  const { directory, put } = prepare()
+  put(".dochaus/lean/plan.json", JSON.stringify({ schema: "dochaus.lean.plan/2", documents: [
+    { id: "d1", title: "Witness statement", purpose: "Record the witness's account of the meeting", parts: [{ heading: "Meeting", scope: "What was said" }], file: "statement.docx", form: "statement" },
+  ] }))
+  expect(checklistProducerInputs(directory)[0].input.targets[0]).toEqual({ document: "d1", role: "Witness statement (Form: statement): Record the witness's account of the meeting. Parts: Meeting (What was said)" })
+})
+
 test("included lawyer updates and actual answers stay separate from original text and model questions", () => {
   const { directory, put } = prepare()
   put(".dochaus/lean/questions.json", JSON.stringify({ questions: [

@@ -85,8 +85,11 @@ export function checklistProducerInputs(directory: string): { key: string; input
   }]
 }
 
-function plannedRole(document: { title: string; purpose: string; parts: { heading: string; scope: string }[] }) {
+/** A target's declared role: its title and form, purpose and parts. The form
+ * tells the checker what kind of document the purpose is read for: a
+ * statement's purpose names the subjects it records. */
+function plannedRole(document: { title: string; purpose: string; parts: { heading: string; scope: string }[]; form?: string }) {
   const parts = document.parts.map(part => part.scope.trim() ? `${part.heading} (${part.scope.trim()})` : part.heading)
-  const role = `${document.title}: ${document.purpose.trim()}`
+  const role = `${document.title}${document.form ? ` (Form: ${document.form})` : ""}: ${document.purpose.trim()}`
   return parts.length ? `${role.replace(/[.\s]+$/, "")}. Parts: ${parts.join("; ")}` : role
 }
