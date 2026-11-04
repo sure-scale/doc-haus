@@ -2,6 +2,7 @@ import { isPosture, normalizeLegend, type Posture } from "../../lib/drafting-pre
 import { effectivePosture } from "../../lib/matter-client"
 import { DOCUMENT_FORMS, type DocumentForm } from "../../lib/page-furniture"
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
+import { attachmentHead } from "./consistency"
 import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type ReviewStageID, type StageID } from "./state"
 
 // The run's plan: every document the request asks for, in drafting order, each
@@ -31,8 +32,10 @@ export type StepID = `${DocID}.${DocStage}` | "instructions" | "discrepancy" | "
  * part unheaded. `instrument` marks the first part of a separate instrument
  * the document's file also holds (foldRequestedFiles): it and the parts after
  * it, up to the next such part, are that instrument's, printed under its own
- * title on a new page. */
-export type PlannedPart = { heading: string; scope: string; display_heading?: string; instrument?: PlannedInstrument }
+ * title on a new page. `attachment` marks a part headed as a schedule, annex,
+ * appendix, exhibit or attachment ("Exhibit A", consistency.ts attachmentHead):
+ * it trails the document, its heading prints and it starts on a new page. */
+export type PlannedPart = { heading: string; scope: string; display_heading?: string; instrument?: PlannedInstrument; attachment?: true }
 /** A separate instrument held in another document's file: its own title, what
  * it is for, the parties who execute it and its form, as its outline entry
  * gave them. */
@@ -238,7 +241,10 @@ export function earlierDocuments(directory: string, id: DocID): PlannedDocument[
  * attempt the document stands with no form, as a legacy plan does. A part's
  * label names a drafting job, not a heading of the document: every part is
  * planned unheaded, except a part with its own "Display heading:" line, unless
- * a "Headings: shown" line under its title keeps that document's labels.
+ * a "Headings: shown" line under its title keeps that document's labels. A part
+ * headed as an attachment ("Schedule 1 …", "Exhibit A …") is marked as one and
+ * prints its heading (plannedPart), except in a document drafted from a
+ * template, whose own attachments are its template parts.
  * Optional "Legend:" and "Page numbers: none" lines under a title give what the
  * request asks of that document's page furniture; the first of each stands. A
  * legend must be the request's own words and is shown with the firm's, and
@@ -387,7 +393,9 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
         purpose: document.purpose.join(" "),
         ...(document.playbook_review ? { playbook_review: document.playbook_review } : {}),
         // Planning labels are not the document's headings.
-        parts: document.parts.map(part => plannedPart(part, !document.headings)),
+        // A template's own attachments arrive as its parts (templateContract),
+        // presented as the template presents them; they are not marked again.
+        parts: document.parts.map(part => plannedPart(part, !document.headings, !document.template)),
         ...(document.mode ? { mode: document.mode } : {}),
         // A combined file that cannot be built stands as the body on the last attempt.
         ...(document.deliverable ? { deliverable: document.deliverable === "combined" && (combinedIssues.length || !memoName) ? "body" as const : document.deliverable } : {}),
@@ -415,10 +423,13 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
 }
 
 /** A planned part; with `unheaded`, a part without its own "Display heading:"
- * line is unheaded. */
-function plannedPart(part: { heading: string; scope: string[]; display_heading?: string }, unheaded: boolean): PlannedPart {
-  const display = part.display_heading ?? (unheaded ? "" : undefined)
-  return { heading: part.heading, scope: part.scope.join(" "), ...(display !== undefined ? { display_heading: display } : {}) }
+ * line is unheaded. With `attachments` (a document not drafted from a
+ * template), a part whose printed heading (its display heading, else its
+ * label) is an attachment's heading is that attachment, and prints it. */
+function plannedPart(part: { heading: string; scope: string[]; display_heading?: string }, unheaded: boolean, attachments = true): PlannedPart {
+  const attachment = attachments && Boolean(attachmentHead(part.display_heading || part.heading))
+  const display = attachment ? part.display_heading || undefined : part.display_heading ?? (unheaded ? "" : undefined)
+  return { heading: part.heading, scope: part.scope.join(" "), ...(display !== undefined ? { display_heading: display } : {}), ...(attachment ? { attachment: true as const } : {}) }
 }
 
 export function headingText(text: string) {
@@ -702,7 +713,7 @@ function isPlannedDocument(value: unknown): value is PlannedDocument {
   const row = value as PlannedDocument
   return typeof row.id === "string" && /^d[1-9]\d*$/.test(row.id) && typeof row.title === "string" && typeof row.purpose === "string" &&
     Array.isArray(row.parts) && row.parts.length > 0 && row.parts.every(part => typeof part?.heading === "string" && typeof part.scope === "string" && (part.display_heading === undefined || typeof part.display_heading === "string") &&
-      (part.instrument === undefined || isPlannedInstrument(part.instrument))) &&
+      (part.instrument === undefined || isPlannedInstrument(part.instrument)) && (part.attachment === undefined || part.attachment === true)) &&
     (row.playbook_review === undefined || isPlaybookReview(row.playbook_review)) &&
     (row.mode === undefined || ["new", "revise"].includes(row.mode)) && (row.deliverable === undefined || ["body", "redline", "combined"].includes(row.deliverable)) &&
     (row.comparison === undefined || typeof row.comparison === "string") && (row.template === undefined || typeof row.template === "string") && (row.file === undefined || typeof row.file === "string") &&

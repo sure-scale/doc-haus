@@ -129,8 +129,10 @@ describe("template coverage in a lean run", () => {
   }, 120_000)
 
   test("a template part the outline leaves out with a reason is not retried or asked for, and the drafting notes disclose the removal", async () => {
+    // The annexes the text refers to print their headings, so the final text has them.
+    const shown = (part: string) => [PARTS.annexA, PARTS.annexB].includes(part) ? `${heading(part)}\nDisplay heading: ${heading(part).slice(3)}` : heading(part)
     const outline = [ACTING, TITLE, FORM, `Template: ${TEMPLATE}`, 'Left out: "3. Service Credits" – the customer asked for no service credits.',
-      ...Object.values(PARTS).filter(part => part !== PARTS.credits).map(heading)].join("\n")
+      ...Object.values(PARTS).filter(part => part !== PARTS.credits).map(shown)].join("\n")
     const draft = [TITLE, ...Object.values(PARTS).filter(part => part !== PARTS.credits)].join("\n\n")
     const directory = templateMatter()
     const model = scriptedModel(replies(templateDrafter([draft], { outline: () => outline })))

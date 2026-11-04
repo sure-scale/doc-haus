@@ -616,12 +616,13 @@ function titleAbove(outline: DraftOutline, index: number) {
 }
 
 /** How the draft stage presents the drafted parts in the Word body, when any
- * part prints other than its label: each part's label and the heading it
- * prints in its place (printedDisplayHeading). */
+ * part prints other than its label or is an attachment: each part's label, the
+ * heading it prints in its place (printedDisplayHeading) and, for an
+ * attachment, that it starts a new page. */
 export function draftPresentation(plan: DraftOutline, drafted: string[]) {
   const letter = isLetter(plan.form)
-  return letter || plan.parts.some(part => part.display_heading !== undefined || part.instrument)
-    ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: printedDisplayHeading(plan, part, text), part })), ...(letter ? { title: false as const } : {}) }
+  return letter || plan.parts.some(part => part.display_heading !== undefined || part.instrument || part.attachment)
+    ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: printedDisplayHeading(plan, part, text), part, ...(plan.parts[part]?.attachment && !plan.parts[part]!.instrument ? { attachment: true as const } : {}) })), ...(letter ? { title: false as const } : {}) }
     : undefined
 }
 
