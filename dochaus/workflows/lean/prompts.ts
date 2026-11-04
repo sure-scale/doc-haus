@@ -7,7 +7,7 @@ import { comparisonDescription } from "./comparison"
 import { combinedDelivery, deliveryArtifactEvidence, requestedMemo } from "./deliverables"
 import { researchHandoff } from "./research"
 import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult, shownText } from "./checks"
-import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type StepID } from "./plan"
+import { guidanceTemplate, reviewGuidance, reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type StepID } from "./plan"
 import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
 import { escapeTagOpeners } from "../../lib/untrusted"
@@ -31,6 +31,8 @@ const REVIEW_FOCUS = {
   "review-wording": "Problematic wording: identify ambiguity, inconsistency or imprecision that changes how a provision operates. Explain the competing readings and their material effect. Separately assess supplied date/number preference warnings as presentation feedback, preserving exact quotations and expressly retained wording.",
   "review-client-disadvantage": "Client disadvantage: assess concrete adverse effects on the stated client's position within the requested purpose. Distinguish a defect from an agreed allocation of risk and an optional negotiating improvement. When no side is determined, assess the parties even-handedly without selecting one.",
 }
+/** Added to the guidance review's focus when the document is drafted from a template. */
+const TEMPLATE_FOCUS = "The template's positions are the provisions its text carries and every note or bracketed direction to the drafter; a position this document leaves out needs the outline's \"Left out:\" reason or a finding; where the template records an earlier deal, the names, figures and terms particular to that deal are not positions: weigh them against this matter's sources and the party the lawyer acts for."
 
 const SOURCE_RULES = [
   "- Read the sources you rely on with search-document or read-document. State only what the request or the sources support: do not invent facts, figures or dates about the parties or the matter, commercial or strategic decisions, or authorities.",
@@ -53,6 +55,17 @@ export const REVISION_PREFERENCE_SCOPE = "The drafting preferences apply to text
  * template draft, whose prompts stay as they were. */
 export function revisionPreferenceScope(directory: string, document: DocID) {
   return plannedDocument(directory, document)?.mode === "revise" ? REVISION_PREFERENCE_SCOPE : ""
+}
+
+/** The sources the guidance review checks the document against, the template
+ * it is drafted from named as such. */
+function guidanceBlock(directory: string, document: DocID) {
+  const template = guidanceTemplate(plannedDocument(directory, document))
+  const role = (id: string) => id === template ? "the template this document is drafted from" : "selected guidance"
+  return tagged("guidance", [
+    "Check this document against each of these sources, read in full with read-document:",
+    ...reviewGuidance(directory, document).map(id => `- ${id} (${role(id)})`),
+  ].join("\n"))
 }
 
 /** A quick draft the lawyer carried into this run: a starting point for the
@@ -97,6 +110,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const adjudicated = stage === "changes" ? readChangePlan(directory, document) : undefined
   const named = title ? ` of "${title}"` : ""
   const template = stage === "draft" || stage === "changes" ? plannedContract(directory, document)?.source : undefined
+  const reviewTemplate = stage === "review-playbook" ? guidanceTemplate(plannedDocument(directory, document)) : undefined
   const acting = actingForBlock(directory)
   const actingFor = planActingFor(directory)
   const planned = plannedDocumentsBlock(directory, document)
@@ -164,8 +178,8 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
     ],
     review: [
       `This is a lean drafting run. Independently review the draft${named} below against the lawyer's request and the matter's sources.`,
-      tagged("review_focus", isReviewStage(stage) ? REVIEW_FOCUS[stage] : ""),
-      request, spineBlock, acting, answerBlock, sources, planned, composition, outline, preferenceScope, finished, paragraphs,
+      tagged("review_focus", isReviewStage(stage) ? [REVIEW_FOCUS[stage], ...(stage === "review-playbook" && reviewTemplate ? [TEMPLATE_FOCUS] : [])].join(" ") : ""),
+      request, spineBlock, acting, answerBlock, sources, ...(stage === "review-playbook" ? [guidanceBlock(directory, document)] : []), planned, composition, outline, preferenceScope, finished, paragraphs,
       ...(stage === "review-wording" ? [draftingStyleWarningsBlock(styleScopedRows(directory, document, readParagraphs(directory, document)))] : []),
       tagged("output_contract", [
         "- Check the draft against the request and the sources (search-document, read-document, verify-quote).",
@@ -294,7 +308,7 @@ function plannedDocumentsBlock(directory: string, document: DocID) {
 export function completedDocumentsText(directory: string, document: DocID) {
   return earlierDocuments(directory, document)
     .map(row => {
-      const guidanceReview = row.playbook_review?.sources.length ? reviewText(directory, row.id, "review-playbook", { strip: true }) : undefined
+      const guidanceReview = reviewStages(directory, row.id).includes("review-playbook") ? reviewText(directory, row.id, "review-playbook", { strip: true }) : undefined
       return `<document title="${attribute(row.title)}">\n${finalBodyParagraphs(directory, row.id).map(shownText).join("\n\n")}\n<accepted_change_explanations>\n${JSON.stringify(appliedChangeEvidence(directory, row.id).map(change => ({
       change_origin: change.change_origin, operation: change.operation, deleted_text: change.deleted_text, result_text: change.result_paragraphs.map(row => row.text), reason: change.reason, sources: change.sources, evidence_basis: change.evidence_basis,
       final_text: (paragraph => paragraph ? shownText(paragraph) : "")(finalBodyParagraphs(directory, row.id).find(paragraph => paragraph.pid === change.pid)),

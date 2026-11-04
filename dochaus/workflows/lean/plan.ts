@@ -4,6 +4,7 @@ import { DOCUMENT_FORMS, type DocumentForm } from "../../lib/page-furniture"
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
 import { attachmentHead } from "./consistency"
 import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type ReviewStageID, type StageID } from "./state"
+import { templateSource } from "./template-contract"
 
 // The run's plan: every document the request asks for, in drafting order, each
 // with its top-level parts. It comes from the draft agent's outline reply (one
@@ -104,7 +105,22 @@ export function leanSteps(directory: string): StepID[] {
 
 /** Planning selects guidance per body; legacy and unassigned bodies retain the ordinary reviews. */
 export function reviewStages(directory: string, document: DocID): ReviewStageID[] {
-  return [...REVIEW_STAGES, ...(plannedDocument(directory, document)?.playbook_review?.sources.length ? ["review-playbook" as const] : [])]
+  return [...REVIEW_STAGES, ...(reviewGuidance(directory, document).length ? ["review-playbook" as const] : [])]
+}
+
+/** The template a new document is drafted from, which its guidance review
+ * checks it against. A revision's original is its baseline, not guidance: the
+ * instructions may remove its provisions. */
+export function guidanceTemplate(entry: Pick<PlannedDocument, "mode" | "template" | "comparison"> | undefined) {
+  return entry?.mode === "revise" ? undefined : templateSource(entry)
+}
+
+/** The sources the guidance review checks a document against: the playbook
+ * sources planning selected for it and the template a new document is drafted from. */
+export function reviewGuidance(directory: string, document: DocID): string[] {
+  const planned = plannedDocument(directory, document)
+  const template = guidanceTemplate(planned)
+  return [...new Set([...(planned?.playbook_review?.sources.map(source => source.source_id) ?? []), ...(template ? [template] : [])])]
 }
 
 export function stepStage(step: StepID): StageID {

@@ -40,7 +40,7 @@ import {
   type ParagraphRow,
   type StageCheck,
 } from "./checks"
-import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type PlannedDocument, type StepID } from "./plan"
+import { reviewGuidance, reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type PlannedDocument, type StepID } from "./plan"
 import { acceptReviewReply, forwardedFindings, readReviewRecord } from "./review-findings"
 import { templateSource } from "./template-contract"
 import { INSTRUCTIONS_FILE, instructionsOutputValid } from "./instructions"
@@ -89,6 +89,8 @@ const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
 const GATE_CONTRACT = "checklist-open-delivery-6"
 /** Keys the act-record step: a change to its jobs, prompts or checks re-runs it. */
 const ACT_RECORD_CONTRACT = "act-record-7"
+/** Keys the guidance review: its guidance list and the template's focus. */
+const GUIDANCE_REVIEW_CONTRACT = "template-guidance-1"
 export const LEAN_MAX_RETRIES = 3
 
 export const LEAN_STAGE_AGENTS = {
@@ -294,7 +296,7 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   // The spine is shown the act record when it plans documents, parties and signatories.
   if (step === "spine") return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), file("discrepancy.json"), file("intake.json"), file("research.json"), file("research-review.json"), file("acts.json")]
   // Applied deletion evidence includes the original paragraph's exact wording.
-  if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(plannedDocument(directory, id)?.playbook_review?.sources.length ? [file(`${id}/review-playbook.json`)] : [])]),
+  if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(reviewStages(directory, id).includes("review-playbook") ? [file(`${id}/review-playbook.json`)] : [])]),
     packageReviewOpenItems(directory)]
   if (step === "research") {
     // Without a gap round the key is unchanged.
@@ -329,7 +331,9 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   const repairs = options.repairContext === false || !["change-plan", "change-prepare", "changes", "change-review"].includes(stage) ? undefined : documentRepairs(directory, document)
   // Only with the other side's markup in the original it revises, so a run without one keeps its keys.
   const counterparty = existsSync(leanFile(directory, `${document}/counterparty.json`)) ? [at("counterparty.json")] : []
-  if (isReviewStage(stage)) return [{ name: "playbook-selection", bytes: JSON.stringify(plannedDocument(directory, document)?.playbook_review ?? null) }, file("request.md"), at("paragraphs.json"), sources, finished, acting, scope, ...composed, ...dated]
+  // The guidance review's key carries its contract and guidance list, so the other reviews keep theirs.
+  const guidance = stage === "review-playbook" ? [{ name: "guidance-review-contract", bytes: GUIDANCE_REVIEW_CONTRACT }, { name: "review-guidance", bytes: JSON.stringify(reviewGuidance(directory, document)) }] : []
+  if (isReviewStage(stage)) return [{ name: "playbook-selection", bytes: JSON.stringify(plannedDocument(directory, document)?.playbook_review ?? null) }, ...guidance, file("request.md"), at("paragraphs.json"), sources, finished, acting, scope, ...composed, ...dated]
   if (stage === "change-prepare") return [file("request.md"), entry, at("paragraphs.json"), at("change-plan.json"), answers, sources, finished, acting, scope, ...composed, ...dated, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
   if (stage === "change-review") return [...(repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-review-contract", bytes: "prepared-dependency-component-review-2-proposed-body" }] : []), { name: "review-contract", bytes: "phase-aware-owned-body-review-2" }, file("request.md"), entry, at("paragraphs.json"), at("changes.json"), at("paragraphs-projected.json"), at("change-plan.json"), at("change-preparation.json"), ...reviewStages(directory, document).map(stage => at(`${stage}.json`)), ...counterparty, answers, sources, finished, acting, scope, ...composed, ...dated, { name: "questions", bytes: keyedQuestions(directory) }, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
   if (stage === "changes" || stage === "change-plan") {

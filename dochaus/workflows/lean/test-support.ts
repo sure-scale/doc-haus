@@ -82,6 +82,8 @@ export function scriptedModel(replies: Record<string, Reply>) {
         [AGENT["review-independent"]]: () => NO_FINDINGS,
         [AGENT["review-wording"]]: () => NO_FINDINGS,
         [AGENT["review-client-disadvantage"]]: () => NO_FINDINGS,
+        // A templated document's guidance review finds every position covered.
+        [AGENT["review-playbook"]]: () => JSON.stringify({ coverage: "Every guidance position is covered.", findings: [] }),
         [AGENT["package-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [], delivery: [] }),
         [AGENT.intake]: () => JSON.stringify({ ready: true, jurisdiction: "No external legal determination needed for this supplied-source fixture", scope: "Reproduce supplied terms only", acting_for: { party: "", basis: "none" }, dates: { document_date: { date: "", basis: "today" }, operative_dates: [] } }),
         [AGENT.research]: () => JSON.stringify({ status: "not-needed", findings: [], limitations: ["This fixture requests a note from supplied terms only."] }),
