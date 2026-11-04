@@ -43,7 +43,8 @@ test("one job per original source plus request uses exact source bytes and plann
   expect(jobs[0].input.passages[0].quote).toBe(readFileSync(path.join(directory, "sources/instructions.txt"), "utf8"))
   expect(jobs[1].input.passages[0].quote).toBe(readFileSync(path.join(directory, "sources/draft.txt"), "utf8"))
   expect(jobs[2].input.passages[0].quote).toBe(readFileSync(path.join(directory, ".dochaus/lean/request.md"), "utf8"))
-  expect(jobs[0].input.targets.slice(0, 2)).toEqual([{ document: "d1", role: "Agreement: Record agreed terms" }, { document: "d2", role: "Advice: Explain decisions" }])
+  // Each target's role carries its planned parts: the coverage producer and checker share.
+  expect(jobs[0].input.targets.slice(0, 2)).toEqual([{ document: "d1", role: "Agreement: Record agreed terms. Parts: Terms (Terms)" }, { document: "d2", role: "Advice: Explain decisions. Parts: Advice (Decisions)" }])
   expect(jobs[0].input.targets[2].document).toBe("notes")
   for (const job of jobs) expect(checklistProducerInputSchema.safeParse(job.input).success).toBe(true)
   expect(JSON.stringify(jobs)).not.toContain('"pid"')

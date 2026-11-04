@@ -16,7 +16,9 @@ const sourceIndexSchema = z.object({ sources: z.array(z.object({ document: z.str
 export function checklistProducerInputs(directory: string): { key: string; input: ChecklistProducerInput }[] {
   const plan = readLeanPlan(directory)
   if (!plan) throw new Error("Checklist extraction needs the document plan before source jobs can be prepared.")
-  const targets = [...plan.documents.map(document => ({ document: document.id, role: `${document.title}: ${document.purpose}` })),
+  // The plan's parts say what each document covers: the coverage a source
+  // observation is checked against, never a directive of its own.
+  const targets = [...plan.documents.map(document => ({ document: document.id, role: plannedRole(document) })),
     { document: "notes", role: "Drafting notes: disclose unresolved matters and explain drafting decisions; inclusion does not itself impose a disclosure requirement." }]
   const request = readLeanText(directory, "request.md")
   if (!request?.trim()) throw new Error("Checklist extraction needs the canonical lawyer request at .dochaus/lean/request.md.")
@@ -81,4 +83,10 @@ export function checklistProducerInputs(directory: string): { key: string; input
       retrieval: "The original canonical request is supplied unchanged; current included human instructions are separate, each with its own locator. Extract current request/update requirements while preserving original quotes and conditions. Only answered human text is authority; model questions and queued updates are not settled instructions. Use targeted source lookup only for material context, without inspecting generated deliverables.",
     }),
   }]
+}
+
+function plannedRole(document: { title: string; purpose: string; parts: { heading: string; scope: string }[] }) {
+  const parts = document.parts.map(part => part.scope.trim() ? `${part.heading} (${part.scope.trim()})` : part.heading)
+  const role = `${document.title}: ${document.purpose.trim()}`
+  return parts.length ? `${role.replace(/[.\s]+$/, "")}. Parts: ${parts.join("; ")}` : role
 }
