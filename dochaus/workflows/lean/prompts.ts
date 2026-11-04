@@ -15,6 +15,7 @@ import { readRepairRound, changesRepairSections, notesRepair } from "./repairs"
 import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings, reviewText } from "./review-findings"
 import { disclosableItems } from "./stages"
 import { QUESTION_KIND_CONTRACT, WORKING_DRAFT, isReviewStage, answeredQuestions, answeredQuestionsText, delegatedQuestions, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type StageID } from "./state"
+import { matterDatesBlock } from "./intake"
 import { plannedContract } from "./template-contract"
 
 // Prompts of the lean model steps. Each step's first prompt carries everything
@@ -73,7 +74,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
     "Human questions must concern information or judgment only the human can supply. Resolve paragraph routing, identifiers, rendering and other internal mechanics in the system; never ask the user to repair them. State the decision, its effect on the requested work and why a disclosed placeholder cannot suffice in context. Preserve the alternatives supported by the sources without selecting an unapproved answer.",
     "Do not ask the human to supply legal research conclusions. Inspect available authority and distinguish its support from unverified law; record or route research gaps as such. Never assert unsupported law or assume a material missing decision to avoid a question. A genuinely indispensable unresolved decision still requires clarification.",
   ].join("\n"))
-  const request = [scope, boundPlaybookContext(directory), tagged("legal_research", "Only the approved retrieved propositions below may support external legal assertions. Preserve jurisdiction, currency and source limitations. Missing research is an open item, never an invitation to use model memory. Cite supporting exact words as \"quote\" [source: source URL].\n" + researchHandoff(directory)), tagged("request", readLeanText(directory, "request.md") ?? ""), updates ? tagged("user_updates",
+  const request = [scope, boundPlaybookContext(directory), tagged("legal_research", "Only the approved retrieved propositions below may support external legal assertions. Preserve jurisdiction, currency and source limitations. Missing research is an open item, never an invitation to use model memory. Cite supporting exact words as \"quote\" [source: source URL].\n" + researchHandoff(directory)), tagged("request", readLeanText(directory, "request.md") ?? ""), matterDatesBlock(directory), updates ? tagged("user_updates",
     "Ongoing instructions from the lawyer, in arrival order. Consider these alongside the original request throughout this run. An explicit later change supersedes the earlier instruction on that point; ask about unresolved contradictions. Do not treat a question or a tentative suggestion as an agreed instruction. Do not ask again for information these updates already supply. Quote the lawyer’s words under source name \"request\".\n\n" + updates) : ""].filter(Boolean).join("\n\n")
   const answers = answeredQuestionsText(directory)
   const working = workingDraftBlock(directory)

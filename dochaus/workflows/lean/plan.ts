@@ -68,9 +68,16 @@ export type PlannedDocument = {
  * no side ("none"). */
 export type ActingForBasis = "stated" | "matter" | "inferred" | "none"
 export type ActingFor = { party: string; basis: ActingForBasis; reason?: string }
+/** The dates the work turns on, as intake found them: the date the documents
+ * bear, from the lawyer's words ("request"), a date the sources fix for them
+ * ("sources") or the drafting day ("today", its date frozen with the plan), and
+ * the operative dates the sources give, each with the words that show it. */
+export type DocumentDateBasis = "request" | "sources" | "today"
+export type MatterDate = { label: string; date: string; source_id: string; quote: string }
+export type MatterDates = { document_date: { date: string; basis: DocumentDateBasis; source_id?: string; quote?: string }; operative_dates: MatterDate[] }
 /** `memo` is the name of the memo the request asks for and `notes_file` the
  * file the notes are delivered as; both are delivery metadata. */
-export type LeanPlan = { schema: "dochaus.lean.plan/2"; documents: PlannedDocument[]; acting_for?: ActingFor; posture?: Posture; basis?: string; memo?: string; notes_file?: string }
+export type LeanPlan = { schema: "dochaus.lean.plan/2"; documents: PlannedDocument[]; acting_for?: ActingFor; posture?: Posture; basis?: string; memo?: string; notes_file?: string; dates?: MatterDates }
 /** `memo` is the request's own words for a memo that accompanies the documents,
  * from a "Memo:" line; the run writes and names the drafting notes as that memo. */
 export type LeanOutline = { documents: Omit<PlannedDocument, "id">[]; acting_for: ActingFor; memo?: string }
@@ -137,10 +144,10 @@ function planIssue(value: unknown): string | undefined {
 /** A requested memo is saved as its name and the notes file it is delivered
  * as; a plan without one carries neither key, nor a plan without a Posture
  * the Posture key. */
-export function writeLeanPlan(directory: string, documents: Omit<PlannedDocument, "id">[], basis?: string, actingFor?: ActingFor, memo?: { name: string; file: string }, posture?: Posture): LeanPlan {
+export function writeLeanPlan(directory: string, documents: Omit<PlannedDocument, "id">[], basis?: string, actingFor?: ActingFor, memo?: { name: string; file: string }, posture?: Posture, dates?: MatterDates): LeanPlan {
   const plan: LeanPlan = {
     schema: LEAN_PLAN_SCHEMA, documents: withDocumentIDs(documents), acting_for: actingFor, posture, basis,
-    ...(memo ? { memo: memo.name, notes_file: memo.file } : {}),
+    ...(memo ? { memo: memo.name, notes_file: memo.file } : {}), dates,
   }
   writeLeanText(directory, "plan.json", `${JSON.stringify(plan, null, 2)}\n`)
   return plan

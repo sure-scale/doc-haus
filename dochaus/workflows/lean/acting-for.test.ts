@@ -300,7 +300,7 @@ describe("who executes each planned document", () => {
 describe("a side taken from the sources", () => {
   const INSTRUCTED = "Kestrel Works asks for a supply note on these terms. The supplier shall deliver the goods within thirty days of the order date."
   const SHOWN = "Kestrel Works asks for a supply note"
-  const intakeFor = (acting: Record<string, unknown>): Reply => () => JSON.stringify({ ready: true, jurisdiction: "None needed", scope: "Supplied terms", acting_for: acting })
+  const intakeFor = (acting: Record<string, unknown>): Reply => () => JSON.stringify({ ready: true, jurisdiction: "None needed", scope: "Supplied terms", acting_for: acting, dates: { document_date: { date: "", basis: "today" }, operative_dates: [] } })
   const inferred = (quote = SHOWN) => intakeFor({ party: "Kestrel Works", basis: "inferred", source_id: SOURCE, quote })
   const KESTREL: ActingFor = { party: "Kestrel Works", basis: "inferred", reason: `"${SHOWN}" [source: ${SOURCE}]` }
 
