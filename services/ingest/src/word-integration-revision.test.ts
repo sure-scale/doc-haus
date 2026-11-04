@@ -8,7 +8,7 @@ import wordIntegration from "../../../dochaus/tool/word-integration"
 import searchDocument from "../../../dochaus/tool/search-document"
 import { paragraphTargets } from "../../../dochaus/lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
-import { memoNotesFile, readLeanDocuments, recordLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
+import { readLeanDocuments, recordLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
 import { writeLeanPlan } from "../../../dochaus/workflows/lean/plan"
 import { initLeanState, readLeanState, writeLeanBytes, writeLeanState, writeLeanText } from "../../../dochaus/workflows/lean/state"
 import { scriptedLeanModel } from "../../../dochaus/workflows/lean/test-support"
@@ -248,7 +248,7 @@ test("editing a part of a saved combined file rebuilds the combined file with th
   // A completed lean run that delivered one combined document with its memo.
   const documents = [{ title: "Supply note", purpose: "Operative terms", parts: [{ heading: "Delivery", scope: "Delivery terms" }], file: "supply-pack.docx", deliverable: "combined" as const }]
   initLeanState(matter.dir, { request: "Draft a short supply note from the supply terms.", ownerSessionID: "ses_owner", model: null })
-  writeLeanPlan(matter.dir, documents, undefined, undefined, { name: "cover memo", file: memoNotesFile(documents, "cover memo") })
+  writeLeanPlan(matter.dir, documents, undefined, undefined, { name: "cover memo" })
   const body = (await renderMarkdownToDocx("# Supply note\n\n## Delivery\n\nBody marker: the supplier delivers the goods.")).bytes
   writeLeanBytes(matter.dir, "d1/body-applied.docx", body)
   writeLeanBytes(matter.dir, "d1/redline.docx", body)

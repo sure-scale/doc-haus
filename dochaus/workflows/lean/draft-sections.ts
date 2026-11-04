@@ -286,6 +286,14 @@ export async function runDraftStage(
     recordCoverage(covered, value.acting_for, coverage)
     const blocked = scopeBlock(covered, coverage)
     if (blocked) return blocked
+    // The outline plans the memo the request asks for as its last document
+    // (parsePlan). The files job still reads the memo as its "memo" hold, so
+    // it is given the documents before the memo, and the memo document stays
+    // last, never folded into another file.
+    const memoTail = value.memo ? value.documents.slice(-1) : []
+    const memoless = (outline: LeanOutline): LeanOutline => memoTail.length ? { ...outline, documents: outline.documents.slice(0, -1) } : outline
+    value = memoless(value)
+    const filesCovered = withDocumentIDs(value.documents)
     // The files the lawyer's words ask for are read from the covered outline.
     // Where its deliverables do not deliver them so, the issues a revision may
     // settle go back to the outline session as a revision request, unless the
@@ -304,9 +312,9 @@ export async function runDraftStage(
     // the files job left out of it goes in it too, unless the lawyer's words
     // ask for that document themselves (unasked) or the lawyer chose a file of
     // its own for one.
-    const filed = await filing(covered, value.memo)
+    const filed = await filing(filesCovered, value.memo)
     const separate = separateFileChosen(readQuestions(directory))
-    const asked = filed?.value && !separate ? withUnaskedDocuments(filed.value, await unasked(filed.value, covered)) : filed?.value
+    const asked = filed?.value && !separate ? withUnaskedDocuments(filed.value, await unasked(filed.value, filesCovered)) : filed?.value
     const fold = (outline: LeanOutline) => asked ? foldRequestedFiles(outline.documents, asked, separate) : undefined
     let folded = fold(value)
     let requested = folded?.requested
@@ -320,7 +328,8 @@ export async function runDraftStage(
     for (let revision = 1, revise = revising(); requested && revise && revision <= PLAN_FILES_REVISIONS; revision++, revise = revising()) {
       delete best.value
       const revised = await ask<LeanOutline>(`outline files revision ${revision}/${PLAN_FILES_REVISIONS}`, retryPrompt("draft", revise.feedback), checkOutline, 0, revise.feedback)
-      const next = revised.value ?? best.value
+      const reply = revised.value ?? best.value
+      const next = reply && memoless(reply)
       if (!next || contents(next) !== contents(value)) continue
       // The issues name the documents as held; each is its outline document.
       const ids: DocID[] = withDocumentIDs(held()).map(row => row.id)
@@ -332,7 +341,8 @@ export async function runDraftStage(
     }
     if (folded?.applied.length) {
       // The coverage record moves to the plan as held, so the saved plan's check stands.
-      writeCoverage(withDocumentIDs(folded.documents), value.acting_for, foldedCoverage(directory, coverage, folded.at, withDocumentIDs(folded.documents)))
+      const saved = withDocumentIDs([...folded.documents, ...memoTail])
+      writeCoverage(saved, value.acting_for, foldedCoverage(directory, coverage, memoTail.length ? [...folded.at, folded.documents.length] : folded.at, saved))
       value = { ...value, documents: folded.documents }
     }
     const documents = withDocumentIDs(value.documents)
@@ -342,22 +352,27 @@ export async function runDraftStage(
     const question = requested && requestedFilesQuestion(directory, requested, documents, files)
     if (question) return { status: "blocked", outputs: ["coverage.json"], openItems: [], questions: [question],
       reason: `${step}: the document plan does not deliver the files the lawyer's words ask for; drafting waits for your answer on how they are delivered.` }
-    // A memo the request asks for is the run's notes, named for the request, and
-    // a file the lawyer's words name takes that name.
+    // The run's notes still carry the requested memo's name until delivery
+    // reads the memo document; the plan records that document by its id.
     const memo = value.memo ? { name: value.memo, file: memoNotesFile(value.documents, value.memo) } : undefined
     const named = requested && withRequestedNames(value.documents, memo, requested)
+    // A file the lawyer's words name for the memo alone is the memo document's.
+    const memoFile = memo && named?.notes_file && named.notes_file !== memoNotesFile(named.documents, memo.name) ? named.notes_file : undefined
+    // The record names the saved plan's documents, the memo's included, as the
+    // later files check and its items read them.
+    const planned = [...named?.documents ?? value.documents, ...memoTail.map(row => memoFile ? { ...row, file: memoFile } : row)]
     if (requested && named) {
-      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, words: requestedFilesWords(directory), planned: requestedFilesPlanned(named.documents, value.memo), stated: requested.stated, files: requested.files })
+      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, words: requestedFilesWords(directory), planned: requestedFilesPlanned(planned, value.memo), stated: requested.stated, files: requested.files })
       const applied = [...folded?.applied ?? [], ...named.applied]
       appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: requested.stated ? "stated" : "not_stated", issues: files.map(row => row.issue),
         ...(applied.length ? { reason: applied.join("; ") } : {}) })
     } else if (filed) {
       // Disclosed from the record (requestedFilesItems), as an unchecked coverage record is.
-      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, words: requestedFilesWords(directory), planned: requestedFilesPlanned(value.documents, value.memo), status: "unchecked", stated: false, files: [] })
+      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, words: requestedFilesWords(directory), planned: requestedFilesPlanned(planned, value.memo), status: "unchecked", stated: false, files: [] })
       appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: "unchecked",
         reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive could not be confirmed; the plan delivers its files as outlined and the drafting notes say so." })
     } else rmSync(leanFile(directory, "requested-files.json"), { force: true })
-    writeLeanPlan(directory, named?.documents ?? value.documents, basis, value.acting_for, memo && { name: memo.name, file: named?.notes_file ?? memo.file }, posture, frozenDates(directory))
+    writeLeanPlan(directory, planned, basis, value.acting_for, memo && { name: memo.name, document: `d${planned.length}` }, posture, frozenDates(directory))
   } else if (document === FIRST_DOCUMENT && !planCoverageCurrent(directory)) {
     const saved = readLeanPlan(directory)!
     const coverage = await covering(saved.documents)

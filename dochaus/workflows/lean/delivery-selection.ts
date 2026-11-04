@@ -1,5 +1,5 @@
 import { normalize, normalizeWithMap } from "../../lib/quote-verify"
-import { combinedDelivery, memoAnchor, memoNotesFile, plannedRegistration } from "./deliverables"
+import { plannedRegistration, requestedMemo } from "./deliverables"
 import { readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { instructionFound, lawyerWords } from "./quotes"
 
@@ -32,7 +32,7 @@ export function checkDeliverySelections(directory: string, value: unknown): stri
       : applied?.documents.find(row => row.id === document)?.deliverable === "redline" ? "redline" : "body"
     return files.find(file => file.kind === kind && file.document === document)
   }
-  const targets = new Set([...rows.map(row => selected(row.document)), ...(applied?.notes_file !== plan?.notes_file ? [selected(null)] : [])])
+  const targets = new Set([...rows.map(row => selected(row.document)), ...(applied && plan && (applied.record_file !== plan.record_file || requestedMemo(directory, applied)?.file !== requestedMemo(directory, plan)?.file) ? [selected(null)] : [])])
   const messages = new Set([...targets].flatMap(target => {
     const group = target ? files.filter(file => file.wanted === target.wanted && (file === target || file.requested)) : []
     if (!target || (target.name === target.wanted && group.length === 1)) return []
@@ -245,40 +245,21 @@ function quotedOrTitled(quote: string, file: string) {
 
 /** Only the delivery metadata changes. Stable document ids, source foundations,
  * drafting intent and all operative parts remain the accepted plan's values.
- * A selected notes name replaces the notes file and never turns on a memo; a
- * requested memo keeps its name. Without one, a memo file still named as
- * memoNotesFile names it is named again after its anchor document (memoAnchor,
- * chosen on the plan), so it follows a rename of that document's body file only;
- * a redline selection, a selection on another document or any other memo file
- * leaves it. A body selection on a combined document names the combined
- * file and keeps it combined; a redline selection still makes it a redline
- * deliverable. A body row that renames the combined file onto the saved notes
- * name, without a notes row, gives the memo its default name (memoNotesFile)
- * again: that name is the combined file's alone. Applying the reply again
- * changes nothing. */
+ * A selected notes name is the drafting record's file (record_file) and never
+ * turns on a memo. A body selection on a combined document names the combined file and
+ * keeps it combined; a redline selection still makes it a redline deliverable.
+ * Applying the reply again changes nothing. */
 export function selectedDeliveryPlan(directory: string, selections: DeliverySelection[]) {
   const plan = readLeanPlan(directory)
   if (!plan) return
   const selected = new Map(selections.flatMap(row => row.role === "drafting_notes" ? [] : [[row.document, row] as const]))
-  const notes = selections.find(row => row.role === "drafting_notes")
   const documents = plan.documents.map((row): PlannedDocument => {
     const selection = selected.get(row.id)
     if (!selection) return row
     const role = row.deliverable === "combined" && selection.role === "body" ? "combined" : selection.role
     return row.file !== selection.file || (row.deliverable ?? "body") !== role ? { ...row, file: selection.file, deliverable: role } : row
   })
-  // The memo follows only a rename of its plan-time anchor document's body
-  // file, never a redline file or another document.
-  const anchor = memoAnchor(plan.documents)
-  const renamed = documents.find(row => row.id === anchor?.id)
-  const follows = !notes && plan.memo && anchor && renamed && plan.notes_file === memoNotesFile(plan.documents, plan.memo)
-  // A pass's notes row may have saved the name a later body row gives the combined file.
-  const combined = combinedDelivery(directory, plan)?.document
-  const onto = combined && selected.get(combined)
-  const reclaimed = !notes && onto?.role === "body" && onto.file !== plan.documents.find(row => row.id === combined)?.file
-    && onto.file.toLocaleLowerCase() === plan.notes_file?.toLocaleLowerCase()
-  const notesFile = notes ? notes.file : reclaimed ? memoNotesFile(documents, plan.memo!)
-    : follows && renamed.deliverable !== "redline" ? memoNotesFile([renamed], plan.memo!) : plan.notes_file
-  return documents.some((row, index) => row !== plan.documents[index]) || notesFile !== plan.notes_file
-    ? { ...plan, documents, ...(notesFile !== undefined ? { notes_file: notesFile } : {}) } : undefined
+  const recordFile = selections.find(row => row.role === "drafting_notes")?.file ?? plan.record_file
+  return documents.some((row, index) => row !== plan.documents[index]) || recordFile !== plan.record_file
+    ? { ...plan, documents, ...(recordFile !== undefined ? { record_file: recordFile } : {}) } : undefined
 }

@@ -541,7 +541,8 @@ describe("requested files items", () => {
   const AS_ASKED = [outline("Share transfer form", { file: "Kestrel Transfer.docx" }), outline("Board minute", { file: "Kestrel Board Pack.docx", deliverable: "combined" })]
   // The transfer form delivered under its title's name, not the lawyer's.
   const ELSEWHERE = [outline("Share transfer form"), AS_ASKED[1]!]
-  const NOTES = { name: MEMO, file: "Kestrel Board Pack - cover memo.docx" }
+  // The memo's notes file is named after the first document with a file (memoNotesFile).
+  const NOTES = { name: MEMO }
   const CONFIRM = " The lawyer should confirm how these files are to be delivered."
   const ANSWERED = " The lawyer answered the question about these files; the plan drawn up with that answer still delivers them so."
   // Each item refers to its file by the file's index in the record (in RECORD, the board pack is file 0 and the transfer form
@@ -550,7 +551,7 @@ describe("requested files items", () => {
     openItem("finalize", "omission", `Requested files: ${detail}${closing}`, { repair_target: "memo", requested_file: file, delivered_names: names })
   const record = (...files: RequestedFile[]): LeanRequestedFiles => ({ schema: LEAN_REQUESTED_FILES_SCHEMA, basis: BASIS, planned: PLANNED, stated: true, files })
 
-  function saved(documents = AS_ASKED, value: LeanRequestedFiles = RECORD, basis: string | null = BASIS, notes: { name: string; file: string } | undefined = NOTES) {
+  function saved(documents = AS_ASKED, value: LeanRequestedFiles = RECORD, basis: string | null = BASIS, notes: { name: string } | undefined = NOTES) {
     const directory = prepared()
     writeLeanPlan(directory, documents, basis ?? undefined, undefined, notes)
     writeRequestedFiles(directory, value)
@@ -575,8 +576,8 @@ describe("requested files items", () => {
 
   test("a plan changed after the record to deliver the memo apart gives one item in the lawyer's words", () => {
     const directory = saved([AS_ASKED[0]!, outline("Board minute", { file: "Kestrel Board Pack.docx", deliverable: "body" })])
-    expect(requestedFilesItems(directory)).toEqual([item(["Kestrel Board Pack - cover memo.docx", "Kestrel Board Pack.docx"], `the lawyer's words "${PACK}" [source: request] ask for the memo and "Board minute" in one file named "Kestrel Board Pack.docx", ` +
-      'but the run delivers the memo in "Kestrel Board Pack - cover memo.docx" and "Board minute" in "Kestrel Board Pack.docx".')])
+    expect(requestedFilesItems(directory)).toEqual([item(["Kestrel Transfer - cover memo.docx", "Kestrel Board Pack.docx"], `the lawyer's words "${PACK}" [source: request] ask for the memo and "Board minute" in one file named "Kestrel Board Pack.docx", ` +
+      'but the run delivers the memo in "Kestrel Transfer - cover memo.docx" and "Board minute" in "Kestrel Board Pack.docx".')])
   })
 
   test("once the lawyer has answered the question on these words, the item cites the answer", () => {
@@ -584,9 +585,9 @@ describe("requested files items", () => {
     const question = requestedFilesQuestion(directory, ASKED, DOCUMENTS, requestedFilesIssues(DOCUMENTS, MEMO, ASKED).issues)!
     writeQuestions(directory, [{ ...question, status: "answered", answer: "As planned.", answered_at: "2026-10-18T00:00:00.000Z" }])
     const detail = `the lawyer's words "${PACK}" [source: request] ask for the memo and "Board minute" in one file named "Kestrel Board Pack.docx", ` +
-      'but the run delivers the memo in "Kestrel Board Pack - cover memo.docx" and "Board minute" in "Kestrel Board Pack.docx".'
+      'but the run delivers the memo in "Kestrel Transfer - cover memo.docx" and "Board minute" in "Kestrel Board Pack.docx".'
     // The answer is cited in plain words: no question id reaches the lawyer.
-    const cited = item(["Kestrel Board Pack - cover memo.docx", "Kestrel Board Pack.docx"], detail, ANSWERED)
+    const cited = item(["Kestrel Transfer - cover memo.docx", "Kestrel Board Pack.docx"], detail, ANSWERED)
     expect(requestedFilesItems(directory)).toEqual([cited])
     expect(cited.detail).not.toContain(question.id)
     // An update that leaves these words as they were leaves the answer standing.
@@ -602,8 +603,8 @@ describe("requested files items", () => {
       const listing = stated(file(["memo", "d2"], listed, "Kestrel Board Pack.docx"))
       const question = requestedFilesQuestion(directory, listing, DOCUMENTS, requestedFilesIssues(DOCUMENTS, MEMO, listing).issues)!
       writeQuestions(directory, [{ ...question, status: "answered", answer: "As planned.", answered_at: "2026-10-18T00:00:00.000Z" }])
-      expect(requestedFilesItems(directory)).toEqual([item(["Kestrel Board Pack - cover memo.docx", "Kestrel Board Pack.docx"], `the lawyer's words "${recorded}" [source: request] ask for the memo and "Board minute" in one file named "Kestrel Board Pack.docx", ` +
-        'but the run delivers the memo in "Kestrel Board Pack - cover memo.docx" and "Board minute" in "Kestrel Board Pack.docx".',
+      expect(requestedFilesItems(directory)).toEqual([item(["Kestrel Transfer - cover memo.docx", "Kestrel Board Pack.docx"], `the lawyer's words "${recorded}" [source: request] ask for the memo and "Board minute" in one file named "Kestrel Board Pack.docx", ` +
+        'but the run delivers the memo in "Kestrel Transfer - cover memo.docx" and "Board minute" in "Kestrel Board Pack.docx".',
       ` The lawyer answered the question about the files the words "${listed}" [source: request] ask for; the plan drawn up with that answer still delivers them so.`)])
     }
   })
@@ -729,11 +730,11 @@ describe("requested files items", () => {
   test("a run file the lawyer's accepted Word revision or its notes addendum changed is still the run's", () => {
     // The memo alone, asked for under the notes file's name.
     const documents = [outline("Share transfer form", { file: "Kestrel Transfer.docx" }), outline("Board minute")]
-    const directory = saved(documents, record(file(["memo"], PACK, "Kestrel Board Pack.docx")), BASIS, { name: MEMO, file: "Kestrel Board Pack.docx" })
-    const notes = path.join(directory, "Kestrel Board Pack.docx")
+    const directory = saved(documents, record(file(["memo"], PACK, "Kestrel Transfer - cover memo.docx")))
+    const notes = path.join(directory, "Kestrel Transfer - cover memo.docx")
     writeFileSync(notes, "the run's synthetic notes")
     writeLeanText(directory, "documents.json", JSON.stringify({ schema: "dochaus.lean.documents/2", status: "completed", documents: [
-      { kind: "drafting_notes", document: null, title: null, path: ".dochaus/lean/drafting-notes.docx", sha256: sha256File(notes)!.sha256, deliverable: "Kestrel Board Pack.docx" },
+      { kind: "drafting_notes", document: null, title: null, path: ".dochaus/lean/drafting-notes.docx", sha256: sha256File(notes)!.sha256, deliverable: "Kestrel Transfer - cover memo.docx" },
     ] }))
     expect(requestedFilesItems(directory)).toEqual([])
     // An addendum after a Word accept rewrites the notes as an accepted revision before the summary is next written.
@@ -790,21 +791,21 @@ describe("requested files items", () => {
     const combined = saved([outline("Share transfer form", { deliverable: "combined" }), outline("Board minute")], record(file(["d1"], TRANSFER)))
     expect(requestedFilesItems(combined)).toEqual([item(["Share transfer form.docx"], `the lawyer's words "${TRANSFER}" [source: request] ask for "Share transfer form" as a file of its own, ` +
       'but the run delivers the memo and "Share transfer form" in one file named "Share transfer form.docx".')])
-    // A memo-only file under a name a document holds takes a suffix, spelled as planned.
-    const suffixed = saved([outline("Share transfer form", { file: "Kestrel Pack.docx" }), outline("Board minute")], record(file(["memo"], PACK, "Kestrel Pack.docx")), BASIS, { name: MEMO, file: "Kestrel Pack.docx" })
-    expect(requestedFilesItems(suffixed)).toEqual([item(["Kestrel Pack (2).docx"], `the lawyer's words "${PACK}" [source: request] ask for the memo as a file named "Kestrel Pack.docx", but the run delivers the memo in "Kestrel Pack (2).docx".`)])
+    // A memo-only file under a name a document holds is delivered under the memo's own name after that document.
+    const apart = saved([outline("Share transfer form", { file: "Kestrel Pack.docx" }), outline("Board minute")], record(file(["memo"], PACK, "Kestrel Pack.docx")))
+    expect(requestedFilesItems(apart)).toEqual([item(["Kestrel Pack - cover memo.docx"], `the lawyer's words "${PACK}" [source: request] ask for the memo as a file named "Kestrel Pack.docx", but the run delivers the memo in "Kestrel Pack - cover memo.docx".`)])
   })
 
   test("the memo with a document planned as a redline gives an item naming the redline, citing the answer once given", () => {
     const documents = [AS_ASKED[0]!, outline("Board minute", { deliverable: "redline" })]
     const directory = saved(documents)
     const detail = `the lawyer's words "${PACK}" [source: request] ask for the memo and "Board minute" in one file named "Kestrel Board Pack.docx", ` +
-      'but the run delivers the memo in "Kestrel Board Pack - cover memo.docx" and "Board minute" as a redline in "Board minute.docx". The run cannot join the memo with a redline.'
-    expect(requestedFilesItems(directory)).toEqual([item(["Kestrel Board Pack - cover memo.docx", "Board minute.docx"], detail)])
+      'but the run delivers the memo in "Kestrel Transfer - cover memo.docx" and "Board minute" as a redline in "Board minute.docx". The run cannot join the memo with a redline.'
+    expect(requestedFilesItems(directory)).toEqual([item(["Kestrel Transfer - cover memo.docx", "Board minute.docx"], detail)])
     const ids = documents.map((row, index) => ({ ...row, id: `d${index + 1}` as DocID }))
     const question = requestedFilesQuestion(directory, ASKED, ids, requestedFilesIssues(ids, MEMO, ASKED).issues)!
     writeQuestions(directory, [{ ...question, status: "answered", answer: "As planned.", answered_at: "2026-10-18T00:00:00.000Z" }])
-    expect(requestedFilesItems(directory)).toEqual([item(["Kestrel Board Pack - cover memo.docx", "Board minute.docx"], detail, ANSWERED)])
+    expect(requestedFilesItems(directory)).toEqual([item(["Kestrel Transfer - cover memo.docx", "Board minute.docx"], detail, ANSWERED)])
   })
 
   test("a name the run could not confirm is disclosed with the file delivered, whatever that file's name", () => {
@@ -985,6 +986,6 @@ describe("requested files items", () => {
     // A plan edited by hand under the same basis: other documents or another memo than the record was read for.
     expect(requestedFilesItems(saved(changed))).toHaveLength(1)
     expect(requestedFilesItems(saved([AS_ASKED[0]!, outline("Board resolution", { deliverable: "body" })]))).toEqual([])
-    expect(requestedFilesItems(saved(changed, RECORD, BASIS, { name: "advice memo", file: NOTES.file }))).toEqual([])
+    expect(requestedFilesItems(saved(changed, RECORD, BASIS, { name: "advice memo" }))).toEqual([])
   })
 })

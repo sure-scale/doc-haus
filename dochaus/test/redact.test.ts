@@ -17,7 +17,7 @@ import { renderMarkdownToDocx } from "../lib/render"
 import { scrubDocxPackage, docxPackageResidue, listRedactions } from "../lib/redactions"
 import { recordRedline, pendingRedlinesForDoc } from "../lib/redlines"
 import { claimWordEditLease, EditingLeaseError } from "../lib/word-edit-lease"
-import { memoNotesFile, readLeanDocuments, recordLeanDocuments } from "../workflows/lean/deliverables"
+import { readLeanDocuments, recordLeanDocuments } from "../workflows/lean/deliverables"
 import { writeLeanPlan } from "../workflows/lean/plan"
 import { initLeanState, readLeanState, writeLeanBytes, writeLeanState, writeLeanText } from "../workflows/lean/state"
 import { scriptedLeanModel } from "../workflows/lean/test-support"
@@ -116,7 +116,7 @@ describe("redact tool", () => {
     const { dir } = await matterWith(buildFixture())
     const documents = [{ title: "Synthetic record", purpose: "Invented inventory", parts: [{ heading: "Inventory", scope: "Invented details" }], file: "record.docx", deliverable: "combined" as const }]
     initLeanState(dir, { request: "Prepare an invented record.", ownerSessionID: "test", model: null })
-    writeLeanPlan(dir, documents, undefined, undefined, { name: "cover memo", file: memoNotesFile(documents, "cover memo") })
+    writeLeanPlan(dir, documents, undefined, undefined, { name: "cover memo" })
     writeLeanBytes(dir, "d1/body-applied.docx", buildFixture())
     writeLeanBytes(dir, "d1/redline.docx", buildFixture())
     writeLeanBytes(dir, "drafting-notes.docx", fixtureBytes)

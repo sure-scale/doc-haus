@@ -15,7 +15,7 @@ import { openItem } from "./quotes"
 import { runLean } from "./runner"
 import { acceptStageReply, disclosableItems, LEAN_MAX_RETRIES, stageOutputValid } from "./stages"
 import { leanFile, readLeanJson, readLeanState, readLeanText, writeLeanText, writeOpenItems, writeQuestions, type Question } from "./state"
-import { AGENT, DRAFT, DRAFTED, cleanupMatters, drafter, draftingNotes, happyPath, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
+import { AGENT, COVER_MEMO, DRAFT, DRAFTED, changesFirst, cleanupMatters, drafter, draftingNotes, happyPath, listed, matter, noChanges, pidOf, reviewFirst, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // In the drafting notes, a requested memo or not, an internal id may appear
 // only inside a "[ref: …]" marker. The drafting-notes check holds an item as
@@ -41,7 +41,7 @@ const STRAY = (ids: string[]) =>
  * open items, as runItemIDs reads them. */
 function memoMatter(plan: "memo" | "none" | "notes file only" = "memo") {
   const directory = matter()
-  if (plan === "memo") writeLeanPlan(directory, [DOCUMENT], undefined, undefined, { name: "cover memo", file: memoNotesFile([DOCUMENT], "cover memo") })
+  if (plan === "memo") writeLeanPlan(directory, [DOCUMENT], undefined, undefined, { name: "cover memo" })
   else writeLeanPlan(directory, [DOCUMENT])
   // A delivery selection's rename names a notes file without a memo.
   if (plan === "notes file only") writeLeanText(directory, "plan.json", JSON.stringify({ ...readLeanPlan(directory)!, notes_file: "supply-advice.docx" }))
@@ -67,7 +67,7 @@ const addSource = (directory: string, name: string, text: string) => {
 async function stubbornMemoRun(lines: (ids: string[]) => string[], replies: Record<string, Reply> = {}, withMemo = true) {
   const directory = matter()
   if (withMemo) writeLeanText(directory, "request.md", "Draft a short supply note from the supply terms, with a cover memo on the open points.")
-  const draft = drafter(DRAFT)
+  const draft = withMemo ? drafter(DRAFT, COVER_MEMO) : drafter(DRAFT)
   const memoDrafter: Reply = (prompt, index) => withMemo ? draft(prompt, index).replace("Acting for: not stated", "Acting for: not stated\nMemo: cover memo") : draft(prompt, index)
   let ids: string[] = [], written = ""
   const stubborn: Reply = prompt => {
@@ -75,7 +75,8 @@ async function stubbornMemoRun(lines: (ids: string[]) => string[], replies: Reco
     if (blocks.length) ids = blocks.flatMap(match => [...match[1]!.matchAll(/^- (\S+):/gm)].map(row => row[1]!))
     return written = memo(...lines(ids))
   }
-  const model = scriptedModel({ ...happyPath, [AGENT.draft]: memoDrafter, [AGENT.finalize]: stubborn, ...replies })
+  // The memo document has no supply paragraph to review or change.
+  const model = scriptedModel({ ...happyPath, [AGENT.draft]: memoDrafter, [AGENT.review]: reviewFirst, [AGENT.changes]: changesFirst, [AGENT.finalize]: stubborn, ...replies })
   const run = await runLean(directory, { sessions: model.port })
   return { directory, run, written, model }
 }
@@ -158,8 +159,8 @@ describe("a requested memo", () => {
     // The applied change leaves an open item for the memo to disclose.
     const { directory, run, written } = await stubbornMemoRun(ids => ["The draft follows the supply terms.", "",
       ...ids.map(id => `- ${id}: The lawyer must resolve this before the draft is used. [ref: ${id}]`)], {
-      [AGENT.changes]: sameSession(prompt => JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED),
-        updated: "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen].", reason: "Drafting judgment.", sources: [] }], questions: [] })),
+      [AGENT.changes]: sameSession((prompt, index) => listed(prompt, DRAFTED) ? JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED),
+        updated: "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen].", reason: "Drafting judgment.", sources: [] }], questions: [] }) : noChanges(prompt, index)),
     })
     expect(run.status).toBe("completed")
     expect(readLeanState(directory)?.stages.finalize?.attempts).toBe(LEAN_MAX_RETRIES + 1)
@@ -342,7 +343,7 @@ describe("a recorded change id in a requested memo", () => {
   test("the ids matched are the change-list ids the run records, in runItemIDs' order, then each open item's amendment", () => {
     const directory = changeMatter()
     writeLeanPlan(directory, [DOCUMENT, { title: "Supply agreement", purpose: "Full terms", parts: [{ heading: "Price", scope: "Price terms" }] }], undefined, undefined,
-      { name: "cover memo", file: memoNotesFile([DOCUMENT], "cover memo") })
+      { name: "cover memo" })
     writeLeanText(directory, "d2/changes.json", JSON.stringify({ amendments: ["a1", "a4"].map(amendment), questions: [],
       withheld: [{ amendment: amendment("w2"), issues: ["Quote not found."] }], explanations: [{ id: "i2", pid: PID, reason: "Initial revision.", sources: [] }] }))
     const pending = openItem("apply", "unapplied_amendment", "Amendment a9 was not applied.", { document: "d2", amendment_id: "a9" })
@@ -410,7 +411,7 @@ describe("a planned document id in a requested memo", () => {
   /** A memo run planning d1 and d2. */
   function twoDocuments(withMemo = true) {
     const directory = matter()
-    writeLeanPlan(directory, [DOCUMENT, OTHER], undefined, undefined, withMemo ? { name: "cover memo", file: memoNotesFile([DOCUMENT, OTHER], "cover memo") } : undefined)
+    writeLeanPlan(directory, [DOCUMENT, OTHER], undefined, undefined, withMemo ? { name: "cover memo" } : undefined)
     return directory
   }
   const disclosed = `[refs: ${GAP.id}; ${CONDITION.id}]`
@@ -747,7 +748,7 @@ describe("a planned document id inside a quotation, a citation, a footnote marke
   const check = (line: string) => {
     const directory = matter()
     writeLeanPlan(directory, [DOCUMENT, { title: "Supply agreement", purpose: "Full terms", parts: [{ heading: "Price", scope: "Price terms" }] }], undefined, undefined,
-      { name: "cover memo", file: memoNotesFile([DOCUMENT], "cover memo") })
+      { name: "cover memo" })
     return checkDraftingNotes(directory, memo(`${line} [refs: ${GAP.id}; ${CONDITION.id}]`), [GAP, CONDITION]).issues
   }
   test("is not a stray", () => {

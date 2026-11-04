@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import type { GateResult } from "./gate"
 import { runLean } from "./runner"
 import { leanFile, readLeanJson, readLeanText, writeLeanText } from "./state"
-import { AGENT, DRAFT, DRAFTED, LETTER, SUPPORT, changesFirst, cleanupMatters, drafter, happyPath, listed, matter, pidOf, scriptedModel, type Reply } from "./test-support"
+import { AGENT, COVER_MEMO, DRAFT, DRAFTED, LETTER, SUPPORT, changesFirst, cleanupMatters, drafter, happyPath, listed, matter, pidOf, scriptedModel, type Reply } from "./test-support"
 import { existsSync } from "node:fs"
 
 // Review findings that concern another document of the package. A finding
@@ -60,7 +60,7 @@ describe("cross-document review findings", () => {
   test("a finding for the accompanying memo reaches the notes", async () => {
     const directory = matter()
     writeLeanText(directory, "request.md", "Draft a short supply note from the supply terms, a covering letter and a cover memo.\n")
-    const draft = drafter(DRAFT, LETTER)
+    const draft = drafter(DRAFT, LETTER, COVER_MEMO)
     const outline: Reply = (prompt, index) => /^Draft part \d+ of \d+ of /m.test(prompt) ? draft(prompt, index) : `Memo: cover memo\n${draft(prompt, index)}`
     const model = scriptedModel({ ...happyPath, [AGENT.draft]: outline, [AGENT.review]: reviews(true), [AGENT.changes]: changesFirst })
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")

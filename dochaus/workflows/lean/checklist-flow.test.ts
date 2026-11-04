@@ -267,7 +267,7 @@ test("a consumed reinspection admits one fresh check once the plan delivers its 
 test("a consumed reinspection admits one fresh check when only the combined file built from the target's parts changes", async () => {
   const directory = matter()
   const record = { title: "Record", purpose: "Record instructions", file: "record.docx", deliverable: "combined" as const, parts: [{ heading: "Record", scope: "Record" }] }
-  writeLeanPlan(directory, [record], undefined, undefined, { name: "cover memo", file: memoNotesFile([record], "cover memo") })
+  writeLeanPlan(directory, [record], undefined, undefined, { name: "cover memo" })
   const options = { finding: "indeterminate" as "indeterminate" | "satisfied" }
   const deps = port(directory, options)
   const checked: ChecklistCheckerInput[] = []

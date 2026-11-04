@@ -177,12 +177,14 @@ test("whitespace-only accepted paragraphs stay in records but are never emitted 
 test("actual notes filename resolves; unknown and duplicate targets remain unresolved", async () => {
   const directory = matter()
   try {
-    const plan = JSON.parse(readFileSync(leanFile(directory, "plan.json"), "utf8")); plan.notes_file = "review-notes.docx"; writeFileSync(leanFile(directory, "plan.json"), JSON.stringify(plan))
+    // A requested memo names the notes (memoNotesFile).
+    const plan = JSON.parse(readFileSync(leanFile(directory, "plan.json"), "utf8")); plan.memo = "review notes"; writeFileSync(leanFile(directory, "plan.json"), JSON.stringify(plan))
+    const file = memoNotesFile(plan.documents, "review notes")
     await save(directory, "drafting-notes.docx", "The violet inventory receipt remains open.")
-    const notes = buildChecklistDocumentContext(directory, { item_id: "notes", item: item("review-notes.docx") })
+    const notes = buildChecklistDocumentContext(directory, { item_id: "notes", item: item(file) })
     expect(hints(notes.input)).toHaveLength(1)
-    expect(notes.input.current_evidence[0]!.document).toBe("review-notes.docx")
-    expect(plainRows(notes.delivery!).map(row => [row.kind, row.planned_filename])).toEqual([["drafting_notes", "review-notes.docx"]])
+    expect(notes.input.current_evidence[0]!.document).toBe(file)
+    expect(plainRows(notes.delivery!).map(row => [row.kind, row.planned_filename])).toEqual([["drafting_notes", file]])
     const missing = buildChecklistDocumentContext(directory, { item_id: "unknown", item: item("invented.docx") })
     expect(missing.input.current_evidence).toEqual([])
     expect(missing.warnings.join(" ")).toContain("0 exact plan identity matches")
@@ -465,7 +467,7 @@ function combinedMatter() {
     { title: "Record", purpose: "Requested record", file: "record.docx", deliverable: "combined" as const, parts: [{ heading: "Record", scope: "Record contents" }] },
     { title: "Explanation", purpose: "Requested explanation", file: "explanation.docx", parts: [{ heading: "Explanation", scope: "Explanation contents" }] },
   ]
-  writeLeanPlan(directory, documents, undefined, undefined, { name: "cover memo", file: memoNotesFile(documents, "cover memo") })
+  writeLeanPlan(directory, documents, undefined, undefined, { name: "cover memo" })
   return directory
 }
 const packaged = (directory: string, target = "record.docx") => buildChecklistDocumentContext(directory, { item_id: "package", item: item(target, "Deliver one file named record.docx, the cover memo first, then the record.") })

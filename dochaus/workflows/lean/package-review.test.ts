@@ -22,7 +22,7 @@ const UNGROUNDED = [
 ]
 const withheld = (file: string, reason = "no naming instruction in the lawyer's words") => `${file}: ${reason}; the planned name stands`
 const NOT_QUOTED = { cause: "not_quoted", reason: "no naming instruction in the lawyer's words", asked: false } as const
-function twoDocuments(request = REQUEST, options: { basis?: string; memo?: { name: string; file: string }; file?: string } = {}) {
+function twoDocuments(request = REQUEST, options: { basis?: string; memo?: { name: string }; file?: string } = {}) {
   const directory = matter()
   writeLeanText(directory, "request.md", request)
   writeLeanPlan(directory, [{ title: "Supply note", purpose: "Operative terms", parts: [{ heading: "Terms", scope: "Preserve" }] },
@@ -156,15 +156,18 @@ test("a duplicate grounded delivery row is kept once on the last attempt, with n
 })
 
 test("on the last attempt a grounded row is kept beside a grounded row that takes the memo's name", async () => {
-  const directory = twoDocuments(`${REQUEST} Save the covering letter as Points to resolve.docx. Save the supply note as Points memo.docx.`,
-    { memo: { name: "points memo", file: "Points memo.docx" } })
-  const kept = { document: "d2", role: "body", file: "Points to resolve.docx", instruction_quote: "Save the covering letter as Points to resolve.docx" } as const
-  const clash = { document: "d1", role: "body", file: "Points memo.docx", instruction_quote: "Save the supply note as Points memo.docx" }
+  // The memo's notes are named after the first document with a file (memoNotesFile).
+  const directory = matter()
+  writeLeanText(directory, "request.md", `${REQUEST} Save the supply note as Supply terms.docx. Save the covering letter as Supply terms - points memo.docx.`)
+  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Operative terms", file: "Supply terms.docx", parts: [{ heading: "Terms", scope: "Preserve" }] },
+    { title: "Covering letter", purpose: "Points to resolve", parts: [{ heading: "Points", scope: "List" }] }], undefined, undefined, { name: "points memo" })
+  const kept = { document: "d1", role: "body", file: "Supply terms.docx", instruction_quote: "Save the supply note as Supply terms.docx" } as const
+  const clash = { document: "d2", role: "body", file: "Supply terms - points memo.docx", instruction_quote: "Save the covering letter as Supply terms - points memo.docx" }
   expect((await acceptStageReply(directory, "package-review", review([kept, clash]))).issues.length).toBeGreaterThan(0)
   expect((await acceptStageReply(directory, "package-review", review([kept, clash]), { final: true })).issues).toEqual([])
-  expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], delivery: [kept], limitations: ["A disclosed gap.", withheld("Points memo.docx", "the notes already have that file name")],
-    withheld_delivery: [{ document: "d1", role: "body", file: "Points memo.docx", cause: "notes_name", reason: "the notes already have that file name", asked: true, asked_file: "Points memo.docx", asked_spelling: "Points memo.docx" }] })
-  expect(withheldDeliveryItems(directory).map(item => item.detail)).toEqual([`Your instructions mention the name "Points memo.docx", but it was not applied: "Supply note" keeps its planned file name because the memo already has the name.`])
+  expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], delivery: [kept], limitations: ["A disclosed gap.", withheld("Supply terms - points memo.docx", "the notes already have that file name")],
+    withheld_delivery: [{ document: "d2", role: "body", file: "Supply terms - points memo.docx", cause: "notes_name", reason: "the notes already have that file name", asked: true, asked_file: "Supply terms - points memo.docx", asked_spelling: "Supply terms - points memo.docx" }] })
+  expect(withheldDeliveryItems(directory).map(item => item.detail)).toEqual([`Your instructions mention the name "Supply terms - points memo.docx", but it was not applied: "Covering letter" keeps its planned file name because the memo already has the name.`])
 })
 
 test("a rename the lawyer's words never give stays a limitation, with no item for the lawyer", async () => {

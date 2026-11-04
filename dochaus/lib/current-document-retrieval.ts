@@ -6,6 +6,7 @@ import { readRegularFile } from "./regular-file"
 import { readDocxComments, readDocxRevisionText } from "./docx-comments"
 import { projectedChangeParagraphs } from "../workflows/lean/change-pipeline"
 import { readChangeList, readParagraphs } from "../workflows/lean/checks"
+import { requestedMemo } from "../workflows/lean/deliverables"
 import { readLeanPlan } from "../workflows/lean/plan"
 import { UNTRUSTED_DOCUMENT_NOTICE } from "./untrusted"
 import { readDocxBodyView } from "./docx-revision-views"
@@ -24,7 +25,7 @@ type CurrentView = { status: "available"; document: string; view: CurrentDocumen
 /** Actual Word and the explicitly requested pending projection remain distinct evidence views. */
 export async function currentDocumentView(directory: string, document: string, view: CurrentDocumentView): Promise<CurrentView> {
   const plan = readLeanPlan(directory)
-  const declared = [...(plan?.documents ?? []).map(row => ({ id: row.id, file: row.file ?? row.id })), ...(plan ? [{ id: "notes", file: plan.notes_file ?? "drafting-notes.docx" }] : [])]
+  const declared = [...(plan?.documents ?? []).map(row => ({ id: row.id, file: row.file ?? row.id })), ...(plan ? [{ id: "notes", file: plan.record_file ?? requestedMemo(directory, plan)?.file ?? "drafting-notes.docx" }] : [])]
   const matches = declared.filter(row => row.id === document || row.file === document)
   if (matches.length > 1) return { status: "unavailable", document, view, reason: "Current document must have one exact plan ID or filename match." }
   const selected = matches[0]

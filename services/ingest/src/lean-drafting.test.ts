@@ -32,7 +32,7 @@ import {
   startLeanDraftingRun,
 } from "./lean-drafting"
 import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
-import { memoNotesFile, recordLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
+import { recordLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
 import { writeLeanPlan, type PlannedDocument } from "../../../dochaus/workflows/lean/plan"
 import { writeLeanBytes } from "../../../dochaus/workflows/lean/state"
 import { scriptedLeanModel } from "../../../dochaus/workflows/lean/test-support"
@@ -1086,7 +1086,7 @@ test("status names the requested memo and a combined document's delivered parts 
   directories.push(directory)
   // Before the outline: no memo, no combined file.
   expect(leanDraftingStatus(directory)).toMatchObject({ memo: null, combined_output: null })
-  writeLeanPlan(directory, [SUPPLY_PACK], undefined, undefined, { name: "cover memo", file: memoNotesFile([SUPPLY_PACK], "cover memo") })
+  writeLeanPlan(directory, [SUPPLY_PACK], undefined, undefined, { name: "cover memo" })
   // Planned with the memo but not delivered: the memo is named, no combined file yet.
   expect(leanDraftingStatus(directory)).toMatchObject({ memo: "cover memo", combined_output: null })
   // An older run's file holds the body's first name, so the body registers under its next free name.

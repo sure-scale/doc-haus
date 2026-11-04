@@ -39,7 +39,7 @@ export function matter(sourceText = SOURCE_TEXT, request = "Draft a short supply
 /** The current plan, now also naming a requested memo, as an outline does. */
 export function requestMemo(directory: string) {
   const plan = readLeanPlan(directory)!
-  writeLeanPlan(directory, plan.documents.map(({ id, ...document }) => document), plan.basis, plan.acting_for, { name: "cover memo", file: "cover memo.docx" }, plan.posture, plan.dates)
+  writeLeanPlan(directory, plan.documents.map(({ id, ...document }) => document), plan.basis, plan.acting_for, { name: "cover memo" }, plan.posture, plan.dates)
 }
 
 export function scriptedModel(replies: Record<string, Reply>) {
@@ -284,6 +284,10 @@ export const happyPath: Record<string, Reply> = { [AGENT.draft]: drafter(DRAFT),
 
 // Runs that plan a second document: a covering letter for the supply note,
 // whose part labels are not its headings.
+/** A requested cover memo as the outline plans it: an advice document, with a
+ * scripted reply for each of the workflow's memo parts (parsePlan). */
+export const COVER_MEMO = ["# Cover memo", "Form: advice", "", ...["What this is and what you need to do", "Decisions taken and why", "Discrepancies and how handled",
+  "What the documents do", "Research relied on and its limits"].flatMap(heading => [`## ${heading}`, "", `The memo sets out ${heading.toLowerCase()}.`, ""])].join("\n")
 export const LETTER = "# Covering letter\nForm: letter\n\n## Enclosure\n\nWe enclose the supply note for signature.\n\n## Delivery\n\nThe goods will be delivered as the supply note states.\n"
 export const DRAFTED = "The supplier shall deliver the goods."
 export const APPLIED = "The supplier shall deliver the goods within thirty days of the order date."

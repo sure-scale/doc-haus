@@ -6,6 +6,7 @@ import { readChecklistAdjudicationCounterevidence, readEffectiveChecklistItems }
 import { checklistDeliveryEvidence } from "./checklist-document-context"
 import { normalize } from "../../lib/quote-verify"
 import { readChangeList, readParagraphs, type ApplyResult, type ParagraphRow } from "./checks"
+import { requestedMemo } from "./deliverables"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { excerpt, openItem, withSourceSnapshot } from "./quotes"
 import { hashStageInputs, isReviewStage, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText, type LeanState, type OpenItem } from "./state"
@@ -278,7 +279,7 @@ export function checklistRepairItems(directory: string, skip: (item_id: string, 
     // add, as a visible open item; only a native annotation is out of reach.
     if (!["operative", "advice", "open_issue"].includes(record.item.target.treatment)) return []
     const matches = plan.documents.filter(document => document.id === record.item.target.document || document.file === record.item.target.document)
-    const notes = !matches.length && ["notes", plan.notes_file ?? "drafting-notes.docx"].includes(record.item.target.document)
+    const notes = !matches.length && ["notes", plan.record_file ?? requestedMemo(directory, plan)?.file ?? "drafting-notes.docx"].includes(record.item.target.document)
     // Code sets a delivered file's name, Word format and composition, so no
     // text repair can change them. A finding resting only on the delivery
     // rows supplied for its target stays disclosed with its class; one that

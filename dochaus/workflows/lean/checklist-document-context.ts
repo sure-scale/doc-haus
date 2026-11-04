@@ -9,7 +9,7 @@ import { createHash } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import { readDocxCommentParagraphs, readDocxComments, readDocxRevisionText, readDocxRevisionProperties } from "../../lib/docx-comments"
 import { readLeanPlan } from "./plan"
-import { deliveryArtifactEvidence } from "./deliverables"
+import { deliveryArtifactEvidence, requestedMemo } from "./deliverables"
 import { readParagraphs } from "./checks"
 import { leanFile } from "./state"
 import { DELIVERY_ARTIFACTS_ROW, checklistTextMeasuresMeaning, type ChecklistCheckerInput, type ChecklistCurrentEvidence, type ChecklistItem, type ChecklistSourceReference } from "./checklist-contract"
@@ -60,7 +60,8 @@ export function buildChecklistDocumentContext(directory: string, options: {
       labels: new Map(rows.flatMap(row => row.label ? [[row.pid, row.label] as const] : [])),
     }
   })
-  if (plan) declared.push({ id: "notes", document: plan.notes_file ?? "drafting-notes.docx", aliases: [...new Set(["notes", plan.notes_file ?? "drafting-notes.docx"])], files: ["drafting-notes.docx"] })
+  const notesFile = plan && (plan.record_file ?? requestedMemo(directory, plan)?.file ?? "drafting-notes.docx")
+  if (notesFile) declared.push({ id: "notes", document: notesFile, aliases: [...new Set(["notes", notesFile])], files: ["drafting-notes.docx"] })
   if (!plan) warnings.push("No current document plan is available; target identity is unresolved.")
   for (const document of declared) {
     const relative = document.files.find(file => existsSync(leanFile(directory, file)))
