@@ -8,7 +8,7 @@ import { leanFile } from "./state"
  * reuse alone never makes a source the redline baseline. */
 export function comparisonBaseline(directory: string, document: DocID) {
   const source = plannedDocument(directory, document)?.comparison
-  if (!source) return { name: "this run’s initial generated draft", bytes: readFileSync(leanFile(directory, `${document}/body.docx`)) }
+  if (!source) return { name: "the first draft", bytes: readFileSync(leanFile(directory, `${document}/body.docx`)) }
   if (path.basename(source) !== source || !/\.docx$/i.test(source) || !matterSourceIDs(directory).includes(source))
     throw new Error(`The requested redline baseline "${source}" must name an indexed matter DOCX document.`)
   const root = realpathSync(directory)
@@ -23,6 +23,8 @@ export function comparisonBasis(directory: string, document: DocID) {
   return plannedDocument(directory, document)?.comparison ? comparisonBaseline(directory, document).bytes.toString("base64") : ""
 }
 
+/** The redline's baseline in the words the notes may repeat to the lawyer. */
 export function comparisonDescription(directory: string, document: DocID) {
-  return `Redline compares ${plannedDocument(directory, document)?.comparison ? `the supplied original "${plannedDocument(directory, document)!.comparison}"` : "this run’s initial generated draft"} with the final revised body.`
+  const original = plannedDocument(directory, document)?.comparison
+  return original ? `Redline compares the supplied original "${original}" with the final document.` : "Redline shows the changes made in review to the first draft."
 }
