@@ -87,6 +87,6 @@ describe("the matter's dates", () => {
   test("intake fixes the dates rather than asking only because the request gives none", () => {
     const prompt = researchPrompt(matter(DATED), "intake", "basis")
     expect(prompt).toContain('else one the sources fix for them (basis "sources"), else the drafting day (basis "today", date empty)')
-    expect(prompt).toContain("Never ask for a date only because the request does not give one.")
+    expect(prompt).toContain("Never ask whom the lawyer acts for, or for a date, only because the request does not say.")
   })
 })

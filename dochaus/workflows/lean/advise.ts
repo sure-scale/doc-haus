@@ -4,7 +4,7 @@ import { parseJsonObject } from "./change-checks"
 import { parallel } from "./checklist-flow"
 import { readParagraphs, record, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
-import { intakeActingFor } from "./intake"
+import { intakeActingFor, matterDatesBlock } from "./intake"
 import { FIRST_DOCUMENT, planActingFor, readLeanPlan, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, tagged } from "./prompts"
 import { REQUEST_SOURCE, isAnswerSource, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
@@ -211,6 +211,7 @@ export function advisePrompt(directory: string, question: Question) {
     tagged("answers", answeredQuestionsText(directory) || "None."),
     ...(readLeanText(directory, INSTRUCTIONS_FILE) ? [tagged("instructions", readLeanText(directory, INSTRUCTIONS_FILE)!)] : []),
     tagged("acting_for", actingForAdvice(directory)),
+    ...[matterDatesBlock(directory)].filter(Boolean),
     tagged("legal_research", researchHandoff(directory)),
     `Matter source names (use these exact names with search-document and read-document): ${JSON.stringify(matterSourceIDs(directory))}`,
     ...(provenanceLine ? [provenanceLine] : []),
