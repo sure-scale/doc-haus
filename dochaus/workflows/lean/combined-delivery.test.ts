@@ -38,6 +38,10 @@ const SUPPLY: Document = { title: "Supply note", purpose: "Operative terms", par
 const SCHEDULE: Document = { title: "Delivery schedule", purpose: "Delivery dates", parts: [{ heading: "Dates", scope: "Delivery dates" }] }
 const COMBINED: Document = { ...SUPPLY, file: "supply-pack.docx", deliverable: "combined" }
 const memo = (documents: Document[]) => ({ name: "cover memo", file: memoNotesFile(documents, "cover memo") })
+const COVER: Document = { title: "Cover memo", purpose: "Advice", form: "advice", parts: [{ heading: "Advice", scope: "The advice" }] }
+/** A plan with the requested memo as its last document, held by that id, as the outline plans it. */
+const memoPlanned = (directory: string, documents: Document[]) =>
+  writeLeanPlan(directory, [...documents, COVER], "basis-1", undefined, { name: "cover memo", document: `d${documents.length + 1}` })
 const PACKAGE_FINDING = "Distinct named primary artifacts need distinct filenames. Report a conflicting naming instruction as a package finding."
 
 /** Writes each planned document's body and redline and the notes, then
@@ -698,9 +702,9 @@ describe("the combined file saved in the matter", () => {
   test("a request naming the combined file is checked against the name registration gives it: once it moves to the next free name, the mismatch is disclosed", async () => {
     const directory = matter()
     const words = "Send the supply note with the cover memo in one file named supply-pack.docx"
-    const plan = writeLeanPlan(directory, [COMBINED], "basis-1", undefined, memo([COMBINED]))
+    const plan = memoPlanned(directory, [COMBINED])
     writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: requestedFilesPlanned(plan.documents, plan.memo), stated: true,
-      files: [{ holds: ["memo", "d1"], name: "supply-pack.docx", quote: words }] })
+      files: [{ holds: ["d2", "d1"], name: "supply-pack.docx", quote: words }] })
     const evidence = () => deliveryArtifactEvidence(directory).at(-1)
     await writeCopies(directory, COPIES)
     expect(requestedFilesItems(directory)).toEqual([])
@@ -710,8 +714,8 @@ describe("the combined file saved in the matter", () => {
     await acceptIntoCombined(directory)
     await writeCopies(directory, REVISED_MEMO)
 
-    const item = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for the memo and "Supply note" in one file named "supply-pack.docx", ` +
-      'but the run delivers the memo and "Supply note" in one file named "supply-pack (2).docx", since a file already in the matter holds the name "supply-pack.docx". ' +
+    const item = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for "Cover memo" and "Supply note" in one file named "supply-pack.docx", ` +
+      'but the run delivers "Cover memo" and "Supply note" in one file named "supply-pack (2).docx", since a file already in the matter holds the name "supply-pack.docx". ' +
       "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0, delivered_names: ["supply-pack (2).docx"] })
     // Predicted before the delivery moves the file, and read from the summary after it.
     expect(requestedFilesItems(directory)).toEqual([item])
@@ -724,17 +728,17 @@ describe("the combined file saved in the matter", () => {
   test("a request for one file without a name: once a kept file holds the combined name, the file the run delivers instead is disclosed with the reason", async () => {
     const directory = matter()
     const words = "Send the supply note with the cover memo in one file"
-    const plan = writeLeanPlan(directory, [COMBINED], "basis-1", undefined, memo([COMBINED]))
+    const plan = memoPlanned(directory, [COMBINED])
     writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: requestedFilesPlanned(plan.documents, plan.memo), stated: true,
-      files: [{ holds: ["memo", "d1"], name: null, quote: words }] })
+      files: [{ holds: ["d2", "d1"], name: null, quote: words }] })
     await writeCopies(directory, COPIES)
     await deliver(directory)
     expect(requestedFilesItems(directory)).toEqual([])
     propose(directory, "supply-pack.docx")
     await writeCopies(directory, { "d1/body-applied.docx": "# Supply note\n\nThe supplier delivers the goods each week." })
 
-    const item = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for the memo and "Supply note" in one file, ` +
-      'but the run delivers the memo and "Supply note" in one file named "supply-pack (2).docx", since a file already in the matter holds the name "supply-pack.docx". ' +
+    const item = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for "Cover memo" and "Supply note" in one file, ` +
+      'but the run delivers "Cover memo" and "Supply note" in one file named "supply-pack (2).docx", since a file already in the matter holds the name "supply-pack.docx". ' +
       "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0, delivered_names: ["supply-pack (2).docx"] })
     expect(requestedFilesItems(directory)).toEqual([item])
     discloseAtGate(directory, [item])
@@ -746,9 +750,9 @@ describe("the combined file saved in the matter", () => {
     for (const named of [true, false]) {
       const directory = matter()
       const words = named ? "Send the supply note with the cover memo in one file named supply-pack.docx" : "Send the supply note with the cover memo in one file"
-      const plan = writeLeanPlan(directory, [COMBINED], "basis-1", undefined, memo([COMBINED]))
+      const plan = memoPlanned(directory, [COMBINED])
       writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: requestedFilesPlanned(plan.documents, plan.memo), stated: true,
-        files: [{ holds: ["memo", "d1"], name: named ? "supply-pack.docx" : null, quote: words }] })
+        files: [{ holds: ["d2", "d1"], name: named ? "supply-pack.docx" : null, quote: words }] })
       await writeCopies(directory, COPIES)
       writeFileSync(path.join(directory, "supply-pack.docx"), await docx("# Supply pack\n\nA synthetic file saved under this name by hand."))
       discloseAtGate(directory, disclosableItems(directory))
@@ -760,9 +764,9 @@ describe("the combined file saved in the matter", () => {
       const unsavedItem = openItem("finalize", "omission", 'The combined file "supply-pack (2).docx" (the memo, then "Supply note") is not saved in the matter: ' +
         'the memo could not be read as a Word document. The memo and "Supply note" are delivered as separate files.',
         { repair_target: "memo", combined_file: "supply-pack (2).docx", unsaved_reason: "unreadable_memo" })
-      const separate = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for the memo and "Supply note" in one file named "supply-pack.docx", ` +
-        'but the run delivers the memo in "supply-pack - cover memo.docx" and "Supply note" in "supply-pack - clean.docx". ' +
-        "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0, delivered_names: ["supply-pack - cover memo.docx", "supply-pack - clean.docx"] })
+      const separate = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for "Cover memo" and "Supply note" in one file named "supply-pack.docx", ` +
+        'but the run delivers "Cover memo" in "Cover memo.docx" and "Supply note" in "supply-pack - clean.docx". ' +
+        "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0, delivered_names: ["Cover memo.docx", "supply-pack - clean.docx"] })
       expect({ named, items: disclosableItems(directory).filter(item => /combined file|Requested files/.test(item.detail)) })
         .toEqual({ named, items: named ? expect.arrayContaining([unsavedItem, separate]) : [unsavedItem] })
       expect(disclosableItems(directory).some(item => item.detail.includes("in one file named \"supply-pack (2).docx\""))).toBe(false)
@@ -772,16 +776,16 @@ describe("the combined file saved in the matter", () => {
   test("a save refused under the write's lock after the gate: the request is checked against the name the file is saved under, and an undisclosed mismatch with a requested name fails the run", async () => {
     const words = "Send the supply note with the cover memo in one file named supply-pack.docx"
     const unnamed = "Send the supply note with the cover memo in one file"
-    const item = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for the memo and "Supply note" in one file named "supply-pack.docx", ` +
-      'but the run delivers the memo and "Supply note" in one file named "supply-pack (2).docx", since a file already in the matter holds the name "supply-pack.docx". ' +
+    const item = openItem("finalize", "omission", `Requested files: the lawyer's words "${words}" [source: request] ask for "Cover memo" and "Supply note" in one file named "supply-pack.docx", ` +
+      'but the run delivers "Cover memo" and "Supply note" in one file named "supply-pack (2).docx", since a file already in the matter holds the name "supply-pack.docx". ' +
       "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0, delivered_names: ["supply-pack (2).docx"] })
     /** A delivered matter whose rerun's gate finds nothing to disclose, then a
      * rerun whose save of the combined file is refused under the write's lock. */
     const raced = async (disclosed: ReturnType<typeof openItem>[], named = true, status: ReturnType<typeof openItem>["status"] = "disclosed") => {
       const directory = matter()
-      const plan = writeLeanPlan(directory, [COMBINED], "basis-1", undefined, memo([COMBINED]))
+      const plan = memoPlanned(directory, [COMBINED])
       writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: requestedFilesPlanned(plan.documents, plan.memo), stated: true,
-        files: [{ holds: ["memo", "d1"], name: named ? "supply-pack.docx" : null, quote: named ? words : unnamed }] })
+        files: [{ holds: ["d2", "d1"], name: named ? "supply-pack.docx" : null, quote: named ? words : unnamed }] })
       await writeCopies(directory, COPIES)
       await deliver(directory)
       await writeCopies(directory, { "d1/body-applied.docx": "# Supply note\n\nThe supplier delivers the goods each week." })
@@ -818,8 +822,8 @@ describe("the combined file saved in the matter", () => {
     // completes the run, and the next finalize discloses where the file went.
     const one = await raced([], false)
     expect((await one.delivered).documents.filter(row => row.kind === "combined").map(row => row.deliverable)).toEqual(["supply-pack.docx", "supply-pack (2).docx"])
-    expect(requestedFilesItems(one.directory)).toEqual([openItem("finalize", "omission", `Requested files: the lawyer's words "${unnamed}" [source: request] ask for the memo and "Supply note" in one file, ` +
-      'but the run delivers the memo and "Supply note" in one file named "supply-pack (2).docx", since a file already in the matter holds the name "supply-pack.docx". ' +
+    expect(requestedFilesItems(one.directory)).toEqual([openItem("finalize", "omission", `Requested files: the lawyer's words "${unnamed}" [source: request] ask for "Cover memo" and "Supply note" in one file, ` +
+      'but the run delivers "Cover memo" and "Supply note" in one file named "supply-pack (2).docx", since a file already in the matter holds the name "supply-pack.docx". ' +
       "The lawyer should confirm how these files are to be delivered.", { repair_target: "memo", requested_file: 0, delivered_names: ["supply-pack (2).docx"] })])
   }, 60_000)
 
@@ -828,11 +832,11 @@ describe("the combined file saved in the matter", () => {
     for (const shared of [true, false]) {
       const directory = matter()
       const documents = [COMBINED, SCHEDULE]
-      const plan = writeLeanPlan(directory, documents, "basis-1", undefined, memo(documents))
+      const plan = memoPlanned(directory, documents)
       // Two files asked for in one sentence, or in two: the one file without a
       // name, and the schedule under a name the plan does not give it.
       writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: requestedFilesPlanned(plan.documents, plan.memo), stated: true,
-        files: [{ holds: ["memo", "d1"], name: null, quote: words }, { holds: ["d2"], name: "dates.docx", quote: shared ? words : "the delivery schedule as dates.docx" }] })
+        files: [{ holds: ["d3", "d1"], name: null, quote: words }, { holds: ["d2"], name: "dates.docx", quote: shared ? words : "the delivery schedule as dates.docx" }] })
       const schedule = "# Delivery schedule\n\nGoods arrive on the first day."
       await writeCopies(directory, { ...COPIES, "d2/body-applied.docx": schedule, "d2/redline.docx": schedule })
       await deliver(directory)
@@ -858,9 +862,9 @@ describe("the combined file saved in the matter", () => {
     for (const request of ["refused name", "held name"] as const) {
       const directory = matter()
       const words = request === "refused name" ? "Send the supply note with the cover memo in one file named supply-pack.pdf" : "Send the supply note with the cover memo in one file"
-      const plan = writeLeanPlan(directory, [COMBINED], "basis-1", undefined, memo([COMBINED]))
+      const plan = memoPlanned(directory, [COMBINED])
       writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: requestedFilesPlanned(plan.documents, plan.memo), stated: true,
-        files: [{ holds: ["memo", "d1"], name: null, quote: words, ...(request === "refused name" ? { refused_name: "supply-pack.pdf" } : {}) }] })
+        files: [{ holds: ["d2", "d1"], name: null, quote: words, ...(request === "refused name" ? { refused_name: "supply-pack.pdf" } : {}) }] })
       await writeCopies(directory, COPIES)
       const lawyer = await docx("# Supply pack\n\nA synthetic file saved under this name by hand.")
       // A name the run could not use: the notes say the file the system saved
@@ -911,9 +915,9 @@ describe("the combined file saved in the matter", () => {
   test("a save refused under the write's lock after a matter source named for the request is added: the item the notes disclosed still finds its file, and the run fails", async () => {
     const directory = matter()
     const words = "Send the supply note with the cover memo in one file"
-    const plan = writeLeanPlan(directory, [COMBINED], "basis-1", undefined, memo([COMBINED]))
+    const plan = memoPlanned(directory, [COMBINED])
     writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: requestedFilesPlanned(plan.documents, plan.memo), stated: true,
-      files: [{ holds: ["memo", "d1"], name: null, quote: words }] })
+      files: [{ holds: ["d2", "d1"], name: null, quote: words }] })
     await writeCopies(directory, COPIES)
     const lawyer = await docx("# Supply pack\n\nA synthetic file saved under this name by hand.")
     writeFileSync(path.join(directory, "supply-pack.docx"), lawyer)
@@ -942,11 +946,11 @@ describe("the combined file saved in the matter", () => {
   test("a save refused under the write's lock after a matter source named for the request is added: an item the notes disclosed about another file, still delivered where they said, does not fail the run", async () => {
     const directory = matter()
     const documents = [COMBINED, SCHEDULE]
-    const plan = writeLeanPlan(directory, documents, "basis-1", undefined, memo(documents))
+    const plan = memoPlanned(directory, documents)
     // One file asked for without a name, which the notes do not place, and the
     // schedule asked for under a name the plan does not give it.
     writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: "basis-1", planned: requestedFilesPlanned(plan.documents, plan.memo), stated: true, files: [
-      { holds: ["memo", "d1"], name: null, quote: "Send the supply note with the cover memo in one file" },
+      { holds: ["d3", "d1"], name: null, quote: "Send the supply note with the cover memo in one file" },
       { holds: ["d2"], name: "schedule-review.docx", quote: "Send the delivery schedule as schedule-review.docx" },
     ] })
     await writeCopies(directory, { ...COPIES, "d2/body-applied.docx": "# Delivery schedule\n\nThe goods arrive on Mondays.", "d2/redline.docx": "# Delivery schedule\n\nThe goods arrive on Mondays." })

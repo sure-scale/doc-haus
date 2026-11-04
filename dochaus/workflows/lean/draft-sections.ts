@@ -6,7 +6,6 @@ import { playbookSelectionIssues } from "./playbook-review"
 import { TOOL_SYNTAX_ISSUE, checkDraft, printedToolCall, readParagraphs } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { matterSourceIDs } from "./quotes"
-import { memoNotesFile } from "./deliverables"
 import {
   LEAN_COVERAGE_SCHEMA, coveragePlacementPrompt, coveragePlanHash, coverageScopeQuestion, foldedCoverage, parseCoveragePlacement, planCoverageCurrent, planCoverageIssues, recordedActs, separateFileChosen,
   type CoverageAct, type InstructedAct, type LeanCoverage,
@@ -213,13 +212,13 @@ export async function runDraftStage(
       reason: `${step}: the document plan leaves an instructed act without a document its parties execute; drafting waits for your answer on the package's scope.` }
   }
   // The files job, like the placement job, reads the plan in a fresh session of
-  // its own, and only when the plan has a memo or more than one document to
-  // put in files; undefined when it is not asked. A reply that never passed its
-  // check gives no files. A name refused on one attempt is carried, by quote,
+  // its own, and only when the plan has more than one document, the memo
+  // document included, to put in files; undefined when it is not asked. A
+  // reply that never passed its check gives no files. A name refused on one attempt is carried, by quote,
   // to the later ones (parseRequestedFiles). Errors from the session calls
   // propagate.
-  const filing = async (documents: PlannedDocument[], memo: string | undefined): Promise<Checked<RequestedFiles> | undefined> => {
-    if (memo === undefined && documents.length < 2) return
+  const filing = async (documents: PlannedDocument[], memo: DocID | undefined): Promise<Checked<RequestedFiles> | undefined> => {
+    if (documents.length < 2) return
     const filesAgent = LEAN_STAGE_AGENTS.files
     const id = await deps.sessions.createSession({
       directory, parentID: state.owner_session_id, agent: filesAgent, title: stepSessionTitle(directory, step, "draft: files"), model: state.model, permissions: LEAN_CHILD_PERMISSIONS,
@@ -227,15 +226,15 @@ export async function runDraftStage(
     sessionIDs.push(id)
     progress({ ...(sessionIDs.length === 1 ? { session_id: id } : {}), session_ids: [...sessionIDs] })
     const refused = new Map<string, string>()
-    return exchange({ id, agent: filesAgent })("files", requestedFilesPrompt(directory, documents, memo), (reply, final) => parseRequestedFiles(reply, directory, documents, memo, { final, refused }))
+    return exchange({ id, agent: filesAgent })("files", requestedFilesPrompt(directory, documents, memo), (reply, final) => parseRequestedFiles(reply, directory, documents, { final, refused }))
   }
   // Whether the lawyer's words ask for each planned document the one
   // requested file leaves out, each in a fresh session of its own; the ids of
   // those they do not. A reply that never passed its check keeps its document
-  // as the files job placed it.
-  const unasked = async (requested: RequestedFiles, documents: PlannedDocument[]) => {
+  // as the files job placed it. The memo document is never asked about.
+  const unasked = async (requested: RequestedFiles, documents: PlannedDocument[], memo: DocID | undefined) => {
     const filesAgent = LEAN_STAGE_AGENTS.files
-    const verdicts = await Promise.all(unheldDocuments(requested, documents).map(async row => {
+    const verdicts = await Promise.all(unheldDocuments(requested, documents, memo).map(async row => {
       const id = await coverageSession(filesAgent, `files: ${row.id} asked`)
       const checked = await exchange({ id, agent: filesAgent })(`files asked ${row.id}`, unheldDocumentPrompt(directory, row, requested.files[0]!), reply => parseUnheldDocument(reply, directory))
       return checked.value === false ? [row.id as string] : []
@@ -287,13 +286,10 @@ export async function runDraftStage(
     const blocked = scopeBlock(covered, coverage)
     if (blocked) return blocked
     // The outline plans the memo the request asks for as its last document
-    // (parsePlan). The files job still reads the memo as its "memo" hold, so
-    // it is given the documents before the memo, and the memo document stays
-    // last, never folded into another file.
-    const memoTail = value.memo ? value.documents.slice(-1) : []
-    const memoless = (outline: LeanOutline): LeanOutline => memoTail.length ? { ...outline, documents: outline.documents.slice(0, -1) } : outline
-    value = memoless(value)
-    const filesCovered = withDocumentIDs(value.documents)
+    // (parsePlan); the files jobs hold it by that id, and it stays last, never
+    // folded into another file.
+    const memoed = value.memo !== undefined
+    const memoOf = (documents: unknown[]): DocID | undefined => memoed ? `d${documents.length}` : undefined
     // The files the lawyer's words ask for are read from the covered outline.
     // Where its deliverables do not deliver them so, the issues a revision may
     // settle go back to the outline session as a revision request, unless the
@@ -312,24 +308,23 @@ export async function runDraftStage(
     // the files job left out of it goes in it too, unless the lawyer's words
     // ask for that document themselves (unasked) or the lawyer chose a file of
     // its own for one.
-    const filed = await filing(filesCovered, value.memo)
+    const filed = await filing(covered, memoOf(covered))
     const separate = separateFileChosen(readQuestions(directory))
-    const asked = filed?.value && !separate ? withUnaskedDocuments(filed.value, await unasked(filed.value, filesCovered)) : filed?.value
-    const fold = (outline: LeanOutline) => asked ? foldRequestedFiles(outline.documents, asked, separate) : undefined
+    const asked = filed?.value && !separate ? withUnaskedDocuments(filed.value, await unasked(filed.value, covered, memoOf(covered))) : filed?.value
+    const fold = (outline: LeanOutline) => asked ? foldRequestedFiles(outline.documents, asked, separate, memoOf(outline.documents)) : undefined
     let folded = fold(value)
     let requested = folded?.requested
     const held = () => folded?.documents ?? value!.documents
     const contents = (outline: LeanOutline) => JSON.stringify([outline.documents.map(row => normalizedHeading(row.title)), outline.memo ? normalizedHeading(outline.memo) : null])
     const delivered = ({ deliverable: _deliverable, ...row }: LeanOutline["documents"][number], revised: LeanOutline["documents"][number]) =>
       ({ ...row, ...(revised.deliverable ? { deliverable: revised.deliverable } : {}) })
-    let files = requested ? requestedFilesIssues(withDocumentIDs(held()), value.memo, requested).issues : []
+    let files = requested ? requestedFilesIssues(withDocumentIDs(held()), memoOf(held()), requested).issues : []
     const revising = () =>
-      requested && requestedFilesQuestion(directory, requested, withDocumentIDs(held()), files) ? requestedFilesRevision(directory, files) : undefined
+      requested && requestedFilesQuestion(directory, requested, withDocumentIDs(held()), files, memoOf(held())) ? requestedFilesRevision(directory, files) : undefined
     for (let revision = 1, revise = revising(); requested && revise && revision <= PLAN_FILES_REVISIONS; revision++, revise = revising()) {
       delete best.value
       const revised = await ask<LeanOutline>(`outline files revision ${revision}/${PLAN_FILES_REVISIONS}`, retryPrompt("draft", revise.feedback), checkOutline, 0, revise.feedback)
-      const reply = revised.value ?? best.value
-      const next = reply && memoless(reply)
+      const next = revised.value ?? best.value
       if (!next || contents(next) !== contents(value)) continue
       // The issues name the documents as held; each is its outline document.
       const ids: DocID[] = withDocumentIDs(held()).map(row => row.id)
@@ -337,30 +332,26 @@ export async function runDraftStage(
       value = { ...value, documents: value.documents.map((row, index) => concerned.has(index) ? delivered(row, next.documents[index]!) : row) }
       folded = fold(value)
       requested = folded?.requested
-      files = requestedFilesIssues(withDocumentIDs(held()), value.memo, requested!).issues
+      files = requestedFilesIssues(withDocumentIDs(held()), memoOf(held()), requested!).issues
     }
     if (folded?.applied.length) {
       // The coverage record moves to the plan as held, so the saved plan's check stands.
-      const saved = withDocumentIDs([...folded.documents, ...memoTail])
-      writeCoverage(saved, value.acting_for, foldedCoverage(directory, coverage, memoTail.length ? [...folded.at, folded.documents.length] : folded.at, saved))
+      const saved = withDocumentIDs(folded.documents)
+      writeCoverage(saved, value.acting_for, foldedCoverage(directory, coverage, folded.at, saved))
       value = { ...value, documents: folded.documents }
     }
     const documents = withDocumentIDs(value.documents)
     // A mismatch the revisions leave is the lawyer's call, asked once; once
     // asked, the plan is saved as it stands and the record discloses the files
     // it does not deliver as asked (requestedFilesItems).
-    const question = requested && requestedFilesQuestion(directory, requested, documents, files)
+    const question = requested && requestedFilesQuestion(directory, requested, documents, files, memoOf(documents))
     if (question) return { status: "blocked", outputs: ["coverage.json"], openItems: [], questions: [question],
       reason: `${step}: the document plan does not deliver the files the lawyer's words ask for; drafting waits for your answer on how they are delivered.` }
-    // The run's notes still carry the requested memo's name until delivery
-    // reads the memo document; the plan records that document by its id.
-    const memo = value.memo ? { name: value.memo, file: memoNotesFile(value.documents, value.memo) } : undefined
-    const named = requested && withRequestedNames(value.documents, memo, requested)
     // A file the lawyer's words name for the memo alone is the memo document's.
-    const memoFile = memo && named?.notes_file && named.notes_file !== memoNotesFile(named.documents, memo.name) ? named.notes_file : undefined
+    const named = requested && withRequestedNames(value.documents, memoOf(value.documents), requested)
     // The record names the saved plan's documents, the memo's included, as the
     // later files check and its items read them.
-    const planned = [...named?.documents ?? value.documents, ...memoTail.map(row => memoFile ? { ...row, file: memoFile } : row)]
+    const planned = named?.documents ?? value.documents
     if (requested && named) {
       writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, words: requestedFilesWords(directory), planned: requestedFilesPlanned(planned, value.memo), stated: requested.stated, files: requested.files })
       const applied = [...folded?.applied ?? [], ...named.applied]
@@ -372,7 +363,7 @@ export async function runDraftStage(
       appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: "unchecked",
         reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive could not be confirmed; the plan delivers its files as outlined and the drafting notes say so." })
     } else rmSync(leanFile(directory, "requested-files.json"), { force: true })
-    writeLeanPlan(directory, planned, basis, value.acting_for, memo && { name: memo.name, document: `d${planned.length}` }, posture, frozenDates(directory))
+    writeLeanPlan(directory, planned, basis, value.acting_for, value.memo ? { name: value.memo, document: `d${planned.length}` } : undefined, posture, frozenDates(directory))
   } else if (document === FIRST_DOCUMENT && !planCoverageCurrent(directory)) {
     const saved = readLeanPlan(directory)!
     const coverage = await covering(saved.documents)

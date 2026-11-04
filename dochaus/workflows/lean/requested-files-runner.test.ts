@@ -39,7 +39,9 @@ const COMBINED = memoed(letter("Deliverable: combined"))
 
 /** The files job's reply naming these files. */
 const filesOf = (...files: RequestedFile[]): Reply => () => JSON.stringify({ stated: true, files })
-const PACKED: RequestedFile = { holds: ["memo", "d1"], name: "Kestrel Release Pack.docx", quote: PACK }
+const PACKED: RequestedFile = { holds: ["d2", "d1"], name: "Kestrel Release Pack.docx", quote: PACK }
+/** PACKED where the outline plans a second document, so the memo is d3. */
+const BEHIND: RequestedFile = { ...PACKED, holds: ["d3", "d1"] }
 /** The files agent: `files` for the files job, `asked` for whether the lawyer's words ask for a document the one file leaves out. */
 const filesAnd = (files: Reply, asked: string): Reply => (text, index, sessionID) =>
   text.includes("whether they ask for one planned document themselves") ? asked : files(text, index, sessionID)
@@ -99,7 +101,7 @@ describe("requested files through the run", () => {
     expect(revisions(model)).toEqual([expect.objectContaining({ sessionID: outlinePrompt(model).sessionID })])
     expect(revisions(model)[0]!.text.split("\n").filter(line => line.startsWith("- "))).toEqual([
       `- ${FILES_REVISION_SCOPE}`,
-      `- The lawyer's words "${PACK}" ask for the memo and "Release letter" in one file. Write "Deliverable: combined" under "Release letter".`,
+      `- The lawyer's words "${PACK}" ask for "Cover memo" and "Release letter" in one file. Write "Deliverable: combined" under "Release letter".`,
     ])
 
     const plan = readLeanPlan(directory)!
@@ -127,7 +129,7 @@ describe("requested files through the run", () => {
     const model = scriptedModel(replies({ [AGENT.draft]: draft, [AGENT.files]: filesOf(PACKED) }))
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
-    const issue = `- The lawyer's words "${PACK}" ask for the memo and "Release letter" in one file. Write "Deliverable: combined" under "Release letter".`
+    const issue = `- The lawyer's words "${PACK}" ask for "Cover memo" and "Release letter" in one file. Write "Deliverable: combined" under "Release letter".`
     expect(revisions(model).map(prompt => prompt.text.split("\n").filter(line => line.startsWith("- ")))).toEqual([[`- ${FILES_REVISION_SCOPE}`, issue], [`- ${FILES_REVISION_SCOPE}`, issue]])
     expect(readLeanPlan(directory)!.documents).toEqual([expect.objectContaining({ id: "d1", title: "Release letter", deliverable: "combined", file: "Kestrel Release Pack.docx" }), MEMO_ROW])
     expect(coverageSessions(model)).toEqual([])
@@ -166,7 +168,7 @@ describe("requested files through the run", () => {
     // The revision combines the letter and leaves out the notice's Deliverable line.
     const revised = memoed(letter("Deliverable: combined"), ...notice.filter(line => !line.startsWith("Deliverable")))
     const model = scriptedModel(replies({ [AGENT.draft]: outliner(memoed(letter(), ...notice), revised),
-      [AGENT.files]: filesAnd(filesOf(PACKED), JSON.stringify({ asked: true, quote: "Also prepare a deposit notice for the Orchard Committee." })) }))
+      [AGENT.files]: filesAnd(filesOf(BEHIND), JSON.stringify({ asked: true, quote: "Also prepare a deposit notice for the Orchard Committee." })) }))
     await runLean(directory, { sessions: model.port })
 
     expect(revisions(model)).toHaveLength(1)
@@ -181,7 +183,7 @@ describe("requested files through the run", () => {
     const directory = prepared()
     const approval = ["# Committee approval", "Form: other", "## Approval", "The approval."]
     const model = scriptedModel(replies({ [AGENT.draft]: outliner(memoed(letter("Deliverable: combined"), ...approval)),
-      [AGENT.files]: filesAnd(filesOf(PACKED), '{"asked":false}') }))
+      [AGENT.files]: filesAnd(filesOf(BEHIND), '{"asked":false}') }))
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
     const [only, ...others] = readLeanPlan(directory)!.documents
@@ -208,8 +210,8 @@ describe("requested files through the run", () => {
     expect(revisions(model)).toEqual([])
     const asked = readQuestions(directory)
     expect(asked).toEqual([expect.objectContaining({ id: expect.stringMatching(/^requested-files-/), stage: "draft", status: "open" })])
-    expect(asked[0]!.question).toContain(`Your words "${PACK}" ask for the memo and "Release letter" in one file named "Kestrel Release Pack.docx", ` +
-      'but the document plan delivers "Release letter" as a redline and the memo as a file of its own.')
+    expect(asked[0]!.question).toContain(`Your words "${PACK}" ask for "Cover memo" and "Release letter" in one file named "Kestrel Release Pack.docx", ` +
+      'but the document plan delivers "Release letter" as a redline and "Cover memo" as a file of its own.')
     expect(existsSync(leanFile(directory, "plan.json"))).toBe(false)
   }, 120_000)
 
@@ -242,8 +244,8 @@ describe("requested files through the run", () => {
     expect(model.count(AGENT.files)).toBe(1)
     const asked = readQuestions(directory)
     expect(asked).toEqual([expect.objectContaining({ id: expect.stringMatching(/^requested-files-/), stage: "draft", document: "d1", status: "open" })])
-    expect(asked[0]!.question).toContain(`Your words "${PACK}" ask for the memo and "Release letter" in one file named "Kestrel Release Pack.docx", ` +
-      'but the document plan delivers the memo and "Release letter" as separate files.')
+    expect(asked[0]!.question).toContain(`Your words "${PACK}" ask for "Cover memo" and "Release letter" in one file named "Kestrel Release Pack.docx", ` +
+      'but the document plan delivers "Cover memo" and "Release letter" as separate files.')
     expect(existsSync(leanFile(directory, "plan.json"))).toBe(false)
     expect(readRequestedFiles(directory)).toBeUndefined()
     expect(partPrompts(model)).toEqual([])
@@ -274,8 +276,8 @@ describe("requested files through the run", () => {
     // The file not delivered as asked is disclosed in the drafting notes, citing the answer.
     const items = requestedFilesItems(directory)
     expect(items).toEqual([expect.objectContaining({ stage: "finalize", kind: "omission", ref: expect.objectContaining({ repair_target: "memo" }) })])
-    expect(items[0]!.detail).toBe(`Requested files: the lawyer's words "${requoted.quote}" [source: request] ask for the memo and "Release letter" in one file named "Kestrel Release Pack.docx", ` +
-      'but the run delivers the memo in "Kestrel Release Pack - cover memo.docx" and "Release letter" in "Kestrel Release Pack.docx". ' +
+    expect(items[0]!.detail).toBe(`Requested files: the lawyer's words "${requoted.quote}" [source: request] ask for "Cover memo" and "Release letter" in one file named "Kestrel Release Pack.docx", ` +
+      'but the run delivers "Cover memo" in "Cover memo.docx" and "Release letter" in "Kestrel Release Pack.docx". ' +
       `The lawyer answered the question about the files the words "${PACK}" [source: request] ask for; the plan drawn up with that answer still delivers them so.`)
     expect(items[0]!.detail).not.toContain(asked[0]!.id)
     expect(disclosableItems(directory)).toContainEqual(items[0])
@@ -306,19 +308,25 @@ describe("requested files through the run", () => {
 
     const late = "Put the cover memo and the release letter in one file named Kestrel Release Pack.docx."
     enqueueLeanRequest(directory, { kind: "update", text: late })
-    const file: RequestedFile = { holds: ["memo", "d1"], name: "Kestrel Release Pack.docx", quote: late }
+    const file: RequestedFile = { holds: ["d2", "d1"], name: "Kestrel Release Pack.docx", quote: late }
     const updated = scriptedModel(replies({ [AGENT.draft]: outliner(BODY), [AGENT.files]: filesOf(file) }))
     expect((await runLean(directory, { sessions: updated.port })).status).toBe("completed")
 
     expect(updated.count(AGENT.files)).toBe(1)
     expect(updated.count(AGENT.draft)).toBe(0)
+    // The recheck sees the memo once: the memo document, by its planned id, with no separate memo to hold.
+    const recheck = updated.prompts.find(prompt => prompt.agent === AGENT.files)!.text
+    expect(recheck).toContain(JSON.stringify([{ id: "d1", title: "Release letter" }, { id: "d2", title: "Cover memo" }], null, 2))
+    expect(recheck.match(/"Cover memo"/g)).toHaveLength(1)
+    expect(recheck).not.toContain("<planned_memo>")
+    expect(recheck).toContain('with "d2" first when the words set no order')
     expect(readQuestions(directory)).toEqual([])
     expect(readLeanText(directory, "plan.json")).toBe(plan)
     expect(readRequestedFiles(directory)).toMatchObject({ basis: readLeanPlan(directory)!.basis, planned: PLANNED, stated: true, files: [file] })
     expect(filesEvents(directory).at(-1)).toMatchObject({ stage: "finalize", step: "files", outcome: "stated" })
     const items = requestedFilesItems(directory)
     expect(items).toHaveLength(1)
-    expect(items[0]!.detail).toContain(`the lawyer's words "${late}" [source: request] ask for the memo and "Release letter" in one file named "Kestrel Release Pack.docx", but the run delivers`)
+    expect(items[0]!.detail).toContain(`the lawyer's words "${late}" [source: request] ask for "Cover memo" and "Release letter" in one file named "Kestrel Release Pack.docx", but the run delivers`)
     expect(readLeanText(directory, "drafting-notes.md")).toContain(`[ref: ${items[0]!.id}]`)
     expect(gateOf(directory).disclosed).toContainEqual(expect.objectContaining({ id: items[0]!.id, status: "disclosed" }))
 
@@ -348,7 +356,7 @@ describe("requested files through the run", () => {
     const deliverables = registering()
     const files: RequestedFile[] = [
       { holds: ["d1"], name: "Kestrel Release.docx", quote: "Deliver the release letter as Kestrel Release.docx" },
-      { holds: ["memo"], name: "Kestrel Advice.docx", quote: "the cover memo separately as Kestrel Advice.docx" },
+      { holds: ["d2"], name: "Kestrel Advice.docx", quote: "the cover memo separately as Kestrel Advice.docx" },
     ]
     const model = scriptedModel(replies({ [AGENT.draft]: outliner(BODY), [AGENT.files]: filesOf(...files) }))
     expect((await runLean(directory, { sessions: model.port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
@@ -359,10 +367,9 @@ describe("requested files through the run", () => {
     expect(plan.documents).toEqual([expect.objectContaining({ id: "d1", file: "Kestrel Release.docx" }), expect.objectContaining({ id: "d2", title: "Cover memo", file: "Kestrel Advice.docx" })])
     expect(plan.documents[0]).not.toHaveProperty("deliverable")
     expect(readRequestedFiles(directory)).toEqual({ schema: LEAN_REQUESTED_FILES_SCHEMA, basis: plan.basis!, words: requestedFilesWords(directory), planned: PLANNED, stated: true, files })
-    // The lawyer's words name the memo's file. Until delivery reads the memo
-    // document, the notes still go out as the memo beside it, under a suffix,
-    // and the drafting notes say so.
-    expect(requestedFilesItems(directory)).toEqual([expect.objectContaining({ kind: "omission", ref: expect.objectContaining({ repair_target: "memo", delivered_names: ["Kestrel Advice (2).docx"] }) })])
+    // The lawyer's words name the memo's file, held by the memo document's id:
+    // the memo document is delivered under that name, so nothing is disclosed.
+    expect(requestedFilesItems(directory)).toEqual([])
     expect(readQuestions(directory)).toEqual([])
     expect(deliverables.names).toEqual(expect.arrayContaining(["Kestrel Release.docx", "Kestrel Advice.docx"]))
   }, 120_000)
@@ -407,8 +414,8 @@ describe("requested files through the run", () => {
     expect(readRequestedFiles(directory)).toMatchObject({ stated: true, files: [{ ...PACKED, name: null, refused_name: refused }] })
     const items = requestedFilesItems(directory)
     expect(items).toHaveLength(1)
-    expect(items[0]!.detail).toBe(`Requested files: the lawyer's words "${PACK}" [source: request] ask for the memo and "Release letter" in one file, ` +
-      `but the run could not use "${refused}" as its name; it delivers the memo and "Release letter" in one file named "Release letter.docx". ` +
+    expect(items[0]!.detail).toBe(`Requested files: the lawyer's words "${PACK}" [source: request] ask for "Cover memo" and "Release letter" in one file, ` +
+      `but the run could not use "${refused}" as its name; it delivers "Cover memo" and "Release letter" in one file named "Release letter.docx". ` +
       "The lawyer should confirm how these files are to be delivered.")
     expect(gateOf(directory).disclosed).toContainEqual(expect.objectContaining({ id: items[0]!.id, status: "disclosed" }))
   }, 120_000)
