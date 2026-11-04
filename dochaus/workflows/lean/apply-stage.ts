@@ -20,10 +20,15 @@ import { draftingAttribution, withGeneratedDocxAttribution } from "../../lib/doc
 import { continueListStarts, numberDocxClauses, numberedList } from "../../lib/docx-numbering"
 import { linkCrossReferences, referenceFields } from "../../lib/docx-crossrefs"
 import { paragraphFields, refInstruction, unlink } from "../../lib/docx-fields"
-import { shadeOpenItemsInDocx, unshadeOpenItems } from "../../lib/open-items"
+import { openItemMarkers, shadeOpenItemsInDocx, unshadeOpenItems } from "../../lib/open-items"
 import { assertRedlineRoundTrip } from "../../lib/redline-round-trip"
 import { discloseSourceRevisions } from "../../lib/docx-revision-views"
 import { openItem } from "./quotes"
+import { normalize } from "../../lib/quote-verify"
+import { paragraphSha256, type Amendment } from "../../lib/drafting-amendment"
+import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, repairedUnverified, unverifiedKey } from "./repairs"
+import { OPEN_ITEM_PATTERN } from "../../lib/marker-patterns"
+import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const BODY = "word/document.xml"
@@ -56,6 +61,7 @@ export async function runApply(directory: string, state: LeanState, document: Do
     .then((value): ApplyResult => value, (error: unknown) => ({ error: message(directory, error) }))
   const settled = "error" in result ? settleApply(changes, undefined, false, result.error) : settleApply(changes, result, existsSync(out))
   if (settled.bodyUnchanged) copyFileSync(body, out)
+  const marked = await markUnverified(directory, out, document)
   const identity = draftingAttribution()
   // A changed paragraph whose text now carries a clause number the body's list
   // supplies is numbered by the list, as at drafting. The later parts of a
@@ -70,7 +76,7 @@ export async function runApply(directory: string, state: LeanState, document: Do
   // so a number a change wrote or extended points at the clause it names; the
   // other paragraphs are only refreshed.
   const renumbered = renumberApplied(readFileSync(body), readFileSync(out), settled.result)
-  const rewritten = new Set(settled.result.applied.flatMap(row => row.mode === "code" ? row.result_pids ?? [row.pid] : []))
+  const rewritten = new Set([...settled.result.applied.flatMap(row => row.mode === "code" ? row.result_pids ?? [row.pid] : []), ...marked.map(row => row.pid)])
   const relink = (paragraph: Element) => paragraphPointers(paragraph).some(pointer => rewritten.has(pointer.pid))
   const links = draftedReferences(directory, document).links
   const linked = await linkCrossReferences(renumbered, links ? { ...links, relink } : { refreshOnly: true })
@@ -81,23 +87,106 @@ export async function runApply(directory: string, state: LeanState, document: Do
   writeLeanBytes(directory, `${document}/body-applied.docx`, withGeneratedDocxAttribution(shadeOpenItemsInDocx(linked, relink), identity))
   const rows = await paragraphRows(out)
   writeLeanText(directory, `${document}/paragraphs-applied.json`, `${JSON.stringify(rows, null, 2)}\n`)
-  const annotated = await documentRedline(directory, document, readFileSync(out), changes, settled.result.applied, identity)
+  const annotated = await documentRedline(directory, document, readFileSync(out), changes, settled.result.applied, identity, marked)
   // Tracked changes are dated when this step started applying them; a change
   // already in the previous redline keeps its date, so an unchanged redline
   // keeps its bytes and the evidence keyed on them.
   const previous = leanFile(directory, `${document}/redline.docx`)
   writeLeanBytes(directory, `${document}/redline.docx`, withStableRevisionDates(annotated.bytes, state.stages[step]?.started_at ?? new Date().toISOString(),
     existsSync(previous) ? readFileSync(previous) : undefined))
-  writeLeanText(directory, `${document}/apply.json`, `${JSON.stringify({ ...settled.result, comments: annotated.comments }, null, 2)}\n`)
+  writeLeanText(directory, `${document}/apply.json`, `${JSON.stringify({ ...settled.result, ...(marked.length ? { marked } : {}), comments: annotated.comments }, null, 2)}\n`)
+  // A marker this step wrote shows its citation or quotation item, which the
+  // notes name; it is not a second open item. The same words elsewhere in the
+  // body were not written here and stay open items of their own.
+  const written = new Map(marked.map(row => [row.pid, new Set(row.markers.map(marker => normalize(marker).toLowerCase()))]))
+  const bodyItems = finalBodyItems(directory, rows).filter(item => item.kind !== "placeholder" || !item.ref.pid || !written.get(item.ref.pid)?.has(normalize(item.ref.placeholder ?? "").toLowerCase()))
   return {
     status: "done", outputs: stepOutputs(step),
     openItems: [
-      ...settled.openItems, ...annotated.openItems, ...finalBodyItems(directory, rows), ...draftStatusItems(directory, document, rows, "apply"),
+      ...settled.openItems, ...annotated.openItems, ...bodyItems, ...draftStatusItems(directory, document, rows, "apply"),
       ...templateItems(directory, document, readParagraphs(directory, document), rows, changes.amendments, new Set(settled.result.applied.map(row => row.id))),
       ...consistencyItems(directory, document, readParagraphs(directory, document), rows, referenceFields(readFileSync(out))),
       ...tableItems(directory, document, readFileSync(out), rows),
     ],
   }
+}
+
+type MarkedParagraph = { pid: string; markers: string[] }
+
+/** An unverified quotation or an unsupported citation left in the final body
+ * after a repair round aimed at it, or once the run's substantive repair rounds
+ * are used up, is marked where it stands: its paragraph gets a visible
+ * open-item marker, written before the body is numbered, shaded and compared,
+ * and the item itself, named in the drafting notes, goes with a review draft.
+ * Before that the gate starts one repair round for it
+ * (startUnverifiedRepairRound). */
+async function markUnverified(directory: string, out: string, document: DocID): Promise<MarkedParagraph[]> {
+  const round = readRepairRound(directory)
+  const exhausted = (round?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
+  const repaired = repairedUnverified(round)
+  if (!exhausted && !repaired.size || !existsSync(out)) return []
+  const rows = await paragraphRows(out)
+  const texts = new Map(rows.map(row => [row.pid, row.text]))
+  const wanted = new Map<string, string[]>()
+  for (const item of finalBodyItems(directory, rows)) {
+    if (item.kind !== "citation_unsupported" && item.kind !== "quote_miss" || !item.ref.pid || !texts.has(item.ref.pid)) continue
+    if (!exhausted && !repaired.has(unverifiedKey(item, document))) continue
+    const marker = unverifiedMarker(item)
+    // A paragraph already marked for this item is left as it stands; a marker
+    // about something else in it does not tell the lawyer about this one.
+    if (marksItem(texts.get(item.ref.pid)!, item, marker)) continue
+    const markers = wanted.get(item.ref.pid) ?? []
+    if (!markers.includes(marker)) wanted.set(item.ref.pid, [...markers, marker])
+  }
+  const amendments: Amendment[] = [...wanted].map(([pid, markers], index) => ({ id: `m${index + 1}`, pid, existing_sha256: paragraphSha256(texts.get(pid)!),
+    updated: `${texts.get(pid)!.trimEnd()} ${markers.join(" ")}`, reason: "Marked as an open item: it could not be verified against a source after a repair round.", sources: [] }))
+  if (!amendments.length) return []
+  // A paragraph the applier could not mark keeps its item unmarked, and the gate blocks on it.
+  const result = await applyAmendments({ docxPath: out, outPath: out, amendments, ownedMarkerDecoration: true }).catch(() => undefined)
+  const applied = new Set(result?.applied.map(row => row.pid) ?? [])
+  return [...wanted].flatMap(([pid, markers]) => applied.has(pid) ? [{ pid, markers }] : [])
+}
+
+/** Whether a paragraph already shows an open item for an unverified citation
+ * or quotation: the marker apply would write, or a marker or placeholder that
+ * names the citation or quotation itself. */
+function marksItem(text: string, item: OpenItem, marker: string) {
+  const named = normalize(item.ref.citation ?? item.ref.quote ?? "").toLowerCase()
+  const normalized = normalize(text)
+  return [...openItemMarkers(normalized), ...draftingPlaceholders(normalized)].some(shown =>
+    shown.toLowerCase() === normalize(marker).toLowerCase() || Boolean(named) && shown.toLowerCase().includes(named))
+}
+
+/** The marker for an unverified quotation or citation. A citation is named in
+ * it whenever the marker still reads as one open item: the open-item pattern
+ * takes the whole marker and no other bracket pattern finds anything inside it.
+ * A citation whose square brackets break the bracket form is named in the
+ * parenthesis form instead. A quotation is never repeated. */
+export function unverifiedMarker(item: OpenItem) {
+  if (item.kind === "quote_miss") return "[open item: quotation not verified against its source]"
+  const generic = "[open item: citation not verified against a source]"
+  const citation = item.ref.citation?.replace(/\s+/g, " ").trim()
+  if (!citation) return generic
+  const whole = (named: string) => {
+    const found = [...named.matchAll(new RegExp(OPEN_ITEM_PATTERN.source, "gi"))]
+    return found.length === 1 && found[0]![0] === named && !draftingPlaceholders(named).length
+  }
+  return [`[open item: citation not verified against a source: ${citation}]`, `(open item: citation not verified against a source: ${citation})`].find(whole) ?? generic
+}
+
+/** Applied amendments as the final body shows them, with any marker the apply
+ * step added to their paragraphs (markUnverified), so their comments still
+ * match the wording they explain. */
+function withMarkers(amendments: Amendment[], applied: ApplyResult["applied"], marked: MarkedParagraph[]) {
+  if (!marked.length) return amendments
+  const markers = new Map(marked.map(row => [row.pid, row.markers]))
+  return amendments.map(amendment => {
+    const row = applied.find(outcome => outcome.id === amendment.id && outcome.mode === "code")
+    const pids = row?.result_pids ?? (row ? [row.pid] : [])
+    if (!pids.some(pid => markers.has(pid)) || amendment.operation === "delete") return amendment
+    const parts = amendmentParagraphs(amendment).map((text, index) => markers.has(pids[index] ?? "") ? `${text.trimEnd()} ${markers.get(pids[index]!)!.join(" ")}` : text)
+    return { ...amendment, updated: typeof amendment.updated === "string" ? parts[0]! : parts }
+  })
 }
 
 // The applied body numbered by the drafted body's list (see runApply).
@@ -148,7 +237,8 @@ export async function writeProjectedNumbers(directory: string, document: DocID) 
  * recorded (changes.json and apply.json). */
 export async function documentRedline(directory: string, document: DocID, final: Uint8Array,
   changes: ChangeList | undefined = readChangeList(directory, document),
-  applied: ApplyResult["applied"] | undefined = recordedApplied(directory, document), identity = draftingAttribution()) {
+  applied: ApplyResult["applied"] | undefined = recordedApplied(directory, document), identity = draftingAttribution(),
+  marked: MarkedParagraph[] = recordedMarked(directory, document)) {
   if (!changes || !applied) throw new Error(`${document}: the change list or the apply outcome is missing or unreadable.`)
   const source = comparisonBaseline(directory, document).bytes
   const [before, after] = comparableBodies(source, final)
@@ -156,7 +246,7 @@ export async function documentRedline(directory: string, document: DocID, final:
   // several runs; the redline shades it whole, as the body shows it.
   const compared = await compareDocxWithPointers(before, after, { authorName: identity.author })
   const redline = withGeneratedDocxAttribution(shadeOpenItemsInDocx(compared), identity)
-  const exported = exportAppliedChangeComments(redline, final, document, changes.amendments, applied, changes.explanations, readParagraphs(directory, document), identity.author)
+  const exported = exportAppliedChangeComments(redline, final, document, withMarkers(changes.amendments, applied, marked), applied, changes.explanations, readParagraphs(directory, document), identity.author)
   const disclosed = await discloseSourceRevisions(exported.bytes, source, identity.author)
   await assertRedlineRoundTrip(disclosed.bytes, before, after)
   return { ...exported, bytes: disclosed.bytes, openItems: [...exported.openItems,
@@ -213,6 +303,11 @@ function comparableBodies(baseline: Uint8Array, final: Uint8Array): [Uint8Array,
 function recordedApplied(directory: string, document: DocID) {
   const applied = (readLeanJson(directory, `${document}/apply.json`) as Partial<ApplyResult> | undefined)?.applied
   return Array.isArray(applied) ? applied : undefined
+}
+
+function recordedMarked(directory: string, document: DocID): MarkedParagraph[] {
+  const marked = (readLeanJson(directory, `${document}/apply.json`) as { marked?: unknown } | undefined)?.marked
+  return Array.isArray(marked) ? marked as MarkedParagraph[] : []
 }
 
 function message(directory: string, error: unknown) {

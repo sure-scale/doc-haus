@@ -154,13 +154,13 @@ test("adverse findings need explicit reinspection, preserve original, and consum
   expect(reviewed.checks[0].reinspection?.original_finding).toEqual(initial.checks[0].finding)
   await runChecklistCheckFlow(directory, deps, { reinspectAdverse: true })
   expect(deps.counts.created).toBe(before + 1)
-  // Model/session/prompt cache changes must not replenish substantive review.
+  // A model change is not new input: nothing re-runs and review is not replenished.
   const changedModel = { ...deps, model: { providerID: "test", modelID: "different-model" } }
   await runChecklistExtractionFlow(directory, changedModel)
   await runChecklistCheckFlow(directory, changedModel, { reinspectAdverse: true })
-  expect(deps.counts.created).toBe(before + 2)
+  expect(deps.counts.created).toBe(before + 1)
   await runChecklistCheckFlow(directory, changedModel, { reinspectAdverse: true })
-  expect(deps.counts.created).toBe(before + 2)
+  expect(deps.counts.created).toBe(before + 1)
   // A regenerated paraphrase/session is not new canonical source or Word evidence.
   const extraction = readLeanJson(directory, "checklist/extraction.json") as { sources: { items: { item: { check: string } }[] }[] }
   extraction.sources[0].items[0].item.check = "Rephrased check of the same proposed arrangement."

@@ -7,7 +7,7 @@ import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
 import { checklistRepairItems, declinedChecklistRepair, LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, startRepairRound } from "./repairs"
 import { snapshotRead } from "./quotes"
 import type { ChecklistItem } from "./checklist-contract"
-import { LeanQuestionError, hashStageInputs, answerQuestion, leanDir, readLeanJson, readLeanText, writeLeanText, type LeanState, type OpenItem } from "./state"
+import { LeanQuestionError, hashStageInputs, answerQuestion, leanDir, readLeanJson, readLeanText, writeLeanText, type LeanModel, type LeanState, type OpenItem } from "./state"
 
 // Lawyer requests to a lean drafting run. Continue and answer POSTs only append a
 // request file; the lean runner is the single writer of the run's state and
@@ -17,9 +17,11 @@ import { LeanQuestionError, hashStageInputs, answerQuestion, leanDir, readLeanJs
 // order, and moved to requests/done/ with its outcome.
 
 export type ChecklistRefinementSelection = { parent_id: string; scope: "source_collection" | "cited_sources" | "target_body" }
-export type LeanRequest = { kind: "continue" } | { kind: "answer"; question_id: string; answer: string } | { kind: "answer"; question_id: string; option_id: string } | { kind: "answer"; question_id: string; adopt: true } | { kind: "update"; text: string } | { kind: "clarification"; text: string } | { kind: "refine_checklist"; parents: ChecklistRefinementSelection[] }
+export type LeanRequest = { kind: "continue"; model?: LeanModel } | { kind: "answer"; question_id: string; answer: string } | { kind: "answer"; question_id: string; option_id: string } | { kind: "answer"; question_id: string; adopt: true } | { kind: "update"; text: string } | { kind: "clarification"; text: string } | { kind: "refine_checklist"; parents: ChecklistRefinementSelection[] }
 export type StoredLeanRequest = LeanRequest & { id: string; received_at: string }
-export type DrainOutcome = { answered: number; updated: number; repairRound: boolean }
+/** `model`: the model the last processed Continue named, selected in Settings
+ * when the lawyer continued; the steps still to run use it. */
+export type DrainOutcome = { answered: number; updated: number; repairRound: boolean; model?: LeanModel }
 
 const sequence = { next: 0 }
 
@@ -84,6 +86,8 @@ export function drainLeanRequests(directory: string, stopped?: LeanState): Drain
       answered: total.answered + (outcome.status === "answered" ? 1 : 0),
       updated: total.updated + (["included", "clarification_included"].includes(outcome.status) ? 1 : 0),
       repairRound: total.repairRound || outcome.status === "repair_round",
+      // Only an accepted Continue changes the model the run continues on.
+      ...(isContinue(request) && outcome.status !== "rejected" && isLeanModel(request.model) ? { model: request.model } : total.model ? { model: total.model } : {}),
     }
   }, { answered: 0, updated: 0, repairRound: false })
 }
@@ -163,14 +167,20 @@ function humanContextSince(directory: string, since: string) {
     typeof value.processed_at === "string" && value.processed_at > since)
 }
 
-function blockedGateItems(directory: string): OpenItem[] {
+/** The items a blocked gate.json blocks on; none for a passing gate. */
+export function blockedGateItems(directory: string): OpenItem[] {
   const gate = readLeanJson(directory, "gate.json")
   if (!record(gate) || gate.status !== "blocked" || !Array.isArray(gate.blocking)) return []
   return gate.blocking.filter(record) as OpenItem[]
 }
 
-function isContinue(value: unknown): value is { kind: "continue" } {
+function isContinue(value: unknown): value is Extract<LeanRequest, { kind: "continue" }> {
   return record(value) && value.kind === "continue"
+}
+
+/** A model as Start and Continue name it: provider and model ids, neither blank. */
+export function isLeanModel(value: unknown): value is LeanModel {
+  return record(value) && typeof value.providerID === "string" && !!value.providerID.trim() && typeof value.modelID === "string" && !!value.modelID.trim()
 }
 
 /** An answer carries exactly one of the lawyer's text, a picked option_id or adopt: true. */

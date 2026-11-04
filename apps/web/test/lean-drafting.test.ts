@@ -33,7 +33,7 @@ import { delegableQuestion, leanContinueAvailable, leanRunStopped, leanRunTakesU
 import Questions from "../src/components/drafting/Questions"
 import { runOutcome } from "../src/components/narration/outcome"
 import RunHeader, { runHeadline } from "../src/components/drafting/RunHeader"
-import type { RunActions } from "../src/components/drafting/useRunActions"
+import { continueModel, type RunActions } from "../src/components/drafting/useRunActions"
 
 // Response bodies recorded from the real ingest lean start, status, Continue and
 // answer routes with a scripted model (dochaus/workflows/lean/fixtures).
@@ -104,10 +104,12 @@ test("a review draft delivered with unresolved checklist findings is read from i
   expect(draftingStatusLabel(lean(blockedGate))).toEqual({ text: "Drafting needs your attention", findings: false })
 })
 
-test("Continue posts to the lean resume route and answers to the question route", async () => {
+test("Continue posts the selected model to the lean resume route and answers to the question route", async () => {
   const resumed = respond(resume, 202)
-  expect(await resumeLeanDraftingRun("matter-a")).toMatchObject({ profile: "lean", mode: "queued", status: { status: "running" } })
-  expect(resumed).toEqual([{ url: expect.stringMatching(/\/matters\/matter-a\/lean\/resume$/), init: { method: "POST" } }])
+  const model = { providerID: "test", modelID: "selected" }
+  expect(await resumeLeanDraftingRun("matter-a", model)).toMatchObject({ profile: "lean", mode: "queued", status: { status: "running" } })
+  expect(resumed).toEqual([{ url: expect.stringMatching(/\/matters\/matter-a\/lean\/resume$/), init: expect.objectContaining({ method: "POST" }) }])
+  expect(JSON.parse(String(resumed[0]?.init?.body))).toEqual({ model })
 
   const answered = respond(answer, 202)
   const question = blockedQuestion.questions[0]!
@@ -116,7 +118,16 @@ test("Continue posts to the lean resume route and answers to the question route"
   expect(JSON.parse(String(answered[0]?.init?.body))).toEqual({ answer: "No remedy." })
 
   respond({ error: "This matter has no lean drafting run.", code: "lean_run_not_found" }, 404)
-  await expect(resumeLeanDraftingRun("matter-a")).rejects.toThrow("This matter has no lean drafting run.")
+  await expect(resumeLeanDraftingRun("matter-a", model)).rejects.toThrow("This matter has no lean drafting run.")
+})
+
+test("Continue without a readable model in Settings posts no model, so the run keeps its own", async () => {
+  expect(await continueModel(Promise.resolve({ model: "test/selected" }))).toEqual({ providerID: "test", modelID: "selected" })
+  expect(await continueModel(Promise.reject(new Error("offline")))).toBeUndefined()
+  expect(await continueModel(new Promise(() => {}), 10)).toBeUndefined()
+  const resumed = respond(resume, 202)
+  expect(await resumeLeanDraftingRun("matter-a")).toMatchObject({ profile: "lean", mode: "queued" })
+  expect(JSON.parse(String(resumed[0]?.init?.body))).toEqual({})
 })
 
 test("Continue is offered only for a stopped or orphaned run, and delivered documents are listed", () => {

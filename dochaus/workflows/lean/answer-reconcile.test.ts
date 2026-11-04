@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { checkConflicts } from "./answer-reconcile"
+import { OutputLimitError } from "./native-stage-result"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { answeredQuestionsText, delegable, readLeanJson, readQuestions } from "./state"
@@ -92,6 +93,16 @@ test("answers that can all be followed record nothing and the run goes on", asyn
   expect(combined(directory)).toEqual([])
   expect(readLeanJson(directory, "answer-reconcile.json")).toMatchObject({ conflicts: [] })
   expect(model.count(AGENT.draft)).toBeGreaterThan(0)
+})
+
+test("a reading cut off at its output limit finds no conflict, as one never passing its check does, and is not read again", async () => {
+  const { directory, model, run, adoptBoth } = twoQuestions(() => () => { throw new OutputLimitError("The model's reply reached its output limit before giving any answer.") })
+  await run()
+  adoptBoth()
+  expect((await run()).status).toBe("completed")
+  expect(model.count(AGENT.reconcile)).toBe(1)
+  expect(combined(directory)).toEqual([])
+  expect(readLeanJson(directory, "answer-reconcile.json")).toMatchObject({ conflicts: [] })
 })
 
 test("a conflict naming an unknown question or a single one is sent back for a retry", async () => {

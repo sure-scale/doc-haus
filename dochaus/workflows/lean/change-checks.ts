@@ -1,4 +1,6 @@
 import { amendmentSchema, amendmentParagraphs, amendmentText, normalizeParagraphText, type Amendment } from "../../lib/drafting-amendment"
+import { leanCitationReader } from "../../lib/citation-extraction"
+import { OPEN_ITEM_PATTERN } from "../../lib/marker-patterns"
 import { normalize } from "../../lib/quote-verify"
 import { markerIssues } from "./change-markers"
 import { draftStatusAmendmentIssues } from "./draft-status"
@@ -10,14 +12,15 @@ import { FIRST_DOCUMENT, type DocID } from "./plan"
 import { questionKindIssues, readQuestions, shortHash, type Question, type QuestionKind } from "./state"
 
 // Admission of the changes step's reply: the change list is parsed, checked
-// against the draft's paragraphs, its quotations and its markers, and either
+// against the draft's paragraphs, its quotations, citations and markers, and either
 // fed back to the model or, on the last attempt, admitted with what still
 // fails withheld as open items.
 
 
 /** Parses and validates the model's change list. Values code can derive (the
  * amendment id and the paragraph's current hash) are filled in here; the model
- * never restates them. A quotation that the named source does not contain, or
+ * never restates them. A quotation that the named source does not contain, a
+ * citation it adds that nothing supports (`amendmentCitationIssues`), or
  * markers that do not show the lawyer the change (`markerIssues`), or wording
  * that states an agreement's own draft status (draft-status.ts), are retry
  * feedback; on the last allowed attempt (`withholdUnverified`) that amendment is
@@ -67,10 +70,11 @@ export function checkChanges(directory: string, content: string, paragraphs: Par
   if (!contract.success)
     return { issues: contract.error.issues.slice(0, 10).map(issue => `amendments.${issue.path.join(".")}: ${issue.message}`), openItems: [] }
   const statusIssues = draftStatusAmendmentIssues(directory, options.document ?? FIRST_DOCUMENT)
+  const citationIssues = amendmentCitationIssues(directory, filled, rows)
   const unverified = filled.map((amendment, index) => ({
     amendment,
     issues: [...markerIssues(amendment, index, rows.get(amendment.pid)!.text, questionPids), ...amendmentQuoteIssues(directory, amendment, index),
-      ...statusIssues(amendment, index, rows.get(amendment.pid)!.text)],
+      ...citationIssues(amendment, index), ...statusIssues(amendment, index, rows.get(amendment.pid)!.text)],
   })).filter(row => row.issues.length)
   const proposed = askedQuestions(questions.filter(record), asked, options.document)
   const unmarked = proposed.flatMap((question, index) => question ? questionMarkerIssues(question, index, filled, rows) : [])
@@ -179,6 +183,24 @@ function amendmentQuoteIssues(directory: string, amendment: Amendment, index: nu
   ]
 }
 
+/** A citation a change adds must have the support a drafted citation needs
+ * (the body check at apply): a matter source, an approved research finding or
+ * a verified authority. Citations the paragraph already carries, in any case,
+ * are the draft's own, and a citation inside an open-item marker names
+ * authority still to be found. Each amendment's citations are its own; one
+ * support lookup covers the whole list. */
+function amendmentCitationIssues(directory: string, amendments: Amendment[], rows: Map<string, ParagraphRow>) {
+  const read = leanCitationReader(directory, "changes.md")
+  const lower = (text: string) => normalize(text).toLowerCase()
+  return (amendment: Amendment, index: number) => {
+    const current = lower(rows.get(amendment.pid)!.text)
+    const unsupported = [...new Map(read(amendmentText(amendment).replace(OPEN_ITEM_PATTERN, " "))
+      .filter(row => row.status === "unsupported").map(row => [row.normalized_key, row.citation_text])).values()]
+    return unsupported.filter(citation => !current.includes(lower(citation)))
+      .map(citation => `amendments[${index}] ([${amendment.pid}]).updated cites "${citation}", which no matter source, approved research finding or verified authority supports. Cite an approved authority or a matter source instead, or remove the citation; if the point still needs authority, say so with a visible [open item: ...] marker.`)
+  }
+}
+
 export function questionIssues(item: unknown, index: number, rows: Map<string, ParagraphRow>, asked: Map<string, Question>) {
   const at = `questions[${index}]`
   if (!record(item) || typeof item.question !== "string" || !item.question.trim())
@@ -261,6 +283,34 @@ export function parseJsonObject(content: string): { ok: true; value: Record<stri
       return { ok: false, error: "ambiguous content outside the fenced result; return one JSON object" }
     return record(value) ? { ok: true, value } : { ok: false, error: "the JSON value is not an object" }
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : "invalid JSON" }
+    return { ok: false, error: `${error instanceof Error ? error.message : "invalid JSON"}${syntaxLocation(candidate)}` }
   }
+}
+
+/** Where a JSON syntax error is, so a retry can fix it: the parser's own
+ * message names no position. Finds the first bracket that closes the wrong
+ * opener, or the opener left unclosed, outside strings. Reports only. */
+function syntaxLocation(text: string) {
+  const open: { char: string; at: number }[] = []
+  let quoted = false
+  for (let at = 0; at < text.length; at++) {
+    const char = text[at]!
+    if (quoted) {
+      if (char === "\\") at++
+      else if (char === '"') quoted = false
+      continue
+    }
+    if (char === '"') quoted = true
+    else if (char === "{" || char === "[") open.push({ char, at })
+    else if (char === "}" || char === "]") {
+      const opener = open.pop()
+      if (opener?.char !== (char === "}" ? "{" : "[")) return near(text, at, `unexpected ${char}${opener ? ` before the ${opener.char === "{" ? "object" : "list"} opened at character ${opener.at} is closed` : ""}`)
+    }
+  }
+  const unclosed = open.at(-1)
+  return unclosed ? near(text, text.length, `the ${unclosed.char === "{" ? "object" : "list"} opened at character ${unclosed.at} is never closed`) : ""
+}
+
+function near(text: string, at: number, problem: string) {
+  return ` (at character ${at}: ${problem}; near ${JSON.stringify(`${text.slice(Math.max(0, at - 60), at)} >>> ${text.slice(at, at + 20)}`)})`
 }

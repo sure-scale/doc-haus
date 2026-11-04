@@ -2,10 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { readFileSync, writeFileSync } from "node:fs"
 import { checkChanges } from "./change-checks"
 import { readChangeList, readParagraphs, settleApply } from "./checks"
-import { finalGate, type GateResult } from "./gate"
+import { finalGate, paragraphShowsOpenItem, type GateResult } from "./gate"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
-import { runApply } from "./apply-stage"
+import { runApply, unverifiedMarker } from "./apply-stage"
+import { LEAN_MAX_SUBSTANTIVE_REPAIRS } from "./repairs"
+import { inDocument, openItem } from "./quotes"
 import { stagePrompt } from "./prompts"
 import { parsePlan, writeLeanPlan } from "./plan"
 import { acceptStageReply } from "./stages"
@@ -113,22 +115,116 @@ describe("applier outcomes are visible open items", () => {
 })
 
 describe("unsupported content in the final body", () => {
-  test("an unsupported citation named only in the drafting notes blocks; marked in its paragraph and named, it is disclosed", async () => {
-    const cited = "The supplier shall deliver the goods as required by section 4 of the Imaginary Trade Act"
-    const blocked = matter()
-    await runLean(blocked, { sessions: scriptedModel({ ...happyPath, ...quiet, [AGENT.draft]: drafter(`# Supply note\n\n## Delivery\n\n${cited}.\n\n## Payment\n\nPayment is due on delivery.\n`) }).port })
-    const gate = gateOf(blocked)
-    expect(gate.status).toBe("blocked")
-    expect(gate.blocking).toEqual([expect.objectContaining({ kind: "citation_unsupported", resolution: "named in the notes, but its paragraph has no visible open-item marker" })])
+  const CITED = "The supplier shall deliver the goods as required by section 4 of the Imaginary Trade Act"
+  const citing = (marker = "") => drafter(`# Supply note\n\n## Delivery\n\n${CITED}${marker}.\n\n## Payment\n\nPayment is due on delivery.\n`)
+  const changeRuns = (model: ReturnType<typeof scriptedModel>) => model.prompts.filter(prompt => prompt.agent === AGENT.changes).length
 
-    const marked = matter()
-    const state = await runLean(marked, { sessions: scriptedModel({
-      ...happyPath, ...quiet, [AGENT.draft]: drafter(`# Supply note\n\n## Delivery\n\n${cited} [open item: confirm this authority].\n\n## Payment\n\nPayment is due on delivery.\n`),
-    }).port })
-    expect(state.status).toBe("completed")
-    expect(gateOf(marked)).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
-    expect(gateOf(marked).disclosed.map(item => item.kind)).toContain("citation_unsupported")
+  test("an unsupported citation gets one automatic repair round, charged to the allowance; what it leaves is marked and disclosed", async () => {
+    const directory = matter()
+    const model = scriptedModel({ ...happyPath, ...quiet, [AGENT.draft]: citing() })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    // The changes step ran again for the round, which the allowance counts.
+    expect(changeRuns(model)).toBe(2)
+    expect(readLeanJson(directory, "repairs.json")).toMatchObject({ round: 1, substantive_attempts: 1, items: [expect.objectContaining({ stage: "apply", kind: "citation_unsupported" })] })
+    const paragraph = readParagraphs(directory, "d1", "paragraphs-applied.json").find(row => row.text.startsWith(CITED))!
+    expect(paragraph.text).toEndWith("[open item: citation not verified against a source: section 4 of the Imaginary Trade Act]")
+    const gate = gateOf(directory)
+    expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+    const item = gate.disclosed.find(row => row.kind === "citation_unsupported")!
+    expect(item.resolution).toBe("marked in the body and named in the drafting notes")
+    // The marker apply wrote is not reported again as a placeholder of its own.
+    expect(readOpenItems(directory).filter(row => row.kind === "placeholder")).toEqual([])
+
+    // An unchanged state starts no further round.
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(changeRuns(model)).toBe(2)
+    expect(readLeanJson(directory, "repairs.json")).toMatchObject({ round: 1, substantive_attempts: 1 })
+
+    // Without the marker the gate would block on the item the notes name.
+    writeFileSync(leanFile(directory, "d1/paragraphs-applied.json"), JSON.stringify(readParagraphs(directory, "d1", "paragraphs-applied.json")
+      .map(row => row.pid === paragraph.pid ? { ...row, text: `${CITED}.` } : row)))
+    expect(finalGate(directory).blocking).toEqual([expect.objectContaining({ id: item.id, resolution: "named in the notes, but its paragraph has no visible open-item marker" })])
   }, 120_000)
+
+  test("once the repair rounds are used up, no automatic round starts and apply marks an unverified citation at once", async () => {
+    const directory = matter()
+    writeLeanText(directory, "repairs.json", JSON.stringify({ round: 5, substantive_attempts: LEAN_MAX_SUBSTANTIVE_REPAIRS, requested_at: "saved", items: [] }))
+    const model = scriptedModel({ ...happyPath, ...quiet, [AGENT.draft]: citing() })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(changeRuns(model)).toBe(1)
+    expect(readLeanJson(directory, "repairs.json")).toMatchObject({ round: 5, substantive_attempts: LEAN_MAX_SUBSTANTIVE_REPAIRS })
+    const paragraph = readParagraphs(directory, "d1", "paragraphs-applied.json").find(row => row.text.startsWith(CITED))!
+    expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ marked: [{ pid: paragraph.pid }] })
+    expect(gateOf(directory)).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+  }, 120_000)
+
+  test("apply leaves a paragraph whose marker names the citation, but marks one whose marker is about something else", async () => {
+    const run = async (marker: string) => {
+      const directory = matter()
+      writeLeanText(directory, "repairs.json", JSON.stringify({ round: 5, substantive_attempts: LEAN_MAX_SUBSTANTIVE_REPAIRS, requested_at: "saved", items: [] }))
+      expect((await runLean(directory, { sessions: scriptedModel({ ...happyPath, ...quiet, [AGENT.draft]: citing(marker) }).port })).status).toBe("completed")
+      expect(gateOf(directory)).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+      return { apply: readLeanJson(directory, "d1/apply.json"), text: readParagraphs(directory, "d1", "paragraphs-applied.json").find(row => row.text.startsWith(CITED))!.text }
+    }
+    const named = await run(" [open item: confirm section 4 of the Imaginary Trade Act]")
+    expect(named.apply).not.toHaveProperty("marked")
+    expect(named.text).toBe(`${CITED} [open item: confirm section 4 of the Imaginary Trade Act].`)
+    const unrelated = await run(" [open item: confirm the delivery date]")
+    expect(unrelated.apply).toMatchObject({ marked: [{ markers: ["[open item: citation not verified against a source: section 4 of the Imaginary Trade Act]"] }] })
+    expect(unrelated.text).toBe(`${CITED} [open item: confirm the delivery date]. [open item: citation not verified against a source: section 4 of the Imaginary Trade Act]`)
+  }, 120_000)
+
+  test("only the marker apply wrote in a paragraph is passed over; the same words in another paragraph stay a placeholder", async () => {
+    const directory = matter()
+    const marker = "[open item: citation not verified against a source: section 4 of the Imaginary Trade Act]"
+    writeLeanText(directory, "repairs.json", JSON.stringify({ round: 5, substantive_attempts: LEAN_MAX_SUBSTANTIVE_REPAIRS, requested_at: "saved", items: [] }))
+    await runLean(directory, { sessions: scriptedModel({ ...happyPath, ...quiet,
+      [AGENT.draft]: drafter(`# Supply note\n\n## Delivery\n\n${CITED}.\n\n## Payment\n\nPayment is due on delivery ${marker}.\n`) }).port })
+    const rows = readParagraphs(directory, "d1", "paragraphs-applied.json")
+    const delivery = rows.find(row => row.text.startsWith(CITED))!, payment = rows.find(row => row.text.startsWith("Payment is due"))!
+    expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ marked: [{ pid: delivery.pid, markers: [marker] }] })
+    const placeholders = readOpenItems(directory).filter(row => row.stage === "apply" && row.kind === "placeholder")
+    expect(placeholders.map(row => row.ref.pid)).toEqual([payment.pid])
+  }, 120_000)
+
+  test("a resume after the allowance is used up re-runs apply, though its change list is unchanged", async () => {
+    const directory = matter()
+    const model = scriptedModel({ ...happyPath, ...quiet, [AGENT.draft]: citing() })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    const before = readLeanState(directory)!.stages["d1.apply"]!.input_sha
+    const changesKey = readLeanState(directory)!.stages["d1.changes"]!.input_sha
+    writeLeanText(directory, "repairs.json", JSON.stringify({ ...readLeanJson(directory, "repairs.json") as object, substantive_attempts: LEAN_MAX_SUBSTANTIVE_REPAIRS }))
+
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(changeRuns(model)).toBe(2)
+    const stages = readLeanState(directory)!.stages
+    expect(stages["d1.changes"]!.input_sha).toBe(changesKey)
+    expect(stages["d1.apply"]!.input_sha).not.toBe(before)
+    expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ marked: [expect.objectContaining({ markers: [expect.stringContaining("section 4 of the Imaginary Trade Act")] })] })
+    expect(gateOf(directory)).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+  }, 120_000)
+
+  test("a citation the draft already marks needs no repair round and is disclosed", async () => {
+    const directory = matter()
+    const model = scriptedModel({ ...happyPath, ...quiet, [AGENT.draft]: citing(" [open item: confirm this authority]") })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(changeRuns(model)).toBe(1)
+    expect(gateOf(directory)).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+    expect(gateOf(directory).disclosed.map(item => item.kind)).toContain("citation_unsupported")
+  }, 120_000)
+
+  test("an unverified-citation marker names the citation, parentheses included; square brackets take the parenthesis form, and both the generic marker", () => {
+    const marker = (citation: string) => unverifiedMarker(openItem("apply", "citation_unsupported", "Unsupported.", { citation }))
+    expect(marker("section 4(b)(ii) of the Imaginary Trade Act")).toBe("[open item: citation not verified against a source: section 4(b)(ii) of the Imaginary Trade Act]")
+    expect(paragraphShowsOpenItem(`The goods are delivered. ${marker("section 4(b)(ii) of the Imaginary Trade Act")}`)).toBe(true)
+    for (const citation of ["Rule 2 [as amended] of the Imaginary Rules", "section [4] of the Imaginary Trade Act"]) {
+      expect(marker(citation)).toBe(`(open item: citation not verified against a source: ${citation})`)
+      expect(paragraphShowsOpenItem(`The goods are delivered. ${marker(citation)}`)).toBe(true)
+    }
+    for (const citation of ["Rule 2(a) [as amended] of the Imaginary Rules", "section [4] (as amended) of the Imaginary Trade Act"])
+      expect(marker(citation)).toBe("[open item: citation not verified against a source]")
+    expect(unverifiedMarker(openItem("apply", "quote_miss", "Unverified.", { quote: "deliver (in full) the goods" }))).toBe("[open item: quotation not verified against its source]")
+  })
 
   test("a body placeholder named in the drafting notes is disclosed and the output is a review draft", async () => {
     const directory = matter()

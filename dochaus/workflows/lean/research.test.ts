@@ -103,6 +103,32 @@ test("a quotation absent from the text retrieved from its URL, or a URL never re
   expect(readLeanText(directory, "research.json")).toBeUndefined()
 })
 
+test("on the last attempt an unverifiable finding is withheld and disclosed; before it, and for any other issue, the attempt fails", () => {
+  const directory = matter()
+  const research = retrieved(directory)
+  const verified = { ...research.findings[0]!, limitations: "" }
+  const { snapshot: _, ...cited } = verified
+  const invented = { ...cited, id: "r2", title: "Remembered rule", citation: "Rule 9", quote: "A party may terminate without notice.", claim: "Termination needs no notice" }
+  const never = { ...cited, id: "r3", title: "Unretrieved rule", url: "https://example.gov/never-fetched", claim: "Another rule applies" }
+  const reply = { status: "completed", findings: [verified, invented, never], limitations: [] }
+  expect(acceptResearchReply(directory, "research", JSON.stringify(reply)).issues).toEqual([expect.stringContaining("r2:"), expect.stringContaining("r3:")])
+  expect(readLeanText(directory, "research.json")).toBeUndefined()
+  const last = acceptResearchReply(directory, "research", JSON.stringify(reply), { final: true })
+  expect(last.issues).toEqual([])
+  const withheld = [
+    "Authority withheld because its quotation could not be verified against text retrieved from its source: Remembered rule (Rule 9), https://example.gov/legal-notice, cited for: Termination needs no notice",
+    "Authority withheld because its quotation could not be verified against text retrieved from its source: Unretrieved rule, https://example.gov/never-fetched, cited for: Another rule applies",
+  ]
+  // Completed research that withheld authority is limited; only the verified finding reaches drafting.
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "limited", findings: [verified], limitations: withheld })
+  expect(last.openItems.map(item => item.detail)).toEqual(withheld)
+  expect(researchHandoff(directory)).not.toContain("A party may terminate without notice.")
+  // Any other issue still fails the last attempt, and nothing is saved.
+  const other = acceptResearchReply(directory, "research", JSON.stringify({ ...reply, findings: [{ ...verified, jurisdiction: "" }, invented] }), { final: true })
+  expect(other.issues).toEqual([expect.stringContaining("Every finding must include")])
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "limited", findings: [verified], limitations: withheld })
+})
+
 test("of two retrievals of one URL that both contain the quotation, the latest is recorded; a saved matching id is kept", () => {
   const directory = matter()
   const text = "A party must give written notice before termination."
@@ -208,7 +234,7 @@ test("a path is reported with the other issues before the last attempt, and only
   const research = retrieved(directory)
   const leak = "The readable context in .dochaus/lean/research-context.txt held no source text."
   const pathIssues = (issues: string[]) => issues.filter(issue => issue.includes("internal workflow file"))
-  const invented = { ...research, limitations: [leak], findings: [{ ...research.findings[0], quote: "Invented text" }] }
+  const invented = { ...research, limitations: [leak], findings: [{ ...research.findings[0], jurisdiction: "" }] }
   const both = acceptResearchReply(directory, "research", JSON.stringify(invented)).issues
   expect(both.length).toBe(2)
   expect(pathIssues(both)).toEqual([expect.stringContaining("limitations[0]")])
@@ -283,6 +309,20 @@ test("completed legacy runs remain unchanged and do not claim research", async (
   expect(await before.text()).toBe(content)
   expect(model.sessions).toEqual([])
 })
+
+test("an update to a completed legacy run continues on the model the Continue selects", async () => {
+  const directory = matter()
+  const current = readLeanState(directory)!
+  const { intake, research, "research-review": review, ...stages } = current.stages
+  writeLeanState(directory, { ...current, status: "completed", stages })
+  const selected = { providerID: "test", modelID: "selected" }
+  enqueueLeanRequest(directory, { kind: "update", text: "Add a short notice clause." })
+  enqueueLeanRequest(directory, { kind: "continue", model: selected })
+  const model = scriptedModel(happyPath)
+  expect((await runLean(directory, { sessions: model.port })).model).toEqual(selected)
+  expect(model.sessions.length).toBeGreaterThan(0)
+  expect(model.sessions.map(session => session.model)).toEqual(model.sessions.map(() => selected))
+}, 120_000)
 
 
 test("long canonical source text is readable beyond JSON clipping with focused source-context locators", () => {
@@ -413,10 +453,10 @@ test("first review gaps reach research once as targeted issues before the plan",
   const agents = model.sessions.map(row => row.agent)
   expect(agents.lastIndexOf(AGENT["research-review"])).toBeLessThan(agents.indexOf(AGENT.spine))
   const prompts = model.prompts.filter(row => row.agent === AGENT.research).map(row => row.text)
-  expect(prompts[0]).toContain(`${targeted([])}Previously verified research when repairing a new authority issue: No targeted research repair.\n`)
+  expect(prompts[0]).toContain(`${targeted([])}Previously verified research: None.\n`)
   // The round's research also receives the first pass's research with the gap as a limit.
   const handoff = JSON.stringify({ findings: [], limitations: ["Research pass 1 relied on the supplied terms only.", GAP_TEXT] }, null, 2)
-  expect(prompts[1]).toContain(`${targeted([GAP])}Previously verified research when repairing a new authority issue: ${handoff}\n`)
+  expect(prompts[1]).toContain(`${targeted([GAP])}Previously verified research: ${handoff}\n`)
   expect(readLeanJson(directory, "research-gaps.json")).toEqual({ basis: researchBasis(directory), gaps: [GAP] })
   expect(stageInputs(directory, "research").filter(part => part.name === "research-gaps").map(part => part.bytes)).toEqual([JSON.stringify([GAP])])
   expect(readOpenItems(directory).filter(item => item.kind === "research_gap")).toEqual([])
@@ -549,3 +589,169 @@ test("a package-review research repair after the gap round gives the new basis o
   expect((await runLean(directory, { sessions: repeated.port })).status).toBe("completed")
   expect(repeated.sessions).toEqual([])
 }, 120_000)
+
+test("a later research run keeps earlier approved findings, replaces a re-returned one and drops only a withdrawn one", () => {
+  const directory = matter()
+  const notice = retrieved(directory)
+  const cure = { descriptor: { originalUrl: "https://example.gov/cure" } }; fetched(directory, "A defaulting party may cure within ten days of notice.", cure.descriptor.originalUrl)
+  const form = { descriptor: { originalUrl: "https://example.gov/form" } }; fetched(directory, "Notice must be given in writing to the stated address.", form.descriptor.originalUrl)
+  const finding = (id: string, url: string, quote: string, citation: string) => ({ ...notice.findings[0]!, id, url, quote, citation, title: `Provision ${id}`, limitations: "", snapshot: "" })
+  const first = { status: "completed", limitations: [], findings: [
+    finding("r1", notice.findings[0]!.url, notice.findings[0]!.quote, "Rule 1"),
+    finding("r2", cure.descriptor.originalUrl, "A defaulting party may cure within ten days of notice.", "Rule 2"),
+  ] }
+  expect(acceptResearchReply(directory, "research", JSON.stringify(first)).issues).toEqual([])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1", "r2"], rejected: [], limitations: [], gaps: [] })).issues).toEqual([])
+  const later = (extra: Record<string, unknown>) => JSON.stringify({ status: "completed", limitations: [], findings: [
+    finding("r1", form.descriptor.originalUrl, "Notice must be given in writing to the stated address.", "Rule 3"),
+    { ...finding("r2", notice.findings[0]!.url, "A party must give written notice", "Rule 1"), claim: "Restated notice requirement" },
+  ], ...extra })
+  // A withdrawal must name an earlier approved finding, and not one also returned.
+  expect(acceptResearchReply(directory, "research", later({ withdrawn: [{ url: "https://example.gov/unknown", citation: "Rule 9", reason: "Superseded" }] })).issues)
+    .toEqual([expect.stringContaining("withdrawn[0] names no previously verified finding")])
+  expect(acceptResearchReply(directory, "research", later({ withdrawn: [{ url: notice.findings[0]!.url, citation: "Rule 1", reason: "Superseded" }] })).issues)
+    .toEqual([expect.stringContaining("withdrawn[0] is also returned as a finding")])
+  // Without a withdrawal the earlier finding the reply did not return is kept, under a fresh id.
+  expect(acceptResearchReply(directory, "research", later({})).issues).toEqual([])
+  const kept = readLeanJson(directory, "research.json") as { status: string; findings: { id: string; citation: string; claim: string }[] }
+  expect(kept.findings.map(row => [row.id, row.citation])).toEqual([["r1", "Rule 3"], ["r2", "Rule 1"], ["r3", "Rule 2"]])
+  expect(kept.findings[1]!.claim).toBe("Restated notice requirement")
+  expect(kept.status).toBe("completed")
+  expect(checkResearch(directory, kept)).toEqual([])
+  const context = readLeanText(directory, "research-context.txt")!
+  for (const url of ["https://example.gov/legal-notice", "https://example.gov/cure", "https://example.gov/form"]) expect(context).toContain(`Original URL: ${url}`)
+  // The combined set needs its own review before any of it is drafting authority.
+  expect(approvedResearch(directory)).toEqual([])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1", "r2"], rejected: [], limitations: [], gaps: [] })).issues).not.toEqual([])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1", "r2", "r3"], rejected: [], limitations: [], gaps: [] })).issues).toEqual([])
+  expect(researchPrompt(directory, "research", researchBasis(directory))).toContain('"citation": "Rule 2"')
+  // A withdrawn finding is dropped; a kept finding with limits makes completed research limited.
+  const limited = { status: "completed", limitations: [], findings: [finding("r1", form.descriptor.originalUrl, "Notice must be given in writing to the stated address.", "Rule 3")],
+    withdrawn: [{ url: cure.descriptor.originalUrl, citation: "Rule 2", reason: "The retrieved text no longer applies to this matter." }] }
+  writeLeanText(directory, "research.json", `${JSON.stringify({ ...kept, status: "limited", findings: kept.findings.map(row => row.id === "r2" ? { ...row, limitations: "Currency remains to be confirmed" } : row) }, null, 2)}\n`)
+  expect(acceptResearchReply(directory, "research", JSON.stringify(limited)).issues).toEqual([])
+  const after = readLeanJson(directory, "research.json") as { status: string; findings: { citation: string }[] }
+  expect(after.findings.map(row => row.citation)).toEqual(["Rule 3", "Rule 1"])
+  expect(after.status).toBe("limited")
+  // Research that is no longer needed carries nothing forward.
+  acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1", "r2"], rejected: [], limitations: [], gaps: [] }))
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "not-needed", findings: [], limitations: ["No external authority is needed."] })).issues).toEqual([])
+  expect((readLeanJson(directory, "research.json") as { findings: unknown[] }).findings).toEqual([])
+})
+
+/** Research accepted with one finding at Rule 1 and approved by its review. */
+function approvedNotice(directory: string) {
+  const notice = retrieved(directory)
+  const finding = { ...notice.findings[0]!, citation: "Rule 1", limitations: "" }
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "completed", limitations: [], findings: [finding] })).issues).toEqual([])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [], gaps: [] })).issues).toEqual([])
+  return finding
+}
+
+test("a later research run that finds nothing new is checked with the findings it keeps", () => {
+  const directory = matter()
+  const finding = approvedNotice(directory)
+  const withdrawn = [{ url: finding.url, citation: "Rule 1", reason: "The retrieved text no longer applies to this matter." }]
+  // Withdrawing the only authority with nothing new and no limitation still fails.
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "limited", findings: [], limitations: [], withdrawn })).issues)
+    .toEqual([expect.stringContaining("No authority was retrieved")])
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "completed", findings: [], limitations: [], withdrawn })).issues)
+    .toEqual([expect.stringContaining("Completed research requires retrieved findings"), expect.stringContaining("No authority was retrieved")])
+  // Was "Completed research requires retrieved findings…" and "No authority was retrieved…".
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "completed", findings: [], limitations: [] })).issues).toEqual([])
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "completed", findings: [finding], limitations: [] })
+  expect(checkResearch(directory, readLeanJson(directory, "research.json"))).toEqual([])
+})
+
+test("research that runs again before its review keeps the findings that review has not covered; a current review's rejection is kept", () => {
+  const directory = matter()
+  const notice = approvedNotice(directory)
+  const finding = (url: string, quote: string, citation: string) => { fetched(directory, quote, url); return { ...notice, id: "r1", url, quote, citation, snapshot: "", title: `Provision ${citation}` } }
+  const form = finding("https://example.gov/form", "Notice must be given in writing to the stated address.", "Rule 3")
+  const cure = finding("https://example.gov/cure", "A defaulting party may cure within ten days of notice.", "Rule 2")
+  const citations = () => (readLeanJson(directory, "research.json") as { findings: { citation: string }[] }).findings.map(row => row.citation)
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "completed", limitations: [], findings: [form] })).issues).toEqual([])
+  expect(citations()).toEqual(["Rule 3", "Rule 1"])
+  // Research runs again before the combined set is reviewed: the saved review covers only the first research.
+  expect(researchPrompt(directory, "research", researchBasis(directory))).toContain('"citation": "Rule 3"')
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "completed", limitations: [], findings: [cure] })).issues).toEqual([])
+  // Was ["Rule 2"]: the approved Rule 1 and the unreviewed Rule 3 were lost.
+  expect(citations()).toEqual(["Rule 2", "Rule 3", "Rule 1"])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1", "r3"], rejected: [{ id: "r2", reason: "The provision does not support the claim." }], limitations: [], gaps: [] })).issues).toEqual([])
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "limited", limitations: ["Nothing further was found."], findings: [] })).issues).toEqual([])
+  expect(citations()).toEqual(["Rule 2", "Rule 1"])
+})
+
+test("a null withdrawal list is none; on the last attempt a withdrawal naming no earlier finding is dropped and disclosed, keeping the earlier finding", () => {
+  const directory = matter()
+  const finding = approvedNotice(directory)
+  const reply = (withdrawn: unknown) => JSON.stringify({ status: "completed", limitations: [], findings: [], withdrawn })
+  // Was '"withdrawn" must be a list of {url, citation, reason}…'.
+  expect(acceptResearchReply(directory, "research", reply(null)).issues).toEqual([])
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "completed", findings: [finding], limitations: [], withdrawn: null })
+  const unknown = [{ url: "https://example.gov/unknown", citation: "Rule 9", reason: "Superseded by a later rule." }]
+  expect(acceptResearchReply(directory, "research", reply(unknown)).issues).toEqual([expect.stringContaining("withdrawn[0] names no previously verified finding")])
+  // A malformed withdrawal still fails the last attempt.
+  expect(acceptResearchReply(directory, "research", reply([{ url: finding.url }]), { final: true }).issues).toEqual([expect.stringContaining('"withdrawn" must be a list')])
+  const last = acceptResearchReply(directory, "research", reply(unknown), { final: true })
+  expect(last.issues).toEqual([])
+  const disclosed = "Research asked to withdraw an authority that matches no earlier finding, so every earlier finding was kept: Rule 9, https://example.gov/unknown. Reason given: Superseded by a later rule."
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "limited", findings: [finding], limitations: [disclosed], withdrawn: [] })
+  expect(last.openItems.map(item => [item.kind, item.detail])).toEqual([["research_gap", disclosed]])
+})
+
+test("a withdrawal names a finding without a citation by its quote, by the key that replaces it", () => {
+  const directory = matter()
+  const notice = retrieved(directory, "A party must give written notice before termination. Notice takes effect on delivery.")
+  const finding = (id: string, quote: string) => ({ ...notice.findings[0]!, id, quote, claim: `Claim ${id}`, limitations: "" })
+  const [given, effect] = [finding("r1", "A party must give written notice before termination."), finding("r2", "Notice takes effect on delivery.")]
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "completed", limitations: [], findings: [given, effect] })).issues).toEqual([])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1", "r2"], rejected: [], limitations: [], gaps: [] })).issues).toEqual([])
+  const reply = (withdrawn: unknown[], findings: unknown[] = []) => JSON.stringify({ status: "completed", limitations: [], findings, withdrawn })
+  const reason = "The retrieved text no longer applies to this matter."
+  // Was accepted, withdrawing both findings at the URL.
+  expect(acceptResearchReply(directory, "research", reply([{ url: given.url, citation: "", reason }])).issues)
+    .toEqual([expect.stringContaining("and its quote when it has no citation")])
+  expect(acceptResearchReply(directory, "research", reply([{ url: given.url, citation: "", quote: given.quote, reason }], [given])).issues)
+    .toEqual([expect.stringContaining("withdrawn[0] is also returned as a finding")])
+  expect(acceptResearchReply(directory, "research", reply([{ url: given.url, citation: "", quote: 1, reason }])).issues).toEqual([expect.stringContaining('"withdrawn" must be a list')])
+  expect(acceptResearchReply(directory, "research", reply([{ url: given.url, citation: "", quote: effect.quote, reason }], [given])).issues).toEqual([])
+  expect((readLeanJson(directory, "research.json") as { findings: { quote: string }[] }).findings.map(row => row.quote)).toEqual([given.quote])
+})
+
+test("a withdrawn finding's reason becomes a research open item the lawyer reads, naming no finding id", () => {
+  const directory = matter()
+  const finding = approvedNotice(directory)
+  const reason = "r1 no longer applies: the lawyer's answer changed the governing jurisdiction."
+  const accepted = acceptResearchReply(directory, "research", JSON.stringify({ status: "limited", findings: [], limitations: ["No authority applies in the new jurisdiction."], withdrawn: [{ url: finding.url, citation: "Rule 1", reason }] }))
+  expect(accepted.issues).toEqual([])
+  expect((readLeanJson(directory, "research.json") as { findings: unknown[] }).findings).toEqual([])
+  expect(accepted.openItems.map(item => [item.stage, item.kind, item.detail])).toEqual([
+    ["research", "research_gap", "No authority applies in the new jurisdiction."],
+    // Was not disclosed.
+    ["research", "research_gap", `Withdrawn research finding: Notice provision (Rule 1), ${finding.url}. Reason: A research finding no longer applies: the lawyer's answer changed the governing jurisdiction.`],
+  ])
+})
+
+test("the research prompt has an earlier finding withdrawn when the lawyer's later answers or instructions take it out of scope", () => {
+  const directory = matter()
+  approvedNotice(directory)
+  const prompt = researchPrompt(directory, "research", researchBasis(directory))
+  expect(prompt).toContain('"citation": "Rule 1"')
+  expect(prompt).toContain("or when the lawyer's answers or instructions since it was found take it out of scope (a changed jurisdiction, party or facts).")
+  // Was "the same url and citation", which the code does not use for a finding without a citation.
+  expect(prompt).toContain("Return a finding with the same url and citation (or url and quote when it has no citation) only to replace it,")
+})
+
+test("on the last attempt a withdrawal of an authority the reply also returns is dropped and the returned finding kept", () => {
+  const directory = matter()
+  const finding = approvedNotice(directory)
+  const returned = { ...finding, claim: "Restated notice requirement" }
+  const reply = JSON.stringify({ status: "completed", limitations: [], findings: [returned], withdrawn: [{ url: finding.url, citation: "Rule 1", reason: "Superseded by a later rule." }] })
+  expect(acceptResearchReply(directory, "research", reply).issues).toEqual([expect.stringContaining("withdrawn[0] is also returned as a finding")])
+  // Was the same issue, failing the run.
+  const last = acceptResearchReply(directory, "research", reply, { final: true })
+  expect(last.issues).toEqual([])
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "completed", findings: [returned], limitations: [], withdrawn: [] })
+  expect(last.openItems).toEqual([])
+})

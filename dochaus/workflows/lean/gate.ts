@@ -2,15 +2,15 @@ import type { ChecklistFindingClass } from "./checklist-classify"
 import type { ChecklistFinding, ChecklistItem } from "./checklist-contract"
 import { CHECKLIST_COVERAGE_ISSUES, type ChecklistCoverageIssue } from "./checklist-flow"
 import { checklistOutputState, type ChecklistOpenFinding, type ChecklistUnresolvedFinding, type ChecklistUnresolvedParent } from "./stages"
-import { readChangeReview, deferredFindingItems } from "./change-pipeline"
+import { changeReviewItem, readChangeReview, reviewWithheldFinding, deferredFindingItems } from "./change-pipeline"
 import { renderNotesCoverage } from "../../lib/notes-coverage-report"
 import { hasOpenItemMarker } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 import { normalize } from "../../lib/quote-verify"
-import { CITED, finalBodyParagraphs, paragraphTextHolders, readerIDs, standingIDPattern, type ApplyResult } from "./checks"
+import { CITED, finalBodyParagraphs, paragraphTextHolders, readChangeList, readerIDs, standingIDPattern, type ApplyResult } from "./checks"
 import { memoMode, questionNames, runItemIDs, withoutInternalIDs, withoutRefMarkers } from "./delivered-memo"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
-import { isWithheldDeliveryItem, readPackageReview, withheldDeliveryItems } from "./package-review"
+import { isLeftOpenPackageFinding, isWithheldDeliveryItem, leftOpenPackageFinding, packageReviewItem, readPackageReview, withheldDeliveryItems } from "./package-review"
 import { coverageCarries, coverageItems, gateScopeParties } from "./package-coverage"
 import { excerpt, proseQuoteFound, openItem } from "./quotes"
 import { answeredScopeQuestion, GATE_EXCERPT, keyedQuestionID, openScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows } from "./package-scope"
@@ -35,6 +35,11 @@ import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanSt
 // - an amendment that was not applied leaves the body unchanged, so the notes
 //   naming it is enough; so is a question whose paragraph only that withheld
 //   amendment would have marked;
+// - a change-review finding left once the repair allowance is used up is
+//   disclosed by the notes naming it, or by the withheld amendment it faults;
+// - a package-review finding left once the repair allowance is used up is
+//   disclosed in the notes delivered with the draft, unless it is the same
+//   finding as such a change-review finding or withheld amendment discloses;
 // - a template part the final body leaves out with no recorded reason is
 //   disclosed by the notes naming it;
 // - a template part left out on purpose (by the outline, or by an applied
@@ -109,12 +114,35 @@ export function finalGate(directory: string): GateResult {
     notes: readLeanText(directory, "drafting-notes.md") ?? "",
     questions: new Map(readQuestions(directory).map(question => [question.id, question])),
   }
+  const current = currentOpenItems(directory)
+  // A finding left once the repair allowance was used up is recorded as an open
+  // item, or as the amendment change review withheld for that very finding,
+  // and settled with the other open items (withholdReviewedChanges). Any
+  // other finding blocks.
+  const lists = new Map(planned.map(document => [document, readChangeList(directory, document)]))
+  const withheldFor = (document: DocID, finding: { pid?: string; detail: string }) => reviewWithheldFinding(lists.get(document), document, finding, current)
+  // A package-review finding starts a repair round while the allowance lasts.
+  // Once it is used up the finding goes with the review draft: one that is the
+  // same finding as a recorded change-review item or a withheld amendment's is
+  // that item; every other, even on the same paragraph, is disclosed in the
+  // delivered notes (leftOpenPackageFinding, deliveredNotes). The findings it
+  // recorded then (recordPackageFindings) go with the current review's, once.
   const review = readPackageReview(directory)
-  const semantic = review?.status === "changes-required" ? review.findings.map(row => openItem("package-review", "omission", row.detail, { ...(row.document ? { document: row.document } : {}), ...(row.pid ? { pid: row.pid } : {}) })) : []
+  const exhausted = (readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
+  const sameFinding = (document: DocID, finding: { pid?: string; detail: string }) => withheldFor(document, finding) ||
+    current.some(item => item.id === changeReviewItem({ ...finding, document }, document).id)
+  const packageFindings = new Map([...(review?.status === "changes-required" ? review.findings.map(row => packageReviewItem(directory, row)) : []),
+    ...current.filter(item => item.stage === "package-review")].map(item => [item.id, item]))
+  const semantic = [...packageFindings.values()].flatMap(item => {
+    if (!exhausted) return [item]
+    return item.ref.document && sameFinding(item.ref.document, { pid: item.ref.pid, detail: item.detail }) ? [] : [leftOpenPackageFinding(item)]
+  })
   const projected = planned.flatMap(document => {
     const checked = readChangeReview(directory, document)
-    return checked?.status === "changes-required" ? checked.findings.map(row => openItem("change-review", "omission", row.detail,
-      { document, ...(row.pid ? { pid: row.pid } : {}) })) : []
+    return checked?.status === "changes-required" ? checked.findings.flatMap(row => {
+      const item = changeReviewItem(row, document, directory)
+      return current.some(recorded => recorded.id === item.id) || (row.document ?? document) === document && row.target !== "research" && withheldFor(document, row) ? [] : [item]
+    }) : []
   })
   const leanState = readLeanState(directory)
   const checklistState = leanState?.stages["checklist-check"]
@@ -126,8 +154,7 @@ export function finalGate(directory: string): GateResult {
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
   // A file name in the instructions the package review withheld is disclosed with the
   // draft, never blocking it: the notes were written before that review.
-  const current = currentOpenItems(directory)
-  const items = [...unresolved, ...[...current, ...undecidedQuestionItems(context.questions, current), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory)].map(item => settle(item, context)),
+  const items = [...unresolved, ...[...current.filter(item => item.stage !== "package-review"), ...undecidedQuestionItems(context.questions, current), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory)].map(item => settle(item, context)),
     ...semantic, ...projected, ...withheldDeliveryItems(directory)]
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete or stale, or a check or its reinspection failed; see checklist/report.md.", {}))
   // Focused checks can correctly preserve a source-dependent open issue
@@ -177,13 +204,15 @@ export function finalGate(directory: string): GateResult {
  * them (notesForReader), with any unresolved checklist findings and any
  * disclosed requirements the checklist check left open in plain words, and
  * any file name in the instructions the package review could not apply
- * (withheldDeliveryItems), in its item's words. The drafting notes are written
+ * (withheldDeliveryItems), in its item's words, and any package-review finding
+ * left open once the repair allowance was used up (leftOpenPackageFinding), in
+ * its words after its document's title. The drafting notes are written
  * before the checklist check and the package review, so they cannot list
  * these. Undefined when there are neither drafting notes nor such an item.
  *
  * The findings lead the drafting notes, or close a requested memo after its
  * own title and body: the unresolved ones first, then those left open, then
- * the file names not applied, each in its own section. An unresolved one is disclosed as a requirement not
+ * the file names not applied, then the review findings left open, each in its own section. An unresolved one is disclosed as a requirement not
  * confirmed as met, one left open as left open; each is worded from the
  * checklist item's requirement and source quotes rather than the checker's
  * detail (findingEntries), so its lines name no internal id: no checklist
@@ -200,7 +229,8 @@ export function deliveredNotes(directory: string, gate: GateResult): string | un
   const held = new Set(leftOpen.length ? checklistOutputState(directory).openFindings.map(row => row.item_id) : [])
   const open = leftOpen.filter(item => held.has(item.ref.checklist_item ?? item.id))
   const names = gate.items.filter(isWithheldDeliveryItem)
-  if (!unresolved.length && !open.length && !names.length) return read
+  const reviewed = gate.items.filter(isLeftOpenPackageFinding)
+  if (!unresolved.length && !open.length && !names.length && !reviewed.length) return read
   const known = runItemIDs(directory, gate.items)
   // A section, with the blank line after it, only when it lists a finding.
   const section = (findings: OpenItem[], heading: string, intro: string) => findings.length
@@ -208,18 +238,29 @@ export function deliveredNotes(directory: string, gate: GateResult): string | un
   // A file name not applied is listed in its item's own words.
   const named = (heading: string, intro: string) => names.length
     ? [...plainWordsSection(directory, known, heading, intro, names.map(item => (hold: (text: string) => string) => `- ${hold(item.detail)}`)), ""] : []
+  // A final review finding is listed in its words, after the document it is about.
+  const titles = new Map((readLeanPlan(directory)?.documents ?? []).map(row => [row.id, row.title]))
+  const left = (heading: string, intro: string) => reviewed.length
+    ? [...plainWordsSection(directory, known, heading, intro, reviewed.map(item => (hold: (text: string) => string) => {
+      const title = item.ref.document && titles.get(item.ref.document)
+      return `- ${title ? `${hold(title)}: ` : ""}${item.detail}`
+    })), ""] : []
   const body = read ?? ""
   if (!memoMode(directory)) return [...section(unresolved, "# Checklist findings not satisfied",
     "These checklist requirements were not established as satisfied. Each is disclosed with this review draft; none is treated as satisfied."),
   ...section(open, "# Checklist requirements left open",
     "These checklist requirements were left open. Each is disclosed with this review draft; none is treated as satisfied."),
-  ...named("# File names not applied", "These names in your instructions could not be applied. Each is disclosed with this review draft."), body].join("\n")
+  ...named("# File names not applied", "These names in your instructions could not be applied. Each is disclosed with this review draft."),
+  ...left("# Final review findings left open", LEFT_OPEN_INTRO), body].join("\n")
   const memo = body.trimEnd()
   return [...(memo ? [memo, ""] : []),
     ...section(unresolved, "## Requirements not confirmed as met", "These requirements were not confirmed as met in this draft and need the lawyer's review."),
     ...section(open, "## Requirements left open", "These requirements were left open in this draft and need the lawyer's review."),
-    ...named("## File names not applied", "These names in your instructions could not be applied in this draft.")].join("\n")
+    ...named("## File names not applied", "These names in your instructions could not be applied in this draft."),
+    ...left("## Final review findings left open", LEFT_OPEN_INTRO)].join("\n")
 }
+
+const LEFT_OPEN_INTRO = "The final review of the package found these points, which could not be corrected within the run's correction allowance. They are not corrected in this review draft and need the lawyer's review. A later review may not have raised a point again; it is kept because the text it was found in is unchanged."
 
 /** The drafting notes as the reader gets them: without their "[ref: …]"
  * markers, and with no id the notes check keeps from the reader (readerIDs,

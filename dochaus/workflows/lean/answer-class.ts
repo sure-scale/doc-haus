@@ -1,6 +1,7 @@
 import { parseJsonObject } from "./change-checks"
 import { parallel } from "./checklist-flow"
 import { appendLeanEvent, leanElapsedMs } from "./events"
+import { OutputLimitError } from "./native-stage-result"
 import { retryPrompt, tagged } from "./prompts"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, type LeanDeps } from "./stages"
 import { ANSWER_CLASSES, questionOptions, readQuestions, recordAnswerClasses, unclassifiedAnswer, type AnswerClass, type LeanState, type Question } from "./state"
@@ -11,8 +12,9 @@ import { ANSWER_CLASSES, questionOptions, readQuestions, recordAnswerClasses, un
 // is one of a closed set code accepts (answered, delegated, declined); a
 // delegating answer is then recorded as Decide for me records an adoption
 // (state.ts classifiedAnswer). A reply that never passes its check stands as
-// the lawyer's own answer, as every typed answer did before; a runtime error or
-// a pause records nothing, so the next pass reads the answer again.
+// the lawyer's own answer, as every typed answer did before, and so does a reply
+// cut off at its output limit; any other runtime error or a pause records
+// nothing, so the next pass reads the answer again.
 
 /** Reads every answer in the lawyer's own words not yet read and records each class. */
 export async function classifyAnswers(directory: string, state: LeanState, deps: LeanDeps) {
@@ -44,7 +46,9 @@ async function classifyAnswer(directory: string, state: LeanState, deps: LeanDep
       if (checked.answer_class) return checked.answer_class
     }
     return "answered"
-  } catch {
+  } catch (error) {
+    // A reply cut off before any answer fails like one that never passes its check.
+    if (error instanceof OutputLimitError) return "answered"
     // A runtime error, a pause or a settings change: the runner acts on it.
     return undefined
   }

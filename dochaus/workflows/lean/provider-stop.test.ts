@@ -43,6 +43,49 @@ test.each([
   expect(resumed.provider_stop).toBeUndefined()
 }, 120_000)
 
+test("Continue after the lawyer selects another model runs the remaining steps on it and leaves finished steps as they were", async () => {
+  const directory = matter()
+  const broken = scriptedModel({ ...happyPath, [AGENT.discrepancy]: failing({ type: "provider.no-route", message: "Model unavailable: test/scripted" }) })
+  const stopped = await runLean(directory, { sessions: broken.port })
+  expect(stopped.provider_stop).toBe("model")
+  const finished = stopped.stages.instructions!
+  expect(finished.status).toBe("done")
+
+  const selected = { providerID: "test", modelID: "selected" }
+  enqueueLeanRequest(directory, { kind: "continue", model: selected })
+  const fixed = scriptedModel(happyPath)
+  const resumed = await runLean(directory, { sessions: fixed.port })
+
+  expect(resumed.status).toBe("completed")
+  expect(resumed.model).toEqual(selected)
+  expect(fixed.sessions.length).toBeGreaterThan(0)
+  expect(fixed.sessions.map(session => session.model)).toEqual(fixed.sessions.map(() => selected))
+  expect(fixed.sessions[0]?.agent).toBe(AGENT.discrepancy)
+  // The finished step is neither prompted again nor re-keyed.
+  expect(fixed.count(AGENT.instructions)).toBe(0)
+  expect(resumed.stages.instructions).toEqual(finished)
+}, 120_000)
+
+test("Continue on another model keeps the finished checklist check and its extracted items", async () => {
+  const directory = matter()
+  const broken = scriptedModel({ ...happyPath, [AGENT["package-review"]]: failing({ type: "provider.no-route", message: "Model unavailable: test/scripted" }) })
+  const stopped = await runLean(directory, { sessions: broken.port })
+  expect(stopped.stop_reason).toStartWith("package-review:")
+  const checked = stopped.stages["checklist-check"]!
+  expect(checked.status).toBe("done")
+  const extraction = readFileSync(path.join(directory, ".dochaus", "lean", "checklist", "extraction.json"), "utf8")
+
+  enqueueLeanRequest(directory, { kind: "continue", model: { providerID: "test", modelID: "selected" } })
+  const fixed = scriptedModel(happyPath)
+  const resumed = await runLean(directory, { sessions: fixed.port })
+
+  expect(resumed.status).toBe("completed")
+  expect(fixed.count(CHECKLIST_JOB_AGENTS.extract)).toBe(0)
+  expect(fixed.count(CHECKLIST_JOB_AGENTS.check)).toBe(0)
+  expect(resumed.stages["checklist-check"]).toEqual(checked)
+  expect(readFileSync(path.join(directory, ".dochaus", "lean", "checklist", "extraction.json"), "utf8")).toBe(extraction)
+}, 120_000)
+
 test("a provider failure a helper records as an issue still stops the step as that failure", async () => {
   const directory = matter()
   const model = scriptedModel({ ...happyPath, "lean-checklist-extract": failing(EXPIRED) })

@@ -165,7 +165,8 @@ describe("lean drafting start and Continue", () => {
   test("start runs the coordinator in the background; Continue is queued (202) and drained by the running coordinator", async () => {
     const directory = matter()
     const model = heldModel()
-    const routes = leanDraftingRoutes({ directory: () => directory, deps: () => model.deps })
+    const catalog = [{ providerID: "test", id: "selected", enabled: true }, { providerID: "test", id: "disabled", enabled: false }]
+    const routes = leanDraftingRoutes({ directory: () => directory, deps: () => model.deps, models: async () => catalog, catalogWaitMs: 1 })
 
     expect(leanDraftingStatus(directory)).toBeUndefined()
     expect((await routes.request("/m1/lean/resume", { method: "POST" })).status).toBe(404)
@@ -200,14 +201,49 @@ describe("lean drafting start and Continue", () => {
     })
     expect(model.created[1]).toMatchObject({ parentID: "ses_1", agent: LEAN_STAGE_AGENTS.instructions })
 
-    // A Continue after the run stopped starts it again.
-    const resumed = await routes.request("/m1/lean/resume", { method: "POST" })
+    // A Continue after the run stopped starts it again, on the model now selected.
+    const json = (body: unknown) => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    expect((await routes.request("/m1/lean/resume", json({ model: { providerID: "test", modelID: " " } }))).status).toBe(400)
+    // Only a model the engine offers and has enabled is accepted; nothing is queued otherwise.
+    for (const modelID of ["unknown", "disabled"]) {
+      const refused = await routes.request("/m1/lean/resume", json({ model: { providerID: "test", modelID } }))
+      expect(refused.status).toBe(400)
+      expect(await refused.json()).toMatchObject({ code: "invalid_model" })
+    }
+    const offline = leanDraftingRoutes({ directory: () => directory, deps: () => model.deps, catalogWaitMs: 1, models: async () => { throw new Error("Could not check the engine model catalog.") } })
+    const unchecked = await offline.request("/m1/lean/resume", json({ model: { providerID: "test", modelID: "selected" } }))
+    expect(unchecked.status).toBe(503)
+    expect(await unchecked.json()).toMatchObject({ code: "model_catalog_unavailable" })
+    expect(pendingLeanRequests(directory)).toEqual([])
+    const selected = { providerID: "test", modelID: "selected" }
+    const resumed = await routes.request("/m1/lean/resume", json({ model: { providerID: " test ", modelID: "selected " } }))
     expect(resumed.status).toBe(202)
     expect(await resumed.json()).toMatchObject({ mode: "queued", status: { in_flight: true } })
     await leanDraftingIdle(directory)
     expect(model.prompts).toEqual([LEAN_STAGE_AGENTS.instructions, LEAN_STAGE_AGENTS.instructions, LEAN_STAGE_AGENTS.instructions])
-    expect(readLeanState(directory)).toMatchObject({ status: "failed", owner_session_id: "ses_1" })
+    expect(model.created.at(-1)).toMatchObject({ agent: LEAN_STAGE_AGENTS.instructions, model: selected })
+    expect(readLeanState(directory)).toMatchObject({ status: "failed", owner_session_id: "ses_1", model: selected })
     expect(doneRequests(directory)).toHaveLength(3)
+  })
+
+  test("Continue right after the engine starts accepts a model its first catalog does not list yet", async () => {
+    const directory = matter()
+    const model = heldModel()
+    const reads: string[] = []
+    const routes = leanDraftingRoutes({ directory: () => directory, deps: () => model.deps, catalogWaitMs: 1, models: async matter => {
+      reads.push(matter)
+      return reads.length === 1 ? [] : [{ providerID: "test", id: "selected", enabled: true }]
+    } })
+    await startLeanDraftingRun(directory, { request: "Draft the agreement.", agent: "draft", model: MODEL }, model.deps)
+    model.release()
+    await leanDraftingIdle(directory)
+    const selected = { providerID: "test", modelID: "selected" }
+    const resumed = await routes.request("/m1/lean/resume", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: selected }) })
+    expect(resumed.status).toBe(202)
+    // Each read names the matter's directory.
+    expect(reads).toEqual([directory, directory])
+    await leanDraftingIdle(directory)
+    expect(readLeanState(directory)).toMatchObject({ model: selected })
   })
 
   test("an answer is validated at once, queued while the run works, and recorded by the coordinator; never by the run itself", async () => {

@@ -3,20 +3,20 @@ import { currentDocumentArtifacts } from "../../lib/current-document-artifacts"
 import { checklistProducerInputs } from "./checklist-source-context"
 import { existsSync, readFileSync } from "node:fs"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
-import { amendmentParagraphs } from "../../lib/drafting-amendment"
+import { amendmentParagraphs, amendmentText } from "../../lib/drafting-amendment"
 import { askedQuestions, checkChanges, parseJsonObject, questionIssues } from "./change-checks"
-import { finalBodyParagraphs, readChangeList, readParagraphs, record, type ChangeList, shownText, withoutListLabel } from "./checks"
+import { finalBodyParagraphs, readChangeList, readParagraphs, record, type ChangeList, shownText, withTextSha, withoutListLabel } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { reviewStages, earlierDocuments, readLeanPlan, type DocID } from "./plan"
 import { packageCompositionBlock, revisionPreferenceScope, stagePrompt, retryPrompt } from "./prompts"
-import { excerpt, matterSourceIDs, openItem, quoteFound, quoteMissIssue, sourceQuotes } from "./quotes"
+import { excerpt, inDocument, matterSourceIDs, openItem, quoteFound, quoteMissIssue, sourceQuotes } from "./quotes"
 import { normalize, normalizeWithMap, quotePlaces, sourceReadings, verifyQuote } from "../../lib/quote-verify"
 import { changesRepairSections, documentRepairs } from "./repairs"
 import { drainLeanRequests } from "./requests"
 import { approvedResearch } from "./research"
 import { findingItem, findingsFor, findingsText, heldBackDispositions, reviewText, routedFindingItems } from "./review-findings"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_PROMPT_VERSION, LEAN_STAGE_AGENTS, stageInputs, stepSessionTitle, type LeanDeps } from "./stages"
-import { QUESTION_KIND_CONTRACT, hashStageInputs, leanFile, questionContent, readLeanJson, readLeanText, readQuestions, writeLeanText, type LeanState, type LeanStageState, type Question } from "./state"
+import { QUESTION_KIND_CONTRACT, hashStageInputs, leanFile, questionContent, readLeanJson, readLeanText, readQuestions, writeLeanText, type LeanState, type LeanStageState, type OpenItem, type Question } from "./state"
 import { workflowConcurrency } from "./model-concurrency"
 
 export type ChangeGroup = {
@@ -43,6 +43,37 @@ export type ReviewDisposition = {
 export type ChangePlan = { shared_decisions: string[]; groups: ChangeGroup[]; dismissed: string[]; questions: (Question & { resolves?: string[] })[]; findings?: ReviewDisposition[]; settled_groups?: ChangeGroup[] }
 export type ChangePreparation = { groups: { group: string; changes: ChangeList }[] }
 export type ChangeReview = { status: "pass" | "changes-required"; findings: { target?: "body" | "research"; document?: DocID; pid?: string; detail: string }[]; limitations: string[] }
+
+/** A change-review finding as an open item, on the document it names or else
+ * the reviewed one. The runner records it (withholdReviewedChanges) and the
+ * gate projects it in this one shape, so their ids agree; given the matter,
+ * it carries the final-body text it was found on (withTextSha). */
+export function changeReviewItem(row: ChangeReview["findings"][number], document: DocID, directory?: string) {
+  const item = openItem("change-review", "omission", row.detail, { document: row.document ?? document, ...(row.pid ? { pid: row.pid } : {}) })
+  return directory ? withTextSha(directory, item) : item
+}
+
+type Withheld = NonNullable<ChangeList["withheld"]>[number]
+
+/** The open item of an amendment change review withheld once the repair
+ * allowance was used up (withholdReviewedChanges), from its withheld row. */
+export function reviewWithheldItem(row: Withheld, document: DocID) {
+  return inDocument(openItem("changes", "unapplied_amendment", [
+    `Amendment ${row.amendment.id} to paragraph [${row.amendment.pid}] was withheld and not applied: change review still found it materially wrong after the allowed repair rounds.`,
+    `Proposed text: "${excerpt(amendmentText(row.amendment))}" Reason given: ${excerpt(row.amendment.reason)}`,
+    `Problems: ${row.issues.join(" ")} The paragraph keeps its drafted text.`,
+  ].join(" "), { amendment_id: row.amendment.id, pid: row.amendment.pid }), document)
+}
+
+/** Whether a finding on this document's paragraph is one change review already
+ * withheld an amendment for: a withheld row on that paragraph whose problems
+ * hold the finding's words, recorded as change review's own item. A row the
+ * change checks or reconciliation withheld, or another finding on the same
+ * paragraph, is not that finding. */
+export function reviewWithheldFinding(list: ChangeList | undefined, document: DocID, finding: { pid?: string; detail: string }, items: OpenItem[]) {
+  const ids = new Set(items.map(item => item.id))
+  return finding.pid !== undefined && (list?.withheld ?? []).some(row => row.amendment.pid === finding.pid && row.issues.includes(finding.detail) && ids.has(reviewWithheldItem(row, document).id))
+}
 
 /** Adjudication supplies goals and dependencies, never replacement wording. */
 export function changePlanPrompt(directory: string, document: DocID) {

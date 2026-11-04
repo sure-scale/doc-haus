@@ -6,7 +6,7 @@ import { checklistItemSchema, type ChecklistFinding, type ChecklistItem } from "
 import { classifyChecklistFinding, type ChecklistFindingClass } from "./checklist-classify"
 import { acceptChangePlan, acceptChangeReview, preparationOutputValid, readChangePlan, readChangeReview, deferredFindingItems, reviewDispositionText, uniqueReplacementIssues } from "./change-pipeline"
 import { comparisonBasis } from "./comparison"
-import { checkPackageReview, isWithheldDeliveryItem, readPackageReview, withholdUngroundedDelivery } from "./package-review"
+import { checkPackageReview, isLeftOpenPackageFinding, isWithheldDeliveryItem, readPackageReview, withholdUngroundedDelivery } from "./package-review"
 import { coverageItems, planCoverageCurrent } from "./package-coverage"
 import { readActRecord } from "./act-record"
 import { requestedFilesItems } from "./requested-files"
@@ -44,7 +44,7 @@ import { templateSource } from "./template-contract"
 import { INSTRUCTIONS_FILE, instructionsOutputValid } from "./instructions"
 import { completedDocumentsText, delegatedDecisionsText, packageCompositionBlock } from "./prompts"
 import { matterSourceBasis, matterSourceIDs } from "./quotes"
-import { documentRepairs, readRepairRound } from "./repairs"
+import { documentRepairs, LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, unverifiedMarkingBasis } from "./repairs"
 import {
   isReviewStage,
   answeredQuestionsText,
@@ -211,7 +211,7 @@ export function stepOutputs(step: StepID): string[] {
 
 // Items the drafting notes must disclose. Draft and review findings are re-derived from the
 // final body at apply, so the notes disclose what the delivered body still has.
-const DISCLOSED_STAGES: StageID[] = ["research", "research-review", "change-plan", "change-prepare", "changes", "apply"]
+const DISCLOSED_STAGES: StageID[] = ["research", "research-review", "change-plan", "change-prepare", "changes", "change-review", "apply"]
 
 /** Named inputs of each step: everything its prompt or code step reads. Their
  * content hash is the step's resume key and nothing more. A document's accepted
@@ -243,6 +243,10 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     ...(["finalize", "package-review", "gate"].includes(step) ? [{ name: "review-dispositions", bytes: JSON.stringify((readLeanPlan(directory)?.documents ?? []).map(row => reviewDispositionText(directory, row.id))) }] : []),
     ...(["finalize", "package-review"].includes(step) ? [{ name: "delivery-review-contract", bytes: DELIVERY_REVIEW_CONTRACT }] : []),
     ...(step === "gate" ? [{ name: "gate-contract", bytes: GATE_CONTRACT }] : []),
+    // A review asking for changes that ran with the repair allowance used up
+    // started no round: its findings stand, so a resume on unchanged inputs
+    // does not run it again. One that last started a round runs once more.
+    ...(exhaustedReview(directory, step) ? [{ name: "repair-allowance", bytes: "used-up" }] : []),
     ...(!["instructions", "discrepancy", "intake", "research", "research-review", "acts"].includes(step) ? ["research.json", "research-review.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
     ...(!["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine"].includes(step) ? ["discrepancy.json", "spine.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
     ...(clarifications.length && ["checklist-check", "package-review", "gate"].includes(step) ? [{ name: "inspection-clarifications", bytes: JSON.stringify(clarifications) }] : []),
@@ -287,7 +291,8 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   // The spine is shown the act record when it plans documents, parties and signatories.
   if (step === "spine") return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), file("discrepancy.json"), file("intake.json"), file("research.json"), file("research-review.json"), file("acts.json")]
   // Applied deletion evidence includes the original paragraph's exact wording.
-  if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(plannedDocument(directory, id)?.playbook_review?.sources.length ? [file(`${id}/review-playbook.json`)] : [])]), file("open-items.json")]
+  if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(plannedDocument(directory, id)?.playbook_review?.sources.length ? [file(`${id}/review-playbook.json`)] : [])]),
+    packageReviewOpenItems(directory)]
   if (step === "research") {
     // Without a gap round the key is unchanged.
     const gaps = options.researchGaps === false ? undefined : currentResearchGaps(directory, researchBasis(directory))
@@ -329,7 +334,25 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
         (item.stage === "draft" || isReviewStage(item.stage)) && (item.ref.document ?? FIRST_DOCUMENT) === document)) },
       finished, acting, scope, ...composed]
   }
-  return [at("body.docx"), at("changes.json"), at("change-review.json"), { name: "operative-plan", bytes: JSON.stringify(operativePlan(readLeanPlan(directory))) }, sources, { name: "comparison-original", bytes: comparisonBasis(directory, document) }]
+  const marking = unverifiedMarkingBasis(directory, document)
+  return [at("body.docx"), at("changes.json"), at("change-review.json"), { name: "operative-plan", bytes: JSON.stringify(operativePlan(readLeanPlan(directory))) }, sources, { name: "comparison-original", bytes: comparisonBasis(directory, document) },
+    ...(marking ? [{ name: "unverified-marking", bytes: marking }] : [])]
+}
+
+/** The open items that key package review: not its own findings, which it
+ * records once the repair allowance is used up (recordPackageFindings). */
+function packageReviewOpenItems(directory: string) {
+  const name = "open-items.json"
+  const items = readOpenItems(directory)
+  if (!items.some(item => item.stage === "package-review")) return { name, bytes: existsSync(leanFile(directory, name)) ? readFileSync(leanFile(directory, name)) : "" }
+  return { name, bytes: `${JSON.stringify({ items: items.filter(item => item.stage !== "package-review") }, null, 2)}\n` }
+}
+
+function exhaustedReview(directory: string, step: StepID) {
+  const stage = stepStage(step), document = stepDocument(step)
+  if ((readRepairRound(directory)?.substantive_attempts ?? 0) < LEAN_MAX_SUBSTANTIVE_REPAIRS) return false
+  if (stage === "package-review") return readPackageReview(directory)?.status === "changes-required"
+  return stage === "change-review" && Boolean(document) && readChangeReview(directory, document!)?.status === "changes-required"
 }
 
 /** Hash of what the outline is built from: the request and the matter's
@@ -571,11 +594,11 @@ export function stageOutputValid(directory: string, step: StepID) {
   // re-run them; any other failed check does.
   if (stage === "finalize") return !checkDraftingNotes(directory, text("drafting-notes.md"), disclosableItems(directory), { final: true }).issues.length
   // A passed gate delivers the drafting notes, and any unresolved checklist
-  // findings, disclosed requirements left open and file names in the instructions not
-  // applied, in its own notes (deliveredNotes).
+  // findings, disclosed requirements left open, file names in the instructions not
+  // applied and package-review findings left open, in its own notes (deliveredNotes).
   if (stage === "gate") return !(existsSync(leanFile(directory, "drafting-notes.md")) ||
     (readLeanJson(directory, "gate.json") as { items?: OpenItem[] } | undefined)?.items?.some(item => item.kind === "checklist_unresolved" ||
-      item.kind === "checklist_open" && item.status === "disclosed" || isWithheldDeliveryItem(item))) ||
+      item.kind === "checklist_open" && item.status === "disclosed" || isWithheldDeliveryItem(item) || isLeftOpenPackageFinding(item))) ||
     [DELIVERED_NOTES.docx, DELIVERED_NOTES.markdown].every(name => existsSync(leanFile(directory, name)))
   return true
 }

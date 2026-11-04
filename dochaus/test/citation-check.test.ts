@@ -277,4 +277,31 @@ describe("case-name support matching", () => {
     expect(rows("In Home Health Inc. v. Merrow", "in home health inc. v. merrow, 3 synth. 4")).toEqual([["In Home Health Inc. v. Merrow", "verified"]])
     expect(rows("Accord Corp. v. Merrow", "accord corp. v. merrow, 3 synth. 4")).toEqual([["Accord Corp. v. Merrow", "verified"]])
   })
+
+  // Text as written, so a citation can open a line or a paragraph.
+  const textRows = (text: string, supportText: string) => {
+    const dir = matter()
+    writeFileSync(path.join(dir, "draft.md"), text)
+    const index = [{ normalized_text: supportText, support: { kind: "source-artifact" as const, id: "source-artifact:s1", status: "verified" as const } }]
+    return citationRowsForArtifact(dir, "draft.md", index).map(row => [row.citation_text, row.status])
+  }
+
+  test("a heading's enumerator is not part of the name it numbers; it is dropped only where it opens a line, and the name as written is tried first", () => {
+    const support = "merrow v. kestrel holdings (synth) llc, 12 synth. 34"
+    for (const enumerator of ["D.", "IV.", "1.", "(a)", "i."]) {
+      expect(textRows(`Background.\n\n${enumerator} Merrow v. Kestrel Holdings (Synth) LLC\n\nThe facts.\n`, support)).toEqual([["Merrow v. Kestrel Holdings", "verified"]])
+      expect(textRows(`## ${enumerator} Merrow v. Kestrel Holdings (Synth) LLC\n`, support)).toEqual([["Merrow v. Kestrel Holdings", "verified"]])
+    }
+    expect(textRows("J. Merrow v. Kestrel\n", "j. merrow v. kestrel, 12 synth. 34")).toEqual([["J. Merrow v. Kestrel", "verified"]])
+    expect(textRows("The court in D. Merrow v. Kestrel held otherwise.\n", support)).toEqual([["D. Merrow v. Kestrel", "unsupported"]])
+  })
+
+  test("a case name ends where the next case's name begins and never runs on into the next paragraph", () => {
+    const support = "rowan v. merrow, 12 synth. 34; down v. merrow; ash v. kestrel"
+    expect(textRows("Rowan v. Merrow. Rowan v. Merrow, 12 Synth. 34, sets the standard.\n", support)).toEqual([["Rowan v. Merrow", "verified"], ["Rowan v. Merrow", "verified"]])
+    expect(textRows("Down v. Merrow and Ash v. Kestrel both apply.\n", support)).toEqual([["Down v. Merrow", "verified"], ["Ash v. Kestrel", "verified"]])
+    expect(textRows("The leading case is Down v. Merrow\n\nAsh Holdings relies on it.\n", support)).toEqual([["Down v. Merrow", "verified"]])
+    // A name that goes on after an abbreviation keeps going.
+    expect(textRows("Down v. Merrow Bros. Holdings applies.\n", "down v. merrow bros. holdings")).toEqual([["Down v. Merrow Bros. Holdings", "verified"]])
+  })
 })
