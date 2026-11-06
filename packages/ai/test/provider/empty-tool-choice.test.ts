@@ -38,6 +38,8 @@ for (const route of [OpenAIChat.route, OpenAIResponses.route]) {
       }),
     )
 
+    // Responses offers no tools at all for an explicit "none"; openai-responses.test.ts covers that case.
+    if (route.id === "openai-responses" && choice.type === "none") continue
     it.effect(`${route.id} preserves ${choice.type} tool choice with active tools`, () =>
       Effect.gen(function* () {
         const prepared = yield* compileRequest(

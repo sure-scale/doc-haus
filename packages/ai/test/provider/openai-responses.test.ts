@@ -2038,6 +2038,52 @@ describe("OpenAI Responses route", () => {
     }),
   )
 
+  it.effect("disables offered tools without a tool_choice none field and retains prior tool results", () =>
+    Effect.gen(function* () {
+      const prepared = yield* compileRequest(
+        ai.request({
+          model,
+          messages: [
+            Message.user("Look up the value, then summarize."),
+            Message.assistant([ToolCallPart.make({ id: "call_done", name: "lookup", input: { query: "value" } })]),
+            Message.tool({ id: "call_done", name: "lookup", result: { value: "retrieved" } }),
+          ],
+          tools: [ToolDefinition.make({ name: "lookup", description: "Look up a value", inputSchema: { type: "object" } })],
+          toolChoice: "none",
+        }),
+      )
+      expect(prepared.body.tools).toBeUndefined()
+      expect(prepared.body.tool_choice).toBeUndefined()
+      expect(prepared.body.input).toContainEqual({
+        type: "function_call",
+        call_id: "call_done",
+        name: "lookup",
+        arguments: '{"query":"value"}',
+      })
+      expect(prepared.body.input).toContainEqual({
+        type: "function_call_output",
+        call_id: "call_done",
+        output: '{"value":"retrieved"}',
+      })
+    }),
+  )
+
+  it.effect("an explicit no-tools request cannot be re-enabled by provider allowed-tools options", () =>
+    Effect.gen(function* () {
+      const prepared = yield* compileRequest(
+        ai.request({
+          model,
+          prompt: "Summarize without tools.",
+          tools: [ToolDefinition.make({ name: "lookup", description: "Look up a value", inputSchema: { type: "object" } })],
+          toolChoice: "none",
+          providerOptions: { allowedTools: { toolNames: ["lookup"], mode: "required" } },
+        }),
+      )
+      expect(prepared.body.tools).toBeUndefined()
+      expect(prepared.body.tool_choice).toBeUndefined()
+    }),
+  )
+
   it.effect("maps OpenAI provider options to Responses options", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
@@ -2050,7 +2096,7 @@ describe("OpenAI Responses route", () => {
             ToolDefinition.make({ name: "read", description: "Read a file", inputSchema: { type: "object" } }),
             ToolDefinition.make({ name: "grep", description: "Search files", inputSchema: { type: "object" } }),
           ],
-          toolChoice: "none",
+          toolChoice: "auto",
           providerOptions: {
             reasoningEffort: "high",
             reasoningSummary: "auto",

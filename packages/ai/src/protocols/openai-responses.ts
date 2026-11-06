@@ -239,6 +239,8 @@ const fromRequest = Effect.fn("OpenAIResponses.fromRequest")(function* (request:
   const updates = resolveEffortUpdates(request, options.reasoningEffort)
   const generation = OpenResponses.lowerGeneration(request, { ...options, reasoningEffort: updates.effort })
   const custom = OpenAIFreeform.tools(request)
+  // An explicit no-tools request offers none, so provider allowed-tools options cannot re-enable them.
+  const noTools = request.toolChoice?.type === "none"
   return {
     ...(yield* OpenResponses.lowerConversation(updates.request, adapter)),
     ...generation,
@@ -253,9 +255,9 @@ const fromRequest = Effect.fn("OpenAIResponses.fromRequest")(function* (request:
         }
       : {}),
     context_management: management?.map((edit) => ({ type: edit.type, compact_threshold: edit.compactThreshold })),
-    tools: request.tools.length === 0 ? undefined : yield* lowerTools(request),
+    tools: noTools || request.tools.length === 0 ? undefined : yield* lowerTools(request),
     tool_choice:
-      request.tools.length === 0
+      noTools || request.tools.length === 0
         ? undefined
         : (OpenResponses.allowedToolChoice(options, custom) ??
           (request.toolChoice ? yield* lowerToolChoice(request.toolChoice, request.tools, custom) : undefined)),
