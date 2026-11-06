@@ -128,7 +128,7 @@ test("an answer to the conflict question re-keys the checklist check and reaches
 
 const ANSWER = "Payment on delivery governs; state it in the note."
 const ADVICE = { options: [{ text: "The payment requirement governs." }, { text: "The delivery requirement governs." }],
-  recommendation: { option: 0, rationale: "The request asks for a short supply note.", basis: [{ source_id: "request", quote: "short supply note", relevance: "The lawyer's request sets the scope of this supply note, the document both conflicting requirements target." }] } }
+  recommendation: { option: "The payment requirement governs.", rationale: "The request asks for a short supply note.", basis: [{ source_id: "request", quote: "short supply note", relevance: "The lawyer's request sets the scope of this supply note, the document both conflicting requirements target." }] } }
 
 // Two requirements from the request; the first is reported as contradicted by
 // the second's source passage. With `answerFirst`, once the answer is a

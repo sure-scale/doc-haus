@@ -21,7 +21,7 @@ const NO_REMEDY = "Add no separate late-delivery remedy."
 const REDUCTION = "Reduce the price by one percent for each week of late delivery."
 const CONFLICT = "One answer adds no remedy for late delivery while the other reduces the price for it."
 const BASIS = SUPPORT.map(row => ({ ...row, relevance: "The supplied terms fix the period for the supplier's delivery under this note and give no remedy for missing it." }))
-const recommend = (...options: string[]) => JSON.stringify({ options: options.map(text => ({ text })), recommendation: { option: 0, rationale: "The supplied terms support this option.", basis: BASIS } })
+const recommend = (...options: string[]) => JSON.stringify({ options: options.map(text => ({ text })), recommendation: { option: options[0], rationale: "The supplied terms support this option.", basis: BASIS } })
 const combined = (directory: string) => readQuestions(directory).filter(question => question.id.startsWith("answer-conflict-"))
 
 /** A run that asks two judgment questions, each advised with a

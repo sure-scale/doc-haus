@@ -23,7 +23,7 @@ function deciding(id: string, quote: { source_id: string; quote: string }, confi
     ? JSON.stringify(confirmed ? { decides: true, quote: quote.quote } : { decides: false, reason: "The instruction is only a preference." })
     : prompt.includes("<options>")
     ? JSON.stringify({ unavailable: { reason: "The lawyer decides this." } })
-    : JSON.stringify({ options: [{ text: "Follow the instruction" }, { text: "Another approach" }], recommendation: { option: 0, rationale: "The instruction decides it.", basis: [{ ...quote, relevance: "The lawyer's instruction for this work." }], decided_by: id } })
+    : JSON.stringify({ options: [{ text: "Follow the instruction" }, { text: "Another approach" }], recommendation: { option: "Follow the instruction", rationale: "The instruction decides it.", basis: [{ ...quote, relevance: "The lawyer's instruction for this work." }], decided_by: id } })
 }
 
 test("a question the request's instruction decides is settled, not asked, and intake runs again reading it", async () => {

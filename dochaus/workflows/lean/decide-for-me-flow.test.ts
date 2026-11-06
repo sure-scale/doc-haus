@@ -42,7 +42,7 @@ test("an adopted recommendation runs through the queue as the lawyer's answer, r
       ] })
       : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms", acting_for: { party: "", basis: "none" }, dates: { document_date: { date: "", basis: "today" }, operative_dates: [] } }),
     [AGENT.advise]: prompt => prompt.includes(QUESTION)
-      ? JSON.stringify({ options: [{ text: CHOSEN }, { text: OTHER }], recommendation: { option: 0, rationale: "The terms fix the delivery period and add no remedy.", basis: BASIS } })
+      ? JSON.stringify({ options: [{ text: CHOSEN }, { text: OTHER }], recommendation: { option: CHOSEN, rationale: "The terms fix the delivery period and add no remedy.", basis: BASIS } })
       : JSON.stringify({ unavailable: { reason: "The sources name no governing law." } }),
   })
   const run = () => runLean(directory, { sessions: model.port })

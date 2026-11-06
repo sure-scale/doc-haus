@@ -18,7 +18,7 @@ const FILES: Question = { id: "requested-files-1", stage: "draft", question: "Yo
   options: [{ id: "o1", text: "As my words ask" }, { id: "o2", text: "As planned" }] }
 const BASIS = [{ source_id: SOURCE, quote: "within thirty days of the order date", relevance: "The supplied delivery terms state the period this note must reproduce." }]
 const OPTIONS = [{ text: "Thirty days from the order date" }, { text: "Fourteen days from the order date" }]
-const VALID = { options: OPTIONS, recommendation: { option: 0, rationale: "The supply terms set thirty days.", basis: BASIS } }
+const VALID = { options: OPTIONS, recommendation: { option: "Thirty days from the order date", rationale: "The supply terms set thirty days.", basis: BASIS } }
 const UNAVAILABLE = { unavailable: { reason: "The sources do not settle the period." } }
 const check = (reply: unknown, question = QUESTION) => checkAdvice(matter(), question, typeof reply === "string" ? reply : JSON.stringify(reply))
 const asks = (...questions: { question: string; kind?: string; context: string }[]) => () => JSON.stringify({ questions })
@@ -43,6 +43,32 @@ describe("advice checker", () => {
       .toEqual({ issues: [], advice: { recommendation: { option: "o2", rationale: "The request leaves the files to the plan.", basis: [{ source_id: "request", quote: "short supply note" }] } } })
   })
 
+  test("a generated-options recommendation resolves by its option text, not a slipped index", () => {
+    const options = [{ text: "Seven days" }, { text: "Fourteen days" }, { text: "Thirty days" }, { text: "Sixty days" }]
+    const advised = (option: unknown) => check({ options, recommendation: { ...VALID.recommendation, option } })
+    // Copied with other case, spacing and a trailing full stop, the text still names its option.
+    expect(advised("  thirty   DAYS. ").advice).toMatchObject({ recommendation: { option: "o3" } })
+    // A 1-based index for "Thirty days" would have named "Sixty days": an index is no longer read.
+    expect(advised(3).advice).toBeUndefined()
+    expect(advised(3).issues.join(" ")).toContain('"recommendation.option" must be the text of one of your options')
+  })
+
+  test("an unmatched recommendation text is a retry issue", () => {
+    const checked = check({ ...VALID, recommendation: { ...VALID.recommendation, option: "Thirty days from delivery" } })
+    expect(checked.advice).toBeUndefined()
+    expect(checked.issues).toEqual(['"recommendation.option" must be the text of one of your options, copied exactly: "Thirty days from the order date", "Fourteen days from the order date".'])
+  })
+
+  test("own-option questions keep the index", () => {
+    const basis = [{ source_id: "request", quote: "short supply note" }]
+    expect(check({ recommendation: { option: 1, rationale: "The request leaves the files to the plan.", basis } }, FILES).advice).toMatchObject({ recommendation: { option: "o2" } })
+    const byText = check({ recommendation: { option: "As planned", rationale: "The request leaves the files to the plan.", basis } }, FILES)
+    expect(byText.advice).toBeUndefined()
+    expect(byText.issues).toEqual(['"recommendation.option" must be the index, from 0, of one of the 2 options.'])
+    expect(advisePrompt(matter(), FILES)).toContain('where "option" is the index of one of the options above')
+    expect(advisePrompt(matter(), QUESTION)).toContain('"option" the text of the one recommended, copied exactly from your options')
+  })
+
   const rejected: [string, unknown, string, Question?][] = [
     ["a reply that is not JSON", "Thirty days, I think.", "JSON"],
     ["both a recommendation and unavailable", { ...VALID, ...UNAVAILABLE }, "exactly one"],
@@ -54,7 +80,6 @@ describe("advice checker", () => {
     ["options that are the same once normalised", { ...VALID, options: [{ text: "Thirty days" }, { text: "  thirty   DAYS " }] }, "differ"],
     ["options given for a question with its own", { ...VALID, recommendation: { ...VALID.recommendation, basis: [{ source_id: "request", quote: "supply note" }] } }, "its own options", FILES],
     ["a recommendation of no option", { ...VALID, recommendation: { ...VALID.recommendation, option: 2 } }, "recommendation.option"],
-    ["a recommendation not by index", { ...VALID, recommendation: { ...VALID.recommendation, option: "Thirty days from the order date" } }, "recommendation.option"],
     ["a blank rationale", { ...VALID, recommendation: { ...VALID.recommendation, rationale: " " } }, "rationale"],
     ["a blank reason", { unavailable: { reason: "" } }, "unavailable.reason"],
     ["no supporting passage", { ...VALID, recommendation: { ...VALID.recommendation, basis: [] } }, "at least one"],
@@ -115,7 +140,7 @@ describe("advising asked questions", () => {
     // Advised afresh, the options would read otherwise under the same ids.
     const model = scriptedModel({ [AGENT.advise]: prompt => JSON.stringify(prompt.includes("As my words ask")
       ? { recommendation: { option: 1, rationale: "The request names no file.", basis: [{ source_id: "request", quote: "short supply note", relevance: "The request names the supplied note, not a file name." }] } }
-      : { ...VALID, options: [{ text: "Seven days" }, { text: "Ten days" }] }) })
+      : { options: [{ text: "Seven days" }, { text: "Ten days" }], recommendation: { ...VALID.recommendation, option: "Seven days" } }) })
     const advise = (...questions: Question[]) => adviseQuestions(directory, readLeanState(directory)!, "intake", { sessions: model.port }, questions)
     expect(await advise(QUESTION, FILES)).toEqual([{ ...QUESTION, advice: kept }, { ...FILES, advice: UNAVAILABLE }])
     expect(model.count(AGENT.advise)).toBe(0)

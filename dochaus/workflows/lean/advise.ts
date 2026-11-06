@@ -217,7 +217,7 @@ export function advisePrompt(directory: string, question: Question) {
     ...(provenanceLine ? [provenanceLine] : []),
     question.options
       ? `Reply with one JSON object only, including "group":"short topic": {"recommendation":{"option":0,"rationale":"why this option",${basis}}}, where "option" is the index of one of the options above; or, when no option is supported, {"unavailable":{"reason":"why no option can be recommended"}}. Do not return options of your own.`
-      : `Reply with one JSON object only, including "group":"short topic": {"options":[{"text":"one option the lawyer could choose"}],"recommendation":{"option":0,"rationale":"why this option",${basis},"decided_by":"i1"}}, with 2 to 4 distinct options and "option" the 0-based index of the one recommended; or, when no option is supported, {"options":[],"unavailable":{"reason":"why no option can be recommended"}}, with no options or 2 to 4. Give "decided_by" only when one item of <instructions> expressly decides this question, as that item's id, and recommend the option that follows it, quoting the item's own words in basis; otherwise leave it out. An item that is only related, that would need inference to apply, or whose validity as given the question asks about, does not decide the question.`,
+      : `Reply with one JSON object only, including "group":"short topic": {"options":[{"text":"one option the lawyer could choose"}],"recommendation":{"option":"the recommended option's text","rationale":"why this option",${basis},"decided_by":"i1"}}, with 2 to 4 distinct options and "option" the text of the one recommended, copied exactly from your options; or, when no option is supported, {"options":[],"unavailable":{"reason":"why no option can be recommended"}}, with no options or 2 to 4. Give "decided_by" only when one item of <instructions> expressly decides this question, as that item's id, and recommend the option that follows it, quoting the item's own words in basis; otherwise leave it out. An item that is only related, that would need inference to apply, or whose validity as given the question asks about, does not decide the question.`,
   ].join("\n\n")
 }
 
@@ -235,16 +235,22 @@ export function checkAdvice(directory: string, question: Question, reply: string
   const issues = [...own.issues]
   if (recommendation !== undefined) {
     const row: Record<string, unknown> = record(recommendation) ? recommendation : {}
-    if (choices && !(Number.isInteger(row.option) && (row.option as number) >= 0 && (row.option as number) < choices.length))
-      issues.push(`"recommendation.option" must be the index, from 0, of one of the ${choices.length} options.`)
+    // A question's own options are recommended by index; the advisor's own by
+    // their text, which an index slip cannot move onto a neighbouring option.
+    const chosen = question.options
+      ? Number.isInteger(row.option) ? question.options[row.option as number] : undefined
+      : typeof row.option === "string" ? own.options?.find(option => optionKey(option.text) === optionKey(row.option as string)) : undefined
+    if (choices && !chosen) issues.push(question.options
+      ? `"recommendation.option" must be the index, from 0, of one of the ${choices.length} options.`
+      : `"recommendation.option" must be the text of one of your options, copied exactly: ${choices.map(option => JSON.stringify(option.text)).join(", ")}.`)
     if (typeof row.rationale !== "string" || !row.rationale.trim()) issues.push('"recommendation.rationale" must say why that option is recommended.')
     const basis = basisIssues(directory, row.basis, options.requireRelevance, options.request)
     issues.push(...basis.issues)
     const decided = row.decided_by === undefined || question.options ? undefined : row.decided_by
     if (decided !== undefined && !currentInstructions(directory).some(item => item.id === decided))
       issues.push(`"recommendation.decided_by" must be the id of one item listed in <instructions>, or left out.`)
-    if (issues.length || !choices) return { issues }
-    return { issues: [], ...(group ? { group } : {}), advice: { ...kept, recommendation: { option: choices[row.option as number]!.id, rationale: (row.rationale as string).trim(), basis: basis.rows, ...(typeof decided === "string" ? { decided_by: decided } : {}) } } }
+    if (issues.length || !chosen) return { issues }
+    return { issues: [], ...(group ? { group } : {}), advice: { ...kept, recommendation: { option: chosen.id, rationale: (row.rationale as string).trim(), basis: basis.rows, ...(typeof decided === "string" ? { decided_by: decided } : {}) } } }
   }
   const reason = record(unavailable) && typeof unavailable.reason === "string" ? unavailable.reason.trim() : ""
   if (!reason) issues.push('"unavailable.reason" must say why no option can be recommended.')
@@ -261,10 +267,14 @@ function adviceOptions(value: unknown, recommended: boolean): { issues: string[]
   const texts = value.map(row => (row as { text: string }).text.trim())
   const issues = [
     ...(recommended ? texts.length < 2 || texts.length > 4 ? ["Give 2 to 4 options with a recommendation."] : [] : texts.length === 1 || texts.length > 4 ? ['Give no options, or 2 to 4, with "unavailable".'] : []),
-    ...(new Set(texts.map(text => normalize(text).toLowerCase())).size < texts.length ? ["Each option must differ from the others."] : []),
+    ...(new Set(texts.map(optionKey)).size < texts.length ? ["Each option must differ from the others."] : []),
   ]
   return issues.length ? { issues } : { issues: [], options: texts.map((text, index) => ({ id: `o${index + 1}`, text })) }
 }
+
+/** An option's text as a recommendation names it: ignoring case, spacing and
+ * trailing punctuation. */
+const optionKey = (text: string) => normalize(text).toLowerCase().replace(/[\s.,;:!?]+$/, "")
 
 /** At least one supporting passage, each from the request, a matter source
  * or approved research, with non-blank words that source holds. */
