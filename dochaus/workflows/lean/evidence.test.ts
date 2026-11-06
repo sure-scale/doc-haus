@@ -181,11 +181,15 @@ test("a spine entry's bare numbers, years and dates are not asked of its quotes;
 test("on the final attempt the spine stands with its entry's unquoted figures recorded, and a saved spine stays valid", () => {
   const directory = matter(PRICED)
   const reply = JSON.stringify(priced("The purchase price is $4,800,000.", ["Payment is due on delivery."]))
-  expect(checkEvidenceReply(directory, "spine", reply)).toEqual({ issues: [UNQUOTED], recorded: [] })
+  // A failing reply with the spine's shape still gives its parsed value as shaped.
+  expect(checkEvidenceReply(directory, "spine", reply)).toEqual({ issues: [UNQUOTED], recorded: [], shaped: JSON.parse(reply) })
   const final = checkEvidenceReply(directory, "spine", reply, { final: true })
-  expect(final).toEqual({ issues: [], recorded: [{ index: 0, kind: "fact", figures: ["4,800,000"] }], value: JSON.parse(reply) })
+  expect(final).toEqual({ issues: [], recorded: [{ index: 0, kind: "fact", figures: ["4,800,000"] }], shaped: JSON.parse(reply), value: JSON.parse(reply) })
   // Any other issue still fails the final attempt.
   expect(checkEvidenceReply(directory, "spine", JSON.stringify(priced("The price is $4,800,000.", ["Invented price"])), { final: true }).issues[0]).toContain("but those words are not in that document")
+  // A reply without the spine's shape, or with an unknown kind, is not shaped.
+  expect(checkEvidenceReply(directory, "spine", JSON.stringify({ entries: [{ kind: "fact" }], limitations: [] })).shaped).toBeUndefined()
+  expect(checkEvidenceReply(directory, "spine", JSON.stringify(priced("The price is $4,800,000.", ["The price is $4,800,000."], { kind: "note" }))).shaped).toBeUndefined()
   writeLeanText(directory, "spine.json", reply)
   // A spine saved without its atoms re-runs.
   expect(stageOutputValid(directory, "spine")).toBe(false)

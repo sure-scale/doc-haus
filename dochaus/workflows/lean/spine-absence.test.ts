@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { TOOL_SYNTAX_ISSUE } from "./checks"
+import { unquotedFigureIssue } from "./evidence"
 import { readLeanEvents } from "./events"
 import { runLean } from "./runner"
 import {
@@ -12,8 +13,9 @@ import { AGENT, SOURCE, SOURCE_TEXT, cleanupMatters, happyPath, matter, scripted
 // The spine step's check of its parent entries' absence claims, driven through
 // the real coordinator with a scripted model: a classifier job per entry, a
 // verifier job per claim, a contradicted claim sent back to the spine with the
-// source's words, only recorded on the final attempt, an open item never
-// classified, and every settled job saved by content. All text is synthetic.
+// source's words in the same retry as the reply's evidence issues, only
+// recorded on the final attempt, an open item never classified, and every
+// settled job saved by content. All text is synthetic.
 
 afterEach(cleanupMatters)
 
@@ -106,6 +108,23 @@ test("a contradicted claim sends the spine back with the source's words; the res
   // The step lists every job's session beside its own: 3 classifiers, 1 verifier and 2 splits.
   expect(state.stages.spine?.session_ids).toHaveLength(6)
   expect(readOpenItems(directory).filter(item => item.stage === "spine")).toEqual([])
+})
+
+test("a contradicted claim goes back in the same retry as the reply's evidence issues", async () => {
+  const directory = matter(SOURCE_WITH_DIRECTORS)
+  const priced = { ...ONLY, detail: "The price is $4,800,000." }
+  const model = scriptedModel({ ...happyPath,
+    [AGENT.spine]: prompt => prompt.includes("did not pass") ? spine(ONLY, CITED) : spine(priced, SILENT),
+    [AGENT.absence]: classifier, [AGENT["absence-verify"]]: contradicting })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+  const figure = unquotedFigureIssue(0, "4,800,000")
+  const asked = prompts(model, AGENT.spine)
+  expect(asked).toHaveLength(2)
+  expect(asked[1]!.text).toContain(`- ${figure}`)
+  expect(asked[1]!.text).toContain(`- ${ISSUE}`)
+  expect(spineChecks(directory).map(event => [event.attempt, event.issues])).toEqual([[0, [figure, ISSUE]], [1, []]])
+  expect(absenceCounts(directory)[0]).toEqual({ entries: 2, claims: 1, reused: 0, unchecked: 0, stands: 0, contradicted: 1 })
 })
 
 test("a claim that stands passes the spine at once", async () => {

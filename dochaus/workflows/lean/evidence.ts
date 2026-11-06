@@ -35,29 +35,36 @@ export function unquotedFigureIssue(index: number, figure: string) {
 /** The issues a retry must correct. A spine entry's figure (figures) that
  * none of its quotes states is one of them until the final attempt, when the
  * entry is only recorded with its figures: the reply stands, nothing is
- * demoted, and the runner discloses each recorded entry as an open item. */
-function evidenceIssues(directory: string, stage: EvidenceStage, value: unknown, options: { final: boolean }): { issues: string[]; recorded: UnquotedFigures[] } {
+ * demoted, and the runner discloses each recorded entry as an open item.
+ * `shaped` says whether the reply and each entry have the stage's shape (for
+ * the spine, a known kind too), whatever their quotes and figures. */
+function evidenceIssues(directory: string, stage: EvidenceStage, value: unknown, options: { final: boolean }): { issues: string[]; recorded: UnquotedFigures[]; shaped: boolean } {
   if (!record(value) || !Array.isArray(value.entries) || !strings(value.limitations) || (stage === "discrepancy" && !Array.isArray(value.gaps)))
-    return { issues: [stage === "discrepancy" ? "Return JSON with entries, gaps and limitations arrays." : "Return JSON with entries and limitations arrays."], recorded: [] }
+    return { issues: [stage === "discrepancy" ? "Return JSON with entries, gaps and limitations arrays." : "Return JSON with entries and limitations arrays."], recorded: [], shaped: false }
   const sources = evidenceSources(directory)
   const recorded: UnquotedFigures[] = []
+  let shaped = true
   const entries = value.entries.flatMap((row: unknown, index: number) => {
-    if (!record(row) || typeof row.detail !== "string" || !row.detail.trim() || !Array.isArray(row.evidence) || !strings(row.limitations))
+    if (!record(row) || typeof row.detail !== "string" || !row.detail.trim() || !Array.isArray(row.evidence) || !strings(row.limitations)) {
+      shaped = false
       return ["Each entry needs detail, evidence [{source_id,quote}] and limitations arrays."]
+    }
     // A miss names its entry and evidence, as discrepancy issues do, and says
     // what is wrong with the quotation (quoteMissIssue).
     const issues = row.evidence.flatMap((ref: unknown, at: number) => quoteIssues(directory, sources, ref, `entries[${index}].evidence[${at}]`))
     if (!row.evidence.length && !row.limitations.length) issues.push("An entry without evidence must disclose its uncertainty in limitations.")
     if (stage === "discrepancy") issues.push(...discrepancyIssues(row, index))
-    if (stage === "spine" && !(SPINE_KINDS as readonly string[]).includes(String(row.kind)))
+    if (stage === "spine" && !(SPINE_KINDS as readonly string[]).includes(String(row.kind))) {
+      shaped = false
       issues.push("A spine entry kind must be decision, recommendation, requirement, fact or open-item.")
+    }
     if (stage === "spine" && "question_id" in row) issues.push("A spine entry takes no question_id; remove it.")
     const unquoted = stage === "spine" ? unquotedFigures(row.detail, row.evidence.flatMap((ref: unknown) => record(ref) && typeof ref.quote === "string" ? [ref.quote] : [])) : []
     if (options.final && unquoted.length) recorded.push({ index, kind: String(row.kind), figures: unquoted })
     else issues.push(...unquoted.map(figure => unquotedFigureIssue(index, figure)))
     return issues
   })
-  return { issues: stage === "discrepancy" ? [...entries, ...(value.gaps as unknown[]).flatMap((row, index) => gapIssues(directory, sources, row, index))] : entries, recorded }
+  return { issues: stage === "discrepancy" ? [...entries, ...(value.gaps as unknown[]).flatMap((row, index) => gapIssues(directory, sources, row, index))] : entries, recorded, shaped }
 }
 
 const NUMBER = /\d+(?:[.,]\d+)*/g
@@ -156,13 +163,15 @@ function discrepancyIssues(row: Record<string, unknown>, index: number) {
 }
 
 /** The reply's checked value, or the issues a retry must correct. On the final
- * attempt an unquoted spine figure is recorded instead, and the value stands. */
-export function checkEvidenceReply(directory: string, stage: EvidenceStage, reply: string, options: { final?: boolean } = {}): { issues: string[]; recorded: UnquotedFigures[]; value?: Record<string, unknown> } {
+ * attempt an unquoted spine figure is recorded instead, and the value stands.
+ * `shaped` is the parsed reply whenever it has the stage's shape, passing or
+ * not, so a check of its entries can run beside this one's issues. */
+export function checkEvidenceReply(directory: string, stage: EvidenceStage, reply: string, options: { final?: boolean } = {}): { issues: string[]; recorded: UnquotedFigures[]; shaped?: Record<string, unknown>; value?: Record<string, unknown> } {
   const parsed = parseJsonObject(reply)
   if (!parsed.ok) return { issues: [`Reply with the requested JSON object only. ${parsed.error}`], recorded: [] }
   const value = parsed.value
-  const { issues, recorded } = evidenceIssues(directory, stage, value, { final: options.final === true })
-  return issues.length ? { issues, recorded } : { issues: [], recorded, value }
+  const { issues, recorded, shaped } = evidenceIssues(directory, stage, value, { final: options.final === true })
+  return { issues, recorded, ...(shaped ? { shaped: value } : {}), ...(issues.length ? {} : { value }) }
 }
 
 export function acceptEvidenceReply(directory: string, stage: EvidenceStage, reply: string): StageAcceptance {

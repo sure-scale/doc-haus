@@ -810,13 +810,15 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
     const asked = performance.now()
     const reply = await (index === 0 && prepared ? prepared.reply : deps.sessions.prompt({ directory, sessionID, agent, text }))
     const answered = performance.now()
-    // A spine that passes its check has its parent entries' absence claims
-    // verified against the sources (spine-absence.ts), and is then split into
-    // atoms before spine.json is written. On the last attempt an unquoted
-    // figure or a contradicted claim no longer fails it: the checker event
-    // records it, and each entry kept with unquoted figures is an open item.
+    // A spine reply with the spine's shape has its parent entries' absence
+    // claims verified against the sources (spine-absence.ts) on every attempt,
+    // so a contradicted claim goes back in the same retry as the reply's
+    // evidence issues. A spine that passes both is then split into atoms
+    // before spine.json is written. On the last attempt an unquoted figure or
+    // a contradicted claim no longer fails it: the checker event records it,
+    // and each entry kept with unquoted figures is an open item.
     const spine = stage === "spine" ? checkEvidenceReply(directory, stage, reply, { final: index >= LEAN_MAX_RETRIES }) : undefined
-    const absence = spine?.value ? await checkAbsenceClaims(directory, state, deps, spine.value, { final: index >= LEAN_MAX_RETRIES }, jobProgress) : undefined
+    const absence = spine?.shaped ? await checkAbsenceClaims(directory, state, deps, spine.shaped, { final: index >= LEAN_MAX_RETRIES }, jobProgress) : undefined
     const accepted = spine
       ? { issues: [...spine.issues, ...absence?.issues ?? []], outputs: [], openItems: spine.value ? unquotedFigureItems(spine.value, spine.recorded) : [] }
       : stage === "instructions"
