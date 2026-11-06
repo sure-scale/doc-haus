@@ -262,8 +262,10 @@ const layer = Layer.effect(
             model: loaded.model,
             tools: loaded.tools,
             system: transcript.system,
+            // The limit notice is an instruction, not an assistant prefill: some providers reject a trailing
+            // assistant message, and others read it as the model's own words.
             messages: stepLimitReached
-              ? [...transcript.messages, Message.assistant(MAX_STEPS_PROMPT)]
+              ? [...transcript.messages, Message.user(MAX_STEPS_PROMPT)]
               : transcript.messages,
             // Keep tool definitions on the final Step to preserve the provider's cached prefix.
             toolChoice: stepLimitReached ? "none" : undefined,
