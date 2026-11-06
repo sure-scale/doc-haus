@@ -14,7 +14,7 @@ import { requestedFilesItems } from "./requested-files"
 import { draftedDefaultItems } from "./drafted-defaults"
 import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
-import { currentResearchGaps, researchOutputValid } from "./research"
+import { currentResearchGaps, intakeDiscrepancy, researchOutputValid } from "./research"
 import { normalizeLegend, normalizePreferences, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { firmPracticeAreaContext } from "../../lib/practice-areas"
 import { pageFurniture, type FurnitureKind, type RequestedFurniture } from "../../lib/page-furniture"
@@ -96,8 +96,8 @@ const ACT_RECORD_CONTRACT = "act-record-7"
  * split job's prompt or checks, or the files the step writes re-runs the step
  * and every split. */
 export const SPINE_CONTRACT = "spine-atoms-7"
-/** The discrepancy stage runs a differences job, then a gaps job shown its entries (discrepancy.ts); -2 tagged the differences prompt. */
-const DISCREPANCY_CONTRACT = "differences-then-gaps-2"
+/** The discrepancy stage runs a differences job and a gaps job in parallel, then one verify job per gap (discrepancy.ts). */
+const DISCREPANCY_CONTRACT = "differences-gaps-verified-1"
 /** Keys the guidance review: its guidance list and the template's focus. */
 const GUIDANCE_REVIEW_CONTRACT = "template-guidance-1"
 export const LEAN_MAX_RETRIES = 3
@@ -308,12 +308,13 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   // What an instruction settled is not an input of the list it was settled by.
   if (step === "instructions") return outlineInputs(directory, { settled: false })
   // The gaps job reads the instruction list to find what the sources leave
-  // silent; the differences job's own key leaves it out (differencesKey).
+  // silent; the differences and verify jobs' own keys leave it out (discrepancy.ts).
   if (step === "discrepancy") return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), { name: "discrepancy-contract", bytes: DISCREPANCY_CONTRACT }]
   if (step === "intake") {
     // Only with a client recorded on the matter, so a matter without one keeps its key.
     const client = matterClient(directory)
-    return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), file("discrepancy.json"), ...(client ? [{ name: "matter-client", bytes: client }] : [])]
+    // Intake reads the discrepancy record without the gaps a source supplies (intakeDiscrepancy).
+    return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), { name: "discrepancy.json", bytes: intakeDiscrepancy(directory) }, ...(client ? [{ name: "matter-client", bytes: client }] : [])]
   }
   // The act record reads the instructions, the sources and the approved research; it runs before the spine and reads no discrepancy record.
   if (step === "acts") return [...outlineInputs(directory), file("intake.json"), file("research.json"), file("research-review.json"), { name: "act-record-contract", bytes: ACT_RECORD_CONTRACT }]
