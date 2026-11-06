@@ -510,6 +510,7 @@ const EndpointSessionUpdate = (raw: RawClient["server.session"]) => (input: Sess
       params: { sessionID: input["sessionID"] },
       payload: {
         title: input["title"],
+        expectedTitle: input["expectedTitle"],
         metadata: input["metadata"],
         permissions: input["permissions"],
         archived: input["archived"],

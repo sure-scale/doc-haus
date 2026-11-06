@@ -3318,6 +3318,7 @@ export type SessionSwitchModelOutput = void
 export type SessionUpdateInput = {
   readonly sessionID: string
   readonly title?: string | undefined
+  readonly expectedTitle?: string | undefined
   readonly metadata?: { readonly [x: string]: JsonValue } | undefined
   readonly permissions?:
     | ReadonlyArray<{ readonly action: string; readonly resource: string; readonly effect: "allow" | "deny" | "ask" }>

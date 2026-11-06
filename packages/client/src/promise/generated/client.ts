@@ -717,6 +717,7 @@ export function make(options: ClientOptions) {
             path: `/api/session/${encodeURIComponent(input.sessionID)}`,
             body: {
               title: input["title"],
+              expectedTitle: input["expectedTitle"],
               metadata: input["metadata"],
               permissions: input["permissions"],
               archived: input["archived"],
