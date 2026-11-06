@@ -217,5 +217,7 @@ export type SessionDomain = Pick<
   | "context"
 > &
   Pick<ExperimentalSessionApi, "wait" | "instructions"> & {
+    /** Complete durable transcript, oldest first. Unlike context, this is not a compaction window or HTTP page. */
+    readonly messages: SessionApi["context"]
     readonly hook: ModelHooks<SessionHooks>
   }
