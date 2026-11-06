@@ -1,8 +1,6 @@
+import type { FileSystem } from "@opencode/core/filesystem"
 import { describe, expect, test } from "bun:test"
-import { Agent } from "@opencode/schema/agent"
-import { Model } from "@opencode/schema/model"
-import { Provider } from "@opencode/schema/provider"
-import { AIError, TransportError } from "@opencode/ai"
+import { AIError, TransportError } from "@opencode/ai/effect"
 import { Database } from "@opencode/core/database/database"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
@@ -27,18 +25,12 @@ import { SessionStore } from "@opencode/core/session/store"
 import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Scope } from "effect"
 import { eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
-import { promptLocationNode } from "./fixture/prompt-location"
 
 const it = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([Database.node, Bus.node, SessionStore.node, SessionInbox.node, Job.node, KV.node, Session.node]),
   ),
 )
-
-const promptIt = testEffect(AppNodeBuilder.build(
-  LayerNode.group([Database.node, Bus.node, SessionStore.node, SessionInbox.node, Job.node, KV.node, Session.node]),
-  [LocationServiceMap.node.replace(promptLocationNode)],
-))
 
 describe("SessionExecution lifecycle", () => {
   test("classifies success and typed failure terminals", () => {
@@ -77,106 +69,6 @@ describe("SessionExecution lifecycle", () => {
       // The sweep clears orphaned child claims outright; parents keep theirs.
       yield* store.releaseChildClaims([])
       expect(yield* claims(database)).toEqual({ [parent]: true, [child]: false, [idle]: false })
-    }),
-  )
-
-  it.effect("external owned holds and read failures preserve exact native continuation accounting", () =>
-    Effect.gen(function* () {
-      const database = yield* Database.Service
-      const parent = Session.ID.make("ses_direct_parent")
-      const held = Session.ID.make("ses_direct_held")
-      const uncertain = Session.ID.make("ses_direct_uncertain")
-      const unowned = Session.ID.make("ses_direct_unowned")
-      yield* seedSessions(database, [parent])
-      yield* seedSessions(database, [held, uncertain, unowned], { parent_id: parent, time_suspended: 123, resume_attempts: 3 })
-      const scope = yield* Scope.make()
-      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
-      const context = yield* buildExecution(scope, () => Effect.die("Held children must not execute"))
-      const restart = Context.get(context, SessionRestart.Service)
-      const classify: SessionRestart.ChildRecovery = id => id === held ? Effect.succeed("held") :
-        id === uncertain ? Effect.fail(new Error("Read unavailable")) : Effect.succeed("unowned")
-      yield* restart.resumeSuspendedSessionsWith(classify)
-      yield* restart.resumeSuspendedSessionsWith(classify)
-      expect(yield* claims(database)).toEqual({ [parent]: false, [held]: true, [uncertain]: true, [unowned]: false })
-      expect(yield* attempts(database, held)).toBe(3)
-      expect(yield* attempts(database, uncertain)).toBe(3)
-      expect(yield* attempts(database, unowned)).toBe(0)
-    }),
-  )
-
-  it.effect("external direct children coalesce and retain the native ceiling across restarts", () =>
-    Effect.gen(function* () {
-      const database = yield* Database.Service
-      const parent = Session.ID.make("ses_direct_ceiling_parent")
-      const child = Session.ID.make("ses_direct_ceiling_child")
-      yield* seedSessions(database, [parent])
-      yield* seedSessions(database, [child], { parent_id: parent, time_suspended: 123, resume_attempts: 1 })
-      const scope = yield* Scope.make()
-      const started = yield* Deferred.make<void>()
-      const context = yield* buildExecution(scope, () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)), { maxAttempts: 2 })
-      const restart = Context.get(context, SessionRestart.Service)
-      const classify: SessionRestart.ChildRecovery = () => Effect.succeed("ready")
-      yield* restart.resumeSuspendedSessionsWith(classify)
-      yield* Deferred.await(started)
-      yield* restart.resumeSuspendedSessionsWith(classify)
-      expect(yield* attempts(database, child)).toBe(2)
-      yield* Scope.close(scope, Exit.void)
-      expect((yield* claims(database))[child]).toBe(true)
-      const nextScope = yield* Scope.make()
-      yield* Effect.addFinalizer(() => Scope.close(nextScope, Exit.void))
-      const next = yield* buildExecution(nextScope, () => Effect.die("Exhausted child must not execute"), { maxAttempts: 2 })
-      const exhausted = yield* Deferred.make<void>()
-      const failures: SessionEvent.Execution.Failed[] = []
-      yield* (yield* Bus.Service).project(SessionEvent.Execution.Failed, event => {
-        if (event.data.sessionID !== child) return Effect.void
-        failures.push(event)
-        return Deferred.succeed(exhausted, undefined)
-      })
-      yield* Context.get(next, SessionRestart.Service).resumeSuspendedSessionsWith(classify)
-      yield* Deferred.await(exhausted)
-      yield* Context.get(next, SessionExecution.Service).awaitIdle(child)
-      expect((yield* claims(database))[child]).toBe(false)
-      expect(yield* attempts(database, child)).toBe(0)
-      expect(failures.map(event => event.data.error.type)).toEqual(["aborted"])
-      yield* Context.get(next, SessionRestart.Service).resumeSuspendedSessionsWith(classify)
-      yield* Context.get(next, SessionExecution.Service).awaitIdle(child)
-      expect(failures.length).toBe(1)
-      expect((yield* claims(database))[child]).toBe(false)
-      expect(yield* attempts(database, child)).toBe(0)
-    }),
-  )
-
-  promptIt.effect("native lost-state settlement denies changed admission and queued work without terminal mutation", () =>
-    Effect.gen(function* () {
-      const database = yield* Database.Service
-      const sessions = yield* Session.Service
-      const bus = yield* Bus.Service
-      const parent = Session.ID.make("ses_lost_cas_parent")
-      const child = Session.ID.make("ses_lost_cas_child")
-      yield* seedSessions(database, [parent])
-      yield* seedSessions(database, [child], { parent_id: parent })
-      yield* sessions.prompt({ sessionID: child, text: "Original admitted task", resume: false })
-      yield* SessionInbox.promote(database.db, bus, child, "steer")
-      const messageID = SessionMessage.ID.create()
-      // Real native partial step; no assistant/provider error is fabricated.
-      yield* bus.publish(SessionEvent.Step.Started, { sessionID: child, assistantMessageID: messageID,
-        agent: Agent.ID.make("build"), model: Model.Ref.make({ id: Model.ID.make("model"), providerID: Provider.ID.make("provider") }), started: 0 })
-      const scope = yield* Scope.make()
-      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
-      const context = yield* buildExecution(scope, () => Effect.die("No model execution is allowed"))
-      const execution = Context.get(context, SessionExecution.Service)
-      const original = yield* sessions.messages({ sessionID: child, order: "asc" })
-      expect(yield* execution.failOrphaned!(child, Effect.succeed(false))).toBe(false)
-      let calls = 0
-      expect(yield* execution.failOrphaned!(child, Effect.gen(function* () {
-        calls++
-        if (calls === 1) yield* sessions.prompt({ sessionID: child, text: "New queued task", resume: false }).pipe(Effect.orDie)
-        return true
-      }))).toBe(false)
-      expect(yield* sessions.messages({ sessionID: child, order: "asc" })).toEqual(original)
-      expect((yield* sessions.inbox(child)).length).toBe(1)
-      expect(yield* execution.failOrphaned!(child, Effect.succeed(true))).toBe(false)
-      expect((yield* (yield* SessionStore.Service).get(child))?.outcome).toBeUndefined()
     }),
   )
 
@@ -644,6 +536,44 @@ describe("SessionRestart background recovery", () => {
         shellID: "sh_completed",
         state: "completed",
       })
+      expect(yield* restarted.pendingBackground).toEqual([])
+    }),
+  )
+
+  it.effect("delivers an image outcome persisted before its notification, and cancels one still running", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const sessionID = Session.ID.make("ses_background_image")
+      yield* seedSessions(database, [sessionID])
+      const recovery = (path: string) => ({ kind: "image" as const, sessionID, path, model: "test/painter" })
+      yield* jobs.start({
+        id: "image_done",
+        type: "experimental_image_generate",
+        recovery: recovery("/tmp/done.png"),
+        run: Effect.succeed("Image request finished. Saved image: /tmp/done.png (test/painter)."),
+      })
+      yield* jobs.background("image_done")
+      yield* jobs.wait({ id: "image_done" })
+      yield* jobs.start({
+        id: "image_running",
+        type: "experimental_image_generate",
+        recovery: recovery("/tmp/running.png"),
+        run: Effect.never,
+      })
+      yield* jobs.background("image_running")
+
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const restarted = yield* Job.make.pipe(Effect.provideService(Scope.Scope, scope))
+      const context = yield* buildExecution(scope, () => Effect.void, undefined, restarted)
+      yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
+
+      const inbox = yield* SessionInbox.list(database.db, sessionID)
+      expect(inbox.map((item) => (item.type === "synthetic" ? item.payload.text : undefined)).toSorted()).toEqual([
+        '<image id="image_done" state="completed">\nImage request finished. Saved image: /tmp/done.png (test/painter).\n</image>',
+        '<image id="image_running" state="cancelled">\nImage request for /tmp/running.png was cancelled because the server restarted.\n</image>',
+      ])
       expect(yield* restarted.pendingBackground).toEqual([])
     }),
   )
@@ -1480,7 +1410,7 @@ function buildExecution(
         () =>
           // The local execution test only needs the Session runner from the Location graph.
           // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
-          runner as unknown as Layer.Layer<LocationServices>,
+          runner as unknown as Layer.Layer<LocationServices, FileSystem.DirectoryNotFoundError>,
       ),
     )
     return yield* Layer.buildWithScope(

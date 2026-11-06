@@ -2,12 +2,11 @@ export * as ReadTool from "./read.js"
 
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { basename, dirname, join } from "path"
-import { ToolFailure } from "@opencode/ai"
+import { ToolFailure } from "@opencode/ai/effect"
 import { Effect, Schema } from "effect"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Location } from "../../location.js"
 import { FileAccess } from "../../file-access.js"
-import { InstructionDiscovery } from "../../instruction-discovery.js"
 import { SessionInstructions } from "../../session/instructions.js"
 import { AbsolutePath } from "../../schema.js"
 import { ReadToolFileSystem } from "../read-filesystem.js"
@@ -35,7 +34,6 @@ export const Plugin = {
     const sessionInstructions = yield* SessionInstructions.Service
     const fs = yield* FSUtil.Service
     const location = yield* Location.Service
-    const discovery = yield* InstructionDiscovery.Service
 
     yield* ctx.tool
       .transform((editor) =>
@@ -84,27 +82,22 @@ export const Plugin = {
               // After a successful read, discover nearby AGENTS.md walking up to the Location
               // root exclusive and inject them as durable synthetic instructions. For a
               // directory listing the walk starts at the directory itself (so its own AGENTS.md
-              // is discovered); for a file it starts at the file's dirname. Nothing is injected
-              // when project instruction discovery is disabled. External reads, and internal
-              // project reads outside the Location (where up() would never meet its stop and
-              // would walk to the filesystem root), are skipped. Discovery failures never fail
-              // the read.
+              // is discovered); for a file it starts at the file's dirname. External reads are
+              // skipped, and discovery failures never fail the read.
               yield* Effect.gen(function* () {
-                if (!discovery.project) return
                 if (result.target.externalDirectory !== undefined) return
                 const resolved = yield* fs.resolve(result.target.absolute)
                 const root = yield* fs.resolve(location.directory)
-                const start = result.content.type === "list-page" ? resolved : dirname(resolved)
-                if (!FSUtil.contains(root, start)) return
-                // up() searches its stop directory, so the Location-root AGENTS.md (already
-                // supplied by core initial instructions) is dropped by the dirname filter.
+                // The Location and its ancestors are already supplied by initial instructions,
+                // even when an upward walk from elsewhere in the project cannot reach root.
                 const discovered = yield* fs.up({
                   targets: [FILENAME],
-                  start,
+                  start: result.content.type === "list-page" ? resolved : dirname(resolved),
                   stop: root,
+                  type: "file",
                 })
                 const candidates = (yield* Effect.forEach(discovered, fs.resolve)).filter(
-                  (file) => dirname(file) !== root,
+                  (file) => !FSUtil.contains(dirname(file), root) && file !== resolved,
                 )
                 if (candidates.length === 0) return
                 yield* sessionInstructions.load({ sessionID: context.sessionID, paths: candidates })
@@ -112,12 +105,6 @@ export const Plugin = {
                 Effect.catch(() => Effect.void),
                 Effect.catchDefect(() => Effect.void),
               )
-              if (
-                result.content.type === "file" &&
-                result.content.encoding === "base64" &&
-                !ReadToolFileSystem.MEDIA_MIMES.has(result.content.mime)
-              )
-                return yield* Effect.fail(new ReadToolFileSystem.BinaryFileError({ resource: result.target.resource }))
               return { output: result.content, path: result.path }
             }).pipe(
               Effect.map((result) => ({
@@ -156,20 +143,53 @@ export const Plugin = {
       return join(dirname(absolute), matches[0].name)
     })
 
-    const missing = Effect.fn("ReadTool.missing")(function* (input: string, absolute: string) {
-      const base = basename(input).toLowerCase()
-      const suggestions = yield* fs.readDirectory(dirname(absolute)).pipe(
-        Effect.map((entries) =>
-          entries
-            .filter((entry) => {
-              const candidate = entry.toLowerCase()
-              return candidate.includes(base) || base.includes(candidate)
-            })
-            .map((entry) => join(dirname(input), entry))
-            .slice(0, 3),
-        ),
-        Effect.orElseSucceed(() => [] as string[]),
+    // Lists through the session's environment, which may be a remote workspace rather than this host.
+    const listing = (path: string) =>
+      reader.list(AbsolutePath.make(path)).pipe(
+        Effect.map((entries) => ({ type: "found" as const, names: entries.map((entry) => entry.name) })),
+        Effect.catchTag("Environment.NotFound", () => Effect.succeed({ type: "missing" as const })),
+        Effect.orElseSucceed(() => ({ type: "unknown" as const })),
       )
+
+    const similar = (names: readonly string[], name: string) => {
+      const base = name.toLowerCase()
+      return names
+        .filter((entry) => {
+          const candidate = entry.toLowerCase()
+          return candidate.includes(base) || base.includes(candidate)
+        })
+        .slice(0, 3)
+    }
+
+    // A missing folder usually means a removed worktree, a moved directory, or a relative path
+    // resolved from the wrong place, so name the first missing folder and its nearest existing parent.
+    const missingFolder = Effect.fn("ReadTool.missingFolder")(function* (input: string, folder: string) {
+      let child = folder
+      let parent = dirname(folder)
+      while (parent !== child) {
+        const found = yield* listing(parent)
+        if (found.type === "unknown") break
+        if (found.type === "found") {
+          const suggestions = similar(found.names, basename(child)).map((entry) => join(parent, entry))
+          const message = [
+            `File not found: ${input}`,
+            `The folder ${child} does not exist. The nearest folder that does is ${parent}.`,
+            ...(suggestions.length === 0 ? [] : [`Did you mean one of these?\n${suggestions.join("\n")}`]),
+          ].join("\n\n")
+          return yield* new ToolFailure({ message })
+        }
+        child = parent
+        parent = dirname(parent)
+      }
+      return yield* new ToolFailure({ message: `File not found: ${input}` })
+    })
+
+    const missing = Effect.fn("ReadTool.missing")(function* (input: string, absolute: string) {
+      const folder = dirname(absolute)
+      const found = yield* listing(folder)
+      if (found.type === "missing") return yield* missingFolder(input, folder)
+      const suggestions =
+        found.type === "found" ? similar(found.names, basename(input)).map((entry) => join(dirname(input), entry)) : []
       const message =
         suggestions.length === 0
           ? `File not found: ${input}`

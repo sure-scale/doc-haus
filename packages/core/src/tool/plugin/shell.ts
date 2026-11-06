@@ -1,12 +1,11 @@
 export * as ShellTool from "./shell.js"
 
-import { ToolFailure } from "@opencode/ai"
+import { ToolFailure } from "@opencode/ai/effect"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import type { ShellCreateBefore } from "@opencode/plugin/effect/shell"
 import type { Tool } from "@opencode/schema/tool"
 import { Deferred, Effect, Schema, Scope } from "effect"
-import { Config } from "../../config.js"
 import { Environment } from "../../environment/index.js"
 import { Job } from "../../job.js"
 import { FileAccess } from "../../file-access.js"
@@ -111,7 +110,6 @@ export const Plugin = {
     const shellSelect = yield* ShellSelect.Service
     const compatibleShell = shellSelect.resolve({ priority: "compat" })
     const permission = yield* Permission.Service
-    const config = yield* Config.Service
 
     const prepare = Effect.fn("ShellTool.prepare")(function* (invocation: ShellCreateBefore, context: Tool.Context) {
       const source = {
@@ -122,8 +120,7 @@ export const Plugin = {
       const target = yield* access.resolve({ path: invocation.cwd, kind: "directory" })
       invocation.cwd = target.absolute
       const timeout = invocation.timeout
-      const portable = Config.latest(yield* config.entries(), "experimental")?.portable_shell_scanner === true
-      const parsed = yield* ShellParse.scan(invocation.command, invocation.shell, target.absolute, { portable })
+      const parsed = yield* ShellParse.scan(invocation.command, invocation.shell, target.absolute)
       const directories = yield* Effect.forEach(parsed.directories, (directory) =>
         access.resolve({
           path: FileAccess.resolvePath(target.absolute, directory),

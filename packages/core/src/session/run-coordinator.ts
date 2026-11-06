@@ -11,26 +11,15 @@ export interface Coordinator<Key, E, Reason = never> {
   readonly isActive: (key: Key) => Effect.Effect<boolean>
   /** Starts an execution while idle, or joins the active execution and returns its exit. */
   readonly run: (key: Key) => Effect.Effect<void, E>
-  /** Starts only when idle. Preparation and drain share one reserved owner;
-   * refusal does not publish an execution terminal or join active work. */
-  readonly runIfIdle: (key: Key, prepare: Effect.Effect<boolean>) => Effect.Effect<boolean, E>
   /** Rings the doorbell: an idle key starts an execution; an active one drains again before settling. */
   readonly wake: (key: Key, scope?: Promotable) => Effect.Effect<void>
   /**
    * Stops the active execution and clears its doorbell. No-op when idle. Resolves once the
    * interruption is accepted, not when cleanup settles: the execution fiber finishes its
    * finalizers and settled hook on its own time. Returns whether an active execution was
-   * interrupted. `awaitSettlement` waits for this execution's cleanup and settled hook,
-   * without following fresh work admitted during cleanup. `awaitIdle` follows successors too.
+   * interrupted.
    */
-  readonly interrupt: (
-    key: Key,
-    reason?: Reason,
-    options?: { readonly awaitSettlement?: boolean },
-  ) => Effect.Effect<boolean>
-  /** Reserves an idle key for non-running lifecycle settlement. Concurrent wakes
-   * are retained, and the operation can refuse settlement after a new wake. */
-  readonly whenIdle: (key: Key, operation: (quiet: () => boolean) => Effect.Effect<boolean>) => Effect.Effect<boolean>
+  readonly interrupt: (key: Key, reason?: Reason) => Effect.Effect<boolean>
   /** Resolves once no execution is active for the key. Returns immediately when already idle and never starts work. */
   readonly awaitIdle: (key: Key) => Effect.Effect<void>
 }
@@ -50,8 +39,6 @@ type Execution<E, Reason> = {
   pendingWake?: Promotable
   stopping: boolean
   interruptionReason?: Reason
-  reservation?: boolean
-  prepared?: boolean
 }
 
 /**
@@ -92,12 +79,11 @@ export const make = <Key, E, Reason = never>(options: {
         ),
       )
 
-    const start = (key: Key, force: boolean, scope: Promotable, prepare?: Effect.Effect<boolean>) => {
+    const start = (key: Key, force: boolean, scope: Promotable) => {
       const execution: Execution<E, Reason> = {
         done: Deferred.makeUnsafe<void, E>(),
         scope,
         stopping: false,
-        prepared: prepare === undefined,
       }
       executions.set(key, execution)
       // The leading yield lets `owner` be assigned before the drain can settle, and keeps
@@ -105,17 +91,12 @@ export const make = <Key, E, Reason = never>(options: {
       // Drains start one tick after wake; callers observe progress through events or run.
       execution.owner = fork(
         Effect.yieldNow.pipe(
-          Effect.andThen(Effect.gen(function* () {
-            if (prepare && (execution.pendingWake !== undefined || !(yield* prepare))) return
-            execution.prepared = true
-            yield* Effect.uninterruptible(options.started?.(key) ?? Effect.void)
-            yield* loop(key, execution, force)
-          })),
+          Effect.andThen(Effect.uninterruptible(options.started?.(key) ?? Effect.void)),
+          Effect.andThen(loop(key, execution, force)),
           Effect.onExit((exit) =>
             Effect.sync(() => {
               execution.owner = undefined
-            }).pipe(Effect.andThen(execution.prepared || execution.interruptionReason !== undefined
-              ? options.settled?.(key, exit, execution.interruptionReason) ?? Effect.void : Effect.void)),
+            }).pipe(Effect.andThen(options.settled?.(key, exit, execution.interruptionReason) ?? Effect.void)),
           ),
           Effect.onExit((exit) => Effect.sync(() => settle(key, execution, exit))),
           Effect.exit,
@@ -140,10 +121,8 @@ export const make = <Key, E, Reason = never>(options: {
         const execution = executions.get(key)
         if (execution !== undefined) {
           // A stopping execution refuses joiners: wait out its cleanup, then run fresh.
-          if (execution.stopping) {
-            if (execution.reservation) execution.pendingWake = "input"
+          if (execution.stopping)
             return Deferred.await(execution.done).pipe(Effect.ignoreCause, Effect.andThen(run(key)))
-          }
           return Deferred.await(execution.done)
         }
         return Deferred.await(start(key, true, "input").done)
@@ -191,36 +170,5 @@ export const make = <Key, E, Reason = never>(options: {
         return Deferred.await(execution.done).pipe(Effect.ignoreCause, Effect.andThen(awaitIdle(key)))
       })
 
-    return {
-      active: Effect.sync(() => new Set(executions.keys())),
-      isActive,
-      run,
-      runIfIdle: (key, prepare) => Effect.suspend(() => {
-        if (executions.has(key)) return Effect.succeed(false)
-        const execution = start(key, true, "input", prepare)
-        return Deferred.await(execution.done).pipe(Effect.map(() => execution.prepared === true))
-      }),
-      wake,
-      interrupt: (key, reason, options) =>
-        Effect.suspend(() => {
-          const execution = executions.get(key)
-          return interrupt(key, reason).pipe(
-            Effect.tap(() =>
-              options?.awaitSettlement && execution
-                ? Deferred.await(execution.done).pipe(Effect.ignoreCause)
-                : Effect.void,
-            ),
-          )
-        }),
-      whenIdle: (key, operation) => Effect.suspend(() => {
-        if (executions.has(key)) return Effect.succeed(false)
-        const reserved: Execution<E, Reason> = { done: Deferred.makeUnsafe<void, E>(), scope: "input", stopping: true, reservation: true }
-        executions.set(key, reserved)
-        return operation(() => reserved.pendingWake === undefined).pipe(
-          Effect.ensuring(Effect.sync(() => settle(key, reserved, Exit.void))),
-          Effect.uninterruptible,
-        )
-      }),
-      awaitIdle,
-    }
+    return { active: Effect.sync(() => new Set(executions.keys())), isActive, run, wake, interrupt, awaitIdle }
   })
