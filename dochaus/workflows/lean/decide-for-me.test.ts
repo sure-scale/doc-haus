@@ -197,7 +197,10 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // (outline-one-pass-reverse-18), and when a template's restated title stopped
 // counting as a part, a memo named only by a requested file name or only by a
 // planned memo's title began to stand, and acts an answered scope question
-// settled stopped being sent back for revision (outline-one-pass-reverse-19).
+// settled stopped being sent back for revision (outline-one-pass-reverse-19),
+// and when the outline began to be shown the template parts it must account
+// for, to read deeper headings as scope, to adopt a lone advice document as
+// the memo and never to fold advice (outline-one-pass-reverse-20).
 // The spine was re-pinned when its entries
 // began to be split into atoms (spine-atoms-1), when a one-atom split began to
 // read as atomic (spine-atoms-2), when its checks began asking each figure of
@@ -207,7 +210,10 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // claims began to be verified (spine-atoms-5); every step after the spine,
 // other than the draft, was re-pinned then for keying the atoms. The spine
 // alone was re-pinned when an id's digits stopped being read as a number and a
-// dotted number after a reference label as a figure (spine-atoms-6).
+// dotted number after a reference label as a figure (spine-atoms-6), and when
+// its absence check began to skip open items, to run on every shaped attempt
+// and to record only on the last, and a figure stopped being a bare run of
+// digits (spine-atoms-7).
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", `  A (${ADOPTED_ANSWER}): Singapore law.`)
 // A draft keys its outline contract and plan entry, never answers.
@@ -219,8 +225,8 @@ const INPUTS: Record<string, string> = {
   "research": "64a0d22c3dd780907955b2e56b3122b94ea72101092d694f899a15e2af0cb13b",
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
   "acts": "ff830f3d37f64416362401fa66710c9fc8e770429b6bc5f2af84baffd3f35a3c",
-  "spine": "9b2eeb481a99d1b2b9d4b09791b0fbd617d6df8f96c850a6e71f311a9236882b",
-  "d1.draft": "6893cde874f1d5701164ae1a0c6e7bdaceeb8bb0549142d13cc5796001d77991",
+  "spine": "7719311d661486872e589bf29d615b4ffc5893a39fb4ab7694ff3ae6f16cecef",
+  "d1.draft": "91a52c7311ebbc0fcf507f8d921ce27391ecf34ada33f65d60da3eccbeb77482",
   "d1.review": "23af042296cf7f7d3ee97332f0caaf1fac7ab240199ce23d96a33f9c65fc2693",
   "d1.review-independent": "ae78dbf15aa677be04d6d44d0b91d63c34fd2fa03754e51350a6941413143d70",
   "d1.review-wording": "da1716d02cfb2df4b1f9fe71ceec32c3ffe41e66070f508a765ef7aa81e3792a",
