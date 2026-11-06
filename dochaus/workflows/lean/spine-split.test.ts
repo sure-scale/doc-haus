@@ -56,10 +56,24 @@ test("an atomic entry is itself; a compound entry becomes atoms carrying the ent
   ] })
 })
 
+test("a reply of one atom keeps the entry as written, whatever the atom says", () => {
+  for (const atom of [ATOMS[0], { kind: "fact", detail: "Delivery is due in 30 days to Acme.", evidence: [7], limitations: [0] }])
+    expect(parseSpineSplit(JSON.stringify({ atoms: [atom] }), COMPOUND)).toEqual({ issues: [], atoms: [COMPOUND] })
+  expect(parseSpineSplit(JSON.stringify({ atoms: [] }), COMPOUND).issues).toEqual([expect.stringContaining("Reply with the JSON object only")])
+})
+
+test("a split job that replies with one atom is atomic at once: no retry, the entry unchanged in spine.json", async () => {
+  const directory = matter()
+  const model = scriptedModel({ ...happyPath, [AGENT.spine]: spineReply(ONLY, COMPOUND), [AGENT.split]: () => JSON.stringify({ atoms: [ATOMS[0]] }) })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(spineEntries(directory)).toEqual([ONLY, COMPOUND])
+  expect(splitPrompts(model)).toHaveLength(2)
+  expect(readLeanEvents(directory).find(event => event.event === "spine_split")?.counts).toEqual({ entries: 2, reused: 0, atomic: 2, split: 0, kept: 0, atoms: 2 })
+})
+
 test("the check refuses a kind, a reference or a detail the entry does not hold, and an atom or split that drops part of it", () => {
   const issues = (atoms: object[], parent = COMPOUND) => parseSpineSplit(JSON.stringify({ atoms }), parent).issues
   const [first, second] = ATOMS as [typeof ATOMS[0], typeof ATOMS[0]]
-  expect(issues([first])).toEqual([expect.stringContaining('reply {"atomic":true}')])
   expect(issues([{ ...first, kind: "drafting-choice" }, second])).toEqual(["atoms[0] kind must be decision, recommendation, requirement, fact, open-item."])
   expect(issues([{ ...first, evidence: [0, 2] }, second])).toEqual(["atoms[0].evidence lists [2]: use evidence indexes 0 to 1."])
   expect(issues([first, { ...second, evidence: [] }])).toEqual(["atoms[1] cites no evidence; cite the index of the evidence that supports it.", "Evidence [1] goes to no atom; cite it in the atom it supports."])

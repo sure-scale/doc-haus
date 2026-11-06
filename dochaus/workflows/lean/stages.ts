@@ -92,7 +92,7 @@ const GATE_CONTRACT = "checklist-open-delivery-6"
 const ACT_RECORD_CONTRACT = "act-record-7"
 /** Keys the spine step and each saved split of one of its entries: a change to
  * the split job's prompt or checks re-runs the step and every split. */
-export const SPINE_CONTRACT = "spine-atoms-1"
+export const SPINE_CONTRACT = "spine-atoms-2"
 /** Keys the guidance review: its guidance list and the template's focus. */
 const GUIDANCE_REVIEW_CONTRACT = "template-guidance-1"
 export const LEAN_MAX_RETRIES = 3

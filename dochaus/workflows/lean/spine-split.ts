@@ -39,7 +39,7 @@ export function spineSplitPrompt(entry: SpineEntry) {
     tagged("output_contract", [
       "- A point is one proposition, with its drafting consequence, that a later job can draft or check on its own. Parts that only make sense together are one point.",
       '- When the entry states one point, reply {"atomic":true}.',
-      `- Otherwise reply {"atoms":[{"kind":"${SPINE_KINDS.join("|")}","detail":"...","evidence":[0],"limitations":[]}]} with two or more atoms, in the order the entry states them.`,
+      `- Otherwise reply {"atoms":[{"kind":"${SPINE_KINDS.join("|")}","detail":"...","evidence":[0],"limitations":[]}]} with one atom per point, in the order the entry states them.`,
       "- Each atom's detail uses the entry's own words and adds nothing to them; together the atoms keep everything the entry says.",
       "- evidence and limitations list the indexes above. Each atom cites the evidence that supports it, at least one when the entry has any, and every evidence and limitation goes to at least one atom. An atom without evidence carries at least one limitation.",
       "- Answer from the entry above; no lookup is needed. Reply with the JSON object only.",
@@ -49,15 +49,17 @@ export function spineSplitPrompt(entry: SpineEntry) {
 
 const SHAPE = 'Reply with the JSON object only: {"atomic":true} or {"atoms":[{"kind":"...","detail":"...","evidence":[0],"limitations":[]}]}.'
 
-/** Reads the reply to spineSplitPrompt: the entry itself when it is atomic,
- * otherwise its atoms, each built from the entry's own evidence and
- * limitations. Every other reply is retried. */
+/** Reads the reply to spineSplitPrompt: the entry itself when it is atomic or
+ * the reply gives one atom, otherwise its atoms, each built from the entry's
+ * own evidence and limitations. Every other reply is retried. */
 export function parseSpineSplit(reply: string, parent: SpineEntry): { issues: string[]; atoms?: SpineEntry[] } {
   const parsed = parseJsonObject(reply)
   if (!parsed.ok) return { issues: [SHAPE] }
   if (parsed.value.atomic === true && parsed.value.atoms === undefined) return { issues: [], atoms: [parent] }
   const rows = parsed.value.atoms
-  if (!Array.isArray(rows) || rows.length < 2) return { issues: [`Give two or more atoms, or reply {"atomic":true} when the entry states one point. ${SHAPE}`] }
+  if (!Array.isArray(rows) || !rows.length) return { issues: [SHAPE] }
+  // One atom says the entry states one point: the entry stands as written, not the atom's rewording.
+  if (rows.length === 1) return { issues: [], atoms: [parent] }
   const known = entryText(parent)
   const used = { evidence: new Set<number>(), limitations: new Set<number>() }
   const issues: string[] = []
