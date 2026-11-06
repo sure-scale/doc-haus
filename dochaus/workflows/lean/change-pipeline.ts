@@ -139,10 +139,10 @@ export function checkChangePlan(directory: string, document: DocID, value: unkno
     }),
     ...((value.findings ?? []) as unknown[]).flatMap((finding, index) => {
       const at = `findings[${index}]`
-      if (!record(finding) || !["deferred", "recommendation", "rejected"].includes(String(finding.disposition)) ||
-        !["information", "research", "suggestion"].includes(String(finding.kind)) || !nonempty(finding.detail) || !nonempty(finding.reason) ||
+      if (!record(finding) || !FINDING_DISPOSITIONS.includes(String(finding.disposition)) ||
+        !FINDING_KINDS.includes(String(finding.kind)) || !nonempty(finding.detail) || !nonempty(finding.reason) ||
         !strings(finding.documents) || !finding.documents.length || !Array.isArray(finding.sources) || !strings(finding.limitations) || !resolvesShape(finding))
-        return [`${at} needs disposition, kind, detail, reason, affected documents, sources, limitations and a resolves list of review finding ids.`]
+        return [`${at} needs disposition, kind, detail, reason, affected documents, sources, limitations and a resolves list of review finding ids.${record(finding) ? findingValueIssues(finding) : ""}`]
       const key = finding.detail.trim().toLowerCase().replace(/\s+/g, " ")
       const issues = findings.has(key) ? [`${at}: consolidate duplicate findings into one disposition with all affected documents.`] : []
       findings.add(key)
@@ -164,6 +164,17 @@ export function checkChangePlan(directory: string, document: DocID, value: unkno
       ...(record(question) && !resolvesShape(question) ? [`questions[${index}].resolves must list review finding ids.`] : []),
     ]),
   ]
+}
+
+const FINDING_DISPOSITIONS = ["deferred", "recommendation", "rejected"]
+const FINDING_KINDS = ["information", "research", "suggestion"]
+
+/** A closed-set value the finding got wrong, named with the values allowed:
+ * the list of fields alone left a model resending the same wrong value. */
+function findingValueIssues(finding: Record<string, unknown>) {
+  const named = (field: string, allowed: string[]) => allowed.includes(String(finding[field])) ? "" :
+    ` Its ${field} is ${finding[field] === undefined ? "missing" : JSON.stringify(finding[field])}; use ${allowed.slice(0, -1).map(row => `"${row}"`).join(", ")} or "${allowed.at(-1)}".`
+  return named("disposition", FINDING_DISPOSITIONS) + named("kind", FINDING_KINDS)
 }
 
 /** Ids a plan names that are not listed review findings are dropped. On the

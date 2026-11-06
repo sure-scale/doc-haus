@@ -65,6 +65,10 @@ test("admission is causal for evidence, scope, uncertainty and duplicate disposi
   const noLimitation = plan()
   noLimitation.findings![0].limitations = []
   expect(checkChangePlan(directory, "d1", noLimitation).join(" ")).toContain("evidence limitation")
+  // A question's kind on a finding is named, with the kinds a finding takes.
+  const questionKind = plan()
+  questionKind.findings![0].kind = "judgment" as never
+  expect(checkChangePlan(directory, "d1", questionKind).join(" ")).toContain('Its kind is "judgment"; use "information", "research" or "suggestion".')
   const duplicated = plan([...findings, { ...findings[0], detail: `  ${findings[0].detail.toUpperCase()} `, documents: ["d2"] }])
   expect(checkChangePlan(directory, "d1", duplicated).join(" ")).toContain("consolidate duplicate findings")
   expect(checkChangePlan(directory, "d1", plan())).toEqual([])
