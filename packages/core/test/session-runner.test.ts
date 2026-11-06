@@ -48,9 +48,9 @@ import { SessionProjector } from "@opencode/core/session/projector"
 import { SessionExecution } from "@opencode/core/session/execution"
 import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { Instance } from "@opencode/core/instance/service"
-import { Job } from "@opencode/core/job"
 import { KV } from "@opencode/core/kv"
 import type { LocationServices } from "@opencode/core/location-services"
+import type { FileSystem } from "@opencode/core/filesystem"
 import { SessionRunCoordinator } from "@opencode/core/session/run-coordinator"
 import { SessionRunner } from "@opencode/core/session/runner/index"
 import { SessionRunnerLLM } from "@opencode/core/session/runner/llm"
@@ -623,7 +623,7 @@ scenario("native direct restart reloads partial tool history without replay and 
   yield* insertSession(otherSessionID)
   yield* s.db.update(SessionTable).set({ parent_id: otherSessionID }).where(eq(SessionTable.id, sessionID)).run().pipe(Effect.orDie)
   yield* s.admit("Continue the admitted document task.")
-  yield* s.llm.push(TestLLM.tool("read-once", "echo", { text: "recorded partial read" }), Stream.never)
+  yield* s.llm.push(TestLLM.toolCall("read-once", "echo", { text: "recorded partial read" }), Stream.never)
   const realRunner = yield* SessionRunner.Service
   const partial = yield* realRunner.drain({ sessionID, force: true }).pipe(Effect.forkChild)
   while (s.requests.length < 2) yield* Effect.yieldNow
@@ -641,7 +641,7 @@ scenario("native direct restart reloads partial tool history without replay and 
   // The same native runner and native store are used; only the Location selector
   // is narrowed to its runner capability, as in the execution lifecycle fixture.
   const runner = Layer.succeed(SessionRunner.Service, realRunner)
-  const locations = Layer.effect(LocationServiceMap.Service, LayerMap.make(() => runner as unknown as Layer.Layer<LocationServices>))
+  const locations = Layer.effect(LocationServiceMap.Service, LayerMap.make(() => runner as unknown as Layer.Layer<LocationServices, FileSystem.DirectoryNotFoundError>))
   const context = yield* Layer.buildWithScope(SessionRestart.layer().pipe(
     Layer.provideMerge(Layer.succeed(Session.Service, s.session)),
     Layer.provideMerge(Layer.fresh(SessionExecution.layer)),
