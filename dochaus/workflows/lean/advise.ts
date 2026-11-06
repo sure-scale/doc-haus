@@ -7,6 +7,7 @@ import { intakeActingFor, matterDatesBlock } from "./intake"
 import { FIRST_DOCUMENT, planActingFor, readLeanPlan, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, tagged } from "./prompts"
 import { REQUEST_SOURCE, isAnswerSource, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
+import { scopeQuestionTitles } from "./package-coverage"
 import { matterClient } from "../../lib/matter-client"
 import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../lib/source-provenance"
 import { confirmationDocument, currentInstructions, INSTRUCTIONS_FILE, type Instruction, type InstructionDocument } from "./instructions"
@@ -228,7 +229,7 @@ export function checkAdvice(directory: string, question: Question, reply: string
   const { options: offered, recommendation, unavailable } = parsed.value
   const group = typeof parsed.value.group === "string" ? parsed.value.group.trim().slice(0, 120) : undefined
   if ((recommendation === undefined) === (unavailable === undefined)) return { issues: ['Return exactly one of "recommendation" or "unavailable".'] }
-  const own = question.options ? { issues: offered === undefined ? [] : ['The question has its own options: leave out "options" and recommend one of them by its index.'] } : adviceOptions(offered, recommendation !== undefined)
+  const own = question.options ? { issues: offered === undefined ? [] : ['The question has its own options: leave out "options" and recommend one of them by its index.'] } : adviceOptions(directory, question, offered, recommendation !== undefined)
   const choices = question.options ?? own.options
   // The advisor's options are kept beside its advice; a question's own stay on the question.
   const kept = own.options?.length ? { options: own.options } : {}
@@ -260,7 +261,7 @@ export function checkAdvice(directory: string, question: Question, reply: string
 
 /** The advisor's own options with code-assigned ids: 2 to 4 with a
  * recommendation; none, or 2 to 4, without one. */
-function adviceOptions(value: unknown, recommended: boolean): { issues: string[]; options?: QuestionOption[] } {
+function adviceOptions(directory: string, question: Question, value: unknown, recommended: boolean): { issues: string[]; options?: QuestionOption[] } {
   if (value === undefined && !recommended) return { issues: [], options: [] }
   if (!Array.isArray(value) || value.some(row => !record(row) || typeof row.text !== "string" || !row.text.trim()))
     return { issues: ['"options" must be a list of {"text":"..."} with non-empty text.'] }
@@ -268,8 +269,32 @@ function adviceOptions(value: unknown, recommended: boolean): { issues: string[]
   const issues = [
     ...(recommended ? texts.length < 2 || texts.length > 4 ? ["Give 2 to 4 options with a recommendation."] : [] : texts.length === 1 || texts.length > 4 ? ['Give no options, or 2 to 4, with "unavailable".'] : []),
     ...(new Set(texts.map(optionKey)).size < texts.length ? ["Each option must differ from the others."] : []),
+    ...(question.kind === "scope" ? sourceCarrierIssues(directory, question, texts) : []),
   ]
   return issues.length ? { issues } : { issues: [], options: texts.map((text, index) => ({ id: `o${index + 1}`, text })) }
+}
+
+/** A package-scope option may put an act in a planned document, a new one or
+ * outside this request, never in an uploaded matter source: the package writes
+ * only planned documents. An option naming a source by its file name is refused
+ * unless it also names a planned document, whose title may hold a source's.
+ * A source's title alone is ordinary prose ("an amendment to the Supply
+ * Agreement") and passes. The plan the question asks about may not be saved
+ * yet, so the planned documents the question shows count too. */
+function sourceCarrierIssues(directory: string, question: Question, texts: string[]) {
+  const planned = [...(readLeanPlan(directory)?.documents ?? []).flatMap(document => [document.title, ...(document.file ? [document.file] : [])]), ...scopeQuestionTitles(question)]
+  const sources = matterSourceIDs(directory)
+  return texts.flatMap(text => {
+    const source = sources.find(name => holdsName(text, name))
+    return source && !planned.some(name => holdsName(text, name, "iu"))
+      ? [`Option ${JSON.stringify(text)} puts the act in ${JSON.stringify(source)}, an uploaded matter source the package does not write: offer a planned document, a new document, or "outside this request".`] : []
+  })
+}
+
+/** Whether `text` holds `name` as whole words; a source's name as written, a planned document's in any case. */
+function holdsName(text: string, name: string, flags = "u") {
+  const key = normalize(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return !!key && new RegExp(`(?<![\\p{L}\\p{N}])${key}(?![\\p{L}\\p{N}])`, flags).test(normalize(text))
 }
 
 /** An option's text as a recommendation names it: ignoring case, spacing and

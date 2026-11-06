@@ -7,6 +7,7 @@ import { openItem } from "./quotes"
 import { runLean, stageInputSha } from "./runner"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, type StageSessionPort } from "./stages"
 import { keepAskedQuestions, readLeanState, readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
+import { writeLeanPlan } from "./plan"
 import { confirmationQuestions, writeInstructionsFile } from "./instructions"
 import { AGENT, SOURCE, SOURCE_TEXT, cleanupMatters, matter, scriptedModel } from "./test-support"
 import { withWorkflowLimit } from "./model-concurrency-test-support"
@@ -67,6 +68,27 @@ describe("advice checker", () => {
     expect(byText.issues).toEqual(['"recommendation.option" must be the index, from 0, of one of the 2 options.'])
     expect(advisePrompt(matter(), FILES)).toContain('where "option" is the index of one of the options above')
     expect(advisePrompt(matter(), QUESTION)).toContain('"option" the text of the one recommended, copied exactly from your options')
+  })
+
+  const SCOPE: Question = { id: "q-scope", stage: "draft", question: 'The document plan leaves this instructed act without a document executed by the parties who must take it: "Confirm the delivery period", directed by "within thirty days of the order date" [source: supply-terms.docx]; to be taken by "Supplier" and "Buyer"; no planned document carries it. Should the package add a document, or change a planned one, so that those parties take it, or is it outside this request?', context: "Drafting waits for your answer.", status: "open", kind: "scope" }
+  const scopeReply = (carrier: string) => ({ options: [{ text: carrier }, { text: "A new letter executed by the supplier and the buyer" }, { text: "Outside this request" }],
+    recommendation: { option: "Outside this request", rationale: "The supply terms already set the period.", basis: BASIS } })
+
+  test("a scope option naming an uploaded source as carrier is a retry issue", () => {
+    const named = check(scopeReply("Add it to supply-terms.docx, executed by the supplier and the buyer"), SCOPE)
+    expect(named.advice).toBeUndefined()
+    expect(named.issues).toEqual(['Option "Add it to supply-terms.docx, executed by the supplier and the buyer" puts the act in "supply-terms.docx", an uploaded matter source the package does not write: offer a planned document, a new document, or "outside this request".'])
+    expect(check(scopeReply("Add it to supply-terms.docx, signed by both"), { ...SCOPE, kind: "judgment" }).issues).toEqual([])
+    // A source's title alone is prose, such as an amendment to it.
+    expect(check(scopeReply("A new amendment to the supply-terms, signed by both"), SCOPE).issues).toEqual([])
+  })
+
+  test("a scope option naming a planned document whose title resembles a source passes", () => {
+    const labelled = { ...SCOPE, question: SCOPE.question.replace("no planned document carries it", 'planned in d1 "Variation of supply-terms", executed by "Supplier"') }
+    expect(check(scopeReply("Variation of supply-terms, executed by the supplier and the buyer"), labelled).advice).toMatchObject({ recommendation: { option: "o3" } })
+    const directory = matter()
+    writeLeanPlan(directory, [{ title: "Supply-terms side letter", purpose: "Record the delivery period", parts: [{ heading: "Delivery", scope: "Delivery period" }] }])
+    expect(checkAdvice(directory, SCOPE, JSON.stringify(scopeReply("Put it in the supply-terms side letter, signed by both"))).issues).toEqual([])
   })
 
   const rejected: [string, unknown, string, Question?][] = [

@@ -1030,6 +1030,11 @@ const savedAct = (row: unknown) => record(row) && ["act", "source", "quote"].eve
 
 const label = (document: PlannedDocument) => `${document.id} "${document.title}"`
 
+/** The titles of the planned documents a package-scope question shows by label. */
+export function scopeQuestionTitles(question: Pick<Question, "question">) {
+  return [...question.question.matchAll(/\bd[1-9]\d* "([^"]*)"/g)].map(match => match[1]!)
+}
+
 /** The one act an entry describes: what is to be done, ignoring spacing and
  * case, and its parties by nameKey. */
 const sameAct = (act: Pick<CoverageAct, "act" | "parties">) => JSON.stringify([act.act.replace(/\s+/g, " ").toLowerCase(), act.parties.map(nameKey).toSorted()])
