@@ -6,8 +6,10 @@ import { tagged } from "./prompts"
 import { excerpt, openItem } from "./quotes"
 import { hashStageInputs, leanFile, readLeanJson, readLeanText, shortHash, writeLeanText, type OpenItem } from "./state"
 
-// Spine placement: which planned parts rest on each drafting-spine entry
-// (spine.json). Each entry gets two focused jobs, side by side, each in a fresh
+// Spine placement: which planned parts rest on each drafting-spine entry, one
+// atom at a time as the spine step split them (spine-atoms.json; spine.json
+// keeps the entries as the spine wrote them, for the jobs that read the whole
+// spine). Each entry gets two focused jobs, side by side, each in a fresh
 // session of its own. The level job reads that entry alone, with no document
 // in context, and says whether it binds some part's text or the package as a
 // whole (spineLevelPrompt, parseEntryLevel). A settled level is saved under the
@@ -24,7 +26,7 @@ import { hashStageInputs, leanFile, readLeanJson, readLeanText, shortHash, write
 // disclosed (placementItems), never blocking. A package entry placed nowhere
 // raises neither and rides the drafting spine as before. The record,
 // placement.json, is keyed on what the placement jobs read: the documents as
-// coverageView shows them and the spine's bytes. Each part prompt is told the
+// coverageView shows them and the atoms' bytes. Each part prompt is told the
 // entries placed in it (groundsBlock), as are the checklist's planned roles and
 // the reviews' outline. Nothing here judges the legal substance.
 
@@ -33,7 +35,10 @@ export const LEAN_SPINE_LEVELS_SCHEMA = "dochaus.lean.spine-levels/1"
 /** Revised outlines the placement issues may ask for before the plan is saved. */
 export const PLAN_PLACEMENT_REVISIONS = 1
 
-/** One spine entry, by its index in spine.json. */
+/** The spine's atoms, written by the spine step beside spine.json (spine-split.ts). */
+export const SPINE_ATOMS = "spine-atoms.json"
+
+/** One spine entry, by its index in spine-atoms.json. */
 export type SpineEntry = { index: number; kind: string; detail: string; evidence: { source_id: string; quote: string }[] }
 /** "text": some part's text must carry it or reason from it; "package": it binds what is produced, where, from what, how or where it is disclosed. */
 export type EntryLevel = "text" | "package"
@@ -55,9 +60,9 @@ const READ_ONLY = "- Read-only tools are available; file-writing and publication
 /** The kinds a plan must give a part: what the documents must do or have decided. */
 const RELIED_ON = ["requirement", "decision"]
 
-/** The spine's entries, each with its index in spine.json; [] without a spine. */
+/** The spine's atoms, each with its index in spine-atoms.json; [] without them. */
 export function spineEntries(directory: string): SpineEntry[] {
-  const value = readLeanJson(directory, "spine.json")
+  const value = readLeanJson(directory, SPINE_ATOMS)
   if (!record(value) || !Array.isArray(value.entries)) return []
   return value.entries.flatMap((row: unknown, index) => record(row) && typeof row.kind === "string" && typeof row.detail === "string" && row.detail.trim() ? [{
     index, kind: row.kind, detail: row.detail.trim(),
@@ -168,10 +173,10 @@ export function planPlacementIssues(entries: SpineEntry[], placements: EntryPlac
   })
 }
 
-/** Content key of a placement: the documents as its jobs read them and the spine. */
+/** Content key of a placement: the documents as its jobs read them and the spine's atoms. */
 export function placementPlanHash(directory: string, documents: PlannedDocument[]) {
   return hashStageInputs(`${FIRST_DOCUMENT}.draft`, LEAN_PLACEMENT_SCHEMA, [
-    { name: "documents", bytes: JSON.stringify(documents.map(coverageView)) }, { name: "spine.json", bytes: readLeanText(directory, "spine.json") ?? "" },
+    { name: "documents", bytes: JSON.stringify(documents.map(coverageView)) }, { name: SPINE_ATOMS, bytes: readLeanText(directory, SPINE_ATOMS) ?? "" },
   ])
 }
 
@@ -193,12 +198,12 @@ export function readLeanPlacement(directory: string): LeanPlacement | undefined 
   return value as LeanPlacement
 }
 
-/** The saved plan's placement is settled: the spine lists no entry, or the record placed this very plan and spine. */
+/** The saved plan's placement is settled: the spine lists no atom, or the record placed this very plan and these atoms. */
 export function planPlacementCurrent(directory: string, plan = readLeanPlan(directory)) {
   return !plan || !spineEntries(directory).length || readLeanPlacement(directory)?.plan === placementPlanHash(directory, plan.documents)
 }
 
-/** The current record, or undefined when it placed another plan or spine. */
+/** The current record, or undefined when it placed another plan or other atoms. */
 function currentPlacement(directory: string) {
   const plan = readLeanPlan(directory)
   const saved = plan && readLeanPlacement(directory)

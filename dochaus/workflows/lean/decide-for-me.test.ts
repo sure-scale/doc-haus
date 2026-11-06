@@ -194,7 +194,11 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // re-pinned when its entries began to be split into atoms (spine-atoms-1),
 // when a one-atom split began to read as atomic (spine-atoms-2) and when its
 // checks began asking each figure of an entry or atom of its own quotes
-// (spine-atoms-3).
+// (spine-atoms-3), and again when spine.json began keeping the accepted
+// entries beside their atoms (spine-atoms.json) and a figure became one with a
+// sign, a decimal point, separators or five digits (spine-atoms-4); every step
+// after the spine, other than the draft, was re-pinned then for keying the
+// atoms.
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", `  A (${ADOPTED_ANSWER}): Singapore law.`)
 // A draft keys its outline contract and plan entry, never answers.
@@ -206,21 +210,21 @@ const INPUTS: Record<string, string> = {
   "research": "64a0d22c3dd780907955b2e56b3122b94ea72101092d694f899a15e2af0cb13b",
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
   "acts": "ff830f3d37f64416362401fa66710c9fc8e770429b6bc5f2af84baffd3f35a3c",
-  "spine": "01f717bd18a22b59749899050ac196a6544d429bce93781d63053bb53109e733",
+  "spine": "dc46aa641985c65e0b700617e907d163d96a507dfc055d1e0005f7eb1032c8da",
   "d1.draft": "16217c1cfd58dbafb55f9bafd49935ee815d218d0dd88f4dcef533fdf60ba369",
-  "d1.review": "f92e8b2f697df753f08ff89503d1c092d84fd980a5649ffa77627092541a4a74",
-  "d1.review-independent": "d6b17a179c121993a0115e9cb582a88041569779f0b458d6092ef4d7917dd477",
-  "d1.review-wording": "a26d07fa11c6809f348701b39e3d4e22536470e85610e12e28aebdc0e5c7cebc",
-  "d1.review-client-disadvantage": "4c18d2beccef061120fd2ec812cbd37bd20f5520d490dc96e9b96b18e39b5d89",
-  "d1.change-plan": "505763faece914783109529ec3705c4be1a809d1503f433d368b8e455e14934f",
-  "d1.change-prepare": "b8c5bca696f6179fd04dcdc29b565be8804eac116fd7af6dfecd2baf9fbcde7c",
-  "d1.changes": "d5a641fd10fc180ec24955810f08868b68df08fba766824adff29bc38c618e39",
-  "d1.change-review": "d36fb4ee8463bcfda8c0fdad2c3aef05de8a6801ac65742ea3cbd336f6ed7711",
-  "d1.apply": "be634fcb03591aca6f952d8f756bc599cb4ef5b014ec37f1b37e38c2afaa27a4",
-  "finalize": "ede5a86d8ac5fb23776eb8d8a3a3018f04bc92f827998d6b5f1ef5a189f7f7b8",
-  "checklist-check": "593362745da684a2b335a4f33deb1e581b7bb97a0c652ab4c305ae7151e90423",
-  "package-review": "50e84f8ca0e182baec5a3abc41021134e95069b6fcea956220192846e017784e",
-  "gate": "0950183c873a0bd663d5367c064a7013025084deb8884311b2f38a54fcb8e229",
+  "d1.review": "23af042296cf7f7d3ee97332f0caaf1fac7ab240199ce23d96a33f9c65fc2693",
+  "d1.review-independent": "ae78dbf15aa677be04d6d44d0b91d63c34fd2fa03754e51350a6941413143d70",
+  "d1.review-wording": "da1716d02cfb2df4b1f9fe71ceec32c3ffe41e66070f508a765ef7aa81e3792a",
+  "d1.review-client-disadvantage": "c43e31f535349cf6ad55d3ce52bb9c90b2b7ef81d138cad29091f9f29d626111",
+  "d1.change-plan": "20d99921729a43a29acd201db2a6c86a882bae30fd7ee6f07aa3865c04bc0e9c",
+  "d1.change-prepare": "5eb87e9b0f4dbadbf0b9916c685b1d24214d3cc4f4d8b408065e0dcbbb7f99db",
+  "d1.changes": "132f96d7b820a2985ed5f77066a603023e17b918e497b598473417b55df49396",
+  "d1.change-review": "d73733fc9dcdafca5f02603c12d9ad948389a1185887622786bf27fc63ed74b7",
+  "d1.apply": "010ef984a0764b469b3062366447829190a21d660fbf1d456b798728b3fb66d5",
+  "finalize": "e927aef313b8abe527e12ce7fdac01b0c6f89586bbd3d00431ec013cc074473d",
+  "checklist-check": "a44b6aa518efe2b04874468e01db95a9323f20bf98dd2b7805d66e95e3632a20",
+  "package-review": "d1c48bcf6dfe13c61403da6a6e73dbb9423d0a0ff5449c2ee5d0eb6bf7480783",
+  "gate": "04cf9a0b7d6876b1afe64a4beb8abe0883d0c4a6e26baba2faef68a0220c5fe3",
 }
 
 test("the answers text and every step's inputs are pinned, however the lawyer gave the answer", () => {

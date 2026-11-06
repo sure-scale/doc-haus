@@ -24,9 +24,9 @@ export function checkEvidence(directory: string, stage: EvidenceStage, value: un
   return evidenceIssues(directory, stage, value, { final: false }).issues
 }
 
-/** The issues a retry must correct. A spine entry's figure that none of its
- * quotes states is one of them until the final attempt, when it is only
- * recorded: the reply stands and nothing is demoted. */
+/** The issues a retry must correct. A spine entry's figure (figures) that
+ * none of its quotes states is one of them until the final attempt, when it is
+ * only recorded: the reply stands and nothing is demoted. */
 function evidenceIssues(directory: string, stage: EvidenceStage, value: unknown, options: { final: boolean }): { issues: string[]; recorded: string[] } {
   if (!record(value) || !Array.isArray(value.entries) || !strings(value.limitations) || (stage === "discrepancy" && !Array.isArray(value.gaps)))
     return { issues: [stage === "discrepancy" ? "Return JSON with entries, gaps and limitations arrays." : "Return JSON with entries and limitations arrays."], recorded: [] }
@@ -50,24 +50,43 @@ function evidenceIssues(directory: string, stage: EvidenceStage, value: unknown,
   return { issues: stage === "discrepancy" ? [...entries, ...(value.gaps as unknown[]).flatMap((row, index) => gapIssues(directory, sources, row, index))] : entries, recorded }
 }
 
-const FIGURE = /\d+(?:[.,]\d+)*/g
+const NUMBER = /\d+(?:[.,]\d+)*/g
+/** Digits grouped in threes by commas (1,500,000.50) or by points (1.500.000,50). */
+const GROUPED = /^\d{1,3}(?:,\d{3})+(?:\.\d+)?$|^\d{1,3}(?:\.\d{3})+(?:,\d+)?$/
+/** One decimal point: 12.5, not a dotted reference or date (3.2.1, 15.01.2025). */
+const DECIMAL = /^\d+\.\d+$/
 
-// Each figure a text states, as written and as compared: normalised as
+// Each number a text states, as written and as compared: normalised as
 // quotations are, without thousands separators, so "$1,000,000" and
-// "1,000,000" are one figure. A figure written in words is not read.
-function statedFigures(text: string) {
-  return [...normalize(text).matchAll(FIGURE)].map(match => ({ written: match[0], figure: match[0].replaceAll(",", "") }))
+// "1,000,000" are one figure. A number written in words is not read. A number
+// is a figure when it carries a currency sign or %, a decimal point or
+// thousands separators, or has five digits or more; a bare number of up to
+// four digits (a list or part number, a count, a year) or a date is not.
+function statedNumbers(text: string) {
+  const normalized = normalize(text)
+  return [...normalized.matchAll(NUMBER)].map(match => {
+    const written = match[0]
+    const before = normalized.slice(Math.max(0, match.index - 2), match.index)
+    const after = normalized.slice(match.index + written.length, match.index + written.length + 2)
+    const signed = /\p{Sc} ?$/u.test(before) || /^ ?[\p{Sc}%]/u.test(after)
+    return { written, figure: written.replaceAll(",", ""), checked: signed || GROUPED.test(written) || DECIMAL.test(written) || /^\d{5,}$/.test(written) }
+  })
 }
 
 /** The figures a text states, compared without currency signs or thousands separators. */
 export function figures(text: string) {
-  return statedFigures(text).map(row => row.figure)
+  return statedNumbers(text).filter(row => row.checked).map(row => row.figure)
 }
 
-/** Each figure the detail states, as written, that none of the quotations states. */
+/** Every number a text states, compared as figures are: what can state a figure. */
+export function numbers(text: string) {
+  return statedNumbers(text).map(row => row.figure)
+}
+
+/** Each figure the detail states, as written, that none of the quotations states in any form. */
 export function unquotedFigures(detail: string, quotes: string[]) {
-  const quoted = new Set(quotes.flatMap(figures))
-  return [...new Set(statedFigures(detail).filter(row => !quoted.has(row.figure)).map(row => row.written))]
+  const quoted = new Set(quotes.flatMap(numbers))
+  return [...new Set(statedNumbers(detail).filter(row => row.checked && !quoted.has(row.figure)).map(row => row.written))]
 }
 
 function quoteIssues(directory: string, sources: string[], ref: unknown, where: string): string[] {

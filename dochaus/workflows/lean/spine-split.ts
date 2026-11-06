@@ -2,24 +2,29 @@ import { normalize } from "../../lib/quote-verify"
 import { parseJsonObject } from "./checks"
 import { parallel } from "./checklist-flow"
 import { record } from "./checks"
-import { figures, SPINE_KINDS, unquotedFigures } from "./evidence"
+import { figures, numbers, SPINE_KINDS, unquotedFigures } from "./evidence"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { OutputLimitError } from "./native-stage-result"
 import { retryPrompt, tagged } from "./prompts"
 import type { SourceQuote } from "./quotes"
+import { SPINE_ATOMS } from "./spine-placement"
 import { LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, SPINE_CONTRACT, stepSessionTitle, type LeanDeps, type PermissionRule } from "./stages"
 import { readLeanJson, shortHash, writeLeanText, type LeanStageState, type LeanState } from "./state"
 
-// Once the spine reply passes its checks, and before spine.json is written, one
-// job per entry asks whether the entry states one point or several and, if
-// several, splits it into atoms that each state one. Code checks every atom: a
-// kind from the spine's set, evidence and limitations taken by index from the
-// entry's own (so every quotation stays one the spine check verified), a cited
-// quotation stating each figure the entry's quotations state, and no figure,
-// quoted passage or capitalised term the entry does not hold. An entry
-// that is already atomic, or whose job never passes, stays as it is. spine.json
-// holds the atoms in the entries' order. Each finished split is saved under its
-// entry's content, so a re-run of the step splits only entries not split before.
+// Once the spine reply passes its checks, and before the step's files are
+// written, one job per entry asks whether the entry states one point or several
+// and, if several, splits it into atoms that each state one. Code checks every
+// atom: a kind from the spine's set, evidence and limitations taken by index
+// from the entry's own (so every quotation stays one the spine check verified),
+// a cited quotation stating each figure the entry's quotations state, and no
+// figure, quoted passage or capitalised term the entry does not hold. An entry
+// that is already atomic, or whose job never passes, stays as it is.
+// spine.json stays the accepted reply, its entries as the spine wrote them, for
+// the jobs that read the whole spine (outline, parts, reviews, notes, package
+// review); spine-atoms.json holds the atoms in the entries' order, for the jobs
+// that read one entry at a time (level, placement). Each finished split is
+// saved under its entry's content, so a re-run of the step splits only entries
+// not split before.
 
 const FILE = "spine-split.json"
 
@@ -78,7 +83,8 @@ export function parseSpineSplit(reply: string, parent: SpineEntry): { issues: st
     if (!parent.evidence.length && !limitations.length) own.push(`${at} has no evidence, so it must carry at least one limitation index.`)
     own.push(...added(row.detail, known).map(term => `${at} says ${JSON.stringify(term)}, which the entry does not; use only the entry's own words.`))
     // A figure the entry's quotes state is stated by a quote the atom cites, as the spine check asks of the entry.
-    own.push(...unquotedFigures(row.detail, evidence.map(item => parent.evidence[item]!.quote)).filter(figure => !unquotedFigures(figure, parent.evidence.map(ref => ref.quote)).length).map(figure => `${at} states ${JSON.stringify(figure)}, which none of its evidence states; cite the index of the evidence that states it.`))
+    const unstated = unquotedFigures(row.detail, parent.evidence.map(ref => ref.quote))
+    own.push(...unquotedFigures(row.detail, evidence.map(item => parent.evidence[item]!.quote)).filter(figure => !unstated.includes(figure)).map(figure => `${at} states ${JSON.stringify(figure)}, which none of its evidence states; cite the index of the evidence that states it.`))
     evidence.forEach(item => used.evidence.add(item))
     limitations.forEach(item => used.limitations.add(item))
     issues.push(...own)
@@ -87,7 +93,8 @@ export function parseSpineSplit(reply: string, parent: SpineEntry): { issues: st
   parent.evidence.forEach((_, item) => { if (!used.evidence.has(item)) issues.push(`Evidence [${item}] goes to no atom; cite it in the atom it supports.`) })
   parent.limitations.forEach((_, item) => { if (!used.limitations.has(item)) issues.push(`Limitation [${item}] goes to no atom; give it to the atom it qualifies.`) })
   if (atoms.length === rows.length) {
-    const kept = new Set(atoms.flatMap(atom => figures(atom.detail)))
+    // Kept in whatever form an atom writes it.
+    const kept = new Set(atoms.flatMap(atom => numbers(atom.detail)))
     for (const figure of new Set(figures(parent.detail))) if (!kept.has(figure)) issues.push(`The entry's figure ${JSON.stringify(figure)} is in no atom; keep it in the atom that states it.`)
     const details = atoms.map(atom => normalize(atom.detail).toLowerCase())
     details.forEach((detail, index) => { if (details.indexOf(detail) !== index) issues.push(`atoms[${index}] repeats atoms[${details.indexOf(detail)}]; each atom states a different point.`) })
@@ -108,15 +115,16 @@ function entryText(entry: SpineEntry) {
 }
 
 /** What an atom's detail says that the entry's words do not, where code can
- * tell: a figure, a quoted passage, or a capitalised word not opening a
- * sentence (a name or defined term) that the entry never uses. */
+ * tell: a figure the entry states in no form, a quoted passage, or a
+ * capitalised word not opening a sentence (a name or defined term) that the
+ * entry never uses. */
 function added(detail: string, known: string) {
   const text = normalize(detail)
   const lower = known.toLowerCase()
-  const knownFigures = new Set(figures(known))
+  const knownNumbers = new Set(numbers(known))
   const opensSentence = (index: number) => /(^|[.!?:;("'[]\s*)$/.test(text.slice(0, index))
   const terms = [
-    ...figures(text).filter(figure => !knownFigures.has(figure)),
+    ...figures(text).filter(figure => !knownNumbers.has(figure)),
     ...[...text.matchAll(/"([^"]+)"/g)].map(match => match[1]!.trim()).filter(passage => passage && !lower.includes(passage.toLowerCase())),
     ...[...text.matchAll(/(?<![\p{L}\p{N}])\p{Lu}[\p{L}\p{N}-]*/gu)].filter(match => !opensSentence(match.index) && !lower.includes(match[0].toLowerCase())).map(match => match[0]),
   ]
@@ -124,11 +132,12 @@ function added(detail: string, known: string) {
 }
 
 /** Splits each entry of the checked spine reply into atoms, in parallel within
- * the concurrency limit, and writes spine.json with the atoms in the entries'
- * order. A saved split of the same entry is reused. A job that never passes its
- * check, or whose reply stops at the output limit, keeps its entry. Any other
- * error, including a pause, propagates once the jobs in flight settle; the
- * splits finished by then stay saved and spine.json is left unwritten. */
+ * the concurrency limit, and writes the reply as spine.json and the atoms, in
+ * the entries' order, as spine-atoms.json. A saved split of the same entry is
+ * reused. A job that never passes its check, or whose reply stops at the output
+ * limit, keeps its entry. Any other error, including a pause, propagates once
+ * the jobs in flight settle; the splits finished by then stay saved and neither
+ * file is written. */
 export async function splitSpineEntries(directory: string, state: LeanState, deps: LeanDeps, spine: Record<string, unknown>, progress: (patch: Partial<LeanStageState>) => void): Promise<string[]> {
   const entries = spine.entries as SpineEntry[]
   const keys = entries.map(entry => shortHash(JSON.stringify([SPINE_CONTRACT, entry]), 40))
@@ -160,8 +169,9 @@ export async function splitSpineEntries(directory: string, state: LeanState, dep
   save()
   const atoms = keys.flatMap(key => splits[key]!)
   appendLeanEvent(directory, { stage: "spine", event: "spine_split", step: "split entries", counts: { ...counts, atoms: atoms.length } })
-  writeLeanText(directory, "spine.json", `${JSON.stringify({ ...spine, entries: atoms }, null, 2)}\n`)
-  return ["spine.json"]
+  writeLeanText(directory, SPINE_ATOMS, `${JSON.stringify({ entries: atoms }, null, 2)}\n`)
+  writeLeanText(directory, "spine.json", `${JSON.stringify(spine, null, 2)}\n`)
+  return ["spine.json", SPINE_ATOMS]
 }
 
 function savedSplits(directory: string): Record<string, SpineEntry[]> {

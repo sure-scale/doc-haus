@@ -6,7 +6,7 @@ import { readLeanEvents } from "./events"
 import { readLeanPlan, type PlannedDocument } from "./plan"
 import { stagePrompt } from "./prompts"
 import {
-  PLAN_PLACEMENT_REVISIONS, documentGrounds, groundsBlock, parseEntryLevel, parseEntryPlacement, placementItems, placementPlanHash, planPlacementCurrent, planPlacementIssues, readLeanPlacement, readSpineLevels,
+  PLAN_PLACEMENT_REVISIONS, SPINE_ATOMS, documentGrounds, groundsBlock, parseEntryLevel, parseEntryPlacement, placementItems, placementPlanHash, planPlacementCurrent, planPlacementIssues, readLeanPlacement, readSpineLevels,
   spineEntries, spineLevelKey, spineLevelPrompt, spinePlacementPrompt, writePlacement,
   type EntryPlacement,
 } from "./spine-placement"
@@ -50,10 +50,12 @@ const placer = (text: string) => {
   return JSON.stringify({ parts: planned.flatMap(document => document.parts.filter(part => part.heading === heading).map(part => part.ref)) })
 }
 
+/** A matter whose spine's entries are each atomic: the atoms are the entries. */
 function prepared(spine = SPINE) {
   const directory = matter()
   writeLeanText(directory, "acts.json", JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status: "none", acts: [], verify: null, deliverables: [], issues: [] }))
   writeLeanText(directory, "spine.json", spine)
+  writeLeanText(directory, SPINE_ATOMS, spine)
   return { directory, state: readLeanState(directory)! }
 }
 
@@ -158,13 +160,23 @@ describe("spine placement parser", () => {
     expect(first).not.toContain(PAYMENT)
   })
 
-  test("the record's key moves with the spine's bytes and the documents' coverage view", () => {
+  test("the record's key moves with the atoms' bytes and the documents' coverage view, not with spine.json", () => {
     const { directory } = prepared()
     const key = placementPlanHash(directory, documents)
     expect(placementPlanHash(directory, [{ ...documents[0]!, file: "note.docx" }])).toBe(key)
     expect(placementPlanHash(directory, [{ ...documents[0]!, parts: documents[0]!.parts.slice(1) }])).not.toBe(key)
     writeLeanText(directory, "spine.json", SPINE.replace("thirty", "forty"))
+    expect(placementPlanHash(directory, documents)).toBe(key)
+    writeLeanText(directory, SPINE_ATOMS, SPINE.replace("thirty", "forty"))
     expect(placementPlanHash(directory, documents)).not.toBe(key)
+  })
+
+  test("the level and placement jobs read the atoms, never the entries as the spine wrote them", () => {
+    const { directory } = prepared()
+    writeLeanText(directory, "spine.json", JSON.stringify({ entries: [{ kind: "requirement", detail: `${DELIVERY} ${PAYMENT}`, evidence: [], limitations: ["Both terms."] }], limitations: [] }))
+    expect(spineEntries(directory).map(entry => [entry.index, entry.detail])).toEqual([[0, DELIVERY], [1, PAYMENT]])
+    writeLeanText(directory, SPINE_ATOMS, "")
+    expect(spineEntries(directory)).toEqual([])
   })
 })
 
@@ -232,7 +244,7 @@ describe("spine placement at the outline step", () => {
     await run(directory, model)
     expect(placementPrompts(model)).toHaveLength(2)
     expect(levelPrompts(model)).toHaveLength(2)
-    writeLeanText(directory, "spine.json", SPINE.replace("thirty days", "forty days"))
+    writeLeanText(directory, SPINE_ATOMS, SPINE.replace("thirty days", "forty days"))
     expect(planPlacementCurrent(directory)).toBe(false)
     await run(directory, model)
     expect(placementPrompts(model)).toHaveLength(4)

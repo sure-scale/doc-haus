@@ -50,7 +50,7 @@ export type LeanEventName =
   /** The spine step's split of its entries into atoms (spine-split.ts): how
    * many entries it had, how many reused a saved split, were atomic, were
    * split or kept as they were because their job never passed, and how many
-   * atoms spine.json holds, as `counts`. */
+   * atoms spine-atoms.json holds, as `counts`. */
   | "spine_split"
 
 export type LeanEvent = {

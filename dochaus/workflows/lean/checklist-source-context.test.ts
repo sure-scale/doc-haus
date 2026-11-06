@@ -196,7 +196,7 @@ test("unavailable, invalid or empty selected playbooks surface explicit source c
 
 test("a part's placed spine entries are its coverage too, so the role names them after its scope", () => {
   const { directory, put } = prepare()
-  put(".dochaus/lean/spine.json", JSON.stringify({ entries: [
+  put(".dochaus/lean/spine-atoms.json", JSON.stringify({ entries: [
     { kind: "requirement", detail: "Keep unconfirmed proposals open.", evidence: [{ source_id: "request", quote: "Keep unconfirmed proposals open." }], limitations: [] },
     { kind: "fact", detail: "The proposal is unconfirmed.", evidence: [{ source_id: "instructions.txt", quote: "subject to confirmation" }], limitations: [] },
   ], limitations: [] }))

@@ -8,7 +8,7 @@ import { acceptChangePlan, acceptChangeReview, preparationOutputValid, readChang
 import { comparisonBasis } from "./comparison"
 import { checkPackageReview, isLeftOpenPackageFinding, isWithheldDeliveryItem, readPackageReview, withholdUngroundedDelivery } from "./package-review"
 import { coverageItems, planCoverageCurrent } from "./package-coverage"
-import { placementItems, planPlacementCurrent } from "./spine-placement"
+import { placementItems, planPlacementCurrent, SPINE_ATOMS } from "./spine-placement"
 import { readActRecord } from "./act-record"
 import { requestedFilesItems } from "./requested-files"
 import { draftedDefaultItems } from "./drafted-defaults"
@@ -92,9 +92,9 @@ const GATE_CONTRACT = "checklist-open-delivery-6"
 /** Keys the act-record step: a change to its jobs, prompts or checks re-runs it. */
 const ACT_RECORD_CONTRACT = "act-record-7"
 /** Keys the spine step and each saved split of one of its entries: a change to
- * the spine's checks or the split job's prompt or checks re-runs the step and
- * every split. */
-export const SPINE_CONTRACT = "spine-atoms-3"
+ * the spine's checks, the split job's prompt or checks, or the files the step
+ * writes re-runs the step and every split. */
+export const SPINE_CONTRACT = "spine-atoms-4"
 /** Keys the guidance review: its guidance list and the template's focus. */
 const GUIDANCE_REVIEW_CONTRACT = "template-guidance-1"
 export const LEAN_MAX_RETRIES = 3
@@ -204,7 +204,9 @@ export const OPTIONAL_OUTPUTS = ["coverage.json", "requested-files.json"]
  * document's draft also saves the run's plan, its coverage record and its
  * requested-files record. */
 export function stepOutputs(step: StepID): string[] {
-  if (step === "discrepancy" || step === "spine" || step === "package-review") return [`${step}.json`]
+  if (step === "discrepancy" || step === "package-review") return [`${step}.json`]
+  // The spine as accepted and its entries split into atoms (spine-split.ts).
+  if (step === "spine") return ["spine.json", SPINE_ATOMS]
   if (step === "checklist-check") return ["checklist/extraction.json", "checklist/refinements.json", "checklist/checks.json", "checklist/report.md"]
   if (step === "instructions") return ["instructions.json", INSTRUCTIONS_FILE]
   if (step === "intake") return ["intake.json"]
@@ -264,7 +266,8 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     // does not run it again. One that last started a round runs once more.
     ...(exhaustedReview(directory, step) ? [{ name: "repair-allowance", bytes: "used-up" }] : []),
     ...(!["instructions", "discrepancy", "intake", "research", "research-review", "acts"].includes(step) ? ["research.json", "research-review.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
-    ...(!["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine"].includes(step) ? ["discrepancy.json", "spine.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
+    // Later steps read the whole spine (spine.json) and, through the placement, its atoms.
+    ...(!["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine"].includes(step) ? ["discrepancy.json", "spine.json", SPINE_ATOMS].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
     ...(clarifications.length && ["checklist-check", "package-review", "gate"].includes(step) ? [{ name: "inspection-clarifications", bytes: JSON.stringify(clarifications) }] : []),
     { name: "source-content", bytes: matterSourceBasis(directory) },
     ...(!inputs.some(part => part.name === "answers") ? [{ name: "answers", bytes: answeredQuestionsText(directory) }] : []),
@@ -590,7 +593,9 @@ export function stageOutputValid(directory: string, step: StepID) {
   if (step === "checklist-check") return checklistOutputState(directory).valid
   if (step === "package-review") return Boolean(readPackageReview(directory))
   if (step === "instructions") return instructionsOutputValid(directory)
-  if (step === "discrepancy" || step === "spine") return evidenceOutputValid(directory, step)
+  if (step === "discrepancy") return evidenceOutputValid(directory, step)
+  // A spine saved without its atoms re-runs; the splits it saved are reused.
+  if (step === "spine") return evidenceOutputValid(directory, step) && Array.isArray((readLeanJson(directory, SPINE_ATOMS) as { entries?: unknown } | undefined)?.entries)
   if (step === "intake" || step === "research" || step === "research-review") return researchOutputValid(directory, step)
   if (step === "acts") return Boolean(readActRecord(directory))
   const stage = stepStage(step)
