@@ -4,7 +4,7 @@ import { writeFileSync } from "node:fs"
 import path from "node:path"
 import { LEAN_MAX_RETRIES, researchBasis, stageOutputValid } from "./stages"
 import { researchPrompt } from "./research"
-import { acceptEvidenceReply, checkDifferences, checkEvidence, checkEvidenceReply, checkGaps, checkGapVerify, evidencePrompt, figures, gapsPrompt, gapVerifyPrompt, numbers, restatesDifference, type Discrepancy } from "./evidence"
+import { acceptEvidenceReply, checkDifferences, checkDifferenceVerify, checkEvidence, checkEvidenceReply, checkGaps, checkGapVerify, differenceVerifyPrompt, evidencePrompt, figures, gapsPrompt, gapVerifyPrompt, numbers, restatesDifference, type Discrepancy } from "./evidence"
 import { readLeanEvents } from "./events"
 import { enqueueLeanRequest, drainLeanRequests } from "./requests"
 import { leanSteps } from "./plan"
@@ -147,6 +147,18 @@ test("a verify job asks one gap against the source index; a supplied answer rest
   expect(requested).toStartWith(`evidence[0]: Unknown evidence source_id "request". Allowed source_id values: ${JSON.stringify([SOURCE])}.`)
   expect(requested).toContain("Use a matter source's exact name as source_id.")
   expect(checkGapVerify(directory, { supplied: "yes", evidence: [], limitations: [] })).toEqual(['Return JSON {"supplied":true or false,"evidence":[{"source_id","quote"}],"limitations":[]}.'])
+})
+
+test("a difference verify job asks one entry against its own passages; its reply is a differs boolean", () => {
+  const prompt = differenceVerifyPrompt({ ...ENTRY, detail: "The <b>term</b> differs.", evidence: [{ source_id: SOURCE, quote: "a <tag> quote" }] })
+  expect([...prompt.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["entry", "question", "output_contract"])
+  expect(prompt).toContain('The \\u003cb>term\\u003c/b> differs.')
+  expect(prompt).toContain(`- in "${SOURCE}": "a \\u003ctag> quote"`)
+  expect(prompt).not.toContain(ENTRY.resolution)
+  expect(prompt).toContain('<output_contract>\nReturn JSON {"differs":true} when they do, or {"differs":false} when they state it the same way.\n</output_contract>')
+  expect(checkDifferenceVerify({ differs: true })).toEqual([])
+  expect(checkDifferenceVerify({ differs: false })).toEqual([])
+  for (const value of [{ differs: "no" }, {}, [], null]) expect(checkDifferenceVerify(value)).toEqual(['Return JSON {"differs":true} or {"differs":false}.'])
 })
 
 test("later answers and same-name source revisions invalidate dependent work", () => {

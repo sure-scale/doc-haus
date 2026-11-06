@@ -57,6 +57,12 @@ export type LeanEventName =
    * a saved answer or never passed, and how many claims stood or a source
    * contradicted, as `counts`. */
   | "spine_absence"
+  /** The discrepancy stage's record (discrepancy.ts), as `counts`: the
+   * differences listed, how many their verify jobs dropped as stating the
+   * point the same way and how many went unchecked; the gaps listed, how many
+   * their verify jobs found supplied, how many went unchecked and how many
+   * restated a difference. */
+  | "discrepancy_record"
 
 export type LeanEvent = {
   stage: StageID | "run"
@@ -80,7 +86,7 @@ export type LeanEvent = {
   /** Milliseconds of deterministic work: on checker events the reply's check, on
    * started and skipped events keying the step and deciding whether to skip it. */
   check_ms?: number
-  /** Act-record, spine-split and spine-absence events: the record's counts. */
+  /** Act-record, spine-split, spine-absence and discrepancy-record events: the record's counts. */
   counts?: Record<string, number>
   /** Act-record events: each job's check, "passed", "failed" or, for WHO and
    * HOW with no listed act, "not_asked". */

@@ -1,6 +1,6 @@
 import { parallel } from "./checklist-flow"
 import { appendLeanEvent, leanElapsedMs } from "./events"
-import { checkDifferences, checkGaps, checkGapVerify, acceptEvidenceReply, evidencePrompt, gapsPrompt, gapVerifyPrompt, quoteKey, restatesDifference, type Discrepancy, type Gap, type GapVerify } from "./evidence"
+import { checkDifferences, checkDifferenceVerify, checkGaps, checkGapVerify, acceptEvidenceReply, differenceVerifyPrompt, evidencePrompt, gapsPrompt, gapVerifyPrompt, quoteKey, restatesDifference, type Discrepancy, type Gap, type GapVerify } from "./evidence"
 import { parseJsonObject } from "./checks"
 import { INSTRUCTIONS_FILE } from "./instructions"
 import { retryPrompt } from "./prompts"
@@ -14,22 +14,24 @@ import { hashStageInputs, readLeanJson, writeLeanText, type LeanStageState, type
 // dates, figures, versions and instructions, as the stage did before it listed
 // gaps. GAPS, shown the lawyer's words and the instruction list, lists what the
 // work must settle that the sources leave silent or only one source speaks to.
-// The two run in parallel. Each gap then gets a VERIFY job of its own, run in
-// parallel within the workflow limit: does a matter source supply it? Code
-// writes discrepancy.json once (assembleDiscrepancy), checked as a whole by
-// checkEvidence. Each job's accepted reply is saved under its own content key,
-// so a resume, or a new instruction list (which only GAPS reads), runs only the
-// jobs whose answer is missing.
+// The two run in parallel. Each difference and each gap then gets a VERIFY job
+// of its own, run in parallel within the workflow limit: do the difference's
+// passages state its point differently? does a matter source supply the gap?
+// A difference whose passages agree is dropped. Code writes discrepancy.json
+// once (assembleDiscrepancy), checked as a whole by checkEvidence, and records
+// its counts in one discrepancy_record event. Each job's accepted reply is
+// saved under its own content key, so a resume, or a new instruction list
+// (which only GAPS reads), runs only the jobs whose answer is missing.
 
 const DIFFERENCES_FILE = "discrepancy-differences.json"
 const GAPS_FILE = "discrepancy-gaps.json"
 const VERIFY_FILE = "discrepancy-verify.json"
+const DIFFERS_FILE = "discrepancy-differs.json"
 /** Added to a gap whose verify job never passed its check: the gap stands. */
 export const UNVERIFIED_GAP = "Whether a matter source supplies this point could not be checked, so it stays a gap."
 
 type Differences = { key: string; entries: Discrepancy[]; limitations: string[] }
 type Gaps = { key: string; gaps: Gap[]; limitations: string[] }
-type Verified = GapVerify & { key: string }
 /** A job's accepted answer, or how the stage stops. */
 type Outcome<T> = { value: T } | { stop: Extract<StageRun, { status: "failed" | "restart" }> }
 
@@ -42,6 +44,9 @@ const gapsKey = (directory: string) => hashStageInputs("discrepancy", LEAN_PROMP
 /** A verify job's key: the sources it searches and the gap it is shown. */
 const verifyKey = (inputs: ReturnType<typeof sourceInputs>, gap: Gap) =>
   hashStageInputs("discrepancy", LEAN_PROMPT_VERSION, [...inputs, { name: "gap", bytes: JSON.stringify([gap.detail, gap.requirement.source_id, gap.requirement.quote]) }])
+/** A difference verify job's key: the sources and the entry and passages it is shown. */
+const differsKey = (inputs: ReturnType<typeof sourceInputs>, entry: Discrepancy) =>
+  hashStageInputs("discrepancy", LEAN_PROMPT_VERSION, [...inputs, { name: "entry", bytes: JSON.stringify([entry.detail, entry.evidence.map(ref => [ref.source_id, ref.quote])]) }])
 
 export async function runDiscrepancyStage(directory: string, state: LeanState, deps: LeanDeps, progress: (patch: Partial<LeanStageState>) => void): Promise<StageRun> {
   const agent = LEAN_STAGE_AGENTS.discrepancy
@@ -99,27 +104,53 @@ export async function runDiscrepancyStage(directory: string, state: LeanState, d
     return { value }
   }
 
-  // One verify job per gap, within the workflow limit. A job that never passes
-  // leaves its gap unverified (assembleDiscrepancy). An error stops new jobs,
-  // waits for the running ones and is rethrown, so no job outlives the stage.
-  const verifyGaps = async (candidates: Gap[]): Promise<Outcome<(GapVerify | undefined)[]>> => {
-    const saved = (readLeanJson(directory, VERIFY_FILE) as { records?: Verified[] } | undefined)?.records ?? []
-    const jobKeys = candidates.map(gap => verifyKey(inputs, gap))
-    const records = jobKeys.map(key => saved.find(row => row.key === key && !checkGapVerify(directory, row).length))
-    const save = () => writeLeanText(directory, VERIFY_FILE, `${JSON.stringify({ records: records.filter(row => row !== undefined) }, null, 2)}\n`)
+  // One verify job per candidate, within the workflow limit, each answer saved
+  // in `file` under its own content key. A job that never passes leaves its
+  // candidate unchecked (undefined). An error stops new jobs, waits for the
+  // running ones and is rethrown, so no job outlives the stage.
+  const verifyEach = async <T, R extends object>(file: string, label: string, candidates: T[], keyOf: (candidate: T) => string, prompt: (candidate: T) => string,
+    check: (candidate: T, value: unknown) => string[], answer: (value: Record<string, unknown>) => R): Promise<Outcome<(R | undefined)[]>> => {
+    const saved = (readLeanJson(directory, file) as { records?: (R & { key: string })[] } | undefined)?.records ?? []
+    const jobKeys = candidates.map(keyOf)
+    const records = jobKeys.map((key, index) => saved.find(row => row.key === key && !check(candidates[index]!, row).length))
+    const save = () => writeLeanText(directory, file, `${JSON.stringify({ records: records.filter(row => row !== undefined) }, null, 2)}\n`)
     const stopped: { error?: { cause: unknown }; restart?: boolean } = {}
     await parallel(jobKeys, async (key, index) => {
       if (records[index] || stopped.error || stopped.restart) return
       try {
-        const asked = await job(`verify gap ${index + 1}`, gapVerifyPrompt(directory, candidates[index]!), value => checkGapVerify(directory, value))
+        const candidate = candidates[index]!
+        const asked = await job(`${label} ${index + 1}`, prompt(candidate), value => check(candidate, value))
         if (!asked.value) return
         if (sourcesChanged()) { stopped.restart = true; return }
-        records[index] = { key, supplied: asked.value.supplied as boolean, evidence: asked.value.evidence as SourceQuote[], limitations: asked.value.limitations as string[] }
+        records[index] = { key, ...answer(asked.value) }
         save()
       } catch (error) { stopped.error ??= { cause: error } }
     })
     if (stopped.error) throw stopped.error.cause
     return stopped.restart ? restart : { value: records }
+  }
+
+  // A gap whose verify job never passes stays unverified (assembleDiscrepancy).
+  const verifyGaps = (candidates: Gap[]) => verifyEach<Gap, GapVerify>(VERIFY_FILE, "verify gap", candidates, gap => verifyKey(inputs, gap), gap => gapVerifyPrompt(directory, gap),
+    (_gap, value) => checkGapVerify(directory, value),
+    value => ({ supplied: value.supplied as boolean, evidence: value.evidence as SourceQuote[], limitations: value.limitations as string[] }))
+
+  // Whether each difference's passages state its point differently; undefined
+  // when its verify job never passed, or when it quotes no passage to compare.
+  const verifyDifferences = async (entries: Discrepancy[]): Promise<Outcome<(boolean | undefined)[]>> => {
+    const quoted = entries.filter(entry => entry.evidence.length)
+    const verified = await verifyEach(DIFFERS_FILE, "verify difference", quoted, entry => differsKey(inputs, entry), differenceVerifyPrompt,
+      (_entry, value) => checkDifferenceVerify(value), value => ({ differs: value.differs as boolean }))
+    if ("stop" in verified) return verified
+    const answers = new Map(quoted.map((entry, index) => [entry, verified.value[index]?.differs]))
+    return { value: entries.map(entry => answers.get(entry)) }
+  }
+
+  const comparedAndVerified = async (): Promise<Outcome<{ differences: Differences; differs: (boolean | undefined)[] }>> => {
+    const compared = await differences()
+    if ("stop" in compared) return compared
+    const verified = await verifyDifferences(compared.value.entries)
+    return "stop" in verified ? verified : { value: { differences: compared.value, differs: verified.value } }
   }
 
   const listedAndVerified = async (): Promise<Outcome<{ gaps: Gaps; verified: (GapVerify | undefined)[] }>> => {
@@ -129,9 +160,10 @@ export async function runDiscrepancyStage(directory: string, state: LeanState, d
     return "stop" in verified ? verified : { value: { gaps: listed.value, verified: verified.value } }
   }
 
-  // DIFFERENCES runs beside GAPS and its verify jobs. Both settle before the
-  // stage does, so neither outlives it; an error from either is rethrown.
-  const running = [differences(), listedAndVerified()] as const
+  // DIFFERENCES and its verify jobs run beside GAPS and its verify jobs. Both
+  // settle before the stage does, so neither outlives it; an error from either
+  // is rethrown.
+  const running = [comparedAndVerified(), listedAndVerified()] as const
   await Promise.allSettled(running)
   const [compared, listed] = [await running[0], await running[1]]
   if ("stop" in compared || "stop" in listed) {
@@ -139,13 +171,23 @@ export async function runDiscrepancyStage(directory: string, state: LeanState, d
     const reasons = stops.flatMap(row => row.status === "failed" ? [row.reason] : [])
     return reasons.length < stops.length ? { status: "restart" } : { status: "failed", reason: reasons.join(" ") }
   }
-  const assembled = assembleDiscrepancy(compared.value, listed.value.gaps, listed.value.verified)
+  // A difference whose verify job found its passages agree is dropped; an unchecked one stands.
+  const { differences: found, differs } = compared.value
+  const entries = found.entries.filter((_entry, index) => differs[index] !== false)
+  const assembled = assembleDiscrepancy({ entries, limitations: found.limitations }, listed.value.gaps, listed.value.verified)
+  const supplied = assembled.supplied?.length ?? 0
+  appendLeanEvent(directory, { stage: "discrepancy", event: "discrepancy_record", counts: {
+    differences: found.entries.length, differences_dropped: found.entries.length - entries.length,
+    differences_unchecked: found.entries.filter((entry, index) => entry.evidence.length && differs[index] === undefined).length,
+    gaps: listed.value.gaps.gaps.length, gaps_supplied: supplied, gaps_unchecked: listed.value.verified.filter(row => !row).length,
+    gaps_restated: listed.value.gaps.gaps.length - assembled.gaps.length - supplied,
+  } })
   const accepted = acceptEvidenceReply(directory, "discrepancy", JSON.stringify(assembled))
   if (accepted.issues.length) return { status: "failed", reason: `discrepancy: ${accepted.issues.join(" ")}` }
   return { status: "done", outputs: accepted.outputs, openItems: accepted.openItems }
 }
 
-/** discrepancy.json, in order: the differences' entries; then the gaps no
+/** discrepancy.json, in order: the differences' kept entries; then the gaps no
  * matter source supplies, each with any passage its verify job found speaking
  * to it, less any that restates a difference (restatesDifference); then, under
  * `supplied`, the gaps a source supplies, each with the words that supply it.
