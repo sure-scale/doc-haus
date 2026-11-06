@@ -50,6 +50,8 @@ export interface SessionCompactionResult {
 }
 
 export interface SessionCompaction extends SessionContext {
+  /** Replace the summary instruction appended after history; Markdown headings define the expected format. */
+  prompt?: string
   /** Set to use this compaction and skip the model request. */
   result?: SessionCompactionResult
 }

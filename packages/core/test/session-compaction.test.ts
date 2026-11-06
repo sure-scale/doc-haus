@@ -75,7 +75,13 @@ const client = Layer.mock(LLMClient.Service)({
       Stream.drain,
       Stream.concat(
         Stream.make(
-          LLMEvent.textDelta({ id: "summary", text: "## Objective\n- manual summary" }),
+          LLMEvent.textDelta({
+            id: "summary",
+            // A plugin-supplied template gets a reply in its own format.
+            text: JSON.stringify(request.messages.at(-1)).includes("## Matter Handoff")
+              ? "## Matter Handoff\n- current matter state"
+              : "## Objective\n- manual summary",
+          }),
           LLMEvent.stepFinish({
             index: 0,
             reason: { normalized: "stop" },
@@ -1398,5 +1404,37 @@ it.effect("compaction summarizes as usual when the background summary no longer 
       model: { ...resolved, ref: { ...resolved.ref, id: Model.ID.make("other") } },
     }
     expect(yield* compactAfterPrecompute(history.due, switched)).toContain("Third answer")
+  }),
+)
+
+it.effect("compaction uses a hook-supplied prompt and validates its headings", () =>
+  Effect.gen(function* () {
+    requests = []
+    const hooks = yield* PluginHooks.Service
+    const store = yield* SessionStore.Service
+    const sessionID = Session.ID.make("ses_custom_compaction")
+    const session = yield* insertSession(sessionID)
+    yield* hooks.register("session", "compaction", (event) =>
+      Effect.sync(() => {
+        event.prompt = "Create the current matter handoff.\n## Matter Handoff\n- [current state]"
+      }),
+    )
+    const messages = [
+      SessionMessage.User.make({
+        id: SessionMessage.ID.create(),
+        type: "user",
+        text: "Review this document.",
+        time: { created: DateTime.makeUnsafe(0) },
+      }),
+    ]
+    expect(yield* compactManually(session, messages, SessionMessage.ID.make("msg_custom_compaction"))).toEqual({
+      status: "completed",
+    })
+    expect(requests).toHaveLength(1)
+    expect(JSON.stringify(requests[0]?.messages.at(-1))).toContain("## Matter Handoff")
+    expect(JSON.stringify(requests[0]?.messages.at(-1))).not.toContain("## Relevant Files")
+    expect(yield* store.context(sessionID)).toMatchObject([
+      { type: "compaction", summary: "## Matter Handoff\n- current matter state" },
+    ])
   }),
 )

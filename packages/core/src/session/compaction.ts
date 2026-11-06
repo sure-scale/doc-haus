@@ -465,10 +465,15 @@ export const layer = Layer.effect(
       const keepID = background ? undefined : split.keepID
 
       const previous = previousCompaction(messages)
-      const prompt = buildPrompt(previous !== undefined, previous?.summary.includes(LEGACY_HEADING) ?? false)
-      const headings = SUMMARY_TEMPLATE.split("\n").filter((line) => line.startsWith("##"))
-      const filled = (text: string) => text.split("\n").some((line) => headings.includes(line.trim()))
       const prepared = yield* prepare(context, messages, budget)
+      // A compaction hook may replace the summary instruction; its Markdown headings then define a filled reply.
+      const custom = prepared.event.prompt
+      const prompt = custom ?? buildPrompt(previous !== undefined, previous?.summary.includes(LEGACY_HEADING) ?? false)
+      const headings = (custom ?? SUMMARY_TEMPLATE).split("\n").filter((line) => line.startsWith("##"))
+      const filled = (text: string) =>
+        headings.length > 0
+          ? text.split("\n").some((line) => headings.includes(line.trim()))
+          : text.trim().length > 0
       // Size the unchanged request with the number that decided to compact: the last response's count plus an
       // estimate of what came after it. Characters overstate a conversation whose old reasoning the provider drops.
       // A hook can still make this request larger than that count; the provider then rejects it and it is resent as
