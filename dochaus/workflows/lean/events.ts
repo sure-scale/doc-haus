@@ -47,6 +47,11 @@ export type LeanEventName =
    * and how many VERIFY excluded or merged, and how many acts record a conflict
    * as `counts`, and whether each job passed its check as `jobs`. */
   | "act_record"
+  /** The spine step's split of its entries into atoms (spine-split.ts): how
+   * many entries it had, how many reused a saved split, were atomic, were
+   * split or kept as they were because their job never passed, and how many
+   * atoms spine.json holds, as `counts`. */
+  | "spine_split"
 
 export type LeanEvent = {
   stage: StageID | "run"
@@ -70,7 +75,7 @@ export type LeanEvent = {
   /** Milliseconds of deterministic work: on checker events the reply's check, on
    * started and skipped events keying the step and deciding whether to skip it. */
   check_ms?: number
-  /** Act-record events: the record's counts. */
+  /** Act-record and spine-split events: the record's counts. */
   counts?: Record<string, number>
   /** Act-record events: each job's check, "passed", "failed" or, for WHO and
    * HOW with no listed act, "not_asked". */

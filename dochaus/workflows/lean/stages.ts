@@ -90,6 +90,9 @@ const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
 const GATE_CONTRACT = "checklist-open-delivery-6"
 /** Keys the act-record step: a change to its jobs, prompts or checks re-runs it. */
 const ACT_RECORD_CONTRACT = "act-record-7"
+/** Keys the spine step and each saved split of one of its entries: a change to
+ * the split job's prompt or checks re-runs the step and every split. */
+export const SPINE_CONTRACT = "spine-atoms-1"
 /** Keys the guidance review: its guidance list and the template's focus. */
 const GUIDANCE_REVIEW_CONTRACT = "template-guidance-1"
 export const LEAN_MAX_RETRIES = 3
@@ -124,6 +127,8 @@ export const LEAN_STAGE_AGENTS = {
   placement: "lean-placement",
   // A job of the outline, not a stage: it reads the files the lawyer asks to receive.
   files: "lean-files",
+  // A job of the spine, not a stage: it splits one spine entry into atoms that each state one point.
+  split: "lean-spine-split",
   // A job of the asking step, not a stage: it advises on one question before it is recorded.
   advise: "lean-advise",
   // A job of taking an answer, not a stage: it reads how the lawyer's own words answer one question.
@@ -298,8 +303,8 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   }
   // The act record reads the instructions, the sources and the approved research; it runs before the spine and reads no discrepancy record.
   if (step === "acts") return [...outlineInputs(directory), file("intake.json"), file("research.json"), file("research-review.json"), { name: "act-record-contract", bytes: ACT_RECORD_CONTRACT }]
-  // The spine is shown the act record when it plans documents, parties and signatories.
-  if (step === "spine") return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), file("discrepancy.json"), file("intake.json"), file("research.json"), file("research-review.json"), file("acts.json")]
+  // The spine is shown the act record when it plans documents, parties and signatories; its entries are then split into atoms.
+  if (step === "spine") return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), file("discrepancy.json"), file("intake.json"), file("research.json"), file("research-review.json"), file("acts.json"), { name: "spine-contract", bytes: SPINE_CONTRACT }]
   // Applied deletion evidence includes the original paragraph's exact wording.
   if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(reviewStages(directory, id).includes("review-playbook") ? [file(`${id}/review-playbook.json`)] : [])]),
     packageReviewOpenItems(directory)]

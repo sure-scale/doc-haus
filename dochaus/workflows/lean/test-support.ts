@@ -82,6 +82,8 @@ export function scriptedModel(replies: Record<string, Reply>) {
         [AGENT.instructions]: () => JSON.stringify({ items: [], documents: [] }),
         [AGENT.discrepancy]: () => JSON.stringify({ entries: [], gaps: [], limitations: [] }),
         [AGENT.spine]: () => JSON.stringify({ entries: [], limitations: [] }),
+        // Every spine entry already states one point.
+        [AGENT.split]: () => JSON.stringify({ atomic: true }),
         [AGENT["review-independent"]]: () => NO_FINDINGS,
         [AGENT["review-wording"]]: () => NO_FINDINGS,
         [AGENT["review-client-disadvantage"]]: () => NO_FINDINGS,

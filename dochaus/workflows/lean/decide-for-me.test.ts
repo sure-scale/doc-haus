@@ -190,7 +190,8 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // step when it began reading that list to list gaps. Every key that reads
 // plan.json was re-pinned when whom the lawyer acts for gained its basis
 // (dochaus.lean.plan/2). The draft step was re-pinned when the outline
-// contract gained the statement form (statement-form-12).
+// contract gained the statement form (statement-form-12). The spine was
+// re-pinned when its entries began to be split into atoms (spine-atoms-1).
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", `  A (${ADOPTED_ANSWER}): Singapore law.`)
 // A draft keys its outline contract and plan entry, never answers.
@@ -202,7 +203,7 @@ const INPUTS: Record<string, string> = {
   "research": "64a0d22c3dd780907955b2e56b3122b94ea72101092d694f899a15e2af0cb13b",
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
   "acts": "ff830f3d37f64416362401fa66710c9fc8e770429b6bc5f2af84baffd3f35a3c",
-  "spine": "2202a864334a3d94bdc8736e01051643ef15f12485641538cf68eac856dc7b89",
+  "spine": "e4baff1fa3e85705b673d13d2150b37202f45fc4a4ca40ee4568e0079ba0ebf7",
   "d1.draft": "663b9e87a5aec75663ee7ceb506ec7fbae9f26d259800896e22998d27c822008",
   "d1.review": "f92e8b2f697df753f08ff89503d1c092d84fd980a5649ffa77627092541a4a74",
   "d1.review-independent": "d6b17a179c121993a0115e9cb582a88041569779f0b458d6092ef4d7917dd477",

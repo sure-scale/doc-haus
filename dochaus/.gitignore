@@ -53,6 +53,7 @@ agent/*.md
 !agent/lean-review-client-disadvantage.md
 !agent/lean-spine.md
 !agent/lean-spine-level.md
+!agent/lean-spine-split.md
 !agent/narrator.md
 !agent/legal-review.md
 !agent/obligations.md
