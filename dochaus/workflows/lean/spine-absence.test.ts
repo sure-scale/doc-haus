@@ -44,6 +44,10 @@ test("the classifier reads one entry's kind, detail and limitations; the verifie
   for (const tag of ["sources", "entry", "claim", "question"]) expect(verify).toContain(`<${tag}>`)
   expect(verify).toContain(`- ${SOURCE}\n`)
   expect(verify).toContain(`<claim>\nThe entry says the sources do not record: ${CLAIM}\n</claim>`)
+  // Only a passage that sets the thing itself out records it; naming or locating it does not.
+  expect(verify).toContain("- A passage records the thing only when it sets the thing itself out (the term, figure, text or form). " +
+    "A passage that names it, refers to it, attaches part of it, says where it is or what it must be does not.\n")
+  expect(verify).not.toContain("only touches the same subject")
   // The sources come first, so the prefix every claim shares caches across the jobs.
   expect(verify.indexOf("<sources>")).toBeLessThan(verify.indexOf("<entry>"))
 })

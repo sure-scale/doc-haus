@@ -146,6 +146,21 @@ test("a figure carries a currency sign or %, a decimal point or thousands separa
   expect(numbers("§ 3 of the 2025 terms: $1,500")).toEqual(["3", "2025", "1500"])
 })
 
+test("an id's digits are no number, and a dotted number after a reference label is a reference, not a figure", () => {
+  // Digits attached to a letter, "-" or "_" are part of an id.
+  for (const text of ["q-3", "src_12", "a1", "src_12345", "item A12345", "v1.2"]) {
+    expect({ text, figures: figures(text) }).toEqual({ text, figures: [] })
+    expect({ text, numbers: numbers(text) }).toEqual({ text, numbers: [] })
+  }
+  for (const text of ["Section 7.12(c)", "sections 7.12", "clause 4.2", "Art. 3.1", "para. 12.5", "§ 4.2", "§§4.2", "Schedule 2.1"])
+    expect({ text, figures: figures(text) }).toEqual({ text, figures: [] })
+  expect(numbers("Section 7.12(c)")).toEqual(["7.12"])
+  // Money, percentages and decimals stay figures, in a text that cites a part too.
+  for (const [text, stated] of [["$1,500,000", ["1500000"]], ["12.5%", ["12.5"]], ["5-10%", ["10"]], ["a rate of 2.5", ["2.5"]], ["the section's 12.5% fee", ["12.5"]],
+    ["Section 3 sets a fee of $1,500.50", ["1500.50"]], ["Clause 4: 45000 units", ["45000"]]] as const)
+    expect({ text, figures: figures(text) }).toEqual({ text, figures: [...stated] })
+})
+
 test("a spine entry's bare small numbers, years and dates are not asked of its quotes; a figure stated in any form is quoted", () => {
   const directory = matter(PRICED)
   expect(checkEvidence(directory, "spine", priced("Under clause 3 of the 2025 terms, delivery is due 15 days after 1 March 2026 (item 2).", ["Payment is due on delivery."]))).toEqual([])

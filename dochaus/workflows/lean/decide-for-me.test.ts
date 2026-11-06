@@ -205,7 +205,9 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // keeping the accepted entries beside their atoms, a figure became one with a
 // sign, a decimal point, separators or five digits, and its entries' absence
 // claims began to be verified (spine-atoms-5); every step after the spine,
-// other than the draft, was re-pinned then for keying the atoms.
+// other than the draft, was re-pinned then for keying the atoms. The spine
+// alone was re-pinned when an id's digits stopped being read as a number and a
+// dotted number after a reference label as a figure (spine-atoms-6).
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", `  A (${ADOPTED_ANSWER}): Singapore law.`)
 // A draft keys its outline contract and plan entry, never answers.
@@ -217,7 +219,7 @@ const INPUTS: Record<string, string> = {
   "research": "64a0d22c3dd780907955b2e56b3122b94ea72101092d694f899a15e2af0cb13b",
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
   "acts": "ff830f3d37f64416362401fa66710c9fc8e770429b6bc5f2af84baffd3f35a3c",
-  "spine": "c863ba664639c6debfecd74cd86481a53c64ccdad550d37adacc96c4eb0e630f",
+  "spine": "9b2eeb481a99d1b2b9d4b09791b0fbd617d6df8f96c850a6e71f311a9236882b",
   "d1.draft": "6893cde874f1d5701164ae1a0c6e7bdaceeb8bb0549142d13cc5796001d77991",
   "d1.review": "23af042296cf7f7d3ee97332f0caaf1fac7ab240199ce23d96a33f9c65fc2693",
   "d1.review-independent": "ae78dbf15aa677be04d6d44d0b91d63c34fd2fa03754e51350a6941413143d70",

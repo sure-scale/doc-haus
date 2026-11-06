@@ -95,7 +95,7 @@ const ACT_RECORD_CONTRACT = "act-record-7"
  * the spine's checks (its absence-claim jobs included, spine-absence.ts), the
  * split job's prompt or checks, or the files the step writes re-runs the step
  * and every split. */
-export const SPINE_CONTRACT = "spine-atoms-5"
+export const SPINE_CONTRACT = "spine-atoms-6"
 /** Keys the guidance review: its guidance list and the template's focus. */
 const GUIDANCE_REVIEW_CONTRACT = "template-guidance-1"
 export const LEAN_MAX_RETRIES = 3

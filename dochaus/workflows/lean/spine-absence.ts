@@ -82,7 +82,7 @@ export function absenceVerifyPrompt(sources: string[], entry: AbsenceEntry, clai
     tagged("question", [
       "Does any source record it?",
       "- Search the sources for it, by its words and by what it means, and read each passage you find.",
-      "- A passage counts only when it records the thing itself, not when it only touches the same subject.",
+      "- A passage records the thing only when it sets the thing itself out (the term, figure, text or form). A passage that names it, refers to it, attaches part of it, says where it is or what it must be does not.",
       '- When a source records it, reply {"verdict":"contradicted","source_id":"one of the source_id values above","quote":"that source\'s exact words that record it"}. Copy one continuous passage verbatim, without an ellipsis.',
       '- When no source records it, reply {"verdict":"stands"}.',
       "- Reply with the JSON object only.",
