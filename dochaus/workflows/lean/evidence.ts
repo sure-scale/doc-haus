@@ -10,6 +10,7 @@ import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../l
 import type { StageAcceptance } from "./stages"
 
 export type EvidenceStage = "discrepancy" | "spine"
+export const SPINE_KINDS = ["decision", "recommendation", "requirement", "fact", "open-item"] as const
 export type EvidenceEntry = { detail: string; evidence: SourceQuote[]; limitations: string[] }
 export type Discrepancy = EvidenceEntry & { material: boolean; status: "resolved" | "unresolved" | "verify-source" | "benign"; resolution: string }
 /** A point the request or instructions need that no source settles; lawyer
@@ -27,7 +28,7 @@ export function checkEvidence(directory: string, stage: EvidenceStage, value: un
     const issues = row.evidence.flatMap((ref: unknown) => quoteIssues(directory, sources, ref))
     if (!row.evidence.length && !row.limitations.length) issues.push("An entry without evidence must disclose its uncertainty in limitations.")
     if (stage === "discrepancy") issues.push(...discrepancyIssues(row, index))
-    if (stage === "spine" && !["decision", "recommendation", "requirement", "fact", "open-item"].includes(String(row.kind)))
+    if (stage === "spine" && !(SPINE_KINDS as readonly string[]).includes(String(row.kind)))
       issues.push("A spine entry kind must be decision, recommendation, requirement, fact or open-item.")
     if (stage === "spine" && "question_id" in row) issues.push("A spine entry takes no question_id; remove it.")
     return issues
@@ -78,14 +79,20 @@ function discrepancyIssues(row: Record<string, unknown>, index: number) {
   return issues
 }
 
-export function acceptEvidenceReply(directory: string, stage: EvidenceStage, reply: string): StageAcceptance {
+/** The reply's checked value, or the issues a retry must correct. */
+export function checkEvidenceReply(directory: string, stage: EvidenceStage, reply: string): { issues: string[]; value?: Record<string, unknown> } {
   let value: unknown
   try { value = JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {
-    return { issues: ["Reply with the requested JSON object only."], outputs: [], openItems: [] }
+    return { issues: ["Reply with the requested JSON object only."] }
   }
   const issues = checkEvidence(directory, stage, value)
-  if (issues.length) return { issues, outputs: [], openItems: [] }
-  writeLeanText(directory, `${stage}.json`, `${JSON.stringify(value, null, 2)}\n`)
+  return issues.length ? { issues } : { issues: [], value: value as Record<string, unknown> }
+}
+
+export function acceptEvidenceReply(directory: string, stage: EvidenceStage, reply: string): StageAcceptance {
+  const checked = checkEvidenceReply(directory, stage, reply)
+  if (!checked.value) return { issues: checked.issues, outputs: [], openItems: [] }
+  writeLeanText(directory, `${stage}.json`, `${JSON.stringify(checked.value, null, 2)}\n`)
   return { issues: [], outputs: [`${stage}.json`], openItems: [] }
 }
 
