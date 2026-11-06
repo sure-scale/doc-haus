@@ -122,7 +122,7 @@ describe("the Memo line names one planned document", () => {
     expect(parsePlan(outline("Memo: Advice Memo", ...memo, document("Supply note")), request).issues[0]).toContain('The "Memo:" line names "Advice Memo", but the request does not use those words.')
   })
 
-  test("without a Memo line, the one document titled a memo and planned as advice is the memo, planned last", () => {
+  test("without a Memo line, the one document planned as advice, when no other is, is the memo whatever its title, planned last", () => {
     const request = "Please prepare the supply note and cover-memo-to-client.docx."
     const memo = ["# Cover Memo to Client", "Form: advice", "## Terms", "What it covers."]
     const parsed = parsePlan(outline(...memo, document("Supply note")), request)
@@ -131,16 +131,27 @@ describe("the Memo line names one planned document", () => {
     expect(parsed.value?.documents.map(row => row.title)).toEqual(["Supply note", "Cover Memo to Client"])
     expect(parsed.value?.documents[1]).toMatchObject({ form: "advice", executed_by: [], mode: "new" })
 
-    // Not when it is planned in another form, another document is advice too,
-    // or two documents are titled memos: the plan is as outlined.
+    // Its title need not call it a memo, and another document titled one does
+    // not stop it.
+    const adopted = (...lines: string[]) => {
+      const plan = parsePlan(outline(...lines), request).value
+      return [plan?.memo, plan?.documents.map(row => [row.title, row.form])]
+    }
+    expect(adopted("# Advice on Pricing", "Form: advice", "## Terms", document("Supply note")))
+      .toEqual(["Advice on Pricing", [["Supply note", "other"], ["Advice on Pricing", "advice"]]])
+    expect(adopted(...memo, document("Board Memorandum"), document("Supply note")))
+      .toEqual(["Cover Memo to Client", [["Board Memorandum", "other"], ["Supply note", "other"], ["Cover Memo to Client", "advice"]]])
+
+    // Not when it is planned in another form, an advice letter included, or
+    // another document is advice too: the plan is as outlined.
     const asOutlined = (...lines: string[]) => {
       const plan = parsePlan(outline(...lines), request).value
       expect(plan).not.toHaveProperty("memo")
       return plan?.documents.map(row => row.title)
     }
     expect(asOutlined("# Memorandum of Understanding", "Form: agreement", "## Terms", document("Supply note"))).toEqual(["Memorandum of Understanding", "Supply note"])
+    expect(asOutlined("# Cover Memo to Client", "Form: advice letter", "## Terms", document("Supply note"))).toEqual(["Cover Memo to Client", "Supply note"])
     expect(asOutlined(...memo, "# Advice on Pricing", "Form: advice", "## Terms", document("Supply note"))).toEqual(["Cover Memo to Client", "Advice on Pricing", "Supply note"])
-    expect(asOutlined(...memo, document("Board Memorandum"), document("Supply note"))).toEqual(["Cover Memo to Client", "Board Memorandum", "Supply note"])
   })
 
   test("plan.json records the memo document by its id, and an id outside the plan is not read", () => {

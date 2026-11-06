@@ -449,9 +449,11 @@ export function withRequestedNames<T extends { title: string; file?: string; del
  * with its instrument's title; a label printed as the heading keeps its text as
  * its display heading. The records' files hold the ids the documents then have.
  * Only new documents drafted without a template, comparison, left-out parts or
- * playbook to review against fold, none delivered as a redline and only the host combined
- * with the memo; a file holding any other stays as recorded, a shape the run
- * cannot build (requestedFilesItems). The memo document (`memo`, its id) never
+ * playbook to review against fold, none planned as advice or delivered as a
+ * redline and only the host combined with the memo; a file holding any other
+ * stays as recorded, a shape the run cannot build (requestedFilesItems). A
+ * document planned as advice never folds, as host or instrument: advice is
+ * not an instrument of the parties. The memo document (`memo`, its id) never
  * folds: it is joined with a document only as the combined file. With `separate` (the lawyer chose a file
  * of its own for an instrument: separateFileChosen) nothing folds. `at` gives,
  * for each outline document, the index of the document now holding it; `from`,
@@ -459,7 +461,7 @@ export function withRequestedNames<T extends { title: string; file?: string; del
 export function foldRequestedFiles<T extends Omit<PlannedDocument, "id">>(documents: T[], requested: RequestedFiles, separate = false, memo?: DocID) {
   const at = documents.map((_, index) => index)
   const foldable = (document: T, host: boolean) => (document.mode ?? "new") === "new" && !document.template && !document.comparison && !document.playbook_review?.sources.length &&
-    !document.left_out?.length && document.deliverable !== "redline" && (host || document.deliverable !== "combined") && !document.parts.some(part => part.instrument)
+    !document.left_out?.length && document.form !== "advice" && document.deliverable !== "redline" && (host || document.deliverable !== "combined") && !document.parts.some(part => part.instrument)
   if (requested.stated && !separate) for (const file of requested.files) {
     const held = [...new Set(file.holds.filter(id => id !== memo).map(id => Number(id.slice(1)) - 1))].filter(index => documents[index]).toSorted((a, b) => a - b)
     const [host, ...rest] = held

@@ -406,9 +406,10 @@ describe("sectioned draft stage", () => {
       .toEqual([{ title: "Title", purpose: "", parts: [{ heading: "One", scope: "covers the start", display_heading: "" }, { heading: "Two", scope: "", display_heading: "" }], form: "other" }])
     // Several documents: each "# " starts one, its plain lines before the first
     // part are its purpose, and the same part heading may recur across documents.
-    expect(parsePlan("Acting for: not stated\n# First\nWhat the first is for.\nForm: agreement\n## Terms\n# Second\nForm: advice\n## Terms\nCovers terms.").value?.documents).toEqual([
+    // (A lone advice document would be the memo: requested-memo-outline.test.ts.)
+    expect(parsePlan("Acting for: not stated\n# First\nWhat the first is for.\nForm: agreement\n## Terms\n# Second\nForm: letter\n## Terms\nCovers terms.").value?.documents).toEqual([
       { title: "First", purpose: "What the first is for.", parts: [{ heading: "Terms", scope: "", display_heading: "" }], form: "agreement" },
-      { title: "Second", purpose: "", parts: [{ heading: "Terms", scope: "Covers terms.", display_heading: "" }], form: "advice" },
+      { title: "Second", purpose: "", parts: [{ heading: "Terms", scope: "Covers terms.", display_heading: "" }], form: "letter" },
     ])
   })
 

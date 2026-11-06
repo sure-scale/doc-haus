@@ -56,6 +56,12 @@ describe("one named file holding two planned documents", () => {
     unchanged([RESOLUTION, { ...LETTER, playbook_review: { sources: [{ source_id: "s1", quote: "Releases follow approval." }], reason: "The firm's release playbook." } }], { stated: true, files: [PACKED] })
   })
 
+  test("never folds a document planned as advice, as host or instrument; an advice letter still folds", () => {
+    for (const documents of [[RESOLUTION, { ...LETTER, form: "advice" as const }], [{ ...RESOLUTION, form: "advice" as const }, LETTER]])
+      expect(foldRequestedFiles(documents, { stated: true, files: [PACKED] })).toMatchObject({ documents, applied: [] })
+    expect(foldRequestedFiles([RESOLUTION, { ...LETTER, form: "advice letter" }], { stated: true, files: [PACKED] }).documents).toHaveLength(1)
+  })
+
   test("folds when the outline records that no playbook applies", () => {
     const none = { sources: [], reason: "No playbook supplied." }
     expect(foldRequestedFiles([{ ...RESOLUTION, playbook_review: none }, { ...LETTER, playbook_review: none }], { stated: true, files: [PACKED] }).documents).toHaveLength(1)

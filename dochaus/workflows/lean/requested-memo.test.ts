@@ -83,14 +83,13 @@ describe("the outline's Memo line", () => {
     expect(parsePlan(outline("Memo: advice letter", "Advice letter"))).toEqual({ issues: [], value: expect.objectContaining({ memo: "advice letter" }) })
   })
 
-  test("a name fits in 60 characters and carries no character a file name cannot", () => {
+  test("a name is a title: held to whole words the request uses, whatever its length, and carrying no character a file name cannot", () => {
     // Whole words the request uses: a name is never named by a word it cuts.
-    const name = `cover memo ${"x".repeat(49)}`
-    const long = `${name}x`
+    const name = `cover memo ${"x".repeat(109)}`
     const request = `${REQUEST} Title it ${name}.`
     expect(parsePlan(outline(`Memo: ${name}`, name), request)).toEqual({ issues: [], value: expect.objectContaining({ memo: name }) })
     expect(parsePlan(outline(`Memo: ${name.slice(0, -1)}`), request).issues.join(" ")).toContain("the request does not use those words")
-    for (const line of [`Memo: ${long}`, ...["\\", ":", "*", "?", '"', "<", ">", "|"].map(mark => `Memo: cover${mark}memo`)]) {
+    for (const line of ["\\", ":", "*", "?", '"', "<", ">", "|"].map(mark => `Memo: cover${mark}memo`)) {
       const parsed = parsePlan(outline(line))
       expect(parsed.issues.join(" ")).toContain("cannot be part of a file name")
       expect(parsed.value).not.toHaveProperty("memo")
@@ -101,7 +100,7 @@ describe("the outline's Memo line", () => {
     const ungrounded = parsePlan(outline("Memo: advice letter"), REQUEST)
     expect(ungrounded.issues.join(" ")).toContain('The "Memo:" line names "advice letter", but the request does not use those words.')
     expect(ungrounded.value).not.toHaveProperty("memo")
-    for (const line of ["Memo: cover memo/notes", "Memo: cover-memo.docx", `Memo: ${"cover memo ".repeat(7)}`]) {
+    for (const line of ["Memo: cover memo/notes", "Memo: cover-memo.docx"]) {
       const parsed = parsePlan(outline(line), REQUEST)
       expect(parsed.issues.join(" ")).toContain("cannot be part of a file name")
       expect(parsed.value).not.toHaveProperty("memo")
