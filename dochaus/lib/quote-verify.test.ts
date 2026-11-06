@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite"
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { elidedParts, elisionGap, locateElidedQuote, normalizeWithMap, sourceReadings, verifyQuote, type QuoteChunk } from "./quote-verify"
+import { elidedParts, elisionGap, locateElidedQuote, nearSpan, normalizeWithMap, sourceReadings, verifyQuote, type QuoteChunk } from "./quote-verify"
 
 const directories: string[] = []
 afterEach(() => directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true })))
@@ -265,4 +265,30 @@ test("an elided quotation's bracketed change of case is located, and what the el
     passage: elisionGap(text, elidedParts("[t]he Tenant shall pay promptly …")!),
     wrongLetter: elisionGap(text, elidedParts("[s]he Tenant shall pay promptly …")!),
   }).toEqual({ joined: { kind: "near", omitted: "promptly and in full" }, passage: { kind: "near", omitted: "" }, wrongLetter: null })
+})
+
+test("a near-miss quotation is shown the cited document's own words, and only a near one", () => {
+  const text = "In this agreement “Delivery Date” means the date set out in clause 10.5 of the order; the Buyer shall pay within 105 days. Fees \\(if any\\) are payable by the Buyer on demand."
+  const check = fixture([chunk(text, 0, "terms")])
+  const directory = directories.at(-1)!
+  const db = new Database(path.join(directory, ".dochaus/legal.db"))
+  db.query("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)").run("other.docx", "other", "The Seller shall pay within thirty days.", 0, 40)
+  db.close()
+  const near = (quote: string, document = "original.docx") => nearSpan({ directory, quote, document })
+  // Each of these misses verification and is shown the passage it nearly is.
+  expect(check("the buyer shall pay within 105 days").found).toBe(false)
+  expect(near("the buyer shall pay within 105 days")).toBe("the Buyer shall pay within 105 days")
+  expect(near("Delivery Date means the date set out")).toBe("“Delivery Date” means the date set out")
+  expect(near("the date set out in clause 10.5 of the order.")).toBe("the date set out in clause 10.5 of the order")
+  // A source escape is shown as the source writes it.
+  expect(near("fees (if any) are payable by the buyer")).toBe("Fees \\(if any\\) are payable by the Buyer")
+  // Nothing else is read past: a figure is never near another figure.
+  expect(near("the buyer shall pay within 10.5 days")).toBeUndefined()
+  expect(near("in clause 105 of the order")).toBeUndefined()
+  // A short quotation is too likely to be near by chance.
+  expect(near("the buyer")).toBeUndefined()
+  // Only the cited document is searched.
+  expect(near("the seller shall pay within thirty days")).toBeUndefined()
+  expect(near("the seller shall pay within thirty days", "other.docx")).toBe("The Seller shall pay within thirty days")
+  expect(near("the buyer shall pay within 105 days", "other.docx")).toBeUndefined()
 })

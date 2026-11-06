@@ -363,10 +363,11 @@ describe("lean prose quotation reading", () => {
       expect([quote, prose(directory, `The terms provide ${quote} [source: ${SOURCE}].`)]).toEqual([quote, []])
     for (const wrong of ["The Buyer shall pay the 'Deferred Price' on Completion", "The Buyer shall pay the 'Purchase Price' at signing"])
       expect([wrong, prose(directory, `The terms provide "${wrong}" [source: ${SOURCE}].`)]).toEqual([wrong, [unread(wrong)]])
-    // A source without quotation marks there does not take single ones.
+    // A source without quotation marks there does not take single ones; the
+    // miss shows the source's own words.
     const plain = matter("The Buyer shall pay the Purchase Price on Completion.")
     expect(prose(plain, `The terms provide "The Buyer shall pay the 'Purchase Price' on Completion" [source: ${SOURCE}].`))
-      .toEqual([unread("The Buyer shall pay the 'Purchase Price' on Completion")])
+      .toEqual([`The drafting notes quotes "The Buyer shall pay the 'Purchase Price' on Completion" as from "${SOURCE}", but those words are not in that document. The document reads: "The Buyer shall pay the Purchase Price on Completion". Copy those exact characters, or write [x] for a change of case.`])
     // A JSON quote field has no outer marks to nest within and stays verbatim.
     expect(quoteFound(directory, { quote: "The Buyer shall pay the 'Purchase Price' on Completion", source_id: SOURCE })).toBe(false)
   })

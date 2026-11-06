@@ -3,7 +3,7 @@ import { approvedResearch, researchSource } from "./research"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
-import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearestGap, normalize, normalizeWithMap, quotePlaces, verifyQuote } from "../../lib/quote-verify"
+import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearSpan, nearestGap, normalize, normalizeWithMap, quotePlaces, verifyQuote } from "../../lib/quote-verify"
 import type { DocID } from "./plan"
 import { INSTRUCTIONS_FILE } from "./instructions"
 import { leanUserUpdates } from "./requests"
@@ -295,7 +295,9 @@ export function derivedRecordNote(directory: string, quote: string, { adopted: q
 }
 
 /** Actionable retry feedback for one unverified quote. When the words are in a
- * different matter document, that document is named. When an ellipsis in the
+ * different matter document, that document is named; otherwise, when the named
+ * document holds them but for case, quotation marks or end punctuation
+ * (nearSpan), its own words are shown to copy. When an ellipsis in the
  * middle joins passages of the named source, the feedback says so and shows
  * the words it leaves out (or the source's own ellipsis, written differently),
  * or that the passages are apart. A passage beside an ellipsis that is too
@@ -323,6 +325,7 @@ export function quoteMissIssue(directory: string, where: string, quote: SourceQu
   const elsewhere = [...new Set(verifyQuote({ directory, quote: quote.quote }).hits.map(hit => hit.doc))]
     .filter(doc => doc !== quote.source_id)
   const short = elided?.parts.some(part => part.length < SHORT_QUOTE)
+  const near = !elsewhere.length && !short && !request && !answer && !adopted ? nearSpan({ directory, quote: quote.quote, document: quote.source_id }) : undefined
   return [
     short
       ? `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}". A passage around the "…" is too short to locate on its own.`
@@ -335,6 +338,8 @@ export function quoteMissIssue(directory: string, where: string, quote: SourceQu
         : `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in that document.`,
     elsewhere.length
       ? `They do appear in ${elsewhere.map(doc => `"${doc}"`).join(", ")}; cite that document if it is the source you meant.`
+      : near
+      ? `The document reads: "${near.replace(/\s+/g, " ")}". Copy those exact characters, or write [x] for a change of case.`
       : format === "json"
         ? "The JSON quote field requires verbatim source words. Copy them with read-document or check them with verify-quote. Record paraphrases outside source-quote entries; removing JSON string delimiters does not make a paraphrase a valid quote."
         : short

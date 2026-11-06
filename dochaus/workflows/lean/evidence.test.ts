@@ -176,7 +176,7 @@ test("user instruction evidence uses the canonical request identity and rejects 
     expect(issues[0]).toContain('source_id "request"')
     expect(issues[0]).toContain("derived records")
   }
-  expect(checkEvidence(directory, "spine", reply(SOURCE, "Unsupported words"))[0]).toContain("not found in that canonical source")
+  expect(checkEvidence(directory, "spine", reply(SOURCE, "Unsupported words"))[0]).toContain(`entries[0].evidence[0] quotes "Unsupported words" as from "${SOURCE}", but those words are not in that document.`)
   expect(evidencePrompt(directory, "spine")).toContain('source_id "request"')
 })
 
@@ -190,9 +190,7 @@ test("a rejected quotation identifies the exact evidence to correct without acce
   const rejected = `Answer: ${answer}`
   const issues = checkEvidence(directory, "spine", reply(rejected))
   expect(issues).toHaveLength(1)
-  expect(issues[0]).toContain(JSON.stringify(rejected))
-  expect(issues[0]).toContain('in "request"')
-  expect(issues[0]).toContain("not found in that canonical source")
+  expect(issues[0]).toContain(`entries[0].evidence[0] quotes ${JSON.stringify(rejected)} as from "request", but those words are not in the request`)
 })
 
 test("a child source's provenance is a separate labelled line; plain matters' prompts are unchanged", () => {
@@ -206,4 +204,19 @@ test("a child source's provenance is a separate labelled line; plain matters' pr
   expect(evidence).toContain(`Evidence source_id values: ${JSON.stringify(["request", SOURCE])}`)
   expect(evidence).toContain(`Source provenance (where each attachment or archive entry came from; display only, not part of the source names or citations): ${JSON.stringify({ [SOURCE]: "attachment of Thread.eml" })}`)
   expect(researchPrompt(directory, "intake", researchBasis(directory))).toContain(`- ${SOURCE} (provenance: attachment of Thread.eml)`)
+})
+
+test("each missed quotation is named by its entry and gets the reason it missed", () => {
+  const filler = "Each party shall bear its own costs of preparing this agreement. ".repeat(6)
+  const directory = matter(`The supplier shall deliver the goods within thirty days of the order date. ${filler}Payment is due on delivery of the goods.`)
+  const ok = { source_id: SOURCE, quote: "Payment is due on delivery of the goods." }
+  const entry = (evidence: unknown[]) => ({ kind: "decision", detail: "Follow the supplied terms", evidence, limitations: [] })
+  const check = (...evidence: unknown[]) => checkEvidence(directory, "spine", { entries: [entry([ok]), entry([ok, ...evidence])], limitations: [] })
+  // An elision across a long omitted stretch is two passages, not one quotation.
+  const [apart] = check({ source_id: SOURCE, quote: "The supplier shall deliver the goods ... Payment is due on delivery" })
+  expect(apart).toStartWith(`entries[1].evidence[1] quotes "The supplier shall deliver the goods ... Payment is due on delivery" as from "${SOURCE}"`)
+  expect(apart).toContain("in separate passages. Quote each passage as its own quotation, without an ellipsis.")
+  // A change of case alone shows the source's own words to copy.
+  const [cased] = check({ source_id: SOURCE, quote: "the supplier shall deliver the goods within thirty days" })
+  expect(cased).toContain('The document reads: "The supplier shall deliver the goods within thirty days". Copy those exact characters, or write [x] for a change of case.')
 })

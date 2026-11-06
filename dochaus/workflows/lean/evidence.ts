@@ -2,7 +2,7 @@ import { normalize } from "../../lib/quote-verify"
 import { currentInstructions, INSTRUCTIONS_FILE } from "./instructions"
 import { boundPlaybookContext } from "../../lib/playbook-source"
 import { answeredQuestionsText, readLeanJson, readLeanText, writeLeanText } from "./state"
-import { derivedRecordNote, excerpt, matterSourceIDs, REQUEST_SOURCE, quoteFound, type SourceQuote } from "./quotes"
+import { matterSourceIDs, REQUEST_SOURCE, quoteFound, quoteMissIssue, type SourceQuote } from "./quotes"
 import { parseJsonObject } from "./checks"
 import { approvedResearch, researchHandoff } from "./research"
 import { researchChecksText } from "./research-check"
@@ -35,7 +35,9 @@ function evidenceIssues(directory: string, stage: EvidenceStage, value: unknown,
   const entries = value.entries.flatMap((row: unknown, index: number) => {
     if (!record(row) || typeof row.detail !== "string" || !row.detail.trim() || !Array.isArray(row.evidence) || !strings(row.limitations))
       return ["Each entry needs detail, evidence [{source_id,quote}] and limitations arrays."]
-    const issues = row.evidence.flatMap((ref: unknown) => quoteIssues(directory, sources, ref))
+    // A miss names its entry and evidence, as discrepancy issues do, and says
+    // what is wrong with the quotation (quoteMissIssue).
+    const issues = row.evidence.flatMap((ref: unknown, at: number) => quoteIssues(directory, sources, ref, `entries[${index}].evidence[${at}]`))
     if (!row.evidence.length && !row.limitations.length) issues.push("An entry without evidence must disclose its uncertainty in limitations.")
     if (stage === "discrepancy") issues.push(...discrepancyIssues(row, index))
     if (stage === "spine" && !(SPINE_KINDS as readonly string[]).includes(String(row.kind)))
@@ -68,12 +70,11 @@ export function unquotedFigures(detail: string, quotes: string[]) {
   return [...new Set(statedFigures(detail).filter(row => !quoted.has(row.figure)).map(row => row.written))]
 }
 
-function quoteIssues(directory: string, sources: string[], ref: unknown): string[] {
-  if (!record(ref) || typeof ref.source_id !== "string" || typeof ref.quote !== "string" || !ref.quote.trim()) return ["Evidence must name a source and exact supporting quote."]
-  if (!sources.includes(ref.source_id)) return [`Unknown evidence source_id "${ref.source_id}". Allowed source_id values: ${JSON.stringify(sources)}. ${EVIDENCE_SOURCE_CONTRACT} Retrieve the canonical evidence behind a handoff or record the derived uncertainty in limitations without an evidence quotation.`]
-  if (quoteFound(directory, ref as SourceQuote)) return []
-  const derived = ref.source_id === REQUEST_SOURCE ? derivedRecordNote(directory, ref.quote) : ""
-  return [`The supporting quotation ${JSON.stringify(excerpt(ref.quote))} in ${JSON.stringify(ref.source_id)} was not found in that canonical source. ${derived ? `${derived} ` : ""}${EVIDENCE_SOURCE_CONTRACT} Copy exact supporting words from the named source or disclose the limitation without invented evidence.`]
+function quoteIssues(directory: string, sources: string[], ref: unknown, where: string): string[] {
+  if (!record(ref) || typeof ref.source_id !== "string" || typeof ref.quote !== "string" || !ref.quote.trim()) return [`${where}: evidence must name a source and exact supporting quote.`]
+  if (!sources.includes(ref.source_id)) return [`${where}: unknown evidence source_id "${ref.source_id}". Allowed source_id values: ${JSON.stringify(sources)}. ${EVIDENCE_SOURCE_CONTRACT} Retrieve the canonical evidence behind a handoff or record the derived uncertainty in limitations without an evidence quotation.`]
+  const quote = { source_id: ref.source_id, quote: ref.quote }
+  return quoteFound(directory, quote) ? [] : [quoteMissIssue(directory, where, quote, "json")]
 }
 
 // A gap rests on the words that need it: the lawyer's (source_id "request")
@@ -86,8 +87,8 @@ function gapIssues(directory: string, sources: string[], row: unknown, index: nu
   const required = requirementSources(directory)
   const issues = typeof row.requirement.source_id === "string" && !required.includes(row.requirement.source_id)
     ? [`${gap}.requirement quotes "${row.requirement.source_id}", which gives no instructions for this work. Quote the words that need the point from one of ${JSON.stringify(required)}; a point only another source raises is an entry or evidence, not a gap.`]
-    : quoteIssues(directory, sources, row.requirement).map(issue => `${gap}.requirement: ${issue}`)
-  issues.push(...row.evidence.flatMap((ref: unknown) => quoteIssues(directory, sources, ref).map(issue => `${gap}.evidence: ${issue}`)))
+    : quoteIssues(directory, sources, row.requirement, `${gap}.requirement`)
+  issues.push(...row.evidence.flatMap((ref: unknown, at: number) => quoteIssues(directory, sources, ref, `${gap}.evidence[${at}]`)))
   if (typeof row.material !== "boolean") issues.push(`${gap} needs material: true or false.`)
   if (typeof row.lawyer !== "boolean") issues.push(`${gap} needs lawyer: true when only the lawyer or client can supply it, else false.`)
   return issues
