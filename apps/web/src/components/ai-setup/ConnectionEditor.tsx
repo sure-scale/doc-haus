@@ -5,7 +5,7 @@ import type { MatchingSignInCandidate } from "./connection-fields"
 import { visibleFields } from "./connection-fields"
 import { CLOUD_SETUPS } from "../settings/cloud-setups"
 import { FieldRow, PasswordInput } from "../settings/controls"
-import type { CandidateAuthResult } from "../../api/opencode/provider-candidate"
+import type { CandidateAuthResult, CandidateExternalStatus } from "../../api/opencode/provider-candidate"
 import "./connection.css"
 
 export type ConnectionDraft = {
@@ -15,25 +15,41 @@ export type ConnectionDraft = {
   options: Record<string, string>
   name: string
 }
-export type ConnectionChoice = { value: string; label: string; method?: IntegrationMethod }
+export type ConnectionChoice = { value: string; label: string; method?: IntegrationMethod; external?: boolean }
+
+// Claude Code keeps its own sign-in; doc.haus only records that it is used.
+const externalLabel = (providerID: string, fallback: string) => providerID === "claude-agent" ? "Use your Claude Code sign-in" : fallback
+const externalProgram = (providerID: string | undefined) => providerID === "claude-agent" ? "the Claude Code sign-in" : "the sign-in"
+// Status messages mark commands with backticks.
+const withCode = (text: string) => {
+  const parts = text.split("`")
+  return parts.length % 2 ? parts.map((part, index) => index % 2 ? <code key={index}>{part}</code> : part) : text
+}
 
 export function connectionChoices(provider: Provider | undefined, integration: IntegrationInfo | undefined, reusable: MatchingSignInCandidate[], endpoint = false): ConnectionChoice[] {
   if (!provider) return []
-  const saved: ConnectionChoice[] = (integration?.connections ?? []).map(connection => connection.type === "credential"
-    ? { value: `credential:${connection.id}`, label: `${connection.label} · saved ${connection.method === "oauth" ? "sign-in" : "API key"}` }
-    : { value: `env:${connection.name}`, label: `Server environment · ${connection.name}` })
+  const saved: ConnectionChoice[] = (integration?.connections ?? []).map(connection => connection.type !== "credential"
+    ? { value: `env:${connection.name}`, label: `Server environment · ${connection.name}` }
+    : connection.method === "external"
+      ? { value: `credential:${connection.id}`, label: externalLabel(provider.id, `${connection.label} · saved sign-in`), external: true }
+      : { value: `credential:${connection.id}`, label: `${connection.label} · saved ${connection.method === "oauth" ? "sign-in" : "API key"}` })
+  const savedExternal = saved.some(choice => choice.external)
   if (provider.host && !integration?.connections.length) saved.push({ value: "host", label: `Server credentials${provider.host.sources.length ? " · detected" : ""}` })
   saved.push(...reusable.map(connection => ({ value: `reuse:${connection.sourceId}:${connection.connectionId}`, label: `${connection.label} (${connection.sourceLabel})` })))
   if (endpoint && !integration?.connections.length) saved.push({ value: "host", label: "Endpoint without API key" })
   const methods = [...(integration?.methods ?? []), ...(endpoint && !integration?.methods.some(method => method.type === "key") ? [{ type: "key" as const, label: "New API key" }] : [])]
-  return [...saved, ...methods.flatMap((method, index) => method.type === "env" ? [] : [{ value: `method:${index}`, label: method.label || (method.type === "key" ? "New API key" : "Sign in"), method }])]
+  // External methods with fields duplicate the server-credential setup above,
+  // and a saved external sign-in is reused rather than recorded twice.
+  return [...saved, ...methods.flatMap((method, index): ConnectionChoice[] => method.type === "env" || method.type === "external" && (method.form?.length || savedExternal) ? []
+    : method.type === "external" ? [{ value: `method:${index}`, label: externalLabel(provider.id, method.label), method, external: true }]
+      : [{ value: `method:${index}`, label: method.label || (method.type === "key" ? "New API key" : "Sign in"), method }])]
 }
 
 export function methodDefaults(method?: IntegrationMethod): FormAnswer {
   return method && "form" in method ? Object.fromEntries((method.form ?? []).flatMap(field => "default" in field && field.default !== undefined ? [[field.key, field.default]] : [])) : {}
 }
 
-export default function ConnectionEditor({ provider, integration, reusable, draft, onChange, disabled = false, local = false, endpoint = false, sourceOptions = {}, attempt, authCode, onAuthCode, onAuthAction }: {
+export default function ConnectionEditor({ provider, integration, reusable, draft, onChange, disabled = false, local = false, endpoint = false, sourceOptions = {}, attempt, authCode, onAuthCode, onAuthAction, external, checking = false, onCheckAgain }: {
   provider?: Provider
   integration?: IntegrationInfo
   reusable: MatchingSignInCandidate[]
@@ -47,12 +63,16 @@ export default function ConnectionEditor({ provider, integration, reusable, draf
   authCode: string
   onAuthCode: (value: string) => void
   onAuthAction: (action: "complete" | "status" | "cancel") => void
+  external?: CandidateExternalStatus
+  checking?: boolean
+  onCheckAgain?: () => void
 }) {
   const id = useId()
   const choices = connectionChoices(provider, integration, reusable, endpoint)
   const existingChoices = choices.filter(choice => !choice.value.startsWith("method:"))
   const newChoices = choices.filter(choice => choice.value.startsWith("method:"))
-  const method = choices.find(choice => choice.value === draft.choice)?.method
+  const selected = choices.find(choice => choice.value === draft.choice)
+  const method = selected?.method
   const spec = CLOUD_SETUPS.find(item => item.ids.includes(provider?.id ?? ""))
   const fields = method && "form" in method ? method.form ?? [] : []
   const setOption = (key: string, value: string) => onChange({ ...draft, options: { ...draft.options, [key]: value } })
@@ -105,6 +125,14 @@ export default function ConnectionEditor({ provider, integration, reusable, draf
       </>}
       {!choices.length && <p className="settings-hint muted">No interactive connection method is available. Configure this provider’s credentials on the computer running doc.haus, then refresh discovery.</p>}
       {method?.type === "command" && <p className="settings-hint muted">This starts a sign-in command on the computer running doc.haus: <code>{method.command.join(" ")}</code>.</p>}
+      {selected?.external && !external && <p className="settings-hint muted">Uses {externalProgram(provider?.id)} on the computer running doc.haus.</p>}
+      {selected?.external && external && <div className="ai-setup-auth" aria-live="polite">
+        <p className={external.status === "needs_auth" ? undefined : "settings-hint muted"}>{external.status === "needs_auth" ? withCode(external.message)
+          : external.status === "ready" ? provider?.id === "claude-agent" ? "Claude Code is signed in." : "Sign-in found."
+            : "Still checking the sign-in. Check again in a moment."}</p>
+        {external.status === "needs_auth" && external.url && /^https:\/\//.test(external.url) && <a href={external.url} target="_blank" rel="noreferrer">Open setup guide</a>}
+        {onCheckAgain && <div className="ai-setup-actions"><button type="button" className={external.status === "ready" ? "ghost" : "primary"} disabled={disabled} onClick={onCheckAgain}>{checking ? "Checking…" : "Check again"}</button></div>}
+      </div>}
     </>}
     {attempt && <div className="ai-setup-auth" aria-live="polite">
       <p>{attempt.status === "complete" ? "Sign-in prepared. Choose your models to test access." : `Sign-in ${attempt.status || "pending"}.`}</p>

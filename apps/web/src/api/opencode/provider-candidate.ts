@@ -8,6 +8,7 @@ export type CandidateConnection =
   | { type: "host" }
   | { type: "reuse"; sourceId: string; connectionId: string }
   | { type: "new" }
+  | { type: "external"; methodID: string }
 
 export type CandidateInput = {
   providerID: string
@@ -20,6 +21,9 @@ export type CandidateTest = { ok: true } | {
   ok: false; kind: "auth" | "model" | "unavailable"; expired?: boolean; restriction?: "free-tier" | "region"; error: string
 }
 export type CandidateAuthAction = "oauth.connect" | "oauth.status" | "oauth.complete" | "oauth.cancel" | "command.connect" | "command.status" | "command.cancel"
+// A sign-in owned by a program on the computer running doc.haus. The engine
+// checks it without a model request and passes its problem message through.
+export type CandidateExternalStatus = { status: "ready" } | { status: "checking" } | { status: "needs_auth"; message: string; url?: string }
 export type CandidateAuthResult = { attemptID?: string; mode?: "auto" | "code"; url?: string; instructions?: string; message?: string; status?: string }
 
 async function candidateRequest<T>(action: string, body: unknown, timeout = 30_000): Promise<T> {
@@ -32,7 +36,8 @@ async function candidateRequest<T>(action: string, body: unknown, timeout = 30_0
   return result as T
 }
 
-export const createCandidate = (input: CandidateInput) => candidateRequest<{ sessionID: string }>("session", input)
+// An external sign-in check waits for the local program to start and answer.
+export const createCandidate = (input: CandidateInput) => candidateRequest<{ sessionID: string; external?: CandidateExternalStatus }>("session", input, 75_000)
 export const candidateModels = (sessionID: string, modelIDs?: string[]) => candidateRequest<{ data: CandidateModel[]; customModels: boolean }>("models", { sessionID, ...(modelIDs ? { modelIDs } : {}) })
 export const candidateAuth = (sessionID: string, action: CandidateAuthAction, input: { methodID?: string; attemptID?: string; answer?: FormAnswer; code?: string } = {}) => candidateRequest<{ data: CandidateAuthResult }>("auth", { sessionID, action, ...input })
 
