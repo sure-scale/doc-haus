@@ -3,6 +3,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { Credential } from "@opencode/core/credential"
+import { CredentialLegacy } from "@opencode/schema/credential-legacy"
 import { Integration } from "@opencode/schema/integration"
 import { Effect, Logger, Schema } from "effect"
 import { isRemovedProvider } from "./effective-settings"
@@ -10,7 +11,8 @@ import { isRemovedProvider } from "./effective-settings"
 export type ReusableConnection = { id: string; integrationID: string; label: string; authType: "key" | "oauth" }
 export type Stored = { integrationID: Integration.ID; label: string; value: Credential.Value }
 type Row = { id: string; integration_id: string; label: string; authType: string }
-const decode = Schema.decodeUnknownSync(Credential.Value)
+// Source rows may predate v2.1 key metadata; decode them as native storage does.
+const decode = Schema.decodeUnknownSync(CredentialLegacy.Value)
 const integration = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value)
 
 // The launcher captures the native XDG root before sealing the engine runtime.
