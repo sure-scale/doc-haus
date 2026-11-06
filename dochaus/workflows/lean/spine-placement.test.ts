@@ -20,7 +20,7 @@ import { AGENT, cleanupMatters, matter, scriptedModel } from "./test-support"
 // planned parts that rest on it, which bind it at either level, and each
 // planned part's reverse job names the entries it rests on, which only add to
 // those parts; a text
-// requirement or decision placed in no part goes back to the outline once, what
+// entry of any kind placed in no part goes back to the outline once, what
 // is left is recorded unplaced and disclosed, and each part prompt is told the
 // entries placed in it.
 // Synthetic matter only.
@@ -142,7 +142,7 @@ describe("spine placement parser", () => {
     expect(parseEntryPlacement(JSON.stringify({ parts: ["d1/1", "d1/3"] }), documents, { final: true }).value).toEqual(["d1/1"])
   })
 
-  test("a text requirement or decision placed in no part is a gap for the outline; a fact, a package entry or an unchecked entry is not", () => {
+  test("a text entry of any kind placed in no part is a gap for the outline, a fact too; a package entry or an unchecked entry is not", () => {
     const entries = [
       { index: 0, kind: "requirement", detail: DELIVERY, evidence: [{ source_id: "supply-terms.docx", quote: "q" }], limitations: [] },
       { index: 1, kind: "fact", detail: PAYMENT, evidence: [], limitations: [] },
@@ -151,9 +151,12 @@ describe("spine placement parser", () => {
     ]
     expect(planPlacementIssues(entries, [
       { entry: 0, level: "text", parts: [] }, { entry: 1, level: "text", parts: [] }, { entry: 2, level: "text", parts: [], unchecked: true }, { entry: 3, level: "package", parts: [] },
-    ])).toEqual([`No part covers requirement: ${DELIVERY}. Plan the part, or extend the scope of the part that should.`])
+    ])).toEqual([
+      `No part covers requirement: ${DELIVERY}. Plan the part, or extend the scope of the part that should.`,
+      `No part covers fact: ${PAYMENT}. Plan the part, or extend the scope of the part that should.`,
+    ])
     expect(planPlacementIssues(entries, [
-      { entry: 0, level: "text", parts: ["d1/1"] }, { entry: 1, level: "text", parts: [] }, { entry: 2, level: "text", parts: ["d1/1"] }, { entry: 3, level: "package", parts: [] },
+      { entry: 0, level: "text", parts: ["d1/1"] }, { entry: 1, level: "text", parts: ["d1/2"] }, { entry: 2, level: "text", parts: ["d1/1"] }, { entry: 3, level: "package", parts: [] },
     ])).toEqual([])
   })
 
@@ -162,17 +165,21 @@ describe("spine placement parser", () => {
     const { directory } = prepared(JSON.stringify({ ...JSON.parse(SPINE), entries: [...JSON.parse(SPINE).entries, third] }))
     await run(directory, scriptedModel({ [AGENT.draft]: outliner(TWO) }))
     const plan = readLeanPlan(directory)!.documents
-    const rows: EntryPlacement[] = [{ entry: 0, level: "package", parts: ["d1/1"] }, { entry: 1, level: "text", parts: [] }, { entry: 2, level: "package", parts: [] }]
+    const rows: EntryPlacement[] = [{ entry: 0, level: "package", parts: ["d1/1"] }, { entry: 1, level: "text", parts: ["d1/2"] }, { entry: 2, level: "package", parts: [] }]
     expect(planPlacementIssues(spineEntries(directory), rows)).toEqual([])
     writePlacement(directory, plan, { entries: rows, parts: [], issues: [] })
-    expect(documentGrounds(directory, "d1").map(grounds => grounds.map(entry => entry.index))).toEqual([[0], []])
+    expect(documentGrounds(directory, "d1").map(grounds => grounds.map(entry => entry.index))).toEqual([[0], [1]])
     expect(placementItems(directory)).toEqual([])
-    // The same decision at the text level, placed nowhere, goes back to the outline and is disclosed.
-    const gap = rows.map(row => row.entry === 2 ? { ...row, level: "text" as const } : row)
+    // The same decision at the text level, and the fact, placed nowhere, go back to the outline and are disclosed.
+    const gap = rows.map(row => row.entry === 2 ? { ...row, level: "text" as const } : row.entry === 1 ? { ...row, parts: [] } : row)
     const issues = planPlacementIssues(spineEntries(directory), gap)
-    expect(issues).toEqual(["No part covers decision: Deliver to the buyer's yard. Plan the part, or extend the scope of the part that should."])
+    expect(issues).toEqual([
+      `No part covers fact: ${PAYMENT}. Plan the part, or extend the scope of the part that should.`,
+      "No part covers decision: Deliver to the buyer's yard. Plan the part, or extend the scope of the part that should.",
+    ])
     writePlacement(directory, plan, { entries: gap, parts: [], issues })
     expect(placementItems(directory).map(item => item.detail)).toEqual([
+      `Document plan: no planned part sets out or reasons from this fact: ${PAYMENT} [source: supply-terms.docx]. The lawyer should confirm the drafts deal with it.`,
       "Document plan: no planned part sets out or reasons from this decision: Deliver to the buyer's yard. The lawyer should confirm the drafts deal with it.",
     ])
   })

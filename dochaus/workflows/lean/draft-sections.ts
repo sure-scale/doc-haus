@@ -102,8 +102,8 @@ import {
 // its own, the entries in parallel within the installation's limit; beside
 // them, each planned part's reverse job names the entries that part rests on,
 // which only add to the entries' parts. The parts
-// a placement names bind the entry at either level. A text requirement or
-// decision no part covers goes back to the outline session for one revised
+// a placement names bind the entry at either level. A text entry, a fact too,
+// no part covers goes back to the outline session for one revised
 // outline (PLAN_PLACEMENT_REVISIONS), covered and placed again; what is left
 // is recorded in placement.json as unplaced and disclosed, never blocking. A
 // saved plan whose record is stale is placed again before the first document

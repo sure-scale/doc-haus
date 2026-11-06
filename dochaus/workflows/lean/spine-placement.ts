@@ -29,16 +29,17 @@ import { hashStageInputs, leanFile, readLeanJson, readLeanText, shortHash, write
 // from the part's side; a settled reply is saved under the content key of its
 // prompt (part-entries.json), as a level is. Both jobs read each entry's
 // limitations, where a qualification such as what the memo must flag lives.
-// planPlacementIssues sends a text requirement or decision no part covers back
-// to the outline; one still left after the revision is recorded as unplaced and
-// disclosed (placementItems), never blocking. A package entry placed nowhere
-// raises neither and rides the drafting spine as before. The record,
-// placement.json, is keyed on what the placement jobs read: the documents as
-// placementView shows them and the atoms' bytes. Each part prompt is told the
-// entries placed in it (groundsBlock), as are the checklist's planned roles and
-// the reviews' outline. Nothing here judges the legal substance.
+// planPlacementIssues sends a text entry (of any kind, a fact too) no part
+// covers back to the outline; one still left after the revision is recorded as
+// unplaced and disclosed (placementItems), never blocking. A package entry
+// placed nowhere raises neither and rides the drafting spine as before. The
+// record, placement.json, is keyed on what the placement jobs read: the
+// documents as placementView shows them and the atoms' bytes. Each part prompt
+// is told the entries placed in it (groundsBlock), as are the checklist's
+// planned roles and the reviews' outline. Nothing here judges the legal
+// substance.
 
-export const LEAN_PLACEMENT_SCHEMA = "dochaus.lean.placement/4"
+export const LEAN_PLACEMENT_SCHEMA = "dochaus.lean.placement/5"
 export const LEAN_SPINE_LEVELS_SCHEMA = "dochaus.lean.spine-levels/1"
 export const LEAN_PART_ENTRIES_SCHEMA = "dochaus.lean.part-entries/1"
 /** Revised outlines the placement issues may ask for before the plan is saved. */
@@ -60,7 +61,7 @@ export type EntryPlacement = { entry: number; level: EntryLevel; parts: string[]
 /** One planned part's reverse job: the entries, by index, it names; `unchecked`
  * (no entries) when its reply never passed its check. */
 export type PartPlacement = { part: string; entries: number[]; unchecked?: true }
-/** "placed": every text requirement and decision rests on a part; "unplaced": issues remain after the outline's revision. */
+/** "placed": every text entry rests on a part; "unplaced": issues remain after the outline's revision. */
 export type LeanPlacement = { schema: typeof LEAN_PLACEMENT_SCHEMA; plan: string; status: "placed" | "unplaced"; entries: EntryPlacement[]; parts: PartPlacement[]; issues: string[] }
 export type Placement = { entries: EntryPlacement[]; parts: PartPlacement[]; issues: string[] }
 
@@ -71,8 +72,6 @@ const ENTRIES_SHAPE = 'Reply with the JSON object only: {"entries":[3,7]}, each 
 const LEVEL_SHAPE = 'Reply with the JSON object only: {"level":"text"} or {"level":"package"}.'
 const LEVELS: EntryLevel[] = ["text", "package"]
 const READ_ONLY = "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply."
-/** The kinds a plan must give a part: what the documents must do or have decided. */
-const RELIED_ON = ["requirement", "decision"]
 
 /** The spine's atoms, each with its index in spine-atoms.json; [] without them. */
 export function spineEntries(directory: string): SpineEntry[] {
@@ -243,11 +242,11 @@ export function withPartEntries(documents: PlannedDocument[], placements: EntryP
   })
 }
 
-/** A text requirement or decision whose placement job passed and named no part. */
+/** A text entry, of any kind, whose placement job passed and named no part. */
 const unplaced = (entry: SpineEntry | undefined, row: EntryPlacement): entry is SpineEntry =>
-  Boolean(entry) && row.level === "text" && RELIED_ON.includes(entry!.kind) && !row.unchecked && !row.parts.length
+  Boolean(entry) && row.level === "text" && !row.unchecked && !row.parts.length
 
-/** The outline's revision feedback: one gap per unplaced text requirement or decision. */
+/** The outline's revision feedback: one gap per unplaced text entry. */
 export function planPlacementIssues(entries: SpineEntry[], placements: EntryPlacement[]): string[] {
   return placements.flatMap(row => {
     const entry = entries.find(entry => entry.index === row.entry)
@@ -325,8 +324,8 @@ export function withGrounds<T extends { parts: object[] }>(directory: string, do
   return { ...outline, parts: outline.parts.map((part, index) => grounds[index]?.length ? { ...part, rests_on: grounds[index]!.map(groundLine) } : part) }
 }
 
-/** One disclosed item per text requirement or decision the current record
- * leaves without a part, for the lawyer to confirm the drafts deal with it. */
+/** One disclosed item per text entry the current record leaves without a
+ * part, for the lawyer to confirm the drafts deal with it. */
 export function placementItems(directory: string): OpenItem[] {
   const placement = currentPlacement(directory)
   if (!placement?.issues.length) return []
