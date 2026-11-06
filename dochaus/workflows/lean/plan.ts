@@ -241,15 +241,22 @@ export function earlierDocuments(directory: string, id: DocID): PlannedDocument[
  * "Executed by:" line the parties who execute it, "none" for none), and
  * each "## " line under it is a part with the lines below as its scope note. A
  * "Left out:" line anywhere under a title records a template part left out on
- * purpose and why. Only mechanical defects are
- * issues; how many documents the request needs is the model's judgment. A
+ * purpose and why. A document's own line ("Form:", "File:" and the others
+ * below) after its first part, and a "###" or deeper heading line, is read as
+ * nothing and named as an issue: a line misplaced so must not pass silently as
+ * scope text. Only mechanical defects are
+ * issues; how many documents the request needs is the model's judgment. Every
+ * defect is named in one pass; a shape defect (no title, a document without
+ * parts, a repeated title or part heading) withholds the outline. A
  * missing "Acting for:" line is retried, and on the last attempt the outline
  * stands as not stated. With the request text, a stated party must be named in
  * the request; a party the request does not name is retry feedback and, if it
  * stands, not stated. A requested file name is held to the same standard: it
  * must be one the request gives, and a title must not carry a file name or
  * Markdown; both are retry feedback, and on the last attempt a file name the
- * request does not give is dropped and the title kept without Markdown code marks.
+ * request does not give is dropped and the title kept without Markdown code
+ * marks; a title that is only a file name stands as that name's words
+ * (plannedTitle).
  * A missing "Executed by:" line is not an issue; the package-coverage check
  * holds the parties it names to the request and sources.
  * A "Form:" line under each title gives the document's form, one of
@@ -267,8 +274,10 @@ export function earlierDocuments(directory: string, id: DocID): PlannedDocument[
  * "Legend: none" asks nothing: a request never removes the firm's legend. An
  * ungrounded legend or another page numbers value is retry feedback and, on the
  * last attempt, dropped.
- * An optional "Memo:" line before the first title names, in the request's own
- * words, a memo the request asks to accompany the documents. It must be words
+ * An optional "Memo:" line names, in the request's own words, a memo the
+ * request asks to accompany the documents. The prompt asks for it before the
+ * first title; it is read wherever it stands, so a memo named late is still
+ * planned under the rules below. It must be words
  * the request uses and fit in a file name; otherwise it is retry feedback and,
  * on the last attempt, dropped, so the run plans no memo.
  * The memo is a planned document: the Memo line must name exactly one planned
@@ -293,6 +302,10 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
   const acting: string[] = []
   const memos: string[] = []
   const selectionIssues: string[] = []
+  // Lines the outline's shape does not read, named back as issues: the "###"
+  // lines in one, a document's late lines in one per document.
+  const deeper: string[] = []
+  const late: { title: string; line: string }[] = []
   for (const raw of reply.split(/\r?\n/)) {
     const line = raw.trim()
     const party = /^acting for\s*:\s*(.*)$/i.exec(line.replace(/^[-*]\s+/, "").replace(/[*`]/g, ""))?.[1]
@@ -302,7 +315,7 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
     }
     // The value keeps its own characters; outlineMemo cleans and checks it.
     const memoLine = /^(?:[-*]\s+)?[*`]*memo[*`]*\s*:[*`]*\s*(.*)$/i.exec(line)?.[1]
-    if (memoLine !== undefined && !documents.length) {
+    if (memoLine !== undefined) {
       memos.push(memoLine)
       continue
     }
@@ -326,6 +339,18 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
     const pageNumbers = /^page\s+numbers\s*:\s*(.*)$/i.exec(unmarked)?.[1]
     const playbook = /^[-*]?\s*playbook review\s*:\s*(.+)$/i.exec(line)?.[1]
     const displayHeading = /^display heading\s*:\s*(.*)$/i.exec(line)?.[1]
+    if (/^#{3,}\s*\S/.test(line)) {
+      deeper.push(line)
+      continue
+    }
+    // A document's own line after its first part belongs to no document: read
+    // as the part's scope, it would hide a document planned without its title.
+    const field = playbook !== undefined || mode || deliverable || template !== undefined || comparison !== undefined || file !== undefined
+      || executed !== undefined || form !== undefined || headingsShown || legend !== undefined || pageNumbers !== undefined
+    if (field && current?.parts.length) {
+      late.push({ title: current.title, line })
+      continue
+    }
     if (playbook && current && !current.parts.length) {
       let value: unknown
       try { value = JSON.parse(playbook) } catch {}
@@ -360,7 +385,9 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
   const memoAt = named.length ? documents.indexOf(named.find(document => documentForm(document.form) === "advice") ?? named.at(-1)!)
     : adoptable.length === 1 ? documents.indexOf(adoptable[0]!) : -1
   const own = documents.filter((_, index) => index !== memoAt)
-  const issues = [
+  // Shape defects withhold the outline; every other defect is named with them,
+  // so one revision can answer all of them.
+  const shapeIssues = [
     ...selectionIssues,
     ...(!documents.length ? [`The outline has no "# " title line. ${OUTLINE_SHAPE}`] : []),
     ...own.filter(document => !document.parts.length)
@@ -373,7 +400,6 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
         : []
     }),
   ]
-  if (issues.length) return { issues }
   const party = statedParty(acting[0] ?? "")
   // The party intake quoted, named again by the outline, keeps intake's basis.
   const asInferred = party !== undefined && inferred !== undefined && inferred.basis !== "none" && nameKey(party) === nameKey(inferred.party)
@@ -386,26 +412,31 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
     ...(combined.length && !memo.name ? [COMBINED_NEEDS_MEMO] : []),
     ...(combined.length > 1 ? [combinedMoreThanOne(combined)] : []),
   ]
-  const memoIssues = !memoName ? [] : !named.length ? [memoUnplanned(memoName, documents.map(document => plainTitle(document.title)))]
+  const memoIssues = !memoName || !documents.length ? [] : !named.length ? [memoUnplanned(memoName, documents.map(document => plainTitle(document.title)))]
     : [...(named.length > 1 ? [memoNamesMore(memoName, named.map(document => plainTitle(document.title)))] : []),
       ...(documents[memoAt]!.deliverable === "combined" ? [combinedOnMemo(plainTitle(documents[memoAt]!.title))] : [])]
   const forms = documents.map((document, index) => index === memoAt ? "advice" as const : documentForm(document.form))
   const furniture = documents.map(document => documentFurniture(plainTitle(document.title), document.furniture, request))
+  const issues = [
+    ...shapeIssues,
+    ...(deeper.length ? [deeperIssue(deeper)] : []),
+    ...lateIssues(late),
+    ...(!acting.length ? [ACTING_FOR_MISSING] : ungrounded ? [actingForUngrounded(party)] : []),
+    ...documents.flatMap((document, index) => forms[index] ? [] : [formIssue(plainTitle(document.title), document.form)]),
+    ...furniture.flatMap(row => row.issues),
+    ...documents.flatMap(document => titleIssues(document.title)),
+    ...files.flatMap(file => file.issues),
+    ...(repeatedFiles.length ? [`These file names are given to more than one document: ${repeatedFiles.map(name => `"${name}"`).join(", ")}. Give each document its own file name.`] : []),
+    ...memo.issues,
+    ...memoIssues,
+    ...combinedIssues,
+  ]
+  if (shapeIssues.length) return { issues }
   return {
-    issues: [
-      ...(!acting.length ? [ACTING_FOR_MISSING] : ungrounded ? [actingForUngrounded(party)] : []),
-      ...documents.flatMap((document, index) => forms[index] ? [] : [formIssue(plainTitle(document.title), document.form)]),
-      ...furniture.flatMap(row => row.issues),
-      ...documents.flatMap(document => titleIssues(document.title)),
-      ...files.flatMap(file => file.issues),
-      ...(repeatedFiles.length ? [`These file names are given to more than one document: ${repeatedFiles.map(name => `"${name}"`).join(", ")}. Give each document its own file name.`] : []),
-      ...memo.issues,
-      ...memoIssues,
-      ...combinedIssues,
-    ],
+    issues,
     value: {
       documents: [...documents.flatMap((document, index) => index === memoAt ? [] : [{
-        title: plainTitle(document.title),
+        title: plannedTitle(document.title),
         purpose: document.purpose.join(" "),
         ...(document.playbook_review ? { playbook_review: document.playbook_review } : {}),
         // Planning labels are not the document's headings.
@@ -425,7 +456,7 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
       }]),
       // The lawyer asked for the memo: it is planned last, as the workflow's memo.
       ...(memoName ? [memoDocument(memoAt < 0 ? { title: memoTitle(memoName), purpose: MEMO_PURPOSE, parts: memoParts() } : {
-        title: plainTitle(documents[memoAt]!.title),
+        title: plannedTitle(documents[memoAt]!.title),
         purpose: documents[memoAt]!.purpose.join(" ") || MEMO_PURPOSE,
         parts: documents[memoAt]!.parts.length ? documents[memoAt]!.parts.map(part => plannedPart(part, !documents[memoAt]!.headings)) : memoParts(),
         ...(documents[memoAt]!.playbook_review ? { playbook_review: documents[memoAt]!.playbook_review } : {}),
@@ -477,6 +508,25 @@ export function plainFileName(file: string) {
   return !FILE_NAME_FORBIDDEN.test(file) && file.length <= 120
 }
 
+/** Begins every misplaced-line issue: the order the outline's shape reads. */
+const DOCUMENT_ORDER = 'Begin each document with its own "# " title line, then its lines such as "Form:" and "File:", then its "## " parts.'
+const quotedLines = (lines: string[]) => lines.map(line => `"${line}"`).join(", ")
+
+/** "###" or deeper heading lines, which no outline level reads. */
+function deeperIssue(lines: string[]) {
+  return lines.length === 1
+    ? `The line ${quotedLines(lines)} is a "###" heading, which an outline does not use. ${DOCUMENT_ORDER}`
+    : `The lines ${quotedLines(lines)} are "###" headings, which an outline does not use. ${DOCUMENT_ORDER}`
+}
+
+/** A document's own lines written after a document's first part, one issue per document. */
+function lateIssues(rows: { title: string; line: string }[]) {
+  return [...new Set(rows.map(row => row.title))].map(title => {
+    const lines = rows.filter(row => row.title === title).map(row => row.line)
+    return `${lines.length === 1 ? `The line ${quotedLines(lines)} comes` : `The lines ${quotedLines(lines)} come`} after the "## " parts of "${plainTitle(title)}", so no document reads ${lines.length === 1 ? "it" : "them"}. ${DOCUMENT_ORDER}`
+  })
+}
+
 function titleIssues(title: string) {
   if (FILE_IN_TITLE.test(title))
     return [`The title "${title}" carries a file name. Write the document's own title on the "# " line, and give the file name the request asks for on a "File:" line under it.`]
@@ -493,6 +543,18 @@ function titleIssues(title: string) {
 function plainTitle(title: string) {
   const plain = title.replaceAll("`", "").replace(/\s+/g, " ").trim()
   return plain.replace(/^(?:(?:subject|re|fwd?)(?:\s*:|\s+[-–—])\s*)+/i, "").trim() || plain
+}
+
+/** The title the plan keeps: the plain title, except that a title which is
+ * only a file name, still so on the last attempt, stands as the words of that
+ * name ("fee-letter.docx" as "Fee letter"), not as a file name. */
+function plannedTitle(title: string) {
+  const plain = plainTitle(title)
+  const named = /^["'“‘]?([^\s`'"“”‘’]+)\.docx?["'”’]?$/i.exec(plain)?.[1]
+  if (!named) return plain
+  const words = named.replace(/[-_.]+/g, " ").replace(/\s+/g, " ").trim()
+  if (!words) return plain
+  return words === words.toLowerCase() ? words.charAt(0).toUpperCase() + words.slice(1) : words
 }
 
 /** A "File:" line's name, kept only when it is a plain file name the request gives. */

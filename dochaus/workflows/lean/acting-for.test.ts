@@ -227,12 +227,13 @@ describe("who executes each planned document", () => {
     expect(parsePlan(outline("- **Executed by:** \u201CKestrel Works\u201D.\n")).value?.documents[0]?.executed_by).toEqual(["Kestrel Works"])
     for (const line of ["Executed by: none", "Executed by: None.", "- Executed by: none (it takes no legal act)"])
       expect(parsePlan(outline(`${line}\n`))).toEqual({ issues: [], value: expect.objectContaining({ documents: [expect.objectContaining({ executed_by: [] })] }) })
-    // Lines add up; a non-answer declares nothing; a line under a part is scope text.
+    // Lines add up; a non-answer declares nothing; a line under a part is named and read as nothing.
     expect(parsePlan(outline("Executed by: Kestrel Works\nExecuted by: Wren Atelier; Kestrel Works\n")).value?.documents[0]?.executed_by).toEqual(["Kestrel Works", "Wren Atelier"])
     expect(parsePlan(outline("Executed by: not stated\n")).value?.documents[0]).not.toHaveProperty("executed_by")
-    const late = parsePlan("Acting for: not stated\n# Resolution\nForm: other\n## Approval\nExecuted by: Kestrel Works").value?.documents[0]
-    expect(late).not.toHaveProperty("executed_by")
-    expect(late?.parts[0]?.scope).toBe("Executed by: Kestrel Works")
+    const late = parsePlan("Acting for: not stated\n# Resolution\nForm: other\n## Approval\nExecuted by: Kestrel Works")
+    expect(late.issues).toEqual([expect.stringContaining('The line "Executed by: Kestrel Works" comes after the "## " parts of "Resolution"')])
+    expect(late.value?.documents[0]).not.toHaveProperty("executed_by")
+    expect(late.value?.documents[0]?.parts[0]?.scope).toBe("")
   })
 
   test("a later none or non-answer keeps the parties already named, and none must be the whole answer", () => {

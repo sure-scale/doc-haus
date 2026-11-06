@@ -32,18 +32,21 @@ import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, short
 // reads the plan. When the lawyer's words ask for one file only, each planned
 // document other than the memo it leaves out is asked about in a focused job of its own
 // (unheldDocumentPrompt), and those the words do not ask for go in that file
-// (withUnaskedDocuments). A shape the run cannot build (several documents in one file
-// that cannot be held so, or the memo after its document) is no revision issue; like any
+// (withUnaskedDocuments). A file the lawyer's words ask for that holds no
+// planned document goes back to the outline as one revision issue of its own
+// (unplannedFileIssues). A shape the run cannot build (several documents in one file
+// that cannot be held so, the memo after its document, or a file no planned
+// document fills) is no files revision issue; like any
 // file the final plan does not deliver as asked, it reaches the lawyer as an
 // open item derived from the record (requestedFilesItems), never stored. A job
 // whose reply never passed its check is recorded as unchecked, and disclosed
 // the same way.
 
-export const LEAN_REQUESTED_FILES_SCHEMA = "dochaus.lean.requested-files/2"
+export const LEAN_REQUESTED_FILES_SCHEMA = "dochaus.lean.requested-files/3"
 
 /** One file the lawyer asks to receive: the planned ids it holds, in the
  * lawyer's order or, where the lawyer's words set none, with the memo
- * document first; its name in the lawyer's own spelling, or null; and the
+ * document first, none when no planned document is what it holds; its name in the lawyer's own spelling, or null; and the
  * lawyer's exact words that ask for it. A name a reply gave for these words but
  * the lawyer's words did not confirm, or that gives a format other than Word's,
  * is kept as `refused_name`, beside a null name, for disclosure only. */
@@ -102,7 +105,7 @@ export function requestedFilesPrompt(directory: string, documents: PlannedDocume
       "- Answer from the request, the lawyer's updates and answers only.",
       `- When those words say which files the lawyer wants to receive, what goes in each file or what a file is named, reply "stated": true and list each file they ask for. When they do not, reply {"stated":false,"files":[]}.`,
       `- For each file give "holds": the ids of the planned documents that the lawyer's words put in that file` +
-      `${memo ? `, in the order the words place them in the file, with "${memo}" first when the words set no order` : ""}; ` +
+      `${memo ? `, in the order the words place them in the file, with "${memo}" first when the words set no order` : ""}, or [] when no planned document is what the file holds; ` +
       "\"name\": the file name exactly as the lawyer writes it, or null when the lawyer gives no name; " +
       "\"quote\": the lawyer's exact words that ask for this file, copied verbatim, including the words that give its name.",
       "- Put each planned document in one file at most. List only the files the lawyer's words ask for, and in each only what those words put in it.",
@@ -147,9 +150,9 @@ export function parseRequestedFiles(reply: string, directory: string, documents:
   const rows: { index: number; file: RequestedFile }[] = []
   value.files.forEach((row: unknown, index) => {
     const where = `files[${index}]`
-    if (!record(row) || !Array.isArray(row.holds) || !row.holds.length || !row.holds.every(id => typeof id === "string" && id.trim()) ||
+    if (!record(row) || !Array.isArray(row.holds) || !row.holds.every(id => typeof id === "string" && id.trim()) ||
       !(row.name == null || typeof row.name === "string") || typeof row.quote !== "string" || !row.quote.trim())
-      return void issues.push(`${where} needs "holds" as a nonempty list of planned ids, "name" as a file name or null, and a nonempty "quote" string. ${shape}`)
+      return void issues.push(`${where} needs "holds" as a list of planned ids ([] when no planned document is what the file holds), "name" as a file name or null, and a nonempty "quote" string. ${shape}`)
     const given = typeof row.name === "string" ? row.name.trim() : ""
     const name = !given ? null : /\.docx$/i.test(given) || OTHER_FORMAT.test(given) ? given : `${given}.docx`
     const file: RequestedFile = { holds: [...new Set((row.holds as string[]).map(id => id.trim()))], name, quote: row.quote.trim() }
@@ -211,8 +214,9 @@ function nameGrounded(directory: string, quote: string, name: string) {
 /** What a recorded file asks of the plan, `memo` being the memo document's id:
  * the memo with one document, the memo first; one document alone; or the memo
  * alone. Undefined for a shape no plan builds: several other documents in one
- * file, or the memo after its document. */
+ * file, the memo after its document, or nothing planned (unplannedFileIssues). */
 function fileShape(file: RequestedFile, memo: DocID | undefined): { document?: DocID; memo: boolean } | undefined {
+  if (!file.holds.length) return
   const documents = file.holds.filter(id => id !== memo) as DocID[]
   const held = memo !== undefined && file.holds.includes(memo)
   if (documents.length > 1 || (held && documents.length && file.holds[0] !== memo)) return
@@ -311,48 +315,68 @@ export function requestedFilesRevision(directory: string, issues: FilesIssue[]) 
   return { feedback: [FILES_REVISION_SCOPE, ...revisable.map(row => row.issue)], documents: new Set(revisable.flatMap(row => row.documents)) }
 }
 
+/** The outline revision issues for the recorded files that hold no planned
+ * document: one per file, asking the outline to plan the document that file
+ * holds. None when the lawyer's words do not state the files. */
+export function unplannedFileIssues(requested: RequestedFiles) {
+  return !requested.stated ? [] : requested.files.flatMap(file => file.holds.length ? []
+    : [`The lawyer's words "${excerpt(file.quote)}" ask for ${asked(file, () => undefined)}, but no planned document is in it. Plan the document this file holds as a document of its own: its "# " title line, then its lines such as "Form:", then its "## " parts.`])
+}
+
 /** The planned documents no file holds when the lawyer's words ask for one
- * file only, the file they might go in (unheldDocumentPrompt); none otherwise.
- * The memo document (`memo`) is never added to a file it is not asked in. */
+ * file only, the file they might go in (unheldDocumentPrompt); none otherwise,
+ * nor when that one file holds no planned document, since the lawyer's words
+ * then ask for a document the plan does not have, not for the plan's documents
+ * in one file. The memo document (`memo`) is never added to a file it is not
+ * asked in. */
 export function unheldDocuments(requested: RequestedFiles, documents: PlannedDocument[], memo?: DocID) {
   const [only, ...others] = requested.files
-  if (!requested.stated || !only || others.length) return []
+  if (!requested.stated || !only?.holds.length || others.length) return []
   return documents.filter(document => document.id !== memo && !only.holds.includes(document.id))
 }
 
-/** One focused question per planned document the one requested file leaves
- * out: whether the lawyer's words ask for that document themselves. A document
- * the plan adds to carry the request out is not asked for, so it goes in the
- * one file the lawyer asks to receive (withUnaskedDocuments). */
+/** One focused decision per planned document the one requested file leaves
+ * out: whether the lawyer's words ask to receive that document as a file apart
+ * from that one file. A document the plan adds to carry the request out is
+ * not asked for apart, so it goes in the one file the lawyer asks to receive
+ * (withUnaskedDocuments). The quote comes first, so the decision rests on it. */
 export function unheldDocumentPrompt(directory: string, document: PlannedDocument, file: RequestedFile) {
   return [
-    "This is a lean drafting run. Read the lawyer's words for one question: whether they ask for one planned document themselves.",
+    "This is a lean drafting run. Read the lawyer's words for one decision: whether they ask to receive one planned document as a file apart from the one file in <file>.",
     ...wordsBlocks(directory),
     tagged("planned_document", `The plan drafts this document. Its title and purpose are the plan's own choices, not the lawyer's words.\n${JSON.stringify({ title: document.title, purpose: document.purpose })}`),
-    tagged("requested_file", `The lawyer asks for one file${file.name ? `, ${file.name}` : ""}, in these words: "${file.quote}"`),
+    tagged("file", `The one file the lawyer asks to receive${file.name ? `, ${file.name}` : ""}, in these words: "${file.quote}"`),
     tagged("output_contract", [
       "- Answer from the request, the lawyer's updates and answers only.",
-      "- The plan may add a document the lawyer's words do not ask for, to carry out what they ask. Such a document is not asked for, though it carries out an act or term the words ask for.",
-      '- When the words ask for this document themselves, by its name or its kind, reply {"asked":true,"quote":"..."}, with the lawyer\'s exact words that ask for it, copied verbatim. When they do not, reply {"asked":false}.',
+      "- The plan may add a document the lawyer's words do not ask for, to carry out what they ask; it then goes in the file in <file>. Words that ask for an act or term the document carries out, or for the file in <file>, do not ask for this document apart.",
+      '- "quote": the lawyer\'s exact words, copied verbatim, that ask to receive this document as a file apart from the file in <file>, or null when no words do.',
+      '- "apart": true when "quote" gives such words; false when it is null.',
+      `- ${APART_SHAPE}`,
       "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply.",
     ].join("\n")),
   ].filter(Boolean).join("\n\n")
 }
 
-const ASKED_SHAPE = 'Reply with the JSON object only: {"asked":true,"quote":"..."} or {"asked":false}.'
+const APART_SHAPE = 'Reply with the JSON object only, "quote" first: {"quote":"..." or null,"apart":true or false}.'
 
-/** Reads the reply to unheldDocumentPrompt: true with a quote that is the
- * lawyer's words (instructionFound), or false. Every other reply is retried. */
-export function parseUnheldDocument(reply: string, directory: string): Checked<boolean> {
+/** Reads the reply to unheldDocumentPrompt. "apart" true needs a quote that is
+ * the lawyer's words (instructionFound) and not words of the one file's own
+ * quote, which ask for that file; false stands with any quote. Every other
+ * reply is retried, and one that never passes leaves the document unchecked. */
+export function parseUnheldDocument(reply: string, directory: string, file: RequestedFile): Checked<{ quote: string | null; apart: boolean }> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
   const parsed = parseJsonObject(reply)
-  if (!parsed.ok) return { issues: [`${ASKED_SHAPE} ${parsed.error}`] }
+  if (!parsed.ok) return { issues: [`${APART_SHAPE} ${parsed.error}`] }
   const value = parsed.value
-  if (typeof value.asked !== "boolean") return { issues: [ASKED_SHAPE] }
-  if (!value.asked) return { issues: [], value: false }
-  if (typeof value.quote !== "string" || !value.quote.trim()) return { issues: [`"asked" is true, but "quote" is missing. ${ASKED_SHAPE}`] }
-  if (!instructionFound(directory, value.quote)) return { issues: [quoteMissIssue(directory, "quote", { quote: value.quote.trim(), source_id: REQUEST_SOURCE }, "json")] }
-  return { issues: [], value: true }
+  if (!(value.quote === null || typeof value.quote === "string") || typeof value.apart !== "boolean") return { issues: [APART_SHAPE] }
+  const quote = typeof value.quote === "string" && value.quote.trim() ? value.quote.trim() : null
+  if (!value.apart) return { issues: [], value: { quote, apart: false } }
+  if (quote === null) return { issues: [`"apart" is true, but "quote" is null. Quote the lawyer's words that ask for this document as a file apart, or reply {"quote":null,"apart":false} when no words do.`] }
+  if (!instructionFound(directory, quote)) return { issues: [quoteMissIssue(directory, "quote", { quote, source_id: REQUEST_SOURCE }, "json")] }
+  const flat = (words: string) => normalize(words).toLowerCase()
+  if (flat(file.quote).includes(flat(quote)))
+    return { issues: [`"quote" gives "${excerpt(quote)}", which is words of the one file's own request "${excerpt(file.quote)}": they ask for that file, not for this document apart from it. Quote the lawyer's words that ask for this document as a file apart, or reply {"quote":null,"apart":false} when no words do.`] }
+  return { issues: [], value: { quote, apart: true } }
 }
 
 /** `requested` with each document in `unasked` (by id) added to the lawyer's
@@ -551,6 +575,7 @@ export function requestedFilesQuestion(directory: string, requested: RequestedFi
 /** What a recorded file asks for, in the lawyer's terms: its contents by
  * title, in the lawyer's order, and how they are to be delivered. */
 function asked(file: RequestedFile, planned: (id: string) => { title: string } | undefined) {
+  if (!file.holds.length) return file.name ? `a file named "${file.name}"` : "a file"
   const parts = file.holds.map(id => planned(id) ? `"${planned(id)!.title}"` : "a document no longer planned")
   const how = file.name ? (parts.length > 1 ? `in one file named "${file.name}"` : `as a file named "${file.name}"`) : parts.length > 1 ? "in one file" : "as a file of its own"
   return `${serialList(parts)} ${how}`
@@ -577,7 +602,7 @@ export function readRequestedFiles(directory: string): LeanRequestedFiles | unde
   return value as LeanRequestedFiles
 }
 
-const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && row.holds.length > 0 &&
+const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) &&
   row.holds.every(id => typeof id === "string" && /^d[1-9]\d*$/.test(id)) && (row.name === null || typeof row.name === "string") && typeof row.quote === "string" &&
   (row.refused_name === undefined || typeof row.refused_name === "string")
 
@@ -589,8 +614,9 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
  * titles and the memo is still checked against the lawyer's words. An
  * unchecked record gives one item, as the coverage check's does: the run could
  * not confirm which files the lawyer's words ask to receive. A file the run
- * cannot build (fileShape) always gives one, as does the memo asked for with a
- * document planned as a redline. Otherwise each file is compared with the
+ * cannot build (fileShape) always gives one, a file that holds no planned
+ * document included, as does the memo asked for with a document planned as a
+ * redline. Otherwise each file is compared with the
  * names registration gives the plan's files (plannedRegistration): the memo
  * with one document must be that document's combined file (combinedDelivery),
  * one document alone must not be combined, the memo alone must be delivered
@@ -740,8 +766,10 @@ function requestedFilesRaised(directory: string, told?: OpenItem[]): { item: Ope
       if (delivered) files.set(`${delivered.kind}:${delivered.title}`, delivered)
     }
     const phrases = [...files.values()].map(describe)
-    const delivers = phrases.length ? serialList(phrases) : "none of them"
-    const reason = !shape ? file.holds.filter(held => held !== memo).length > 1 ? " The run puts several documents in one file only when it drafts each as a new document, with no template, comparison or playbook review, and none as a redline."
+    // A file holding no planned document, left so by the outline's revision.
+    const unplanned = !file.holds.length
+    const delivers = unplanned ? "no such file" : phrases.length ? serialList(phrases) : "none of them"
+    const reason = unplanned ? " The plan has no document for it." : !shape ? file.holds.filter(held => held !== memo).length > 1 ? " The run puts several documents in one file only when it drafts each as a new document, with no template, comparison or playbook review, and none as a redline."
       : " The run can join the memo and a document in one file only with the memo first."
       : !check.unsupported && check.issue?.ask ? " The run cannot join the memo with a redline." : ""
     const refused = file.name === null ? file.refused_name : undefined
@@ -750,7 +778,8 @@ function requestedFilesRaised(directory: string, told?: OpenItem[]): { item: Ope
     const format = refused !== undefined && (OTHER_FORMAT.test(refused) || formatStem(nameStem(refused)))
     const what = asked(file, held => plan.documents.find(row => row.id === held))
     const listed = answered.listing(file, saved.files, what)
-    const closing = listed && !check.unsupported && check.planned === listed.planned
+    const closing = unplanned ? " The lawyer should confirm what that file is to hold."
+      : listed && !check.unsupported && check.planned === listed.planned
       ? ` The lawyer answered the question about ${listed.same ? "these files" : `the files the words ${lawyerQuote(listed.words)} ask for`}; ` +
         "the plan drawn up with that answer still delivers them so."
       : " The lawyer should confirm how these files are to be delivered."

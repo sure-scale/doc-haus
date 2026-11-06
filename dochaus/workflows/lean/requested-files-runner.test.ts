@@ -42,9 +42,9 @@ const filesOf = (...files: RequestedFile[]): Reply => () => JSON.stringify({ sta
 const PACKED: RequestedFile = { holds: ["d2", "d1"], name: "Kestrel Release Pack.docx", quote: PACK }
 /** PACKED where the outline plans a second document, so the memo is d3. */
 const BEHIND: RequestedFile = { ...PACKED, holds: ["d3", "d1"] }
-/** The files agent: `files` for the files job, `asked` for whether the lawyer's words ask for a document the one file leaves out. */
+/** The files agent: `files` for the files job, `asked` for whether the lawyer's words ask to receive a document the one file leaves out apart from it. */
 const filesAnd = (files: Reply, asked: string): Reply => (text, index, sessionID) =>
-  text.includes("whether they ask for one planned document themselves") ? asked : files(text, index, sessionID)
+  text.includes("whether they ask to receive one planned document as a file apart") ? asked : files(text, index, sessionID)
 /** The cover memo the outline plans last, as the plan saves it. */
 const MEMO_ROW = expect.objectContaining({ title: "Cover memo", form: "advice", executed_by: [] })
 /** The planned documents and memo every outline here gives. */
@@ -168,7 +168,7 @@ describe("requested files through the run", () => {
     // The revision combines the letter and leaves out the notice's Deliverable line.
     const revised = memoed(letter("Deliverable: combined"), ...notice.filter(line => !line.startsWith("Deliverable")))
     const model = scriptedModel(replies({ [AGENT.draft]: outliner(memoed(letter(), ...notice), revised),
-      [AGENT.files]: filesAnd(filesOf(BEHIND), JSON.stringify({ asked: true, quote: "Also prepare a deposit notice for the Orchard Committee." })) }))
+      [AGENT.files]: filesAnd(filesOf(BEHIND), JSON.stringify({ quote: "Also prepare a deposit notice for the Orchard Committee.", apart: true })) }))
     await runLean(directory, { sessions: model.port })
 
     expect(revisions(model)).toHaveLength(1)
@@ -183,7 +183,7 @@ describe("requested files through the run", () => {
     const directory = prepared()
     const approval = ["# Committee approval", "Form: other", "## Approval", "The approval."]
     const model = scriptedModel(replies({ [AGENT.draft]: outliner(memoed(letter("Deliverable: combined"), ...approval)),
-      [AGENT.files]: filesAnd(filesOf(BEHIND), '{"asked":false}') }))
+      [AGENT.files]: filesAnd(filesOf(BEHIND), '{"quote":null,"apart":false}') }))
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
     const [only, ...others] = readLeanPlan(directory)!.documents
@@ -191,6 +191,47 @@ describe("requested files through the run", () => {
     expect(only).toMatchObject({ title: "Release letter", deliverable: "combined", file: "Kestrel Release Pack.docx" })
     expect(only!.parts.map(part => part.instrument?.title)).toEqual([undefined, "Committee approval"])
   }, 120_000)
+
+  describe("a file the lawyer's words ask for that holds no planned document", () => {
+    const NOTICE = "Also send a deposit notice to the Orchard Committee as Kestrel Deposit Notice.docx"
+    const UNPLANNED: RequestedFile = { holds: [], name: "Kestrel Deposit Notice.docx", quote: NOTICE }
+    const ISSUE = `- The lawyer's words "${NOTICE}" ask for a file named "Kestrel Deposit Notice.docx", but no planned document is in it. ` +
+      'Plan the document this file holds as a document of its own: its "# " title line, then its lines such as "Form:", then its "## " parts.'
+    const notice = ["# Deposit notice", "Form: letter", "## Deposit", "The deposit."]
+
+    test("goes back to the outline once; the revised outline is filed again and the document it plans holds the file", async () => {
+      const directory = prepared(`${REQUEST} ${NOTICE}.`)
+      const planned: RequestedFile = { ...UNPLANNED, holds: ["d2"] }
+      const model = scriptedModel(replies({ [AGENT.draft]: outliner(COMBINED, memoed(letter("Deliverable: combined"), ...notice)),
+        [AGENT.files]: (_text, index) => JSON.stringify({ stated: true, files: index ? [BEHIND, planned] : [PACKED, UNPLANNED] }) }))
+      expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+      expect(revisions(model).map(prompt => prompt.text.split("\n").filter(line => line.startsWith("- ")))).toEqual([[ISSUE]])
+      expect(filesSessions(model)).toHaveLength(2)
+      expect(readLeanPlan(directory)!.documents).toEqual([
+        expect.objectContaining({ id: "d1", title: "Release letter", deliverable: "combined", file: "Kestrel Release Pack.docx" }),
+        expect.objectContaining({ id: "d2", title: "Deposit notice", file: "Kestrel Deposit Notice.docx" }),
+        expect.objectContaining({ id: "d3", title: "Cover memo", form: "advice" }),
+      ])
+      expect(readRequestedFiles(directory)).toMatchObject({ stated: true, files: [BEHIND, planned] })
+      expect(requestedFilesItems(directory)).toEqual([])
+    }, 120_000)
+
+    test("still holding nothing after the one revision, it is saved as asked and disclosed", async () => {
+      const directory = prepared(`${REQUEST} ${NOTICE}.`)
+      const model = scriptedModel(replies({ [AGENT.draft]: outliner(COMBINED), [AGENT.files]: filesOf(PACKED, UNPLANNED) }))
+      expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+      expect(revisions(model)).toHaveLength(1)
+      expect(filesSessions(model)).toHaveLength(2)
+      expect(readLeanPlan(directory)!.documents).toEqual([expect.objectContaining({ id: "d1", title: "Release letter", deliverable: "combined" }), MEMO_ROW])
+      expect(readRequestedFiles(directory)).toMatchObject({ planned: PLANNED, stated: true, files: [PACKED, UNPLANNED] })
+      const items = requestedFilesItems(directory)
+      expect(items.map(item => item.detail)).toEqual([`Requested files: the lawyer's words "${NOTICE}" [source: request] ask for a file named "Kestrel Deposit Notice.docx", ` +
+        "but the run delivers no such file. The plan has no document for it. The lawyer should confirm what that file is to hold."])
+      expect(gateOf(directory).disclosed).toContainEqual(expect.objectContaining({ id: items[0]!.id, status: "disclosed" }))
+    }, 120_000)
+  })
 
   test("a files revision changes only the deliverables: a file name the outline gives is kept, though the revision leaves out its line", async () => {
     const directory = prepared()

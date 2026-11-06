@@ -412,6 +412,45 @@ describe("sectioned draft stage", () => {
     ])
   })
 
+  describe("misplaced lines", () => {
+    const ORDER = 'Begin each document with its own "# " title line, then its lines such as "Form:" and "File:", then its "## " parts.'
+
+    test("an outline whose levels are shifted is named in one pass: the parts it lacks, its \"###\" lines, its file-name title and its missing form", () => {
+      const shifted = parsePlan("Acting for: not stated\n# Outline\n## Supply note\n# supply-note.docx\nForm: other\n### Delivery\nThe delivery.\n### Price")
+      expect(shifted.value).toBeUndefined()
+      expect(shifted.issues).toEqual([
+        'The document "supply-note.docx" lists no parts. Add one "## " line per top-level part of that document, in order.',
+        `The lines "### Delivery", "### Price" are "###" headings, which an outline does not use. ${ORDER}`,
+        expect.stringContaining('The document "Outline" has no "Form:" line.'),
+        expect.stringContaining('The title "supply-note.docx" carries a file name.'),
+      ])
+      // One "###" line is named alone; the outline otherwise stands, the line read as nothing.
+      const deeper = parsePlan("Acting for: not stated\n# Supply note\nForm: other\n## Delivery\n#### Timing\nWithin a week.")
+      expect(deeper.issues).toEqual([`The line "#### Timing" is a "###" heading, which an outline does not use. ${ORDER}`])
+      expect(deeper.value?.documents[0]?.parts).toEqual([{ heading: "Delivery", scope: "Within a week.", display_heading: "" }])
+    })
+
+    test("a document's own lines after its parts are named, per document, and read neither as its lines nor as scope", () => {
+      const late = parsePlan("Acting for: not stated\n# Supply note\nForm: other\n## Delivery\nThe delivery.\nForm: advice\nExecuted by: none\nFile: Partner note.docx\n# Side letter\nForm: letter\n## Terms\nMode: new")
+      expect(late.issues).toEqual([
+        `The lines "Form: advice", "Executed by: none", "File: Partner note.docx" come after the "## " parts of "Supply note", so no document reads them. ${ORDER}`,
+        `The line "Mode: new" comes after the "## " parts of "Side letter", so no document reads it. ${ORDER}`,
+      ])
+      expect(late.value?.documents).toEqual([
+        { title: "Supply note", purpose: "", parts: [{ heading: "Delivery", scope: "The delivery.", display_heading: "" }], form: "other" },
+        { title: "Side letter", purpose: "", parts: [{ heading: "Terms", scope: "", display_heading: "" }], form: "letter" },
+      ])
+    })
+
+    test("a title that is only a file name, still so on the last attempt, stands as that name's words", () => {
+      for (const [title, planned] of [["supply-note.docx", "Supply note"], ["`Kestrel_Release_Pack.docx`", "Kestrel Release Pack"], ["Supply note (supply-note.docx)", "Supply note (supply-note.docx)"]]) {
+        const parsed = parsePlan(`Acting for: not stated\n# ${title}\nForm: other\n## Delivery`)
+        expect(parsed.issues).toEqual([expect.stringContaining("carries a file name")])
+        expect(parsed.value?.documents[0]?.title).toBe(planned)
+      }
+    })
+  })
+
   test("the outline records whom the lawyer acts for from one line before the first title", () => {
     const stated = parsePlan("Acting for: the buyer\n# Title\nForm: other\n## One")
     expect(stated).toEqual({ issues: [], value: { documents: [expect.objectContaining({ title: "Title" })], acting_for: { party: "the buyer", basis: "stated" } } })
@@ -540,6 +579,7 @@ describe("sectioned draft stage", () => {
 // it, and a letter reads as one letter, its planning labels unheaded.
 describe("a planned document's form", () => {
   const FORMS = '"Form: agreement", "Form: advice", "Form: letter", "Form: advice letter", "Form: statement", "Form: other"'
+  const DOCUMENT_ORDER = 'Begin each document with its own "# " title line, then its lines such as "Form:" and "File:", then its "## " parts.'
   const outline = (lines: string) => `Acting for: not stated\n# Notice letter\n${lines}\n## Opening\nWhy we write.\n## Terms\nDisplay heading: Terms of notice\nThe notice.\n## Closing\nDisplay heading: none\nWhat follows.`
   const shown = (lines: string) => parsePlan(outline(lines)).value?.documents[0]?.parts.map(part => part.display_heading)
 
@@ -570,10 +610,13 @@ describe("a planned document's form", () => {
   })
 
   test("a missing or unknown form is retry feedback naming the document and the forms, and the document stands without one", () => {
-    // Under a part the line is that part's scope, not the document's form.
+    // Under a part the line is no document's: named, and read as neither form nor scope.
     const missing = parsePlan("Acting for: not stated\n# Notice letter\n## Opening\nForm: letter")
-    expect(missing.issues).toEqual([`The document "Notice letter" has no "Form:" line. Under its title, before its first "## " part, write one of ${FORMS}.`])
-    expect(missing.value?.documents[0]).toEqual({ title: "Notice letter", purpose: "", parts: [{ heading: "Opening", scope: "Form: letter", display_heading: "" }] })
+    expect(missing.issues).toEqual([
+      `The line "Form: letter" comes after the "## " parts of "Notice letter", so no document reads it. ${DOCUMENT_ORDER}`,
+      `The document "Notice letter" has no "Form:" line. Under its title, before its first "## " part, write one of ${FORMS}.`,
+    ])
+    expect(missing.value?.documents[0]).toEqual({ title: "Notice letter", purpose: "", parts: [{ heading: "Opening", scope: "", display_heading: "" }] })
     expect(parsePlan(outline("Form:")).issues).toEqual([expect.stringContaining('The document "Notice letter" has no "Form:" line.')])
     const unknown = parsePlan(`${outline("Form: memo")}\n# Supply terms\nForm: agreement\n## Delivery`)
     expect(unknown.issues).toEqual([`The "Form:" line of "Notice letter" gives "memo", which is not one of the forms. Under its title, before its first "## " part, write one of ${FORMS}.`])
@@ -950,11 +993,13 @@ describe("a document's furniture lines", () => {
       expect(parsed.issues).toEqual([])
       expect(parsed.value?.documents[0]?.furniture).toEqual(furniture)
     }
-    // Without the lines, or with them under a part, the document asks nothing of its furniture.
+    // Without the lines, or with them under a part, the document asks nothing of
+    // its furniture; a line under a part is named, and is not scope text.
     expect(parsePlan(outline(), REQUEST).value?.documents[0]).not.toHaveProperty("furniture")
     const under = parsePlan(`${outline()}\nLegend: none`, REQUEST)
+    expect(under.issues).toEqual([expect.stringContaining('The line "Legend: none" comes after the "## " parts of')])
     expect(under.value?.documents[0]).not.toHaveProperty("furniture")
-    expect(under.value?.documents[0]?.parts[0]?.scope).toBe("Why we write. Legend: none")
+    expect(under.value?.documents[0]?.parts[0]?.scope).toBe("Why we write.")
   })
 
   test("a legend the request does not use as written is retry feedback and is dropped, the other lines kept", () => {

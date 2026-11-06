@@ -12,7 +12,7 @@ import {
 } from "./package-coverage"
 import { answeredScopeQuestion, openScopeQuestion } from "./package-scope"
 import {
-  LEAN_REQUESTED_FILES_SCHEMA, foldRequestedFiles, parseRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesQuestion, requestedFilesRevision, parseUnheldDocument, requestedFilesWords, unheldDocumentPrompt, unheldDocuments, withRequestedNames, withUnaskedDocuments, writeRequestedFiles,
+  LEAN_REQUESTED_FILES_SCHEMA, foldRequestedFiles, parseRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesQuestion, requestedFilesRevision, parseUnheldDocument, requestedFilesWords, unheldDocumentPrompt, unheldDocuments, unplannedFileIssues, withRequestedNames, withUnaskedDocuments, writeRequestedFiles,
   type RequestedFiles,
 } from "./requested-files"
 import {
@@ -73,7 +73,10 @@ import {
 // nor does an act record that lists no act (no_acts).
 // When the outline plans a memo or more than one document and no package-scope
 // question stops the step, a files job in its own session then reads which
-// files the lawyer's words ask to receive (requested-files.ts). Where the plan
+// files the lawyer's words ask to receive (requested-files.ts). A file they ask
+// for that holds no planned document goes back to the outline session for one
+// revised outline (PLAN_UNPLANNED_REVISIONS), covered, placed and filed again;
+// a file still holding nothing is saved as asked and disclosed. Where the plan
 // does not deliver them so, the issues go back to the outline session for at
 // most PLAN_FILES_REVISIONS revised outlines, from which only the deliverables
 // and file names of the documents the issues concern are taken, and only while
@@ -120,6 +123,8 @@ type Coverage = { acts?: CoverageAct[]; issues: string[] }
 export const PLAN_COVERAGE_REVISIONS = 2
 /** Revised outlines the files job's issues may ask for before the plan is saved. */
 export const PLAN_FILES_REVISIONS = 2
+/** Revised outlines a requested file that holds no planned document may ask for. */
+export const PLAN_UNPLANNED_REVISIONS = 1
 
 export async function runDraftStage(
   directory: string,
@@ -329,16 +334,18 @@ export async function runDraftStage(
     const refused = new Map<string, string>()
     return exchange({ id, agent: filesAgent })("files", requestedFilesPrompt(directory, documents, memo), (reply, final) => parseRequestedFiles(reply, directory, documents, { final, refused }))
   }
-  // Whether the lawyer's words ask for each planned document the one
-  // requested file leaves out, each in a fresh session of its own; the ids of
-  // those they do not. A reply that never passed its check keeps its document
-  // as the files job placed it. The memo document is never asked about.
+  // Whether the lawyer's words ask to receive each planned document the one
+  // requested file leaves out as a file apart from it, each in a fresh session
+  // of its own; the ids of those they do not. A reply that never passed its
+  // check keeps its document as the files job placed it. The memo document is
+  // never asked about.
   const unasked = async (requested: RequestedFiles, documents: PlannedDocument[], memo: DocID | undefined) => {
     const filesAgent = LEAN_STAGE_AGENTS.files
+    const [file] = requested.files
     const verdicts = await Promise.all(unheldDocuments(requested, documents, memo).map(async row => {
       const id = await coverageSession(filesAgent, `files: ${row.id} asked`)
-      const checked = await exchange({ id, agent: filesAgent })(`files asked ${row.id}`, unheldDocumentPrompt(directory, row, requested.files[0]!), reply => parseUnheldDocument(reply, directory))
-      return checked.value === false ? [row.id as string] : []
+      const checked = await exchange({ id, agent: filesAgent })(`files asked ${row.id}`, unheldDocumentPrompt(directory, row, file!), reply => parseUnheldDocument(reply, directory, file!))
+      return checked.value?.apart === false ? [row.id as string] : []
     }))
     return verdicts.flat()
   }
@@ -398,16 +405,16 @@ export async function runDraftStage(
         placement = await placing(withDocumentIDs(value.documents))
       }
     }
-    const covered = withDocumentIDs(value.documents)
+    let covered = withDocumentIDs(value.documents)
     recordCoverage(covered, value.acting_for, coverage)
     if (placement) recordPlacement(covered, placement)
     const blocked = scopeBlock(covered, coverage)
     if (blocked) return blocked
     // The outline plans the memo the request asks for as its last document
     // (parsePlan); the files jobs hold it by that id, and it stays last, never
-    // folded into another file.
-    const memoed = value.memo !== undefined
-    const memoOf = (documents: unknown[]): DocID | undefined => memoed ? `d${documents.length}` : undefined
+    // folded into another file. Read from the outline as it stands, since an
+    // unplanned-file revision may add the memo.
+    const memoOf = (documents: unknown[]): DocID | undefined => value!.memo !== undefined ? `d${documents.length}` : undefined
     // The files the lawyer's words ask for are read from the covered outline.
     // Where its deliverables do not deliver them so, the issues a revision may
     // settle go back to the outline session as a revision request, unless the
@@ -426,7 +433,29 @@ export async function runDraftStage(
     // the files job left out of it goes in it too, unless the lawyer's words
     // ask for that document themselves (unasked) or the lawyer chose a file of
     // its own for one.
-    const filed = await filing(covered, memoOf(covered))
+    let filed = await filing(covered, memoOf(covered))
+    // A file the lawyer's words ask for that holds no planned document goes back
+    // to the outline session as one revision request; the revised outline is
+    // covered, placed, checked for the package-scope question and filed again,
+    // as the outline was. A file still holding nothing is saved as asked and
+    // disclosed (requestedFilesItems); a revision with no usable outline keeps
+    // the one before.
+    for (let revision = 1, issues = filed?.value ? unplannedFileIssues(filed.value) : []; issues.length && revision <= PLAN_UNPLANNED_REVISIONS; revision++) {
+      delete best.value
+      const revised = await ask<LeanOutline>(`outline unplanned-file revision ${revision}/${PLAN_UNPLANNED_REVISIONS}`, retryPrompt("draft", issues), checkOutline, 0, issues)
+      const next = revised.value ?? best.value
+      if (!next) continue
+      value = next
+      covered = withDocumentIDs(value.documents)
+      coverage = await covering(covered)
+      placement = scopeBlock(covered, coverage) ? undefined : await placing(covered)
+      recordCoverage(covered, value.acting_for, coverage)
+      if (placement) recordPlacement(covered, placement)
+      const stopped = scopeBlock(covered, coverage)
+      if (stopped) return stopped
+      filed = await filing(covered, memoOf(covered))
+      issues = filed?.value ? unplannedFileIssues(filed.value) : []
+    }
     const separate = separateFileChosen(readQuestions(directory))
     const asked = filed?.value && !separate ? withUnaskedDocuments(filed.value, await unasked(filed.value, covered, memoOf(covered))) : filed?.value
     const fold = (outline: LeanOutline) => asked ? foldRequestedFiles(outline.documents, asked, separate, memoOf(outline.documents)) : undefined

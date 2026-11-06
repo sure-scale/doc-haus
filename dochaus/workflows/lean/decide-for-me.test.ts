@@ -190,7 +190,9 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // step when it began reading that list to list gaps. Every key that reads
 // plan.json was re-pinned when whom the lawyer acts for gained its basis
 // (dochaus.lean.plan/2). The draft step was re-pinned when the outline
-// contract gained the statement form (statement-form-12). The spine was
+// contract gained the statement form (statement-form-12) and when the outline
+// began naming every defect in one pass and planning a requested file that
+// holds no planned document (outline-one-pass-17). The spine was
 // re-pinned when its entries began to be split into atoms (spine-atoms-1),
 // when a one-atom split began to read as atomic (spine-atoms-2) and when its
 // checks began asking each figure of an entry or atom of its own quotes
@@ -213,7 +215,7 @@ const INPUTS: Record<string, string> = {
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
   "acts": "ff830f3d37f64416362401fa66710c9fc8e770429b6bc5f2af84baffd3f35a3c",
   "spine": "dc46aa641985c65e0b700617e907d163d96a507dfc055d1e0005f7eb1032c8da",
-  "d1.draft": "67eff9f9c77854b9c8d21b0b48f9941aa1dd5877a43af105e174fa15137978d6",
+  "d1.draft": "089f1b416898560df5252cd533b70717d73b57a09658fc3394b712fba2d07dd0",
   "d1.review": "23af042296cf7f7d3ee97332f0caaf1fac7ab240199ce23d96a33f9c65fc2693",
   "d1.review-independent": "ae78dbf15aa677be04d6d44d0b91d63c34fd2fa03754e51350a6941413143d70",
   "d1.review-wording": "da1716d02cfb2df4b1f9fe71ceec32c3ffe41e66070f508a765ef7aa81e3792a",

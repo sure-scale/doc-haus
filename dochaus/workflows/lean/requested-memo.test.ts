@@ -47,7 +47,7 @@ const notesRow = (directory: string) => readLeanDocuments(directory)?.documents.
 const finalizePrompts = (model: ReturnType<typeof scriptedModel>) => model.prompts.filter(prompt => prompt.agent === AGENT.finalize).map(prompt => prompt.text)
 
 describe("the outline's Memo line", () => {
-  test("is read before the first title in the request's words, and a non-answer is no memo", () => {
+  test("is read in the request's words wherever it stands, and a non-answer is no memo", () => {
     for (const [line, memo] of [["Memo: cover memo", "cover memo"], ["Memo: a cover memo", "cover memo"], ["- **Memo:** `Cover Memo`", "Cover Memo"],
       ['Memo: "cover memo on the open points"', "cover memo on the open points"], ["Memo: cover memo.", "cover memo"]])
       expect(parsePlan(outline(line, memo), REQUEST)).toEqual({ issues: [], value: expect.objectContaining({ memo }) })
@@ -56,10 +56,24 @@ describe("the outline's Memo line", () => {
       expect(parsed.issues).toEqual([])
       expect(parsed.value).not.toHaveProperty("memo")
     }
-    // Under a title the line is that document's purpose, not the run's memo.
-    const under = parsePlan("Acting for: not stated\n# Supply note\nForm: other\nMemo: cover memo\n## Delivery", REQUEST)
-    expect(under.value).not.toHaveProperty("memo")
-    expect(under.value?.documents[0]?.purpose).toBe("Memo: cover memo")
+    // Under a title, or after the parts, the line is still the run's memo, held
+    // to the memo rules: here no title is the memo, so it is retry feedback and
+    // the memo is added as its own document.
+    for (const late of ["Acting for: not stated\n# Supply note\nForm: other\nMemo: cover memo\n## Delivery", "Acting for: not stated\n# Supply note\nForm: other\n## Delivery\nMemo: cover memo"]) {
+      const parsed = parsePlan(late, REQUEST)
+      expect(parsed.issues).toEqual([expect.stringContaining('The "Memo:" line names "cover memo", but no planned title is that memo')])
+      expect(parsed.value).toMatchObject({ memo: "cover memo", documents: [{ title: "Supply note", purpose: "", parts: [{ heading: "Delivery", scope: "" }] }, { title: "Cover memo", form: "advice" }] })
+    }
+  })
+
+  test("a Memo line after the first title plans the memo: the title naming it is the memo, else the one advice document is adopted", () => {
+    const named = parsePlan("Acting for: not stated\n# Supply note\nForm: other\n## Delivery\n# Cover memo\nForm: advice\n## Decisions\nMemo: cover memo", REQUEST)
+    expect(named.issues).toEqual([])
+    expect(named.value).toMatchObject({ memo: "cover memo", documents: [{ title: "Supply note" }, { title: "Cover memo", form: "advice", parts: [{ heading: "Decisions", scope: "" }] }] })
+    // No title is the memo: retry feedback, and on the last attempt the one document planned as advice is the memo.
+    const adopted = parsePlan("Acting for: not stated\n# Partner note\nForm: advice\n## Points\n# Supply note\nForm: other\nMemo: cover memo\n## Delivery", REQUEST)
+    expect(adopted.issues).toEqual([expect.stringContaining('The "Memo:" line names "cover memo", but no planned title is that memo; the planned titles are "Partner note", "Supply note".')])
+    expect(adopted.value).toMatchObject({ memo: "cover memo", documents: [{ title: "Supply note" }, { title: "Partner note", form: "advice", executed_by: [] }] })
   })
 
   test("a name is a non-answer only as a whole, the first line wins, and without the request it is not grounded", () => {

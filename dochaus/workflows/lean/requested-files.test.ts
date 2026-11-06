@@ -13,7 +13,8 @@ import { tagged } from "./prompts"
 import { REQUEST_SOURCE, openItem, quoteMissIssue } from "./quotes"
 import {
   FILES_REVISION_SCOPE, LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, readRequestedFiles, requestedFilesIssues, requestedFilesItems, requestedFilesPrompt, requestedFilesQuestion,
-  requestedFilesRevision, parseUnheldDocument, unheldDocuments, withRequestedNames, withUnaskedDocuments, writeRequestedFiles, type LeanRequestedFiles, type RequestedFile, type RequestedFiles,
+  requestedFilesRevision, parseUnheldDocument, unheldDocumentPrompt, unheldDocuments, unplannedFileIssues, withRequestedNames, withUnaskedDocuments, writeRequestedFiles,
+  type LeanRequestedFiles, type RequestedFile, type RequestedFiles,
 } from "./requested-files"
 import { writeLeanText, writeQuestions, type Question } from "./state"
 import { cleanupMatters, matter } from "./test-support"
@@ -334,9 +335,13 @@ describe("parse requested files", () => {
     expect(check(reply(true, file(["d3", "d2"], PACK)))).toEqual([{ issues: [], value: stated(file(["d3", "d2"], PACK)) }, { issues: [], value: stated(file(["d3", "d2"], PACK)) }])
     expect(check(reply(true, file(["d3", "d2"], PACK), file(["d2"], BOTH)))).toEqual(twice(
       '"d2" is in files[0] and files[1]. Put each planned document in one file at most, as the lawyer\'s words place it.'))
-    const rowIssue = `files[0] needs "holds" as a nonempty list of planned ids, "name" as a file name or null, and a nonempty "quote" string. ${SHAPE}`
-    expect(check(reply(true, file([], TRANSFER)))).toEqual(twice(rowIssue))
+    const rowIssue = `files[0] needs "holds" as a list of planned ids ([] when no planned document is what the file holds), "name" as a file name or null, and a nonempty "quote" string. ${SHAPE}`
     expect(check(reply(true, { holds: ["d1"], name: "Kestrel Transfer.docx" }))).toEqual(twice(rowIssue))
+    expect(check(reply(true, { holds: "d1", name: null, quote: TRANSFER }))).toEqual(twice(rowIssue))
+    // A file no planned document fills holds nothing: it stands, for the outline to plan.
+    const empty = file([], TRANSFER, "Kestrel Transfer.docx")
+    expect(check(reply(true, empty, file(["d3", "d2"], PACK)))).toEqual([{ issues: [], value: stated(empty, file(["d3", "d2"], PACK)) }, { issues: [], value: stated(empty, file(["d3", "d2"], PACK)) }])
+    expect(requestedFilesPrompt(directory, DOCUMENTS, MEMO_ID)).toContain('first when the words set no order, or [] when no planned document is what the file holds; ')
   })
 
   test("stated and files must agree; a tool call or another reply is retried", () => {
@@ -422,14 +427,56 @@ describe("unheld documents", () => {
     expect(withUnaskedDocuments(stated(file(["d3", "d2"], PACK)), [])).toEqual(stated(file(["d3", "d2"], PACK)))
   })
 
-  test("a document is asked for only with the lawyer's own words that ask for it", () => {
+  test("a file holding nothing counts as a file, and a lone one has nothing to fold into it", () => {
+    // Beside it, the other file is not the only one, so no document is folded into it.
+    expect(unheldDocuments(stated(file([], TRANSFER, "Kestrel Transfer.docx"), file(["d3", "d2"], PACK)), DOCUMENTS, MEMO_ID)).toEqual([])
+    // Alone, it asks for a document the plan does not have, not for the plan's documents in one file.
+    expect(unheldDocuments(stated(file([], PACK, "Kestrel Board Pack.docx")), DOCUMENTS, MEMO_ID)).toEqual([])
+  })
+
+  test("asks one decision, whether the lawyer's words ask for the document as a file apart from <file>, the quote first", () => {
     const directory = prepared()
-    expect(parseUnheldDocument('{"asked":false}', directory)).toEqual({ issues: [], value: false })
-    expect(parseUnheldDocument(JSON.stringify({ asked: true, quote: TRANSFER }), directory)).toEqual({ issues: [], value: true })
-    expect(parseUnheldDocument(JSON.stringify({ asked: true, quote: "Deliver the deposit notice apart." }), directory).issues).toEqual([
+    const prompt = unheldDocumentPrompt(directory, DOCUMENTS[0]!, file(["d3", "d2"], PACK, "Kestrel Board Pack.docx"))
+    expect(prompt).toContain("for one decision: whether they ask to receive one planned document as a file apart from the one file in <file>.")
+    expect(prompt).toContain(tagged("file", `The one file the lawyer asks to receive, Kestrel Board Pack.docx, in these words: "${PACK}"`))
+    expect(prompt).not.toContain("<requested_file>")
+    // The JSON-only line is in the first prompt, the quote before the decision.
+    expect(prompt).toContain('- Reply with the JSON object only, "quote" first: {"quote":"..." or null,"apart":true or false}.')
+    expect(prompt.indexOf('- "quote":')).toBeLessThan(prompt.indexOf('- "apart":'))
+  })
+
+  test("a document is asked for apart only with the lawyer's own words, outside the one file's own quote", () => {
+    const directory = prepared()
+    const pack = file(["d3", "d2"], PACK, "Kestrel Board Pack.docx")
+    const parse = (value: unknown) => parseUnheldDocument(typeof value === "string" ? value : JSON.stringify(value), directory, pack)
+    expect(parse({ quote: null, apart: false })).toEqual({ issues: [], value: { quote: null, apart: false } })
+    expect(parse({ quote: TRANSFER, apart: true })).toEqual({ issues: [], value: { quote: TRANSFER, apart: true } })
+    expect(parse({ quote: "Deliver the deposit notice apart.", apart: true }).issues).toEqual([
       quoteMissIssue(directory, "quote", { quote: "Deliver the deposit notice apart.", source_id: REQUEST_SOURCE }, "json")])
-    expect(parseUnheldDocument('{"asked":true}', directory).value).toBeUndefined()
-    expect(parseUnheldDocument("It is not asked for.", directory).value).toBeUndefined()
+    expect(parse({ quote: null, apart: true }).value).toBeUndefined()
+    // Words of the one file's own quote ask for that file, not for the document apart from it.
+    const inside = parse({ quote: "all in one file named Kestrel Board Pack.docx", apart: true })
+    expect(inside.value).toBeUndefined()
+    expect(inside.issues).toEqual([expect.stringContaining('"quote" gives "all in one file named Kestrel Board Pack.docx", which is words of the one file\'s own request')])
+    expect(parse({ quote: PACK, apart: true }).value).toBeUndefined()
+    // The earlier shape, and prose, are retried.
+    expect(parse({ asked: false }).value).toBeUndefined()
+    expect(parse({ apart: false }).value).toBeUndefined()
+    expect(parse("It is not asked for.").value).toBeUndefined()
+  })
+})
+
+describe("unplanned files", () => {
+  test("a file holding no planned document is one outline revision issue, and no files revision issue", () => {
+    const unplanned = stated(file([], TRANSFER, "Kestrel Transfer.docx"), file(["d3", "d2"], PACK, "Kestrel Board Pack.docx"))
+    expect(unplannedFileIssues(unplanned)).toEqual([`The lawyer's words "${TRANSFER}" ask for a file named "Kestrel Transfer.docx", but no planned document is in it. ` +
+      'Plan the document this file holds as a document of its own: its "# " title line, then its lines such as "Form:", then its "## " parts.'])
+    expect(unplannedFileIssues(stated(file([], TRANSFER)))).toEqual([expect.stringContaining(`"${TRANSFER}" ask for a file, but no planned document is in it.`)])
+    expect(unplannedFileIssues(ASKED)).toEqual([])
+    expect(unplannedFileIssues({ stated: false, files: [] })).toEqual([])
+    // No plan builds it, so it names nothing and asks no revision of the deliverables.
+    expect(requestedFilesIssues(DOCUMENTS, MEMO_ID, stated(unplanned.files[0]!))).toEqual({ issues: [], unsupported: [0] })
+    expect(withRequestedNames(DOCUMENTS, MEMO_ID, unplanned).documents[0]).not.toHaveProperty("file")
   })
 })
 
@@ -579,6 +626,17 @@ describe("requested files items", () => {
 
   test("a plan that delivers the files as asked gives no item", () => {
     expect(requestedFilesItems(saved())).toEqual([])
+  })
+
+  test("a file still holding no planned document reads back and is disclosed as a file the run does not deliver", () => {
+    const words = "Add a deposit notice as Kestrel Deposit Notice.docx"
+    const unplanned = file([], words, "Kestrel Deposit Notice.docx")
+    const value = record(...ASKED.files, unplanned)
+    const directory = saved(AS_ASKED, value)
+    writeLeanText(directory, "request.md", `${REQUEST} ${words}.`)
+    expect(readRequestedFiles(directory)).toEqual(value)
+    expect(requestedFilesItems(directory)).toEqual([item([], `the lawyer's words "${words}" [source: request] ask for a file named "Kestrel Deposit Notice.docx", ` +
+      "but the run delivers no such file. The plan has no document for it.", " The lawyer should confirm what that file is to hold.", 2)])
   })
 
   test("a plan changed after the record to deliver the memo apart gives one item in the lawyer's words", () => {
