@@ -33,6 +33,7 @@ import { Session as SessionSchema } from "@opencode/schema/session"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
+import { AppProcess } from "@opencode/util/process"
 import { Context, Deferred, Effect, Layer, Logger, Option, References, Schema, Scope, Tracer } from "effect"
 import { HttpClient, HttpEffect, HttpMiddleware, HttpRouter, HttpServer, HttpServerRequest } from "effect/http"
 import path from "node:path"
@@ -91,7 +92,7 @@ if (tracing) process.env[TRACE_ROOT_ENV] = tracing
 const legalConfig = makeLocationNode({
   service: Config.Service,
   layer: legalConfigLayer(legal),
-  deps: [Watcher.node, Bus.node, FSUtil.node, Global.node, Location.node, Credential.node, WellKnown.node],
+  deps: [Watcher.node, Bus.node, FSUtil.node, Global.node, Location.node, Credential.node, WellKnown.node, AppProcess.node],
 })
 
 const ChildInput = Schema.Struct({
@@ -195,6 +196,7 @@ await runEngine(
               add: () => Effect.fail(new Error("Remote configuration discovery is disabled in the legal engine")),
               remove: () => Effect.void,
               resolve: () => Effect.succeed([]),
+              cached: () => Effect.succeed([]),
             })),
             Config.node.replace(legalConfig),
             ManagedPolicy.node.replace(legalManagedPolicy),

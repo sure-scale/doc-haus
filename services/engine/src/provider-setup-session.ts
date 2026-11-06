@@ -18,7 +18,8 @@ import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
-import { Context, Effect, Layer } from "effect"
+import { AppProcess } from "@opencode/util/process"
+import { Context, Deferred, Effect, Layer } from "effect"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -33,6 +34,7 @@ export type SetupCredential = { integrationID: Integration.ID; label: string; va
 // those attempts cannot activate a connection in the installation database.
 export function setupMemoryCredentials(initial?: SetupCredential) {
   const records = new Map<Credential.ID, Credential.Info>()
+  const refreshing = new Map<Credential.ID, Deferred.Deferred<Credential.OAuth | undefined, unknown>>()
   let notify = (_info: Credential.Info, _switched: boolean): Effect.Effect<void> => Effect.void
   const snapshot = (integrationID?: string) => {
     const value = Array.from(records.values()).findLast(record => !integrationID || record.integrationID === integrationID)
@@ -42,6 +44,17 @@ export function setupMemoryCredentials(initial?: SetupCredential) {
     all: () => Effect.sync(() => Array.from(records.values())),
     list: integrationID => Effect.sync(() => Array.from(records.values()).filter(record => record.integrationID === integrationID)),
     get: id => Effect.sync(() => records.get(id)),
+    // As natively, concurrent refreshes of one credential share the first operation's result.
+    lock: (id, operation) => Effect.suspend(() => {
+      const current = refreshing.get(id)
+      if (current) return Deferred.await(current)
+      const deferred = Deferred.makeUnsafe<Credential.OAuth | undefined, unknown>()
+      refreshing.set(id, deferred)
+      return operation.pipe(Effect.onExit(exit => Effect.suspend(() => {
+        refreshing.delete(id)
+        return Deferred.done(deferred, exit)
+      })))
+    }),
     create: input => Effect.gen(function* () {
       const info = new Credential.Info({ ...input, id: Credential.ID.create(), label: input.label ?? "default", value: structuredClone(input.value) })
       records.set(info.id, info)
@@ -92,7 +105,7 @@ export function createProviderSetupSession(options: {
     const config = makeLocationNode({
       service: Config.Service,
       layer: legalConfigLayer(options.legal, { shipped: path.join(options.legal, "opencode.json"), overrides }),
-      deps: [Watcher.node, Bus.node, FSUtil.node, Global.node, Location.node, Credential.node, WellKnown.node],
+      deps: [Watcher.node, Bus.node, FSUtil.node, Global.node, Location.node, Credential.node, WellKnown.node, AppProcess.node],
     })
     const built = AppNodeBuilder.build(LayerNode.group([Instance.graph, Bus.node, Credential.node]), [
       modelHttp,
@@ -109,7 +122,7 @@ export function createProviderSetupSession(options: {
       WellKnown.node.replace(Layer.succeed(WellKnown.Service, {
         entries: () => Effect.succeed([]), snapshot: () => [], refresh: () => Effect.succeed(false),
         add: () => Effect.fail(new Error("Remote configuration discovery is disabled during setup")),
-        remove: () => Effect.void, resolve: () => Effect.succeed([]),
+        remove: () => Effect.void, resolve: () => Effect.succeed([]), cached: () => Effect.succeed([]),
       })),
       Config.node.replace(config),
       ManagedPolicy.node.replace(legalManagedPolicy),
