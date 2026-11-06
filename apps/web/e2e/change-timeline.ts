@@ -660,7 +660,7 @@ try {
     expect(matter.dir.startsWith(dataRoot)).toBe(true)
     Object.assign(file, { matter: matter.id, dir: matter.dir })
     for (const [name, bytes] of [[SUPPLY, counterpartyMarkupDocx()], [BUSY, busyDocx()], [TEXT_BOX, textBoxDocx()], [STRUCTURES, structuresDocx()]] as const) {
-      const form = new FormData(); form.append("file", new File([bytes], name))
+      const form = new FormData(); form.append("file", new File([new Uint8Array(bytes)], name))
       expect((await api(`/matters/${matter.id}/documents`, { method: "POST", body: form })).status, `upload ${name}`).toBe(200)
     }
     const busy = await readMarkup(BUSY)
