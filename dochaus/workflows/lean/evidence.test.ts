@@ -50,9 +50,9 @@ test("the discrepancy reply lists gaps, each resting on verified words that need
   expect(checkEvidence(directory, "spine", { entries: [], limitations: [] })).toEqual([])
   expect(checkEvidence(directory, "discrepancy", reply({ ...GAP, requirement: undefined }))).toEqual(["gaps[0] needs detail, requirement {source_id,quote}, evidence [{source_id,quote}] and limitations arrays."])
   const [invented] = checkEvidence(directory, "discrepancy", reply({ ...GAP, requirement: { source_id: "request", quote: "Draft a long supply agreement" } }))
-  expect(invented).toStartWith('gaps[0].requirement: The supporting quotation "Draft a long supply agreement" in "request" was not found')
+  expect(invented).toStartWith('gaps[0].requirement quotes "Draft a long supply agreement" as from "request", but those words are not in the request')
   const [unsupported] = checkEvidence(directory, "discrepancy", reply(GAP, { ...GAP, evidence: [{ source_id: SOURCE, quote: "Invented delivery period" }] }))
-  expect(unsupported).toStartWith('gaps[1].evidence: The supporting quotation "Invented delivery period"')
+  expect(unsupported).toStartWith('gaps[1].evidence[0] quotes "Invented delivery period" as from')
   expect(checkEvidence(directory, "discrepancy", reply({ ...GAP, material: "yes", lawyer: undefined }))).toEqual([
     "gaps[0] needs material: true or false.",
     "gaps[0] needs lawyer: true when only the lawyer or client can supply it, else false.",
@@ -143,7 +143,7 @@ test("on the final attempt the spine stands with its unquoted figure recorded, a
   const final = checkEvidenceReply(directory, "spine", reply, { final: true })
   expect(final).toEqual({ issues: [], recorded: [UNQUOTED], value: JSON.parse(reply) })
   // Any other issue still fails the final attempt.
-  expect(checkEvidenceReply(directory, "spine", JSON.stringify(priced("The price is $4,800,000.", ["Invented price"])), { final: true }).issues[0]).toContain("not found in that canonical source")
+  expect(checkEvidenceReply(directory, "spine", JSON.stringify(priced("The price is $4,800,000.", ["Invented price"])), { final: true }).issues[0]).toContain("but those words are not in that document")
   writeLeanText(directory, "spine.json", reply)
   expect(stageOutputValid(directory, "spine")).toBe(true)
 })

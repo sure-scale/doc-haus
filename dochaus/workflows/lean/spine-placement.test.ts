@@ -71,8 +71,10 @@ describe("spine entry level", () => {
   test("a reply must be {\"level\": \"text\"} or {\"level\": \"package\"}", () => {
     expect(parseEntryLevel(JSON.stringify({ level: "text" }))).toEqual({ issues: [], value: "text" })
     expect(parseEntryLevel(JSON.stringify({ level: "package" }))).toEqual({ issues: [], value: "package" })
-    for (const reply of ["text", JSON.stringify({ level: "part" }), JSON.stringify({ parts: [] })])
-      expect(parseEntryLevel(reply)).toEqual({ issues: ['Reply with the JSON object only: {"level":"text"} or {"level":"package"}.'] })
+    const shape = 'Reply with the JSON object only: {"level":"text"} or {"level":"package"}.'
+    expect(parseEntryLevel("text")).toEqual({ issues: [`${shape} No JSON object was found in the reply.`] })
+    for (const reply of [JSON.stringify({ level: "part" }), JSON.stringify({ parts: [] })])
+      expect(parseEntryLevel(reply)).toEqual({ issues: [shape] })
   })
 
   test("one entry's level prompt holds that entry and the question, and no document", () => {

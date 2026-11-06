@@ -1,5 +1,5 @@
 import { normalize } from "../../lib/quote-verify"
-import { parseJsonObject } from "./change-checks"
+import { parseJsonObject } from "./checks"
 import { parallel } from "./checklist-flow"
 import { record } from "./checks"
 import { figures, SPINE_KINDS, unquotedFigures } from "./evidence"
@@ -55,7 +55,7 @@ const SHAPE = 'Reply with the JSON object only: {"atomic":true} or {"atoms":[{"k
  * own evidence and limitations. Every other reply is retried. */
 export function parseSpineSplit(reply: string, parent: SpineEntry): { issues: string[]; atoms?: SpineEntry[] } {
   const parsed = parseJsonObject(reply)
-  if (!parsed.ok) return { issues: [SHAPE] }
+  if (!parsed.ok) return { issues: [`${SHAPE} ${parsed.error}`] }
   if (parsed.value.atomic === true && parsed.value.atoms === undefined) return { issues: [], atoms: [parent] }
   const rows = parsed.value.atoms
   if (!Array.isArray(rows) || !rows.length) return { issues: [SHAPE] }

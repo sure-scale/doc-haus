@@ -1,5 +1,5 @@
 import { rmSync } from "node:fs"
-import { TOOL_SYNTAX_ISSUE, printedToolCall, record, replyJson } from "./checks"
+import { TOOL_SYNTAX_ISSUE, parseJsonObject, printedToolCall, record } from "./checks"
 import { coverageView } from "./package-coverage"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
@@ -102,8 +102,10 @@ export function spineLevelPrompt(entry: SpineEntry) {
 /** Reads one entry's level reply: {"level":"text"} or {"level":"package"}. */
 export function parseEntryLevel(reply: string): Checked<EntryLevel> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  const value = replyJson(reply)
-  return record(value) && LEVELS.includes(value.level as EntryLevel) ? { issues: [], value: value.level as EntryLevel } : { issues: [LEVEL_SHAPE] }
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok) return { issues: [`${LEVEL_SHAPE} ${parsed.error}`] }
+  const value = parsed.value
+  return LEVELS.includes(value.level as EntryLevel) ? { issues: [], value: value.level as EntryLevel } : { issues: [LEVEL_SHAPE] }
 }
 
 /** A level job's content key: the prompt it reads, so a changed entry or question asks again. */
@@ -142,8 +144,10 @@ export function spinePlacementPrompt(documents: PlannedDocument[], entry: SpineE
  * on the last attempt (`final`) it is dropped and the others kept. */
 export function parseEntryPlacement(reply: string, documents: PlannedDocument[], { final = false } = {}): Checked<string[]> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  const value = replyJson(reply)
-  if (!record(value) || !Array.isArray(value.parts) || !value.parts.every(ref => typeof ref === "string")) return { issues: [PARTS_SHAPE] }
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok) return { issues: [`${PARTS_SHAPE} ${parsed.error}`] }
+  const value = parsed.value
+  if (!Array.isArray(value.parts) || !value.parts.every(ref => typeof ref === "string")) return { issues: [PARTS_SHAPE] }
   const refs = documents.flatMap(document => document.parts.map((_, index) => partRef(document.id, index)))
   const named = new Set((value.parts as string[]).map(ref => ref.trim()))
   const issues = [...named].filter(ref => !refs.includes(ref)).map(ref =>

@@ -71,8 +71,8 @@ export function unquotedFigures(detail: string, quotes: string[]) {
 }
 
 function quoteIssues(directory: string, sources: string[], ref: unknown, where: string): string[] {
-  if (!record(ref) || typeof ref.source_id !== "string" || typeof ref.quote !== "string" || !ref.quote.trim()) return [`${where}: evidence must name a source and exact supporting quote.`]
-  if (!sources.includes(ref.source_id)) return [`${where}: unknown evidence source_id "${ref.source_id}". Allowed source_id values: ${JSON.stringify(sources)}. ${EVIDENCE_SOURCE_CONTRACT} Retrieve the canonical evidence behind a handoff or record the derived uncertainty in limitations without an evidence quotation.`]
+  if (!record(ref) || typeof ref.source_id !== "string" || typeof ref.quote !== "string" || !ref.quote.trim()) return [`${where}: Evidence must name a source and exact supporting quote.`]
+  if (!sources.includes(ref.source_id)) return [`${where}: Unknown evidence source_id "${ref.source_id}". Allowed source_id values: ${JSON.stringify(sources)}. ${EVIDENCE_SOURCE_CONTRACT} Retrieve the canonical evidence behind a handoff or record the derived uncertainty in limitations without an evidence quotation.`]
   const quote = { source_id: ref.source_id, quote: ref.quote }
   return quoteFound(directory, quote) ? [] : [quoteMissIssue(directory, where, quote, "json")]
 }
