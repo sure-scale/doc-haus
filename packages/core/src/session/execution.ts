@@ -13,7 +13,7 @@ import { SessionSchema } from "./schema.js"
 import { SessionStore } from "./store.js"
 import { toSessionError } from "./to-session-error.js"
 import { SessionInbox } from "./inbox.js"
-import { SessionInboxTable, SessionMessageTable, SessionPendingTable, SessionTable } from "./sql.js"
+import { SessionInboxTable, SessionMessageTable, SessionTable } from "./sql.js"
 import { eq, asc } from "drizzle-orm"
 import { EventSequenceTable } from "../event/sql.js"
 
@@ -160,15 +160,14 @@ export const layer = Layer.effect(
           const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie)
           const messages = yield* db.select().from(SessionMessageTable).where(eq(SessionMessageTable.session_id, sessionID)).orderBy(asc(SessionMessageTable.seq)).all().pipe(Effect.orDie)
           const inbox = yield* db.select().from(SessionInboxTable).where(eq(SessionInboxTable.session_id, sessionID)).all().pipe(Effect.orDie)
-          const pending = yield* db.select().from(SessionPendingTable).where(eq(SessionPendingTable.session_id, sessionID)).all().pipe(Effect.orDie)
           const sequence = yield* db.select().from(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, sessionID)).get().pipe(Effect.orDie)
-          return { row, messages, inbox, pending, sequence }
+          return { row, messages, inbox, sequence }
         })
         const before = yield* snapshot
         // No terminal/user stop, no inbox, and an actual unfinished activity.
         // A lost zero counter is never treated as a known prior zero.
         if (!before.row?.parent_id || before.row.time_suspended !== null || before.row.time_idle !== null ||
-          before.row.idle_outcome !== null || before.inbox.length || before.pending.length ||
+          before.row.idle_outcome !== null || before.inbox.length ||
           !before.messages.some(message => message.type === "user") ||
           !before.messages.some(message => message.type === "assistant") || before.messages.at(-1)?.type === "idle") return false
         if (!(yield* authorize) || !quiet()) return false
