@@ -178,7 +178,8 @@
     "source-map-js": "1.2.2",
     "@babel/core": "7.29.7",
     "vitest": "4.1.12",
-    "svgo": "4.1.0"
+    "svgo": "4.1.0",
+    "@peculiar/asn1-schema": "2.11.1"
   },
   "patchedDependencies": {
     "@ai-sdk/openai-compatible@2.0.54": "patches/@ai-sdk%2Fopenai-compatible@2.0.54.patch",
