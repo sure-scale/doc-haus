@@ -8,6 +8,7 @@ import { acceptChangePlan, acceptChangeReview, preparationOutputValid, readChang
 import { comparisonBasis } from "./comparison"
 import { checkPackageReview, isLeftOpenPackageFinding, isWithheldDeliveryItem, readPackageReview, withholdUngroundedDelivery } from "./package-review"
 import { coverageItems, planCoverageCurrent } from "./package-coverage"
+import { placementItems, planPlacementCurrent } from "./spine-placement"
 import { readActRecord } from "./act-record"
 import { requestedFilesItems } from "./requested-files"
 import { draftedDefaultItems } from "./drafted-defaults"
@@ -75,7 +76,7 @@ import {
 // one planned document keep their files under that document's id (d1/, d2/...).
 
 export const LEAN_PROMPT_VERSION = "lean-29-discrepancy-gaps"
-const OUTLINE_CONTRACT = "statement-form-13"
+const OUTLINE_CONTRACT = "spine-placement-14"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
 const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-plain-refs-3"
@@ -117,6 +118,8 @@ export const LEAN_STAGE_AGENTS = {
   finalize: "lean-drafting-notes",
   // A job of the outline, not a stage: it places each act the act record lists in the planned document that carries it.
   coverage: "lean-coverage",
+  // A job of the outline, not a stage: one per spine entry, it names the planned parts that rest on that entry.
+  placement: "lean-placement",
   // A job of the outline, not a stage: it reads the files the lawyer asks to receive.
   files: "lean-files",
   // A job of the asking step, not a stage: it advises on one question before it is recorded.
@@ -583,10 +586,10 @@ export function stageOutputValid(directory: string, step: StepID) {
   if (step === "acts") return Boolean(readActRecord(directory))
   const stage = stepStage(step)
   const document = stepDocument(step) ?? FIRST_DOCUMENT
-  // The first document's draft step also settles the plan's coverage: a missing,
-  // unreadable or earlier plan's record re-runs it, which checks the saved plan
-  // again and keeps the accepted draft (draftOutputValid).
-  if (stage === "draft") return draftOutputValid(directory, step) && (document !== FIRST_DOCUMENT || planCoverageCurrent(directory))
+  // The first document's draft step also settles the plan's coverage and spine
+  // placement: a missing, unreadable or earlier plan's record re-runs it, which
+  // checks the saved plan again and keeps the accepted draft (draftOutputValid).
+  if (stage === "draft") return draftOutputValid(directory, step) && (document !== FIRST_DOCUMENT || planCoverageCurrent(directory) && planPlacementCurrent(directory))
   if (!stepOutputs(step).every(name => OPTIONAL_OUTPUTS.includes(name) || existsSync(leanFile(directory, name)))) return false
   const text = (name: string) => readLeanText(directory, name) ?? ""
   if (stage === "change-plan") return Boolean(readChangePlan(directory, document))
@@ -616,7 +619,7 @@ export function stageOutputValid(directory: string, step: StepID) {
 
 /** Open items the drafting notes must disclose. */
 export function disclosableItems(directory: string): OpenItem[] {
-  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory), ...draftedDefaultItems(directory)]
+  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory), ...coverageItems(directory), ...placementItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory), ...draftedDefaultItems(directory)]
 }
 
 function ensureNewline(text: string) {

@@ -957,8 +957,8 @@ function plannedIn(act: CoverageAct, documents: PlannedDocument[]) {
   return `planned in ${label(carrier)}, executed by ${!executing ? "parties the plan does not name" : executing.length ? quotedList(executing) : "no party"}`
 }
 
-/** What the placement job reads of a planned document: no delivery or review fields. */
-function coverageView(document: PlannedDocument) {
+/** What the placement jobs read of a planned document: no delivery or review fields. */
+export function coverageView(document: PlannedDocument) {
   return {
     id: document.id, title: document.title, purpose: document.purpose, executed_by: document.executed_by ?? null,
     parts: document.parts.map(part => ({ heading: part.heading, scope: part.scope, ...(part.instrument ? { instrument: part.instrument } : {}) })), ...(document.left_out?.length ? { left_out: document.left_out } : {}),

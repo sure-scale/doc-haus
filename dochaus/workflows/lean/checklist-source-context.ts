@@ -6,6 +6,7 @@ import { readRegularFile } from "../../lib/regular-file"
 import { sourceProvenance } from "../../lib/source-provenance"
 import { checklistProducerInputSchema, type ChecklistProducerInput, type ChecklistSourceReference } from "./checklist-contract"
 import { readLeanPlan } from "./plan"
+import { documentGrounds, groundLine, type SpineEntry } from "./spine-placement"
 import { leanUserUpdates } from "./requests"
 import { answeredQuestions, readLeanText } from "./state"
 
@@ -18,7 +19,7 @@ export function checklistProducerInputs(directory: string): { key: string; input
   if (!plan) throw new Error("Checklist extraction needs the document plan before source jobs can be prepared.")
   // The plan's parts say what each document covers: the coverage a source
   // observation is checked against, never a directive of its own.
-  const targets = [...plan.documents.map(document => ({ document: document.id, role: plannedRole(document) })),
+  const targets = [...plan.documents.map(document => ({ document: document.id, role: plannedRole(document, documentGrounds(directory, document.id)) })),
     { document: "notes", role: "Drafting notes: disclose unresolved matters and explain drafting decisions; inclusion does not itself impose a disclosure requirement." }]
   const request = readLeanText(directory, "request.md")
   if (!request?.trim()) throw new Error("Checklist extraction needs the canonical lawyer request at .dochaus/lean/request.md.")
@@ -88,8 +89,13 @@ export function checklistProducerInputs(directory: string): { key: string; input
 /** A target's declared role: its title and form, purpose and parts. The form
  * tells the checker what kind of document the purpose is read for: a
  * statement's purpose names the subjects it records. */
-function plannedRole(document: { title: string; purpose: string; parts: { heading: string; scope: string }[]; form?: string }) {
-  const parts = document.parts.map(part => part.scope.trim() ? `${part.heading} (${part.scope.trim()})` : part.heading)
+function plannedRole(document: { title: string; purpose: string; parts: { heading: string; scope: string }[]; form?: string }, grounds: SpineEntry[][] = []) {
+  // A part's spine entries (spine-placement.ts) are its coverage too: an observation it relies on is the part's to state.
+  const rests = (index: number) => grounds[index]?.length ? `rests on: ${grounds[index]!.map(groundLine).join(" | ")}` : ""
+  const parts = document.parts.map((part, index) => {
+    const notes = [part.scope.trim(), rests(index)].filter(Boolean).join("; ")
+    return notes ? `${part.heading} (${notes})` : part.heading
+  })
   const role = `${document.title}${document.form ? ` (Form: ${document.form})` : ""}: ${document.purpose.trim()}`
   return parts.length ? `${role.replace(/[.\s]+$/, "")}. Parts: ${parts.join("; ")}` : role
 }

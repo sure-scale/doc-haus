@@ -23,6 +23,8 @@ export type LeanEventName =
   | "stopped"
   /** The draft step's recorded plan coverage: its status as `outcome`, its issues. */
   | "coverage"
+  /** The draft step's recorded spine placement (spine-placement.ts): its status as `outcome`, its issues. */
+  | "placement"
   /** The draft step's recorded requested files: whether the lawyer's words state
    * them as `outcome` ("stated" or "not_stated"), the mismatches the outline
    * still leaves as `issues`, and the file names given to the plan as `reason`;

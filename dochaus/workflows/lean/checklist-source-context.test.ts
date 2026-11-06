@@ -6,6 +6,8 @@ import { checklistProducerInputs } from "./checklist-source-context"
 import { runChecklistExtractionFlow } from "./checklist-flow"
 import type { StageSessionPort } from "./stages"
 import { checklistProducerInputSchema } from "./checklist-contract"
+import { readLeanPlan } from "./plan"
+import { writePlacement } from "./spine-placement"
 
 const directories: string[] = []
 const workspace = process.env.WORKSPACE_ROOT
@@ -190,4 +192,17 @@ test("unavailable, invalid or empty selected playbooks surface explicit source c
   expect(() => checklistProducerInputs(directory)).toThrow("selected playbook has no text")
   put("matter.json", JSON.stringify({ playbook: "../other-guidance" }))
   expect(() => checklistProducerInputs(directory)).toThrow("Invalid bound playbook name")
+})
+
+test("a part's placed spine entries are its coverage too, so the role names them after its scope", () => {
+  const { directory, put } = prepare()
+  put(".dochaus/lean/spine.json", JSON.stringify({ entries: [
+    { kind: "requirement", detail: "Keep unconfirmed proposals open.", evidence: [{ source_id: "request", quote: "Keep unconfirmed proposals open." }], limitations: [] },
+    { kind: "fact", detail: "The proposal is unconfirmed.", evidence: [{ source_id: "instructions.txt", quote: "subject to confirmation" }], limitations: [] },
+  ], limitations: [] }))
+  writePlacement(directory, readLeanPlan(directory)!.documents, { entries: [{ entry: 0, parts: ["d1/1"] }, { entry: 1, parts: ["d1/1"] }], issues: [] })
+  expect(checklistProducerInputs(directory)[0].input.targets.slice(0, 2)).toEqual([
+    { document: "d1", role: "Agreement: Record agreed terms. Parts: Terms (Terms; rests on: requirement: Keep unconfirmed proposals open. [source: request] | fact: The proposal is unconfirmed. [source: instructions.txt])" },
+    { document: "d2", role: "Advice: Explain decisions. Parts: Advice (Decisions)" },
+  ])
 })

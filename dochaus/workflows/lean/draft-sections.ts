@@ -38,6 +38,11 @@ import { outlineCoverageIssues, partCarries, plannedContract } from "./template-
 import { draftStatusItems } from "./draft-status"
 import { draftTemplateItems } from "./template-coverage"
 import { originalTables, originalTablesBlock, partTableIssues, tableParts } from "./original-tables"
+import { workflowConcurrency } from "./model-concurrency"
+import {
+  PLAN_PLACEMENT_REVISIONS, documentGrounds, groundsBlock, parseEntryPlacement, planPlacementCurrent, planPlacementIssues, spineEntries, spinePlacementPrompt, writePlacement,
+  type EntryPlacement, type Placement, type SpineEntry,
+} from "./spine-placement"
 
 // Sectioned draft step. A long document can need more tokens than one model
 // reply may carry, so the draft agent writes one part per reply in the same
@@ -87,6 +92,15 @@ import { originalTables, originalTablesBlock, partTableIssues, tableParts } from
 // carries only a small share of (template-coverage.ts), is an open item of the
 // step: the draft is never rewritten for it, the change cycle receives it as a
 // required repair, and the apply step records any gap left in the final body.
+// Once the coverage loop is done and no package-scope question stops the step,
+// each drafting-spine entry is placed in the planned parts that rest on it
+// (spine-placement.ts), one focused job per entry in a session of its own, run
+// in parallel within the installation's limit. A requirement or decision no
+// part rests on goes back to the outline session for at most
+// PLAN_PLACEMENT_REVISIONS revised outlines, each covered and placed again;
+// what is left is recorded in placement.json as unplaced and disclosed, never
+// blocking. A saved plan whose record is stale is placed again before the first
+// document is drafted, and each part prompt is told the entries it rests on.
 
 export type DraftOutline = Pick<PlannedDocument, "title" | "parts" | "form" | "mode" | "template">
 
@@ -211,6 +225,29 @@ export async function runDraftStage(
     return { status: "blocked", outputs: ["coverage.json"], openItems: [], questions: [question],
       reason: `${step}: the document plan leaves an instructed act without a document its parties execute; drafting waits for your answer on the package's scope.` }
   }
+  // Each spine entry's placement job reads the plan in a fresh session of its
+  // own; an entry whose reply never passed its check is recorded unchecked and
+  // raises no revision. Errors from the session calls propagate.
+  const placing = async (documents: PlannedDocument[]): Promise<Placement> => {
+    const entries = spineEntries(directory)
+    const placements: EntryPlacement[] = []
+    const placementAgent = LEAN_STAGE_AGENTS.placement
+    const place = async (entry: SpineEntry): Promise<EntryPlacement> => {
+      const id = await coverageSession(placementAgent, `placement: entry ${entry.index}`)
+      const checked = await exchange({ id, agent: placementAgent })(`placement entry ${entry.index}`, spinePlacementPrompt(documents, entry),
+        (reply, final) => parseEntryPlacement(reply, documents, { final }))
+      return checked.value ? { entry: entry.index, parts: checked.value } : { entry: entry.index, parts: [], unchecked: true }
+    }
+    let next = 0
+    await Promise.all(Array.from({ length: Math.min(workflowConcurrency(), entries.length) }, async () => {
+      for (let at = next++; at < entries.length; at = next++) placements[at] = await place(entries[at]!)
+    }))
+    return { entries: placements, issues: planPlacementIssues(entries, placements) }
+  }
+  const recordPlacement = (documents: PlannedDocument[], placement: Placement) => {
+    const record = writePlacement(directory, documents, placement)
+    if (record) appendLeanEvent(directory, { stage: "draft", document, event: "placement", step: "placement", outcome: record.status, issues: record.issues })
+  }
   // The files job, like the placement job, reads the plan in a fresh session of
   // its own, and only when the plan has more than one document, the memo
   // document included, to put in files; undefined when it is not asked. A
@@ -281,8 +318,25 @@ export async function runDraftStage(
       value = next
       coverage = await covering(withDocumentIDs(value.documents))
     }
+    // The spine entries no part rests on go back to the outline session as a
+    // revision request; each revised outline is covered and placed again. A
+    // plan the package-scope question stops is drawn up again, so not placed.
+    let placement: Placement | undefined
+    if (!scopeBlock(withDocumentIDs(value.documents), coverage)) {
+      placement = await placing(withDocumentIDs(value.documents))
+      for (let revision = 1; placement.issues.length && revision <= PLAN_PLACEMENT_REVISIONS; revision++) {
+        delete best.value
+        const revised = await ask<LeanOutline>(`outline placement revision ${revision}/${PLAN_PLACEMENT_REVISIONS}`, retryPrompt("draft", placement.issues), checkOutline, 0, placement.issues)
+        const next = revised.value ?? best.value
+        if (!next) continue
+        value = next
+        coverage = await covering(withDocumentIDs(value.documents))
+        placement = await placing(withDocumentIDs(value.documents))
+      }
+    }
     const covered = withDocumentIDs(value.documents)
     recordCoverage(covered, value.acting_for, coverage)
+    if (placement) recordPlacement(covered, placement)
     const blocked = scopeBlock(covered, coverage)
     if (blocked) return blocked
     // The outline plans the memo the request asks for as its last document
@@ -371,6 +425,12 @@ export async function runDraftStage(
     const blocked = scopeBlock(saved.documents, coverage, true)
     if (blocked) return blocked
   }
+  // A saved plan placed for another plan or spine (a plan the files job held
+  // as one file, a lawyer's edit, a new spine) is placed again before drafting.
+  if (document === FIRST_DOCUMENT && !planPlacementCurrent(directory)) {
+    const saved = readLeanPlan(directory)!
+    recordPlacement(saved.documents, await placing(saved.documents))
+  }
   // A saved plan's accepted draft is final for the run (a new run starts from
   // an empty lean folder): a step re-run after a coverage refresh, after the
   // question it stopped for is answered, or after a pause, keeps it while it
@@ -393,13 +453,14 @@ export async function runDraftStage(
   // A revised original's tables: each part is shown those its scope holds.
   const original = originalTables(directory, document)
   const scopes = original ? tableParts(directory, document, original.tables) : []
+  const grounds = documentGrounds(directory, document)
   const drafted: string[] = []
   for (const [index, part] of plan.parts.entries()) {
     const label = `part ${index + 1}/${plan.parts.length}`
     const carried = carries[index]
     const section = sectionPrompt(plan, index, contract && carried && (carried.carried.length || carried.left.length)
       ? { source: contract.source, parts: carried.carried.map(unit => unit.label), left: carried.left.map(unit => unit.label) }
-      : undefined)
+      : undefined, grounds[index])
     const brief = sectionHandoff(directory, document)
     const own = scopes.flatMap((parts, table) => parts.includes(index) ? [table] : [])
     // The outline's session saw the run context before the plan named a memo.
@@ -440,7 +501,7 @@ export async function runDraftStage(
   return { status: "done", outputs: accepted.outputs, openItems: [...accepted.openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document)), ...draftStatusItems(directory, document, readParagraphs(directory, document), "draft")], questions: accepted.questions }
 }
 
-export function sectionPrompt(outline: DraftOutline, index: number, template?: { source: string; parts: string[]; left?: string[] }) {
+export function sectionPrompt(outline: DraftOutline, index: number, template?: { source: string; parts: string[]; left?: string[] }, grounds: SpineEntry[] = []) {
   const part = outline.parts[index]!
   const names = (labels: string[]) => labels.map(name => `"${name}"`).join("; ")
   const original = outline.mode === "revise" ? "the original" : template ? `the template "${template.source}"` : undefined
@@ -468,6 +529,7 @@ export function sectionPrompt(outline: DraftOutline, index: number, template?: {
         ...(template.left?.length ? [`Leave out ${names(template.left)} of the template "${template.source}", as the outline records.`] : []),
       ].join(" ")]
       : []),
+    ...(grounds.length ? [groundsBlock(grounds)] : []),
     "",
     "Outline:",
     ...outline.parts.flatMap((row, at) => [

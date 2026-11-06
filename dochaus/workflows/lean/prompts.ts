@@ -17,6 +17,7 @@ import { disclosableItems } from "./stages"
 import { QUESTION_KIND_CONTRACT, WORKING_DRAFT, isReviewStage, answeredQuestions, answeredQuestionsText, delegatedQuestions, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type StageID } from "./state"
 import { matterDatesBlock } from "./intake"
 import { plannedContract } from "./template-contract"
+import { withGrounds } from "./spine-placement"
 
 // Prompts of the lean model steps. Each step's first prompt carries everything
 // the step needs; retries carry only the checker's issues. A document after the
@@ -117,7 +118,9 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const composition = packageCompositionBlock(directory, document)
   // What the scope guards say other output owns: another planned document, the memo.
   const assigned = [planned ? "another planned document" : "", composition ? "the accompanying memo" : ""].filter(Boolean).join(" or ")
-  const outline = tagged("document_outline", JSON.stringify(operativeDocument(plannedDocument(directory, document))))
+  // Each part names the spine entries it rests on (spine-placement.ts), as its part prompt was told.
+  const operative = operativeDocument(plannedDocument(directory, document))
+  const outline = tagged("document_outline", JSON.stringify(operative && withGrounds(directory, document, operative)))
   const preferenceScope = revisionPreferenceScope(directory, document)
   if (options.contextOnly) return [request, spineBlock, acting, answerBlock, sources, planned, composition, outline, preferenceScope, finished].filter(Boolean).join("\n\n")
   const sections: Partial<Record<StageID, string[]>> = {

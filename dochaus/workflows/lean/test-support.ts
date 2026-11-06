@@ -64,6 +64,8 @@ export function scriptedModel(replies: Record<string, Reply>) {
         [AGENT.acts]: actRecord,
         // The outline's files job finds no lawyer instruction on the files to deliver.
         [AGENT.files]: () => JSON.stringify({ stated: false, files: [] }),
+        // Each spine entry's placement job names no part, so no part prompt carries grounds.
+        [AGENT.placement]: () => JSON.stringify({ parts: [] }),
         // The plan rejects every listed review finding: the scripted changes
         // stage amends from the findings it is shown, whatever the plan says.
         [AGENT["change-plan"]]: prompt => {

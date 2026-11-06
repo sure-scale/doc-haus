@@ -43,6 +43,7 @@ agent/*.md
 !agent/lean-instructions.md
 !agent/lean-intake.md
 !agent/lean-package-review.md
+!agent/lean-placement.md
 !agent/lean-research.md
 !agent/lean-research-review.md
 !agent/lean-review-playbook.md
