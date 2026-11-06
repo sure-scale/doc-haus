@@ -1,6 +1,6 @@
-import { checkChanges, parseJsonObject } from "./change-checks"
+import { checkChanges } from "./change-checks"
 import { splitNumberingIssues } from "./apply-stage"
-import { readChangeList, readParagraphs, record, type ChangeList } from "./checks"
+import { parseJsonObject, readChangeList, readParagraphs, record, type ChangeList } from "./checks"
 import { uniqueReplacementIssues, readChangePlan, type ChangePlan, type ChangePreparation } from "./change-pipeline"
 import { checklistProducerInputs } from "./checklist-source-context"
 import { appendLeanEvent, leanElapsedMs } from "./events"

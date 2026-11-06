@@ -1,5 +1,5 @@
 import { normalize, normalizeWithMap, sourceReadings } from "../../lib/quote-verify"
-import { TOOL_SYNTAX_ISSUE, printedToolCall, record, replyJson } from "./checks"
+import { TOOL_SYNTAX_ISSUE, parseJsonObject, printedToolCall, record } from "./checks"
 import { readActRecord, signerFlags, type ActRecord } from "./act-record"
 import { FIRST_DOCUMENT, nameKey, namedIn, readLeanPlan, type ActingFor, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
@@ -174,8 +174,10 @@ export function mergeCoverageActs<T extends { source: string; quote: string }>(.
  * including on the last attempt (`final`). */
 export function parseCoveragePlacement(reply: string, directory: string, documents: PlannedDocument[], acts: InstructedAct[], { final = false } = {}): Checked<CoverageAct[]> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  const value = replyJson(reply)
-  if (!record(value) || !Array.isArray(value.placements)) return { issues: [PLACEMENT_SHAPE] }
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok) return { issues: [`${PLACEMENT_SHAPE} ${parsed.error}`] }
+  const value = parsed.value
+  if (!Array.isArray(value.placements)) return { issues: [PLACEMENT_SHAPE] }
   const issues: string[] = []
   const placed = new Map<number, Record<string, unknown>>()
   const again = new Set<number>()
@@ -222,8 +224,10 @@ export function parseCoveragePlacement(reply: string, directory: string, documen
  * last attempt. */
 export function parseCoverage(reply: string, directory: string, documents: PlannedDocument[], { final = false } = {}): Checked<CoverageAct[]> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  const value = replyJson(reply)
-  if (!record(value) || !Array.isArray(value.acts)) return { issues: [COVERAGE_SHAPE] }
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok) return { issues: [`${COVERAGE_SHAPE} ${parsed.error}`] }
+  const value = parsed.value
+  if (!Array.isArray(value.acts)) return { issues: [COVERAGE_SHAPE] }
   const ids = documents.map(document => document.id)
   let texts: string[] | undefined
   const issues: string[] = []

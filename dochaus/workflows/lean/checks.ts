@@ -417,28 +417,61 @@ export function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-const REPLY_FENCE_OPEN = /^```(?:json)?\s*/
-const REPLY_FENCE_CLOSE = /\s*```$/
+/** A fenced block of a reply, plain or labelled json in either case. */
+const REPLY_FENCE = /```(?:json)?\s*([\s\S]*?)```/gi
+const NOT_OBJECT = "The JSON value is not an object; return one JSON object."
 
-/** A reply's JSON value, bare or fenced; undefined when it is not JSON. */
-export function replyJson(reply: string): unknown {
-  try { return JSON.parse(reply.trim().replace(REPLY_FENCE_OPEN, "").replace(REPLY_FENCE_CLOSE, "")) } catch {}
+/** The one JSON object of a stage reply, the reader every lean stage reply
+ * goes through: the whole reply when it is JSON, or else its one fenced
+ * block, or else the one object from the first "{" to the last "}" in
+ * prose around it. A reply that could be read two ways is refused, never
+ * guessed at: two fenced blocks, braces outside the fenced block, or an
+ * array (the whole value is preferred, so an array holding an object is
+ * not taken for the object). The error is one or more sentences; a syntax
+ * error says where the JSON breaks (jsonBreakNote). */
+export function parseJsonObject(content: string): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
+  try {
+    const value: unknown = JSON.parse(content.trim())
+    return record(value) ? { ok: true, value } : { ok: false, error: NOT_OBJECT }
+  } catch { /* A prose wrapper can still contain one complete JSON object. */ }
+  const start = content.indexOf("{")
+  const end = content.lastIndexOf("}")
+  if (start < 0) return { ok: false, error: "No JSON object was found in the reply." }
+  if (end < start) return { ok: false, error: jsonBreakNote(content) ?? "The reply ends before its JSON object is closed." }
+  const blocks = [...content.matchAll(REPLY_FENCE)]
+  if (blocks.length > 1) return { ok: false, error: "The reply holds more than one fenced block; return one JSON object." }
+  const candidate = blocks[0]?.[1]?.trim() ?? content.slice(start, end + 1)
+  if (!blocks.length && (content.slice(0, start).trimEnd().endsWith("[") || content.slice(end + 1).trimStart().startsWith("]")))
+    return { ok: false, error: NOT_OBJECT }
+  try {
+    const value: unknown = JSON.parse(candidate)
+    if (blocks.length && record(value) && content.slice(start, end + 1) !== candidate)
+      return { ok: false, error: "The reply has braces outside its fenced block, so its object is ambiguous; return one JSON object." }
+    return record(value) ? { ok: true, value } : { ok: false, error: NOT_OBJECT }
+  } catch (error) {
+    return { ok: false, error: jsonBreakNote(content) ?? `The reply is not valid JSON: ${error instanceof Error ? error.message : "it could not be parsed"}.` }
+  }
 }
 
 const JSON_SPACE = new Set([" ", "\t", "\n", "\r"])
 const JSON_LITERAL = /true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y
 
-/** Retry feedback for a reply that replyJson cannot read: where its JSON
- * first breaks, as a character offset in the reply, what was expected there
- * (such as the bracket that closes the list or object open at that point,
- * found by tracking nesting outside strings) and the words around it. A model
- * told only the format tends to resend the same long reply unchanged; the
- * place lets it mend the one slip. Undefined when no break is found, so the
- * caller's format restatement stands alone. */
+/** Retry feedback for a reply that parseJsonObject cannot read: where its
+ * JSON first breaks, as a character offset in the reply, what was expected
+ * there (such as the bracket that closes the list or object open at that
+ * point, found by tracking nesting outside strings) and the words around it.
+ * The JSON is read where parseJsonObject reads it: inside the one fenced
+ * block, or else from the first "{" to the end of the reply, so a reply cut
+ * off inside its object is placed at its end. A model told only the format
+ * tends to resend the same long reply unchanged; the place lets it mend the
+ * one slip. Undefined when no break is found, so the caller's format
+ * restatement stands alone. */
 export function jsonBreakNote(reply: string): string | undefined {
-  const lead = reply.length - reply.trimStart().length
-  const start = lead + (REPLY_FENCE_OPEN.exec(reply.slice(lead))?.[0].length ?? 0)
-  const body = reply.trim().replace(REPLY_FENCE_OPEN, "").replace(REPLY_FENCE_CLOSE, "")
+  const blocks = [...reply.matchAll(REPLY_FENCE)]
+  const block = blocks.length === 1 ? blocks[0]! : undefined
+  // A fenced block's JSON starts after its label and spaces: the match less the closing fence and the JSON.
+  const start = block ? block.index + block[0].length - 3 - block[1]!.length : Math.max(0, reply.indexOf("{"))
+  const body = block ? block[1]!.trimEnd() : reply.slice(start).trimEnd()
   const stack: { bracket: "{" | "["; at: number; name?: string }[] = []
   // What the last token was: nothing yet, an opening bracket, a comma, a colon, an object's name or a complete value.
   let last = "start" as "start" | "open" | "comma" | "colon" | "name" | "value"

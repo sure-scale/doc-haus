@@ -1,4 +1,4 @@
-import { parseJsonObject } from "./change-checks"
+import { parseJsonObject } from "./checks"
 import { parallel } from "./checklist-flow"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { OutputLimitError } from "./native-stage-result"
@@ -76,7 +76,7 @@ export function answerClassPrompt(question: Question) {
 /** The class a reply gives, or the issue for a retry. */
 export function checkAnswerClass(reply: string): { issues: string[]; answer_class?: AnswerClass } {
   const parsed = parseJsonObject(reply)
-  if (!parsed.ok) return { issues: [`Reply with one JSON object: ${parsed.error}.`] }
+  if (!parsed.ok) return { issues: [`Reply with one JSON object. ${parsed.error}`] }
   const value = parsed.value.class
   return (ANSWER_CLASSES as readonly unknown[]).includes(value)
     ? { issues: [], answer_class: value as AnswerClass }

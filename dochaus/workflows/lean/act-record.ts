@@ -1,6 +1,6 @@
 import { normalize } from "../../lib/quote-verify"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
-import { TOOL_SYNTAX_ISSUE, jsonBreakNote, printedToolCall, record, replyJson } from "./checks"
+import { TOOL_SYNTAX_ISSUE, parseJsonObject, printedToolCall, record } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { instructionSections, listedActIssues, mergeCoverageActs, namingTexts } from "./package-coverage"
 import { nameKey, namedIn } from "./plan"
@@ -40,7 +40,7 @@ import { readLeanJson, writeLeanText, type LeanStageState, type LeanState } from
 // the record when it is used (signerFlags), never stored. A recorded conflict
 // reaches the lawyer as an open item (package-coverage.ts, actRecordItems), as
 // does a HOW or WHO job that never passed. A reply that is not JSON is retried
-// with where it breaks (jsonBreakNote).
+// with where it breaks (parseJsonObject, jsonBreakNote).
 //
 // Every job's prompt starts with the same pack (actRecordPack): the task line,
 // the instructions, the approved research, the source names and the rules. Only
@@ -197,11 +197,11 @@ export function actRecordPack(directory: string) {
   ].filter(Boolean).join("\n\n")
 }
 
-/** The issues of a reply not in `shape`: the format restated, after where the
- * reply breaks (jsonBreakNote) when it is not JSON at all. */
-function shapeIssues(reply: string, value: unknown, shape: string) {
-  const broken = value === undefined ? jsonBreakNote(reply) : undefined
-  return broken ? [broken, shape] : [shape]
+/** The issues of a reply not in `shape`: the format restated, after why the
+ * reply could not be read (parseJsonObject, such as where it breaks) when it
+ * could not. */
+function shapeIssues(parsed: ReturnType<typeof parseJsonObject>, shape: string) {
+  return parsed.ok ? [shape] : [parsed.error, shape]
 }
 
 const text = (row: Record<string, unknown>, key: string) => typeof row[key] === "string" ? (row[key] as string).trim() : ""
@@ -213,11 +213,12 @@ const text = (row: Record<string, unknown>, key: string) => typeof row[key] === 
  * checks normalise them). An empty list is valid. */
 function parseListing(reply: string, directory: string, list: "acts" | "deliverables", field: "act" | "deliverable", shape: string): Checked<ListedAct[]> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  const value = replyJson(reply)
-  if (!record(value) || !Array.isArray(value[list])) return { issues: shapeIssues(reply, value, shape) }
+  const parsed = parseJsonObject(reply)
+  const entries = parsed.ok ? parsed.value[list] : undefined
+  if (!Array.isArray(entries)) return { issues: shapeIssues(parsed, shape) }
   const issues: string[] = []
   const rows: ListedAct[] = []
-  ;(value[list] as unknown[]).forEach((row, index) => {
+  ;(entries as unknown[]).forEach((row, index) => {
     if (!record(row) || !text(row, field) || !text(row, "source") || !text(row, "quote"))
       return void issues.push(`${list}[${index}] needs nonempty "${field}", "source" and "quote" strings. ${shape}`)
     const listed = { act: text(row, field), source: text(row, "source"), quote: text(row, "quote") }
@@ -254,12 +255,13 @@ function evidenceSources(directory: string) {
  * index defects are retry feedback alongside each entry's own. */
 function indexedEntries(reply: string, count: number, field: "verify" | "who" | "how", shape: string): { issues: string[]; rows?: Map<number, Record<string, unknown>> } {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  const value = replyJson(reply)
-  if (!record(value) || !Array.isArray(value.acts)) return { issues: shapeIssues(reply, value, `${shape} ${EVERY_ACT}`) }
+  const parsed = parseJsonObject(reply)
+  const acts = parsed.ok ? parsed.value.acts : undefined
+  if (!Array.isArray(acts)) return { issues: shapeIssues(parsed, `${shape} ${EVERY_ACT}`) }
   const issues: string[] = []
   const rows = new Map<number, Record<string, unknown>>()
   const again = new Set<number>()
-  value.acts.forEach((row: unknown, at) => {
+  acts.forEach((row: unknown, at) => {
     if (!record(row) || !record(row[field]))
       return void issues.push(`acts[${at}] needs "index" as the index of a listed act and "${field}" as an object. ${shape}`)
     const index = row.index

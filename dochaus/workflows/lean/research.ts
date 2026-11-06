@@ -5,6 +5,7 @@ import { existsSync, readdirSync, statSync } from "node:fs"
 import path from "node:path"
 import { normalize, normalizeWithMap } from "../../lib/quote-verify"
 import { readResearchSourceSnapshot } from "../../lib/research-source-snapshot"
+import { parseJsonObject } from "./checks"
 import { withoutInternalIDs } from "./delivered-memo"
 import { readRepairRound } from "./repairs"
 import { INTAKE_ACTING_FOR_SHAPE, INTAKE_DATES_SHAPE, checkIntakeActingFor, checkIntakeDates, intakeQuestions, intakeRecordsActingFor, intakeRecordsDates, matterDatesBlock } from "./intake"
@@ -373,10 +374,9 @@ export function acceptResearchReply(directory: string, stage: ResearchStage, rep
     if (questions?.issues.length) return { issues: questions.issues, outputs: [], openItems: [] }
     if (questions?.value) return { issues: [], outputs: [], openItems: [], questions: questions.value }
   }
-  let value: unknown
-  try { value = JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {
-    return { issues: ["Reply with the requested JSON object only."], outputs: [], openItems: [] }
-  }
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok) return { issues: [`Reply with the requested JSON object only. ${parsed.error}`], outputs: [], openItems: [] }
+  let value: unknown = parsed.value
   // Read before this reply replaces research.json.
   const prior = stage === "research" ? priorResearch(directory) : []
   let resolved = stage === "research" ? resolveResearch(directory, value, prior) : undefined

@@ -4,9 +4,9 @@ import { checklistProducerInputs } from "./checklist-source-context"
 import { existsSync, readFileSync } from "node:fs"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { amendmentParagraphs, amendmentText } from "../../lib/drafting-amendment"
-import { askedQuestions, checkChanges, parseJsonObject, questionIssues } from "./change-checks"
+import { askedQuestions, checkChanges, questionIssues } from "./change-checks"
 import { splitNumberingIssues } from "./apply-stage"
-import { finalBodyParagraphs, readChangeList, readParagraphs, record, type ChangeList, shownText, withTextSha, withoutListLabel } from "./checks"
+import { finalBodyParagraphs, parseJsonObject, readChangeList, readParagraphs, record, type ChangeList, shownText, withTextSha, withoutListLabel } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { reviewStages, earlierDocuments, readLeanPlan, type DocID } from "./plan"
 import { SPLIT_NUMBERING, packageCompositionBlock, revisionPreferenceScope, stagePrompt, retryPrompt } from "./prompts"
@@ -170,8 +170,9 @@ export function checkChangePlan(directory: string, document: DocID, value: unkno
  * saved as it is; the findings it leaves out are disclosed
  * (unadjudicatedFindingItems). Earlier attempts retry it. */
 export function acceptChangePlan(directory: string, document: DocID, reply: string, options: { final?: boolean } = {}) {
-  const value = json(reply)
-  const issues = checkChangePlan(directory, document, value)
+  const parsed = parseJsonObject(reply)
+  const value = parsed.ok ? parsed.value : undefined
+  const issues = [...checkChangePlan(directory, document, value), ...parsed.ok ? [] : [parsed.error]]
   if (issues.length || !record(value)) return { issues, outputs: [], openItems: [] }
   const asked = new Map(readQuestions(directory).map(row => [row.id, row]))
   const raw = value.questions as Record<string, unknown>[]
@@ -524,8 +525,9 @@ export function checkChangeReview(directory: string, document: DocID, value: unk
 }
 
 export function acceptChangeReview(directory: string, document: DocID, reply: string) {
-  const value = json(reply)
-  const issues = checkChangeReview(directory, document, value)
+  const parsed = parseJsonObject(reply)
+  const value = parsed.ok ? parsed.value : undefined
+  const issues = [...checkChangeReview(directory, document, value), ...parsed.ok ? [] : [parsed.error]]
   if (issues.length) return { issues, outputs: [], openItems: [] }
   writeLeanText(directory, `${document}/change-review.json`, `${JSON.stringify(value, null, 2)}\n`)
   return { issues: [], outputs: [`${document}/change-review.json`], openItems: [] }
@@ -549,10 +551,6 @@ export function preparationOutputValid(directory: string, document: DocID) {
   })
 }
 
-function json(reply: string): unknown {
-  const parsed = parseJsonObject(reply)
-  return parsed.ok ? parsed.value : undefined
-}
 function nonempty(value: unknown): value is string { return typeof value === "string" && Boolean(value.trim()) }
 function strings(value: unknown): value is string[] { return Array.isArray(value) && value.every(nonempty) }
 function resolvesShape(value: Record<string, unknown>) { return value.resolves === undefined || strings(value.resolves) }

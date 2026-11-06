@@ -1,7 +1,6 @@
 import type { CounterpartyItem } from "../../lib/docx-markup"
 import { escapeTagOpeners } from "../../lib/untrusted"
-import { parseJsonObject } from "./change-checks"
-import { PID_REFERENCE, TOOL_SYNTAX_ISSUE, printedToolCall, record, type ParagraphRow } from "./checks"
+import { PID_REFERENCE, TOOL_SYNTAX_ISSUE, parseJsonObject, printedToolCall, record, type ParagraphRow } from "./checks"
 import { counterpartyFindings } from "./counterparty"
 import { requestedMemo } from "./deliverables"
 import { planActingFor, readLeanPlan, reviewStages, runPosture, type DocID } from "./plan"
@@ -58,7 +57,7 @@ export function acceptReviewReply(directory: string, document: DocID, stage: Rev
   { issues: string[]; record?: ReviewRecord; openItems: OpenItem[] } {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE], openItems: [] }
   const parsed = parseJsonObject(reply)
-  if (!parsed.ok) return { issues: [`${REVIEW_FINDINGS_CONTRACT} The reply could not be read: ${parsed.error}.`], openItems: [] }
+  if (!parsed.ok) return { issues: [`${REVIEW_FINDINGS_CONTRACT} ${parsed.error}`], openItems: [] }
   const value = parsed.value
   const playbook = stage === "review-playbook"
   if (!Array.isArray(value.findings) || (playbook && !nonempty(value.coverage)))

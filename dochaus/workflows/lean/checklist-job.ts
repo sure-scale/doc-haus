@@ -19,6 +19,7 @@ import {
   type ChecklistSourceReference,
   type ChecklistCurrentEvidence,
 } from "./checklist-contract"
+import { parseJsonObject } from "./checks"
 import { LEAN_MAX_RETRIES, type PermissionRule, type StageSessionPort } from "./stages"
 import type { LeanModel } from "./state"
 import { quoteFound, quoteMissIssue } from "./quotes"
@@ -104,13 +105,13 @@ async function runChecklistJob<T>(directory: string, deps: ChecklistJobDeps, age
 }
 
 function parseReply<T>(reply: string, parse: (value: unknown) => T): { ok: true; value: T } | { ok: false; issues: string[] } {
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok) return { ok: false, issues: [`Reply with one complete JSON object. ${parsed.error}`] }
   try {
-    return { ok: true, value: parse(JSON.parse(reply)) }
+    return { ok: true, value: parse(parsed.value) }
   } catch (error) {
-    if (!(error instanceof SyntaxError) && !(error instanceof z.ZodError)) throw error
-    return { ok: false, issues: error instanceof z.ZodError
-      ? error.issues.map(issue => `${issue.path.join(".") || "reply"}: ${issue.message}`)
-      : ["Reply must be a complete JSON object only, without Markdown fences or surrounding prose."] }
+    if (!(error instanceof z.ZodError)) throw error
+    return { ok: false, issues: error.issues.map(issue => `${issue.path.join(".") || "reply"}: ${issue.message}`) }
   }
 }
 

@@ -1,7 +1,6 @@
-import { parseJsonObject } from "./change-checks"
 import { checklistProducerInputs } from "./checklist-source-context"
 import { acceptChangeReview, checkChangeReview, projectedChangeParagraphs, readChangePlan, type ChangeGroup, type ChangeReview } from "./change-pipeline"
-import { readChangeList, readParagraphs, shownText } from "./checks"
+import { parseJsonObject, readChangeList, readParagraphs, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { readLeanPlan, type DocID } from "./plan"
 import { packageCompositionBlock } from "./prompts"
@@ -121,7 +120,7 @@ export async function runFocusedChangeReviewJob(directory: string, state: LeanSt
     const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: attempt ? `Correct only these review-contract errors, retaining your supported findings and original assignment: ${JSON.stringify(issues)}` : input.text })
     const answered = performance.now()
     const parsed = parseJsonObject(reply)
-    issues = parsed.ok ? checkChangeReview(directory, document, parsed.value) : ["Return the required semantic-review JSON object."]
+    issues = parsed.ok ? checkChangeReview(directory, document, parsed.value) : [`Return the required semantic-review JSON object. ${parsed.error}`]
     appendLeanEvent(directory, { stage: "change-review", document, step: input.id, event: "checker", attempt, issues, wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
     progress({ feedback: issues })
     if (!issues.length && parsed.ok) return { session_id: sessionID, review: parsed.value as ChangeReview, issues }

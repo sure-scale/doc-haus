@@ -2,7 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { acceptChangePlan, acceptChangeReview, checkChangePlan, checkChangeReview, projectedChangeParagraphs } from "./change-pipeline"
 import { checkChanges } from "./change-checks"
-import { readChangeList, readParagraphs } from "./checks"
+import { parseJsonObject, readChangeList, readParagraphs } from "./checks"
 import { readLeanEvents } from "./events"
 import { finalGate, type GateResult } from "./gate"
 import { enqueueLeanRequest } from "./requests"
@@ -116,12 +116,36 @@ test("a JSON syntax error is retried with where it is, so the model can find a s
   const issue = (reply: string) => checkChanges(directory, reply, []).issues.join(" ")
   // One brace too many closes the object while its list is still open.
   expect(issue('{"amendments": [{"pid": "p1", "sources": [{"quote": "a"}]} }], "questions": []}'))
-    .toContain("at character 59: unexpected } before the list opened at character 15 is closed; near")
-  expect(issue('{"amendments": [{"pid": "p1", "sources": [{"quote": "a"}]} }], "questions": []}')).toContain(">>> }],")
-  expect(issue('{"amendments": [{"pid": "p1"}, "questions": []}')).toContain("unexpected } before the list opened at character 15 is closed")
-  expect(issue('{"amendments": [], "questions": [], "note": {"a": 1}')).toContain("the object opened at character 0 is never closed")
-  // Brackets inside strings are text, not structure.
-  expect(issue('{"amendments": [{"pid": "p1", "reason": "see [3} and \\"}\\""}], "questions": [] x}')).not.toContain("at character")
+    .toContain('at character 59, "]" was expected to close the "amendments" list opened at character 15, but "}" was found.')
+  expect(issue('{"amendments": [{"pid": "p1", "sources": [{"quote": "a"}]} }], "questions": []}')).toContain(">>>}],")
+  expect(issue('{"amendments": [{"pid": "p1"}, "questions": []}')).toContain('":" was found where it cannot stand')
+  expect(issue('{"amendments": [], "questions": [], "note": {"a": 1}')).toContain('the reply ends before "}" closes the object opened at character 0')
+  // Brackets inside strings are text, not structure: the break is the stray word after them.
+  const stray = '{"amendments": [{"pid": "p1", "reason": "see [3} and \\"}\\""}], "questions": [] x}'
+  expect(issue(stray)).toContain(`at character ${stray.indexOf(" x}") + 1}, "," was expected between two values, but "x" was found.`)
+  // Prose around the object does not move the place: it is counted in the reply.
+  expect(issue(`Here are the changes:\n${stray}`)).toContain(`at character ${stray.indexOf(" x}") + 23}, "," was expected`)
+})
+
+test("every stage reply is read as one object: bare, fenced or in prose, never an ambiguous one", () => {
+  const object = '{"amendments": [], "note": "kept"}'
+  const read = (reply: string) => parseJsonObject(reply)
+  for (const reply of [
+    object,
+    `Here is the result:\n\`\`\`json\n${object}\n\`\`\``,
+    `\`\`\`json\n${object}\n\`\`\`\nThat is all.`,
+    `\`\`\`JSON\n${object}\n\`\`\``,
+    `The result is ${object} as asked.`,
+  ]) expect(read(reply)).toEqual({ ok: true, value: { amendments: [], note: "kept" } })
+  const refused = (reply: string) => { const parsed = read(reply); return parsed.ok ? "" : parsed.error }
+  expect(refused(`\`\`\`json\n${object}\n\`\`\`\n\`\`\`json\n{}\n\`\`\``)).toContain("more than one fenced block")
+  expect(refused(`Keep {this} aside.\n\`\`\`json\n${object}\n\`\`\``)).toContain("ambiguous")
+  expect(refused(`Choose {"a": 1} or {"b": 2}.`)).toContain("not valid JSON")
+  expect(refused(`[${object}]`)).toContain("not an object")
+  expect(refused(`Result: [${object}]`)).toContain("not an object")
+  expect(refused("No object here.")).toBe("No JSON object was found in the reply.")
+  // A cut-off reply says where it ends.
+  expect(refused('{"amendments": [')).toContain("the reply ends before")
 })
 
 test("wrapped review results retain material findings and reject ambiguous alternatives", async () => {

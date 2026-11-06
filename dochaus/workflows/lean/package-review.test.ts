@@ -114,14 +114,16 @@ test("a prose preamble before one package review object does not cost an attempt
   const accepted = await acceptStageReply(directory, "package-review", `Based on my review of the package, here is my assessment.\n\n${review([])}`)
   expect(accepted.issues).toEqual([])
   expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], limitations: ["A disclosed gap."], delivery: [] })
-  expect((await acceptStageReply(directory, "package-review", "No JSON here.")).issues).toEqual(["Reply with the package review JSON only."])
+  expect((await acceptStageReply(directory, "package-review", "No JSON here.")).issues).toEqual(["Reply with the package review JSON only. No JSON object was found in the reply."])
 })
 
 test("a reply of two objects is retried, on the last attempt too, never read as its last object", async () => {
   const directory = twoDocuments()
   const later = review([], { status: "changes-required", findings: [{ target: "memo", detail: "The notes misdescribe the delivery period." }] })
   for (const final of [false, true]) {
-    expect((await acceptStageReply(directory, "package-review", `${review([])}\n${later}`, { final })).issues).toEqual(["Reply with the package review JSON only."])
+    const [issue] = (await acceptStageReply(directory, "package-review", `${review([])}\n${later}`, { final })).issues
+    expect(issue).toStartWith("Reply with the package review JSON only. The reply is not valid JSON:")
+    expect(issue).toContain("the JSON value has already ended, so nothing may follow it")
     expect(readLeanText(directory, "package-review.json")).toBeUndefined()
   }
 })

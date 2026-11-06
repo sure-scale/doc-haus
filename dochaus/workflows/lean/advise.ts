@@ -1,8 +1,7 @@
 import { isDeepStrictEqual } from "node:util"
 import { normalize } from "../../lib/quote-verify"
-import { parseJsonObject } from "./change-checks"
 import { parallel } from "./checklist-flow"
-import { readParagraphs, record, shownText } from "./checks"
+import { parseJsonObject, readParagraphs, record, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { intakeActingFor, matterDatesBlock } from "./intake"
 import { FIRST_DOCUMENT, planActingFor, readLeanPlan, stepDocument, stepStage, type StepID } from "./plan"
@@ -135,7 +134,8 @@ const DECIDES_SHAPE = 'Reply with the JSON object only: {"decides":true,"quote":
  * false with a reason. Every other reply is retried. */
 export function checkDecides(directory: string, item: Instruction, reply: string): { issues: string[]; decides?: boolean } {
   const parsed = parseJsonObject(reply)
-  if (!parsed.ok || typeof parsed.value.decides !== "boolean") return { issues: [DECIDES_SHAPE] }
+  if (!parsed.ok) return { issues: [`${DECIDES_SHAPE} ${parsed.error}`] }
+  if (typeof parsed.value.decides !== "boolean") return { issues: [DECIDES_SHAPE] }
   const { decides, quote, reason } = parsed.value
   if (!decides) return typeof reason === "string" && reason.trim() ? { issues: [], decides: false } : { issues: [`"decides" is false, but "reason" is missing. ${DECIDES_SHAPE}`] }
   if (typeof quote !== "string" || !quote.trim()) return { issues: [`"decides" is true, but "quote" is missing. ${DECIDES_SHAPE}`] }
@@ -224,7 +224,7 @@ export function advisePrompt(directory: string, question: Question) {
 /** The advice a reply gives `question`, or the issues for a retry. */
 export function checkAdvice(directory: string, question: Question, reply: string, options: { requireRelevance?: boolean; request?: string } = {}): { issues: string[]; advice?: QuestionAdvice; group?: string } {
   const parsed = parseJsonObject(reply)
-  if (!parsed.ok) return { issues: [`Reply with one JSON object: ${parsed.error}.`] }
+  if (!parsed.ok) return { issues: [`Reply with one JSON object. ${parsed.error}`] }
   const { options: offered, recommendation, unavailable } = parsed.value
   const group = typeof parsed.value.group === "string" ? parsed.value.group.trim().slice(0, 120) : undefined
   if ((recommendation === undefined) === (unavailable === undefined)) return { issues: ['Return exactly one of "recommendation" or "unavailable".'] }

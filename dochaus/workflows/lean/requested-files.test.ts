@@ -345,7 +345,7 @@ describe("parse requested files", () => {
     expect(parse(reply(false, file(["d1"], TRANSFER)))).toEqual({ issues: ['"stated" is false, but "files" lists files. Give "stated": true with the files the lawyer\'s words ask for, or "stated": false with "files": [].'] })
     expect(parse(reply(true))).toEqual({ issues: ['"stated" is true, but "files" is empty. List each file the lawyer\'s words ask for, or reply {"stated":false,"files":[]} when they do not say.'] })
     expect(parse('<tool_call>{"name":"read-document","arguments":{"document":"x"}}</tool_call>')).toEqual({ issues: [TOOL_SYNTAX_ISSUE] })
-    expect(parse("The lawyer asks for two files.")).toEqual({ issues: [SHAPE] })
+    expect(parse("The lawyer asks for two files.")).toEqual({ issues: [`${SHAPE} No JSON object was found in the reply.`] })
     expect(parse(JSON.stringify({ files: [] }))).toEqual({ issues: [SHAPE] })
   })
 })

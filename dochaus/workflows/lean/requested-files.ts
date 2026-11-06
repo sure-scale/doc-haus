@@ -1,7 +1,7 @@
 import path from "node:path"
 import { sha256File } from "../../lib/lineage"
 import { normalize } from "../../lib/quote-verify"
-import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
+import { TOOL_SYNTAX_ISSUE, parseJsonObject, printedToolCall, record } from "./checks"
 import { readWorkingDocx } from "../../lib/working-docx"
 import { combinedDelivery, combinedFileItems, deliveryArtifactEvidence, deliveryStem, plannedRegistration, present, readLeanDocuments, redlineOfBody } from "./deliverables"
 import { OTHER_FORMAT, formatStem, spelledNames } from "./delivery-selection"
@@ -137,9 +137,10 @@ export function parseRequestedFiles(reply: string, directory: string, documents:
   { final = false, refused = new Map<string, string>() }: { final?: boolean; refused?: Map<string, string> } = {}): Checked<RequestedFiles> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
   const shape = FILES_SHAPE
-  let value: unknown
-  try { value = JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {}
-  if (!record(value) || typeof value.stated !== "boolean" || !Array.isArray(value.files)) return { issues: [shape] }
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok) return { issues: [`${shape} ${parsed.error}`] }
+  const value = parsed.value
+  if (typeof value.stated !== "boolean" || !Array.isArray(value.files)) return { issues: [shape] }
   if (!value.stated) return value.files.length ? { issues: [STATED_WITH_FILES] } : { issues: [], value: { stated: false, files: [] } }
   if (!value.files.length) return { issues: [STATED_WITHOUT_FILES] }
   const issues: string[] = []
@@ -344,9 +345,10 @@ const ASKED_SHAPE = 'Reply with the JSON object only: {"asked":true,"quote":"...
  * lawyer's words (instructionFound), or false. Every other reply is retried. */
 export function parseUnheldDocument(reply: string, directory: string): Checked<boolean> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  let value: unknown
-  try { value = JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {}
-  if (!record(value) || typeof value.asked !== "boolean") return { issues: [ASKED_SHAPE] }
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok) return { issues: [`${ASKED_SHAPE} ${parsed.error}`] }
+  const value = parsed.value
+  if (typeof value.asked !== "boolean") return { issues: [ASKED_SHAPE] }
   if (!value.asked) return { issues: [], value: false }
   if (typeof value.quote !== "string" || !value.quote.trim()) return { issues: [`"asked" is true, but "quote" is missing. ${ASKED_SHAPE}`] }
   if (!instructionFound(directory, value.quote)) return { issues: [quoteMissIssue(directory, "quote", { quote: value.quote.trim(), source_id: REQUEST_SOURCE }, "json")] }

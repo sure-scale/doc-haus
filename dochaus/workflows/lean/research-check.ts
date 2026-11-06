@@ -1,6 +1,5 @@
-import { parseJsonObject } from "./change-checks"
 import { parallel } from "./checklist-flow"
-import { record } from "./checks"
+import { parseJsonObject, record } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { retryPrompt, tagged } from "./prompts"
 import { excerpt, quoteFound } from "./quotes"
@@ -93,7 +92,8 @@ const SHAPE = 'Reply with the JSON object only: {"holds":true} or {"holds":false
  * retried. */
 export function checkResearchCheck(directory: string, question: Question, reply: string): { issues: string[]; check?: ResearchCheck } {
   const parsed = parseJsonObject(reply)
-  if (!parsed.ok || typeof parsed.value.holds !== "boolean") return { issues: [SHAPE] }
+  if (!parsed.ok) return { issues: [`${SHAPE} ${parsed.error}`] }
+  if (typeof parsed.value.holds !== "boolean") return { issues: [SHAPE] }
   const { holds, option, reason, evidence } = parsed.value
   if (holds) return { issues: [] }
   const offered = questionOptions(question).filter(row => row.id !== question.option_id).map(row => row.id)

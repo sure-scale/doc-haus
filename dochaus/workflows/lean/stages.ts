@@ -29,12 +29,13 @@ import { linkCrossReferences } from "../../lib/docx-crossrefs"
 import { withTemplateStyleIds } from "../../lib/template-seed"
 import { presentDraft, type DraftPresentation } from "./draft-presentation"
 import { carryRevisionParagraphs, carryRevisionTables, draftedTablesNotes } from "./original-tables"
-import { checkChanges, parseJsonObject } from "./change-checks"
+import { checkChanges } from "./change-checks"
 import { splitNumberingIssues } from "./apply-stage"
 import {
   checkDraft,
   finalBodyParagraphs,
   checkDraftingNotes,
+  parseJsonObject,
   readChangeList,
   readParagraphs,
   type ApplyResult,
@@ -408,7 +409,7 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   if (stage === "package-review") {
     // A prose preamble before the one object costs no attempt.
     const parsed = parseJsonObject(reply)
-    if (!parsed.ok) return { issues: ["Reply with the package review JSON only."], outputs: [], openItems: [] }
+    if (!parsed.ok) return { issues: [`Reply with the package review JSON only. ${parsed.error}`], outputs: [], openItems: [] }
     // On the last attempt a delivery row the check still refuses, or a missing
     // delivery list, is withheld with a limitation and the planned names stand;
     // earlier attempts retry it. Only code records a withheld row.

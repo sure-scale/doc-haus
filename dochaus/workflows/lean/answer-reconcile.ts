@@ -1,6 +1,5 @@
 import { adviseQuestions } from "./advise"
-import { parseJsonObject } from "./change-checks"
-import { record } from "./checks"
+import { parseJsonObject, record } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { OutputLimitError } from "./native-stage-result"
 import { keyedQuestionID } from "./package-scope"
@@ -103,7 +102,7 @@ export function reconcilePrompt(answered: Question[], request: string, updates: 
  * issues for a retry. */
 export function checkConflicts(reply: string, known: ReadonlySet<string>): { issues: string[]; conflicts?: AnswerConflict[] } {
   const parsed = parseJsonObject(reply)
-  if (!parsed.ok) return { issues: [`Reply with one JSON object: ${parsed.error}.`] }
+  if (!parsed.ok) return { issues: [`Reply with one JSON object. ${parsed.error}`] }
   const { conflicts } = parsed.value
   if (!Array.isArray(conflicts)) return { issues: ['"conflicts" must be a list, empty when the answers can all be followed together.'] }
   const issues: string[] = []

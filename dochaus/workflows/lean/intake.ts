@@ -1,6 +1,7 @@
 import { matterClient } from "../../lib/matter-client"
 import { normalize } from "../../lib/quote-verify"
 import { NOT_STATED, nameKey, readLeanPlan, type ActingFor, type ActingForBasis, type DocumentDateBasis, type MatterDate, type MatterDates } from "./plan"
+import { parseJsonObject } from "./checks"
 import { followsDocument } from "./instructions"
 import { REQUEST_SOURCE, isAnswerSource, quoteFound, quoteMissIssue } from "./quotes"
 import { questionKindIssues, readLeanJson, readQuestions, shortHash, type Question } from "./state"
@@ -8,14 +9,14 @@ import { questionKindIssues, readLeanJson, readQuestions, shortHash, type Questi
 type Checked<T> = { issues: string[]; value?: T }
 
 /** The intake exchange asks material questions before research. They
- * use the ordinary durable question store and dialog; no draft is written. */
+ * use the ordinary durable question store and dialog; no draft is written.
+ * Undefined when the reply holds no questions: a reply parseJsonObject cannot
+ * read is then refused, with why, as the readiness reply. */
 export function intakeQuestions(directory: string, reply: string, stage: Question["stage"] = "intake"): Checked<Question[]> | undefined {
-  const text = reply.trim().replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```$/, "").trim()
-  if (!text.startsWith("{")) return
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok) return
   const invalid = { issues: ['Reply with {"questions":[{"question":"...","kind":"fact|instruction|judgment","context":"why this blocks drafting"}]} or the readiness JSON when ready.'] }
-  let value: unknown
-  try { value = JSON.parse(text) } catch { return invalid }
-  if (typeof value !== "object" || value === null) return invalid
+  const value = parsed.value
   if (!("questions" in value)) return
   if (!Array.isArray(value.questions) || !value.questions.length) return invalid
   const answered = new Set(readQuestions(directory).filter(row => row.status === "answered").map(row => normalize(row.question)))

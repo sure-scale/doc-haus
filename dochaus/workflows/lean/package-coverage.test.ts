@@ -204,8 +204,9 @@ describe("coverage reply", () => {
 
   test("a reply that is not an object with an acts list is retried with the shape", () => {
     const directory = prepared()
-    for (const text of ["The acts are listed below.", '{"acts":"x"}', "null", "[]"])
-      expect(parseCoverage(text, directory, documents)).toEqual({ issues: [SHAPE] })
+    // A reply that is no object also says why it was not read.
+    for (const [text, why] of [["The acts are listed below.", " No JSON object was found in the reply."], ['{"acts":"x"}', ""], ["null", " The JSON value is not an object; return one JSON object."], ["[]", " The JSON value is not an object; return one JSON object."]])
+      expect(parseCoverage(text!, directory, documents)).toEqual({ issues: [`${SHAPE}${why}`] })
   })
 
   test("each malformed act is retried with the shape", () => {
@@ -741,7 +742,8 @@ describe("the placement job's reply", () => {
   test("a printed tool call, a reply that is not the placements object and a malformed placement are retried with the placement shape", () => {
     const directory = prepared()
     expect(parseCoveragePlacement('<tool_call>{"name":"read-document","arguments":{"document":"x"}}</tool_call>', directory, documents, acts)).toEqual({ issues: [TOOL_SYNTAX_ISSUE] })
-    for (const text of ["The acts are placed below.", '{"acts":[]}', '{"placements":"x"}', "[]"]) expect(parseCoveragePlacement(text, directory, documents, acts)).toEqual({ issues: [PLACEMENT_SHAPE] })
+    for (const [text, why] of [["The acts are placed below.", " No JSON object was found in the reply."], ['{"acts":[]}', ""], ['{"placements":"x"}', ""], ["[]", " The JSON value is not an object; return one JSON object."]])
+      expect(parseCoveragePlacement(text!, directory, documents, acts)).toEqual({ issues: [`${PLACEMENT_SHAPE}${why}`] })
     expect(parseCoveragePlacement(placing("x", { act: 0 }, { act: 1, document: 3 }), directory, documents, acts)).toEqual({ issues: [
       ...[0, 1, 2].map(at => `placements[${at}] needs "act" as the index of a listed act and "document" as a planned id or null. ${PLACEMENT_SHAPE}`),
       `No placement for acts 0, 1. ${NO_PLACEMENT}`,

@@ -1,6 +1,6 @@
 import { boundPlaybookContext } from "../../lib/playbook-source"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
-import { parseJsonObject } from "./change-checks"
+import { parseJsonObject } from "./checks"
 import { excerpt, isAnswerSource, lawyerQuoteSource, matterSourceIDs, quoteFound, quoteMissIssue, REQUEST_SOURCE } from "./quotes"
 import type { StageAcceptance } from "./stages"
 import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, shortHash, writeLeanText, type Question } from "./state"
@@ -95,7 +95,7 @@ export function checkInstructions(directory: string, value: unknown): { issues: 
 
 export function acceptInstructionsReply(directory: string, reply: string): StageAcceptance {
   const parsed = parseJsonObject(reply)
-  if (!parsed.ok) return { issues: [`Reply with one JSON object: ${parsed.error}.`], outputs: [], openItems: [] }
+  if (!parsed.ok) return { issues: [`Reply with one JSON object. ${parsed.error}`], outputs: [], openItems: [] }
   const checked = checkInstructions(directory, parsed.value)
   if (!checked.list) return { issues: checked.issues, outputs: [], openItems: [] }
   writeLeanText(directory, SAVED, `${JSON.stringify(checked.list, null, 2)}\n`)

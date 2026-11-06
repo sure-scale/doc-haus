@@ -1,7 +1,6 @@
 import { UNTRUSTED_RECORD_NOTICE } from "../../lib/untrusted"
 import { normalize } from "../../lib/quote-verify"
-import { parseJsonObject } from "./change-checks"
-import { record } from "./checks"
+import { parseJsonObject, record } from "./checks"
 import { advisePrompt, basisIssues, checkAdvice } from "./advise"
 import type { DocID } from "./plan"
 import { matterSourceIDs } from "./quotes"

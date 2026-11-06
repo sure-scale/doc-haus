@@ -3,6 +3,7 @@ import { currentInstructions, INSTRUCTIONS_FILE } from "./instructions"
 import { boundPlaybookContext } from "../../lib/playbook-source"
 import { answeredQuestionsText, readLeanJson, readLeanText, writeLeanText } from "./state"
 import { derivedRecordNote, excerpt, matterSourceIDs, REQUEST_SOURCE, quoteFound, type SourceQuote } from "./quotes"
+import { parseJsonObject } from "./checks"
 import { approvedResearch, researchHandoff } from "./research"
 import { researchChecksText } from "./research-check"
 import { actRecordBlock } from "./act-record"
@@ -113,12 +114,11 @@ function discrepancyIssues(row: Record<string, unknown>, index: number) {
 /** The reply's checked value, or the issues a retry must correct. On the final
  * attempt an unquoted spine figure is recorded instead, and the value stands. */
 export function checkEvidenceReply(directory: string, stage: EvidenceStage, reply: string, options: { final?: boolean } = {}): { issues: string[]; recorded: string[]; value?: Record<string, unknown> } {
-  let value: unknown
-  try { value = JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {
-    return { issues: ["Reply with the requested JSON object only."], recorded: [] }
-  }
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok) return { issues: [`Reply with the requested JSON object only. ${parsed.error}`], recorded: [] }
+  const value = parsed.value
   const { issues, recorded } = evidenceIssues(directory, stage, value, { final: options.final === true })
-  return issues.length ? { issues, recorded } : { issues: [], recorded, value: value as Record<string, unknown> }
+  return issues.length ? { issues, recorded } : { issues: [], recorded, value }
 }
 
 export function acceptEvidenceReply(directory: string, stage: EvidenceStage, reply: string): StageAcceptance {

@@ -59,7 +59,8 @@ test("one typed extraction job uses native readonly boundary and canonical promp
 
 test("malformed JSON and shape receive bounded correction in the same native session", async () => {
   const directory = matter(source.quote)
-  const port = sessionPort(["```json\n{}\n```", "{}", JSON.stringify(finding)])
+  // A fenced object is read like a bare one, so the fence gets the shape issues.
+  const port = sessionPort(['{"item_id": ', "```json\n{}\n```", JSON.stringify(finding)])
   const before = JSON.stringify(checker)
   const result = await runChecklistCheckJob(directory, { sessions: port.sessions, model: null }, checker)
   expect(result.status).toBe("succeeded")
@@ -67,7 +68,7 @@ test("malformed JSON and shape receive bounded correction in the same native ses
   expect(port.created).toHaveLength(1)
   expect(port.prompts.every(row => row.sessionID === "session-1" && row.agent === CHECKLIST_JOB_AGENTS.check)).toBe(true)
   expect(port.prompts[0].text).toBe(buildChecklistCheckerPrompt(checker))
-  expect(port.prompts[1].text).toContain("without Markdown fences")
+  expect(port.prompts[1].text).toContain("not valid JSON")
   expect(port.prompts[2].text).toContain("item_id")
   expect(JSON.stringify(checker)).toBe(before)
 })
