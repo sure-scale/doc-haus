@@ -17,7 +17,7 @@ import { checklistFindingRecovery } from "./checklist-contract"
 import { buildChecklistRefinementContext } from "./checklist-refinement-context"
 import { runChecklistRefinementFlow, readEffectiveChecklistItems, runChecklistExtractionFlow, runChecklistCheckFlow, type ChecklistCheckResult } from "./checklist-flow"
 import { selectedDeliveryPlan } from "./delivery-selection"
-import { changePlanPrompt, changeReviewItem, changeReviewPrompt, readChangeReview, reviewWithheldFinding, reviewWithheldItem, runChangePreparation, unadjudicatedFindings, type ChangeReview } from "./change-pipeline"
+import { changePlanPrompt, changeReviewItem, changeReviewPrompt, readChangePlan, readChangeReview, reviewWithheldFinding, reviewWithheldItem, runChangePreparation, unadjudicatedFindings, type ChangeReview } from "./change-pipeline"
 import { findingTextUnchanged, readChangeList } from "./checks"
 import { packageReviewPrompt, readPackageReview, recordPackageFindings } from "./package-review"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, repairedChecklistItems, startRepairRound, startUnverifiedRepairRound } from "./repairs"
@@ -727,8 +727,11 @@ function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDe
   if (stage === "checklist-check") return runChecklistStage(directory, state, deps, reinspectChecklist)
   if (stage === "acts") return runActRecordStage(directory, state, deps, progress)
   if (stage === "discrepancy") return runDiscrepancyStage(directory, state, deps, progress)
-  // A review that re-ran since the plan has findings only a full plan sees.
-  if (stage === "change-plan" && document && !roundPlanned(directory, state, recorded) && focusedChecklistRepairs(directory, document) && !unadjudicatedFindings(directory, document).length) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
+  // Focused repair amends the accepted plan. A review that re-ran since the plan
+  // has findings only a full plan sees, and a saved plan that no longer checks
+  // (research it cites was re-reviewed) is re-planned in full.
+  const previous = stage === "change-plan" && document ? readChangePlan(directory, document) : undefined
+  if (previous && document && !roundPlanned(directory, state, recorded) && focusedChecklistRepairs(directory, document) && !unadjudicatedFindings(directory, document, previous).length) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
   if (stage === "change-review" && document && focusedChecklistRepairs(directory, document)) return runFocusedChangeReview(directory, state, deps, document, progress)
   if (stage === "changes" && document && focusedChecklistRepairs(directory, document)) return runChangeReconciliation(directory, state, deps, document, progress)
   if (stage === "change-prepare" && document) return runChangePreparation(directory, state, deps, document, progress)

@@ -1,8 +1,11 @@
 import { afterEach, expect, setSystemTime, test } from "bun:test"
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
+import { createHash } from "node:crypto"
 import { strFromU8, unzipSync } from "fflate"
 import { renderMarkdownToDocx } from "../../lib/render"
+import { preserveResearchSourceSnapshot } from "../../lib/research-source-snapshot"
+import { readChangePlan } from "./change-pipeline"
 import { runLean, stageInputSha } from "./runner"
 import { stageOutputValid, type StageSessionPort } from "./stages"
 import { exportDocxComments, readDocxCommentParagraphs } from "../../lib/docx-comments"
@@ -266,6 +269,40 @@ test("a change plan that failed inside its checklist round is adjudicated focuse
   expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
   expect(focusedRepairs(resumed)).toBe(1)
   expect(resumed.prompts.filter(row => row.agent === AGENT["change-plan"] && !row.text.includes("ONE supplied checklist assessment"))).toHaveLength(0)
+}, 180000)
+
+test("checklist repair with a cumulative plan whose research is no longer approved runs the full change plan and shows its prior dispositions", async () => {
+  const directory = matter()
+  const authority = (id: string, url: string, quote: string) => {
+    const hash = (value: string) => createHash("sha256").update(value).digest("hex")
+    const snapshot = preserveResearchSourceSnapshot(directory, { status: "ok", text: quote, extraction: "text", sourceBytes: Buffer.from(quote),
+      descriptor: { originalUrl: url, finalUrl: url, host: new URL(url).host, fetchedAt: "2026-10-12T00:00:00Z", contentType: "text/plain", byteLength: Buffer.byteLength(quote), bodyHash: hash(quote), textHash: hash(quote), textChars: quote.length } }, [{ start: 0, end: quote.length, text: quote, term: id }])
+    return { id, claim: quote, title: "Retrieved provision", citation: "", url, snapshot: snapshot.sha256, quote, jurisdiction: "Supplied", currentness: "Retrieved version", limitations: "" }
+  }
+  const cited = authority("r1", "https://example.gov/notice", "A party must give written notice before termination.")
+  const research = { [AGENT.research]: () => JSON.stringify({ status: "completed", findings: [cited, authority("r2", "https://example.gov/payment", "Payment is due on delivery unless agreed otherwise.")], limitations: [] }) }
+  const deferred = "Confirm the notice period against the retrieved authority."
+  let failed = false
+  // The full plan defers advice citing r1; the focused adjudication fails once.
+  const first = model(directory, "unsatisfied", {}, {}, { ...research,
+    [AGENT["research-review"]]: () => JSON.stringify({ approved: ["r1", "r2"], rejected: [], limitations: [], gaps: [] }),
+    [AGENT["change-plan"]]: text => {
+      if (text.includes("ONE supplied checklist assessment") && !failed) { failed = true; throw new Error("Scripted adjudication failure") }
+      return adjudicating(text, { shared_decisions: [], groups: [], dismissed: [], questions: [], findings: [{ disposition: "deferred", kind: "information", detail: deferred,
+        reason: "The notice period is for the lawyer to confirm.", documents: ["d1"], sources: [{ source_id: cited.url, quote: cited.quote }], limitations: ["Notice period unconfirmed."] }] })
+    } })
+  expect((await runLean(directory, { sessions: first.port })).stages["d1.change-plan"]).toMatchObject({ status: "failed" })
+  // Research re-reviewed since: the saved plan cites an authority no longer approved.
+  const review = { approved: ["r2"], rejected: [{ id: "r1", reason: "The retrieved text is not current." }], limitations: [], gaps: [] }
+  writeLeanText(directory, "research-review.json", JSON.stringify(review))
+  expect(readChangePlan(directory, "d1")).toBeUndefined()
+  enqueueLeanRequest(directory, { kind: "continue" })
+  const resumed = model(directory, "unsatisfied", {}, {}, { ...research, [AGENT["research-review"]]: () => JSON.stringify(review) })
+  const state = await runLean(directory, { sessions: resumed.port })
+  expect(state.stop_reason ?? "").not.toContain("needs the accepted cumulative plan")
+  expect(state.status).toBe("completed")
+  const full = resumed.prompts.find(row => row.agent === AGENT["change-plan"] && !row.text.includes("ONE supplied checklist assessment"))!.text
+  expect(full.split("<previous_review_dispositions>")[1]?.split("</previous_review_dispositions>")[0]).toContain(deferred)
 }, 180000)
 
 test("an omission resting on a delivered file's properties is disclosed with the review draft, never sent to a text repair", async () => {
