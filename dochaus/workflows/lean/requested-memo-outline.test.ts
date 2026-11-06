@@ -157,6 +157,15 @@ describe("the Memo line names one planned document", () => {
     expect(asOutlined("# Memo on Pricing", "Form: advice", "## Terms")).toEqual(["Memo on Pricing"])
   })
 
+  test("a Memo line the request does not word is retry feedback to rename it, and the one advice document stays the memo", () => {
+    const name = "Cover Memo on Supply Note Pricing"
+    const parsed = parsePlan(outline(`Memo: ${name}`, document("Supply note"), "# Cover Memo on Pricing", "Form: advice", "## Terms", "What it covers."),
+      "Draft a supply note, with a cover memo on pricing.")
+    expect(parsed.issues).toEqual([`The "Memo:" line names "${name}", but the request does not use those words. Name the memo in a few of the request's own words, as it writes them, and keep the memo planned as its "# " document. Leave the line and that document out only when the request does not ask for a memo or note.`])
+    expect(parsed.value?.memo).toBe("Cover Memo on Pricing")
+    expect(parsed.value?.documents.map(row => [row.title, row.form])).toEqual([["Supply note", "other"], ["Cover Memo on Pricing", "advice"]])
+  })
+
   test("plan.json records the memo document by its id, and an id outside the plan is not read", () => {
     const directory = matter()
     const plan = writeLeanPlan(directory, [{ title: "Supply note", purpose: "p", parts: [{ heading: "Terms", scope: "s" }] }, { title: "Cover memo", purpose: "p", parts: [{ heading: "Terms", scope: "s" }] }],

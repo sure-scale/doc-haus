@@ -206,7 +206,9 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // settled stopped being sent back for revision (outline-one-pass-reverse-19),
 // and when the outline began to be shown the template parts it must account
 // for, to read deeper headings as scope, to adopt a lone advice document as
-// the memo and never to fold advice (outline-one-pass-reverse-20).
+// the memo and never to fold advice (outline-one-pass-reverse-20), and when a
+// rejected memo name began to be renamed rather than dropped
+// (outline-one-pass-reverse-21).
 // The spine was re-pinned when its entries
 // began to be split into atoms (spine-atoms-1), when a one-atom split began to
 // read as atomic (spine-atoms-2), when its checks began asking each figure of
@@ -232,7 +234,7 @@ const INPUTS: Record<string, string> = {
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
   "acts": "ff830f3d37f64416362401fa66710c9fc8e770429b6bc5f2af84baffd3f35a3c",
   "spine": "7719311d661486872e589bf29d615b4ffc5893a39fb4ab7694ff3ae6f16cecef",
-  "d1.draft": "91a52c7311ebbc0fcf507f8d921ce27391ecf34ada33f65d60da3eccbeb77482",
+  "d1.draft": "8948146029a191a4a9a7b2e8cccd0cd5a92979bafbfc0e22d66d0961c49647d8",
   "d1.review": "23af042296cf7f7d3ee97332f0caaf1fac7ab240199ce23d96a33f9c65fc2693",
   "d1.review-independent": "ae78dbf15aa677be04d6d44d0b91d63c34fd2fa03754e51350a6941413143d70",
   "d1.review-wording": "da1716d02cfb2df4b1f9fe71ceec32c3ffe41e66070f508a765ef7aa81e3792a",

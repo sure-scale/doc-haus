@@ -584,7 +584,7 @@ function outlineMemo(line: string | undefined, request: string | undefined): { n
   if (FILE_NAME_FORBIDDEN.test(name) || FILE_IN_TITLE.test(name))
     return { issues: [`The "Memo:" line gives "${name}", which cannot be part of a file name. Name the memo in a few of the request's own words, without a folder, file extension, Markdown or any of \\ / : * ? " < > |.`] }
   if (request !== undefined && !namedIn(request, name) && !namedIn(request.replace(/[-_]+/g, " "), name))
-    return { issues: [`The "Memo:" line names "${name}", but the request does not use those words. Write a "Memo:" line only when the request asks for a memo or note to accompany the documents, naming it in the request's own words; otherwise leave the line out.`] }
+    return { issues: [`The "Memo:" line names "${name}", but the request does not use those words. Name the memo in a few of the request's own words, as it writes them, and keep the memo planned as its "# " document. Leave the line and that document out only when the request does not ask for a memo or note.`] }
   return { name, issues: [] }
 }
 

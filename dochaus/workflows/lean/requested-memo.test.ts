@@ -10,7 +10,7 @@ import { openItem } from "./quotes"
 import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES, stageInputs } from "./stages"
 import { readLeanJson, readLeanState, readLeanText, readOpenItems, writeLeanText } from "./state"
-import { AGENT, COVER_MEMO, DRAFT, cleanupMatters, drafter, happyPath, listed, matter, noChanges, pidOf, registering, reviewFirst, sameSession, scriptedModel, type Reply } from "./test-support"
+import { AGENT, COVER_MEMO, DRAFT, changesFirst, cleanupMatters, drafter, happyPath, listed, matter, noChanges, pidOf, registering, reviewFirst, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // A memo the request asks for: the outline names it on a "Memo:" line in the
 // request's words and plans it as a document, the notes file is named for it,
@@ -99,6 +99,9 @@ describe("the outline's Memo line", () => {
   test("a name the request does not use, or one a file name cannot carry, is retry feedback and is dropped", () => {
     const ungrounded = parsePlan(outline("Memo: advice letter"), REQUEST)
     expect(ungrounded.issues.join(" ")).toContain('The "Memo:" line names "advice letter", but the request does not use those words.')
+    // A rejected name is renamed, not a reason to drop the memo the request asks for.
+    expect(ungrounded.issues.join(" ")).toContain('keep the memo planned as its "# " document. Leave the line and that document out only when the request does not ask for a memo or note.')
+    expect(ungrounded.issues.join(" ")).not.toContain("otherwise leave the line out")
     expect(ungrounded.value).not.toHaveProperty("memo")
     for (const line of ["Memo: cover memo/notes", "Memo: cover-memo.docx"]) {
       const parsed = parsePlan(outline(line), REQUEST)
@@ -248,6 +251,20 @@ describe("a requested memo through the run", () => {
     expect(readLeanPlan(directory)).toMatchObject({ memo: "cover memo", memo_document: "d3" })
     expect(requestedMemo(directory)?.file).toBe("supply-pack - cover memo.docx")
   }, 60_000)
+
+  test("a requested memo whose name the request does not use is renamed on retry and stays planned", async () => {
+    const directory = matter()
+    writeLeanText(directory, "request.md", REQUEST)
+    const [joined, renamed] = [memoDrafter("Memo: cover memo for the client"), memoDrafter("Memo: cover memo")]
+    const outlined: Reply = (prompt, index) => (prompt.includes("does not use those words") ? renamed : joined)(prompt, index)
+    // The memo document has no supply paragraph to review or change.
+    const model = scriptedModel({ ...happyPath, [AGENT.draft]: outlined, [AGENT.review]: reviewFirst, [AGENT.changes]: changesFirst, [AGENT.finalize]: memoReply })
+    expect((await runLean(directory, { sessions: model.port, registerDeliverable: registering().registerDeliverable })).status).toBe("completed")
+
+    expect(model.prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.includes("does not use those words"))).toHaveLength(1)
+    expect(readLeanPlan(directory)).toMatchObject({ memo: "cover memo", memo_document: "d2" })
+    expect(readLeanPlan(directory)?.documents.at(-1)).toMatchObject({ title: "Cover memo", form: "advice", executed_by: [] })
+  }, 120_000)
 
   test("a Memo line the request does not support is retried, then dropped, and the run keeps its drafting notes", async () => {
     const directory = matter()
