@@ -484,9 +484,10 @@ test("the HTTP answer flow holds a run until every intake question is answered",
   expect(waiting.status).toBe("blocked")
   expect(waiting.questions).toHaveLength(2)
   expect(waiting.stages["d1.review"]?.status).toBe("pending")
-  // Instructions, discrepancy, intake and one advice per question; waiting asks the model nothing more.
+  // Instructions, the discrepancy stage's differences and gaps jobs, intake and
+  // one advice per question; waiting asks the model nothing more.
   const asked = model.prompts.length
-  expect(asked).toBe(5)
+  expect(asked).toBe(6)
   const post = (id: string, answer: string) => routes.request(`/m1/lean/questions/${id}`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ answer }),
   })
