@@ -8,7 +8,6 @@ import { Watcher } from "@opencode/core/filesystem/watcher"
 import { Instance } from "@opencode/core/instance"
 import { InstructionDiscovery } from "@opencode/core/instruction-discovery"
 import { Location } from "@opencode/core/location"
-import { ManagedPolicy } from "@opencode/core/managed-policy"
 import { ModelsDev } from "@opencode/core/models-dev"
 import { Plugin } from "@opencode/core/plugin"
 import { AbsolutePath } from "@opencode/core/schema"
@@ -23,7 +22,7 @@ import { Context, Deferred, Effect, Layer } from "effect"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { legalConfigLayer, legalManagedPolicy } from "./config-layer"
+import { legalConfigLayer } from "./config-layer"
 import type { EngineSettings } from "./effective-settings"
 import { modelHttp } from "./model-http"
 
@@ -125,7 +124,6 @@ export function createProviderSetupSession(options: {
         remove: () => Effect.void, resolve: () => Effect.succeed([]), cached: () => Effect.succeed([]),
       })),
       Config.node.replace(config),
-      ManagedPolicy.node.replace(legalManagedPolicy),
       InstructionDiscovery.node.replace(InstructionDiscovery.configured({ global: false, project: false })),
     ]).pipe(Layer.provide(NodeServices.layer))
     const context = yield* Layer.build(built)
