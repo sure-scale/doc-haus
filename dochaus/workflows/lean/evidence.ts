@@ -1,3 +1,4 @@
+import { normalize } from "../../lib/quote-verify"
 import { currentInstructions, INSTRUCTIONS_FILE } from "./instructions"
 import { boundPlaybookContext } from "../../lib/playbook-source"
 import { answeredQuestionsText, readLeanJson, readLeanText, writeLeanText } from "./state"
@@ -19,9 +20,17 @@ export type Discrepancy = EvidenceEntry & { material: boolean; status: "resolved
 export type Gap = EvidenceEntry & { requirement: SourceQuote; material: boolean; lawyer: boolean }
 /** These are drafting aids, never substitutes for canonical source retrieval. */
 export function checkEvidence(directory: string, stage: EvidenceStage, value: unknown): string[] {
+  return evidenceIssues(directory, stage, value, { final: false }).issues
+}
+
+/** The issues a retry must correct. A spine entry's figure that none of its
+ * quotes states is one of them until the final attempt, when it is only
+ * recorded: the reply stands and nothing is demoted. */
+function evidenceIssues(directory: string, stage: EvidenceStage, value: unknown, options: { final: boolean }): { issues: string[]; recorded: string[] } {
   if (!record(value) || !Array.isArray(value.entries) || !strings(value.limitations) || (stage === "discrepancy" && !Array.isArray(value.gaps)))
-    return [stage === "discrepancy" ? "Return JSON with entries, gaps and limitations arrays." : "Return JSON with entries and limitations arrays."]
+    return { issues: [stage === "discrepancy" ? "Return JSON with entries, gaps and limitations arrays." : "Return JSON with entries and limitations arrays."], recorded: [] }
   const sources = evidenceSources(directory)
+  const recorded: string[] = []
   const entries = value.entries.flatMap((row: unknown, index: number) => {
     if (!record(row) || typeof row.detail !== "string" || !row.detail.trim() || !Array.isArray(row.evidence) || !strings(row.limitations))
       return ["Each entry needs detail, evidence [{source_id,quote}] and limitations arrays."]
@@ -31,9 +40,31 @@ export function checkEvidence(directory: string, stage: EvidenceStage, value: un
     if (stage === "spine" && !(SPINE_KINDS as readonly string[]).includes(String(row.kind)))
       issues.push("A spine entry kind must be decision, recommendation, requirement, fact or open-item.")
     if (stage === "spine" && "question_id" in row) issues.push("A spine entry takes no question_id; remove it.")
+    if (stage === "spine") (options.final ? recorded : issues).push(...unquotedFigures(row.detail, row.evidence.flatMap((ref: unknown) => record(ref) && typeof ref.quote === "string" ? [ref.quote] : []))
+      .map(figure => `entries[${index}] states ${JSON.stringify(figure)}, which none of its quotes states; quote the source words that state it.`))
     return issues
   })
-  return stage === "discrepancy" ? [...entries, ...(value.gaps as unknown[]).flatMap((row, index) => gapIssues(directory, sources, row, index))] : entries
+  return { issues: stage === "discrepancy" ? [...entries, ...(value.gaps as unknown[]).flatMap((row, index) => gapIssues(directory, sources, row, index))] : entries, recorded }
+}
+
+const FIGURE = /\d+(?:[.,]\d+)*/g
+
+// Each figure a text states, as written and as compared: normalised as
+// quotations are, without thousands separators, so "$1,000,000" and
+// "1,000,000" are one figure. A figure written in words is not read.
+function statedFigures(text: string) {
+  return [...normalize(text).matchAll(FIGURE)].map(match => ({ written: match[0], figure: match[0].replaceAll(",", "") }))
+}
+
+/** The figures a text states, compared without currency signs or thousands separators. */
+export function figures(text: string) {
+  return statedFigures(text).map(row => row.figure)
+}
+
+/** Each figure the detail states, as written, that none of the quotations states. */
+export function unquotedFigures(detail: string, quotes: string[]) {
+  const quoted = new Set(quotes.flatMap(figures))
+  return [...new Set(statedFigures(detail).filter(row => !quoted.has(row.figure)).map(row => row.written))]
 }
 
 function quoteIssues(directory: string, sources: string[], ref: unknown): string[] {
@@ -79,14 +110,15 @@ function discrepancyIssues(row: Record<string, unknown>, index: number) {
   return issues
 }
 
-/** The reply's checked value, or the issues a retry must correct. */
-export function checkEvidenceReply(directory: string, stage: EvidenceStage, reply: string): { issues: string[]; value?: Record<string, unknown> } {
+/** The reply's checked value, or the issues a retry must correct. On the final
+ * attempt an unquoted spine figure is recorded instead, and the value stands. */
+export function checkEvidenceReply(directory: string, stage: EvidenceStage, reply: string, options: { final?: boolean } = {}): { issues: string[]; recorded: string[]; value?: Record<string, unknown> } {
   let value: unknown
   try { value = JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {
-    return { issues: ["Reply with the requested JSON object only."] }
+    return { issues: ["Reply with the requested JSON object only."], recorded: [] }
   }
-  const issues = checkEvidence(directory, stage, value)
-  return issues.length ? { issues } : { issues: [], value: value as Record<string, unknown> }
+  const { issues, recorded } = evidenceIssues(directory, stage, value, { final: options.final === true })
+  return issues.length ? { issues, recorded } : { issues: [], recorded, value: value as Record<string, unknown> }
 }
 
 export function acceptEvidenceReply(directory: string, stage: EvidenceStage, reply: string): StageAcceptance {
@@ -96,8 +128,9 @@ export function acceptEvidenceReply(directory: string, stage: EvidenceStage, rep
   return { issues: [], outputs: [`${stage}.json`], openItems: [] }
 }
 
+// A saved spine was accepted, so an unquoted figure in it is never a reason to re-run it.
 export function evidenceOutputValid(directory: string, stage: EvidenceStage) {
-  return !checkEvidence(directory, stage, readLeanJson(directory, `${stage}.json`)).length
+  return !evidenceIssues(directory, stage, readLeanJson(directory, `${stage}.json`), { final: true }).issues.length
 }
 
 export function evidencePrompt(directory: string, stage: EvidenceStage) {

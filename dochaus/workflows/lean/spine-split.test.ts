@@ -97,6 +97,19 @@ test("the check refuses a kind, a reference or a detail the entry does not hold,
   expect(parseSpineSplit("Two points.", COMPOUND).issues).toEqual([expect.stringContaining('Reply with the JSON object only')])
 })
 
+test("an atom cites a quote stating each figure the entry's quotes state; a figure they never state is not asked of it", () => {
+  const PRICE = { source_id: SOURCE, quote: "The price is $4,800,000." }
+  const priced: SpineEntry = { kind: "requirement", detail: "The note states a price of 4,800,000 and that payment is due on delivery.", evidence: [PRICE, PAYMENT], limitations: [] }
+  const atoms = (price: number[], payment: number[]) => JSON.stringify({ atoms: [
+    { kind: "requirement", detail: "The note states a price of 4,800,000.", evidence: price, limitations: [] },
+    { kind: "requirement", detail: "The note states that payment is due on delivery.", evidence: payment, limitations: [] },
+  ] })
+  expect(parseSpineSplit(atoms([1], [0]), priced).issues).toEqual(['atoms[0] states "4,800,000", which none of its evidence states; cite the index of the evidence that states it.'])
+  expect(parseSpineSplit(atoms([0], [1]), priced).issues).toEqual([])
+  // An entry the spine kept with a figure none of its quotes states splits as before.
+  expect(parseSpineSplit(atoms([1], [0]), { ...priced, evidence: [DELIVERY, PAYMENT] }).issues).toEqual([])
+})
+
 test("spine.json holds the atoms in the entries' order, each split in its entry's place, from tool-less split sessions", async () => {
   const directory = matter()
   // The first entry's job answers last, so the order is the entries', not the replies'.

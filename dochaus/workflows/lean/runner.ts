@@ -786,7 +786,8 @@ function roundPlanned(directory: string, state: LeanState, recorded: LeanStageSt
  * review still faults once the repair allowance is used up, withholdReviewedChanges), research withholds
  * findings it cannot verify (disclosed as research limitations), and package review
  * withholds delivery rows its check still refuses, or reads a missing delivery
- * list as none (the planned names stand);
+ * list as none (the planned names stand), and the spine keeps an entry figure
+ * none of its quotes states (recorded in the checker event);
  * any other fourth failed check stops the run with those issues. */
 async function runModelStage(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, prepared?: PreparedReview): Promise<StageRun> {
   const stage = stepStage(step) as ModelStageID
@@ -801,8 +802,10 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
     const asked = performance.now()
     const reply = await (index === 0 && prepared ? prepared.reply : deps.sessions.prompt({ directory, sessionID, agent, text }))
     const answered = performance.now()
-    // A spine that passes its check is split into atoms before spine.json is written.
-    const spine = stage === "spine" ? checkEvidenceReply(directory, stage, reply) : undefined
+    // A spine that passes its check is split into atoms before spine.json is
+    // written. On the last attempt an unquoted figure no longer fails it: the
+    // checker event records it.
+    const spine = stage === "spine" ? checkEvidenceReply(directory, stage, reply, { final: index >= LEAN_MAX_RETRIES }) : undefined
     const accepted = spine
       ? { issues: spine.issues, outputs: [], openItems: [] }
       : stage === "instructions"
@@ -814,7 +817,7 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
       : await acceptStageReply(directory, step, reply, { final: index >= LEAN_MAX_RETRIES })
     const timing = { wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) }
     progress({ attempts: index + 1, calls: index + 1, feedback: accepted.issues })
-    appendLeanEvent(directory, { stage, document, event: "checker", attempt: index, issues: accepted.issues, ...timing })
+    appendLeanEvent(directory, { stage, document, event: "checker", attempt: index, issues: [...accepted.issues, ...spine?.recorded ?? []], ...timing })
     if (spine?.value) accepted.outputs = await splitSpineEntries(directory, state, deps, spine.value, progress)
     if (!accepted.issues.length)
       return { status: (stage === "intake" || stage === "change-plan") && accepted.questions?.length ? "blocked" : "done", outputs: accepted.outputs, openItems: accepted.openItems, questions: accepted.questions,

@@ -191,8 +191,10 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // plan.json was re-pinned when whom the lawyer acts for gained its basis
 // (dochaus.lean.plan/2). The draft step was re-pinned when the outline
 // contract gained the statement form (statement-form-12). The spine was
-// re-pinned when its entries began to be split into atoms (spine-atoms-1) and
-// when a one-atom split began to read as atomic (spine-atoms-2).
+// re-pinned when its entries began to be split into atoms (spine-atoms-1),
+// when a one-atom split began to read as atomic (spine-atoms-2) and when its
+// checks began asking each figure of an entry or atom of its own quotes
+// (spine-atoms-3).
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", `  A (${ADOPTED_ANSWER}): Singapore law.`)
 // A draft keys its outline contract and plan entry, never answers.

@@ -2,7 +2,7 @@ import { normalize } from "../../lib/quote-verify"
 import { parseJsonObject } from "./change-checks"
 import { parallel } from "./checklist-flow"
 import { record } from "./checks"
-import { SPINE_KINDS } from "./evidence"
+import { figures, SPINE_KINDS, unquotedFigures } from "./evidence"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { OutputLimitError } from "./native-stage-result"
 import { retryPrompt, tagged } from "./prompts"
@@ -14,8 +14,9 @@ import { readLeanJson, shortHash, writeLeanText, type LeanStageState, type LeanS
 // job per entry asks whether the entry states one point or several and, if
 // several, splits it into atoms that each state one. Code checks every atom: a
 // kind from the spine's set, evidence and limitations taken by index from the
-// entry's own (so every quotation stays one the spine check verified), and no
-// figure, quoted passage or capitalised term the entry does not hold. An entry
+// entry's own (so every quotation stays one the spine check verified), a cited
+// quotation stating each figure the entry's quotations state, and no figure,
+// quoted passage or capitalised term the entry does not hold. An entry
 // that is already atomic, or whose job never passes, stays as it is. spine.json
 // holds the atoms in the entries' order. Each finished split is saved under its
 // entry's content, so a re-run of the step splits only entries not split before.
@@ -76,6 +77,8 @@ export function parseSpineSplit(reply: string, parent: SpineEntry): { issues: st
     if (parent.evidence.length && !evidence.length) own.push(`${at} cites no evidence; cite the index of the evidence that supports it.`)
     if (!parent.evidence.length && !limitations.length) own.push(`${at} has no evidence, so it must carry at least one limitation index.`)
     own.push(...added(row.detail, known).map(term => `${at} says ${JSON.stringify(term)}, which the entry does not; use only the entry's own words.`))
+    // A figure the entry's quotes state is stated by a quote the atom cites, as the spine check asks of the entry.
+    own.push(...unquotedFigures(row.detail, evidence.map(item => parent.evidence[item]!.quote)).filter(figure => !unquotedFigures(figure, parent.evidence.map(ref => ref.quote)).length).map(figure => `${at} states ${JSON.stringify(figure)}, which none of its evidence states; cite the index of the evidence that states it.`))
     evidence.forEach(item => used.evidence.add(item))
     limitations.forEach(item => used.limitations.add(item))
     issues.push(...own)
@@ -102,10 +105,6 @@ function indexes(values: unknown[], length: number, at: string, name: string, is
 // The entry's words: its detail, its quotations and its limitations.
 function entryText(entry: SpineEntry) {
   return normalize([entry.detail, ...entry.evidence.map(row => row.quote), ...entry.limitations].join("\n"))
-}
-
-function figures(text: string) {
-  return [...normalize(text).matchAll(/\d+(?:[.,]\d+)*/g)].map(match => match[0].replaceAll(",", ""))
 }
 
 /** What an atom's detail says that the entry's words do not, where code can

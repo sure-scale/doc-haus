@@ -2,15 +2,16 @@ import { afterEach, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { writeFileSync } from "node:fs"
 import path from "node:path"
-import { researchBasis } from "./stages"
+import { LEAN_MAX_RETRIES, researchBasis, stageOutputValid } from "./stages"
 import { researchPrompt } from "./research"
-import { acceptEvidenceReply, checkEvidence, evidencePrompt } from "./evidence"
+import { acceptEvidenceReply, checkEvidence, checkEvidenceReply, evidencePrompt } from "./evidence"
+import { readLeanEvents } from "./events"
 import { enqueueLeanRequest, drainLeanRequests } from "./requests"
 import { leanSteps } from "./plan"
-import { stageInputSha } from "./runner"
-import { answerQuestion, writeQuestions, writeLeanText } from "./state"
+import { runLean, stageInputSha } from "./runner"
+import { answerQuestion, readLeanJson, writeQuestions, writeLeanText } from "./state"
 import { writeInstructionsFile } from "./instructions"
-import { cleanupMatters, matter, SOURCE, SOURCE_TEXT } from "./test-support"
+import { AGENT, cleanupMatters, happyPath, matter, scriptedModel, SOURCE, SOURCE_TEXT } from "./test-support"
 
 afterEach(cleanupMatters)
 
@@ -114,6 +115,50 @@ test("spine is source-linked and followed by four independent reviews", () => {
   expect(evidencePrompt(directory, "spine")).toContain("future stages must retrieve underlying text")
 })
 
+
+// Each figure a spine entry states is stated by one of its own quotes,
+// compared as quotations are and without currency signs or separators.
+const PRICED = `${SOURCE_TEXT} The price is $4,800,000.`
+const priced = (detail: string, quotes: string[], extra: object = {}) =>
+  ({ entries: [{ kind: "fact", detail, evidence: quotes.map(quote => ({ source_id: SOURCE, quote })), limitations: [], ...extra }], limitations: [] })
+const UNQUOTED = 'entries[0] states "4,800,000", which none of its quotes states; quote the source words that state it.'
+
+test("a spine entry's figures are stated by its own quotes, however the currency sign and separators are written", () => {
+  const directory = matter(PRICED)
+  expect(checkEvidence(directory, "spine", priced("The price is 4,800,000.", ["Payment is due on delivery.", "The price is $4,800,000."]))).toEqual([])
+  expect(checkEvidence(directory, "spine", priced("The purchase price is $4,800,000.", ["4,800,000"]))).toEqual([])
+  expect(checkEvidence(directory, "spine", priced("The purchase price is 4800000.", ["The price is $4,800,000."]))).toEqual([])
+  expect(checkEvidence(directory, "spine", priced("State payment timing.", ["Payment is due on delivery."]))).toEqual([])
+  expect(checkEvidence(directory, "spine", priced("The purchase price is $4,800,000.", ["Payment is due on delivery.", "within thirty days of the order date"]))).toEqual([UNQUOTED])
+  // A part of a stated figure is not that figure.
+  expect(checkEvidence(directory, "spine", priced("The price is 4,800.", ["The price is $4,800,000."]))).toEqual(['entries[0] states "4,800", which none of its quotes states; quote the source words that state it.'])
+  // Only the spine's entries: a discrepancy entry is not held to it.
+  expect(checkEvidence(directory, "discrepancy", { ...priced("The price is $4,800,000.", ["Payment is due on delivery."], { material: false, status: "benign", resolution: "Distinct terms." }), gaps: [] })).toEqual([])
+})
+
+test("on the final attempt the spine stands with its unquoted figure recorded, and a saved spine stays valid", () => {
+  const directory = matter(PRICED)
+  const reply = JSON.stringify(priced("The purchase price is $4,800,000.", ["Payment is due on delivery."]))
+  expect(checkEvidenceReply(directory, "spine", reply)).toEqual({ issues: [UNQUOTED], recorded: [] })
+  const final = checkEvidenceReply(directory, "spine", reply, { final: true })
+  expect(final).toEqual({ issues: [], recorded: [UNQUOTED], value: JSON.parse(reply) })
+  // Any other issue still fails the final attempt.
+  expect(checkEvidenceReply(directory, "spine", JSON.stringify(priced("The price is $4,800,000.", ["Invented price"])), { final: true }).issues[0]).toContain("not found in that canonical source")
+  writeLeanText(directory, "spine.json", reply)
+  expect(stageOutputValid(directory, "spine")).toBe(true)
+})
+
+test("a spine that keeps an unquoted figure is retried with the figure named, then accepted on the final attempt", async () => {
+  const directory = matter(PRICED)
+  const model = scriptedModel({ ...happyPath, [AGENT.spine]: () => JSON.stringify(priced("The purchase price is $4,800,000.", ["Payment is due on delivery."])) })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  const spine = model.prompts.filter(prompt => prompt.agent === AGENT.spine)
+  expect(spine).toHaveLength(LEAN_MAX_RETRIES + 1)
+  for (const retry of spine.slice(1)) expect(retry.text).toContain(`- ${UNQUOTED}`)
+  const checks = readLeanEvents(directory).filter(event => event.stage === "spine" && event.event === "checker" && event.step === undefined)
+  expect(checks.map(event => [event.attempt, event.issues])).toEqual([0, 1, 2, 3].map(attempt => [attempt, [UNQUOTED]]))
+  expect((readLeanJson(directory, "spine.json") as { entries: { detail: string }[] }).entries.map(entry => entry.detail)).toEqual(["The purchase price is $4,800,000."])
+})
 
 test("user instruction evidence uses the canonical request identity and rejects handoff aliases", () => {
   const directory = matter()
