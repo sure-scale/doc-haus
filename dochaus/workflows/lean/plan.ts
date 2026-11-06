@@ -241,10 +241,11 @@ export function earlierDocuments(directory: string, id: DocID): PlannedDocument[
  * "Executed by:" line the parties who execute it, "none" for none), and
  * each "## " line under it is a part with the lines below as its scope note. A
  * "Left out:" line anywhere under a title records a template part left out on
- * purpose and why. A document's own line ("Form:", "File:" and the others
- * below) after its first part, and a "###" or deeper heading line, is read as
- * nothing and named as an issue: a line misplaced so must not pass silently as
- * scope text. Only mechanical defects are
+ * purpose and why. A "###" or deeper heading line is a scope line of the
+ * current part, its heading text kept. A document's own line ("Form:", "File:"
+ * and the others below) after its first part is read as nothing and named as
+ * an issue: a line misplaced so must not pass silently as scope text. Only
+ * mechanical defects are
  * issues; how many documents the request needs is the model's judgment. Every
  * defect is named in one pass; a shape defect (no title, a document without
  * parts, a repeated title or part heading) withholds the outline. A
@@ -302,9 +303,8 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
   const acting: string[] = []
   const memos: string[] = []
   const selectionIssues: string[] = []
-  // Lines the outline's shape does not read, named back as issues: the "###"
-  // lines in one, a document's late lines in one per document.
-  const deeper: string[] = []
+  // A document's own lines after its parts, which no document reads, named
+  // back in one issue per document.
   const late: { title: string; line: string }[] = []
   for (const raw of reply.split(/\r?\n/)) {
     const line = raw.trim()
@@ -339,8 +339,12 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
     const pageNumbers = /^page\s+numbers\s*:\s*(.*)$/i.exec(unmarked)?.[1]
     const playbook = /^[-*]?\s*playbook review\s*:\s*(.+)$/i.exec(line)?.[1]
     const displayHeading = /^display heading\s*:\s*(.*)$/i.exec(line)?.[1]
-    if (/^#{3,}\s*\S/.test(line)) {
-      deeper.push(line)
+    // A "###" or deeper heading writes a sub-part's name: it is scope text of
+    // the current part, as a plain line under it would be.
+    const sub = /^#{3,}(?!#)\s*(.*)$/.exec(line)?.[1]
+    if (sub !== undefined) {
+      const text = headingText(sub)
+      if (text && current) (current.parts.at(-1)?.scope ?? current.purpose).push(text)
       continue
     }
     // A document's own line after its first part belongs to no document: read
@@ -426,7 +430,6 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
   const furniture = documents.map(document => documentFurniture(plainTitle(document.title), document.furniture, request))
   const issues = [
     ...shapeIssues,
-    ...(deeper.length ? [deeperIssue(deeper)] : []),
     ...lateIssues(late),
     ...(!acting.length ? [ACTING_FOR_MISSING] : ungrounded ? [actingForUngrounded(party)] : []),
     ...documents.flatMap((document, index) => forms[index] ? [] : [formIssue(plainTitle(document.title), document.form)]),
@@ -518,13 +521,6 @@ export function plainFileName(file: string) {
 /** Begins every misplaced-line issue: the order the outline's shape reads. */
 const DOCUMENT_ORDER = 'Begin each document with its own "# " title line, then its lines such as "Form:" and "File:", then its "## " parts.'
 const quotedLines = (lines: string[]) => lines.map(line => `"${line}"`).join(", ")
-
-/** "###" or deeper heading lines, which no outline level reads. */
-function deeperIssue(lines: string[]) {
-  return lines.length === 1
-    ? `The line ${quotedLines(lines)} is a "###" heading, which an outline does not use. ${DOCUMENT_ORDER}`
-    : `The lines ${quotedLines(lines)} are "###" headings, which an outline does not use. ${DOCUMENT_ORDER}`
-}
 
 /** A document's own lines written after a document's first part, one issue per document. */
 function lateIssues(rows: { title: string; line: string }[]) {

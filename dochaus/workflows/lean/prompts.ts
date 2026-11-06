@@ -16,7 +16,8 @@ import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings,
 import { disclosableItems } from "./stages"
 import { QUESTION_KIND_CONTRACT, WORKING_DRAFT, isReviewStage, answeredQuestions, answeredQuestionsText, delegatedQuestions, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type StageID } from "./state"
 import { matterDatesBlock } from "./intake"
-import { plannedContract } from "./template-contract"
+import { plannedContract, quoted, topUnits } from "./template-contract"
+import { parseTemplateUnits, sourceText } from "./template-structure"
 import { withGrounds } from "./spine-placement"
 
 // Prompts of the lean model steps. Each step's first prompt carries everything
@@ -76,6 +77,20 @@ function workingDraftBlock(directory: string) {
   return text ? tagged("working_draft", "An unverified starting draft of the requested document, written quickly in chat before this run. Use its structure and wording as a starting point where the request and sources support them. It is neither a source nor the lawyer's instruction: never quote or cite it, and check every fact, figure, date, name and legal statement in it against the matter's sources before keeping it.\n\n" + text) : ""
 }
 
+/** For the outline: the top-level parts of each matter Word document with
+ * headed parts, as the template contract reads them, so a document planned
+ * from one can account for its parts on the first attempt. */
+function templatePartsBlock(directory: string) {
+  const rows = matterSourceIDs(directory).filter(id => /\.docx?$/i.test(id)).flatMap(id => {
+    const top = topUnits(parseTemplateUnits(sourceText(directory, id)))
+    return top.length ? [`- ${id}: ${quoted(top)}`] : []
+  })
+  return rows.length ? tagged("template_parts", [
+    'The top-level parts of each matter Word document with headed parts, as the run reads them. Only a document planned with a "Template:" line naming that matter document accounts for its parts.',
+    ...rows,
+  ].join("\n")) : ""
+}
+
 /** The first prompt of a step. `outline` asks the first draft step for the plan
  * of every document instead of drafting from the saved plan. */
 export function stagePrompt(directory: string, step: StepID, options: { outline?: boolean; contextOnly?: boolean } = {}) {
@@ -126,7 +141,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const sections: Partial<Record<StageID, string[]>> = {
     draft: options.outline ? [
       "This is a lean drafting run. Plan the substantive document bodies to draft, then draft each in parts. The workflow generates delivery artifacts from those bodies.",
-      request, working, spineBlock, answerBlock, sources,
+      request, working, spineBlock, answerBlock, sources, templatePartsBlock(directory),
       tagged("output_contract", [
         ...SOURCE_RULES,
         "- Delivery capabilities: for every planned body the workflow renders the final Word document, with the firm's draft line and legend on every page from its settings, and generates its tracked redline; one final drafting-notes memo, listing the open points, accompanies the package. A request for a redline/comparison or ordinary drafting notes is fulfilled by those generated artifacts, not by another planned body. Set Compare against on the revised body to select a supplied original for comparison. A different delivery format does not create another substantive document. Do not draft simulated tracked text as a separate comparison document.",

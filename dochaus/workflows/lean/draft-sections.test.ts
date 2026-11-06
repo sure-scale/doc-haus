@@ -415,19 +415,23 @@ describe("sectioned draft stage", () => {
   describe("misplaced lines", () => {
     const ORDER = 'Begin each document with its own "# " title line, then its lines such as "Form:" and "File:", then its "## " parts.'
 
-    test("an outline whose levels are shifted is named in one pass: the parts it lacks, its \"###\" lines, its file-name title and its missing form", () => {
+    test("an outline whose levels are shifted is named in one pass: the parts it lacks, its file-name title and its missing form", () => {
       const shifted = parsePlan("Acting for: not stated\n# Outline\n## Supply note\n# supply-note.docx\nForm: other\n### Delivery\nThe delivery.\n### Price")
       expect(shifted.value).toBeUndefined()
       expect(shifted.issues).toEqual([
         'The document "supply-note.docx" lists no parts. Add one "## " line per top-level part of that document, in order.',
-        `The lines "### Delivery", "### Price" are "###" headings, which an outline does not use. ${ORDER}`,
         expect.stringContaining('The document "Outline" has no "Form:" line.'),
         expect.stringContaining('The title "supply-note.docx" carries a file name.'),
       ])
-      // One "###" line is named alone; the outline otherwise stands, the line read as nothing.
-      const deeper = parsePlan("Acting for: not stated\n# Supply note\nForm: other\n## Delivery\n#### Timing\nWithin a week.")
-      expect(deeper.issues).toEqual([`The line "#### Timing" is a "###" heading, which an outline does not use. ${ORDER}`])
-      expect(deeper.value?.documents[0]?.parts).toEqual([{ heading: "Delivery", scope: "Within a week.", display_heading: "" }])
+    })
+
+    test("a \"###\" or deeper line is scope text of the current part, its heading text kept, with no issue", () => {
+      const deeper = parsePlan("Acting for: not stated\n# Supply note\nForm: other\n## Delivery\n#### Timing ####\nWithin a week.\n## Price\n### Payment\n#### \n")
+      expect(deeper.issues).toEqual([])
+      expect(deeper.value?.documents[0]?.parts).toEqual([
+        { heading: "Delivery", scope: "Timing Within a week.", display_heading: "" },
+        { heading: "Price", scope: "Payment", display_heading: "" },
+      ])
     })
 
     test("a document's own lines after its parts are named, per document, and read neither as its lines nor as scope", () => {
