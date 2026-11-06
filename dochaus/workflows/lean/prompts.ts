@@ -38,6 +38,7 @@ const TEMPLATE_FOCUS = "The template's positions are the provisions its text car
 
 const SOURCE_RULES = [
   "- Read the sources you rely on with search-document or read-document. State only what the request or the sources support: do not invent facts, figures or dates about the parties or the matter, commercial or strategic decisions, or authorities.",
+  "- The document speaks to its reader in its author's voice. The request, the instructions, the entries a part rests on and a part's scope speak to you: do what they direct, say to the reader what they direct the document to say, and never write a direction to you as document text.",
   "- Quote a source only word for word, written as \"exact words\" [source: document name or approved source URL].",
   "- A source recommendation is a proposed negotiating position, not an agreed term. When the request calls for proposals, draft the source-supported recommendation, mark it in its paragraph with a visible [open item: confirm proposed ...] marker and explain its consequence; absence of client approval alone does not require withholding it. Preserve any genuinely unresolved commercial choice visibly. Never describe a proposal as agreed or externally verified.",
   "- For each gap, ask whether the lawyer would fill it with information or with a preference.",

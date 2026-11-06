@@ -208,7 +208,8 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // for, to read deeper headings as scope, to adopt a lone advice document as
 // the memo and never to fold advice (outline-one-pass-reverse-20), and when a
 // rejected memo name began to be renamed rather than dropped
-// (outline-one-pass-reverse-21).
+// (outline-one-pass-reverse-21), and when the writer was told that its
+// directions speak to it, never to the reader (outline-one-pass-reverse-22).
 // The spine was re-pinned when its entries
 // began to be split into atoms (spine-atoms-1), when a one-atom split began to
 // read as atomic (spine-atoms-2), when its checks began asking each figure of
@@ -221,7 +222,8 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // dotted number after a reference label as a figure (spine-atoms-6), and when
 // its absence check began to skip open items, to run on every shaped attempt
 // and to record only on the last, and a figure stopped being a bare run of
-// digits (spine-atoms-7).
+// digits (spine-atoms-7), and when a requirement began to record a working
+// direction by its effect on the document (spine-atoms-8).
 // Finalize was re-pinned when each open item began with the marker the notes
 // copy (lawyer-facing-notes-plain-refs-4).
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
@@ -235,8 +237,8 @@ const INPUTS: Record<string, string> = {
   "research": "64a0d22c3dd780907955b2e56b3122b94ea72101092d694f899a15e2af0cb13b",
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
   "acts": "ff830f3d37f64416362401fa66710c9fc8e770429b6bc5f2af84baffd3f35a3c",
-  "spine": "7719311d661486872e589bf29d615b4ffc5893a39fb4ab7694ff3ae6f16cecef",
-  "d1.draft": "8948146029a191a4a9a7b2e8cccd0cd5a92979bafbfc0e22d66d0961c49647d8",
+  "spine": "1cb83eb48110987631958a74011061658e9a79105928c84b5f81364a3da4c8ac",
+  "d1.draft": "3638b07e04e737b3aaa285cb463cea0b27e8d2b6ec8abd5b68b80aac4f168c06",
   "d1.review": "23af042296cf7f7d3ee97332f0caaf1fac7ab240199ce23d96a33f9c65fc2693",
   "d1.review-independent": "ae78dbf15aa677be04d6d44d0b91d63c34fd2fa03754e51350a6941413143d70",
   "d1.review-wording": "da1716d02cfb2df4b1f9fe71ceec32c3ffe41e66070f508a765ef7aa81e3792a",
@@ -289,8 +291,9 @@ const LAW = "Which law should govern the supply note?"
 const spine = (...entries: object[]) => ({ entries, limitations: [] })
 const FACT = { kind: "fact", detail: "Delivery is within thirty days.", evidence: SUPPORT, limitations: [] }
 // Pinned on the code before hand-backs reached the spine; re-pinned when the
-// spine began carrying unsettled discrepancy gaps as open items.
-const SPINE_PROMPT = "495828d2f70b3dc96d2e5f1584315afdd678f845afd3382b77ff3236cf97ea36"
+// spine began carrying unsettled discrepancy gaps as open items, and when a
+// requirement began to record a working direction by its effect.
+const SPINE_PROMPT = "9161578720b30f1fff38d8c59e52fd9717fdba574476d8260c379a1fa7f993b7"
 
 function spineMatter(late: "open" | "answered" | "adopted") {
   const directory = matter()
