@@ -4,7 +4,6 @@ import path from "node:path"
 import { LEAN_ACTS_SCHEMA, type ActRecord } from "./act-record"
 import { checkDraftingNotes } from "./checks"
 import { selectedDeliveryPlan } from "./delivery-selection"
-import { PLAN_COVERAGE_REVISIONS } from "./draft-sections"
 import { finalGate, type GateResult } from "./gate"
 import { PACKAGE_SCOPE_QUESTION } from "./package-scope"
 import { LEAN_COVERAGE_SCHEMA, coverageCarries, coveragePlanHash, coverageScopeQuestion, planCoverageCurrent, planCoverageIssues, readLeanCoverage, type CoverageAct, type LeanCoverage } from "./package-coverage"
@@ -546,8 +545,8 @@ describe("plan coverage open items through the run", () => {
     const model = scriptedModel(named())
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
     expect(readLeanPlan(directory)!.documents[0]).toMatchObject({ file: "release-letter.docx", deliverable: "body" })
-    // The answer re-plans once (an outline and its revisions); the renaming asks for no further check.
-    expect(model.count(AGENT.coverage)).toBe(PLAN_COVERAGE_REVISIONS + 1)
+    // The answer re-plans once (one outline: the act it settled is sent back for no revision); the renaming asks for no further check.
+    expect(model.count(AGENT.coverage)).toBe(1)
     const items = coverageItems(directory)
     expect(items).toEqual([expect.objectContaining({ detail: expect.stringContaining(question!.id) })])
     expect((readLeanJson(directory, "gate.json") as GateResult).disclosed).toContainEqual(expect.objectContaining({ id: items[0]!.id, status: "disclosed" }))

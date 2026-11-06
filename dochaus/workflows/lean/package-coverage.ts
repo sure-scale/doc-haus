@@ -700,6 +700,21 @@ export function coverageScopeQuestion(acts: CoverageAct[], documents: PlannedDoc
   }
 }
 
+/** The plan's coverage `issues` (planCoverageIssues of `acts`) an outline
+ * revision is asked to settle: all but those of acts one of the `answered`
+ * package-scope questions settled, read as the plan step's question reads them
+ * (actScopeAnswers), since a revision never overrides the lawyer's answer. An
+ * issue another act still raises stays. The record keeps every issue, so
+ * coverageItems still discloses a settled act as uncovered. */
+export function revisionCoverageIssues(issues: string[], acts: CoverageAct[], documents: PlannedDocument[], answered: Question[]) {
+  const open = acts.filter(act => !act.excluded_by && actIssues(act, documents, acts).length)
+  const settled = actScopeAnswers(open, answered, acts)
+  const issuesOf = (rows: CoverageAct[]) => new Set(rows.flatMap(act => actIssues(act, documents, acts)))
+  const dropped = issuesOf(open.filter(act => settled.by(act).length))
+  const kept = issuesOf(acts.filter(act => !open.includes(act) || !settled.by(act).length))
+  return issues.filter(issue => !dropped.has(issue) || kept.has(issue))
+}
+
 /** Where a document carrying the plan step's uncovered acts goes when the
  * request names one file: in that file, as a separate instrument the file's
  * one body holds, under its own heading and executed by those parties

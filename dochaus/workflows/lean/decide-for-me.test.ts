@@ -194,7 +194,11 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // outline began naming every defect in one pass and planning a requested file
 // that holds no planned document, and each planned part began to be placed
 // from its own side too and to read each entry's limitations
-// (outline-one-pass-reverse-18). The spine was re-pinned when its entries
+// (outline-one-pass-reverse-18), and when a template's restated title stopped
+// counting as a part, a memo named only by a requested file name or only by a
+// planned memo's title began to stand, and acts an answered scope question
+// settled stopped being sent back for revision (outline-one-pass-reverse-19).
+// The spine was re-pinned when its entries
 // began to be split into atoms (spine-atoms-1), when a one-atom split began to
 // read as atomic (spine-atoms-2), when its checks began asking each figure of
 // an entry or atom of its own quotes (spine-atoms-3), and when spine.json began
@@ -214,7 +218,7 @@ const INPUTS: Record<string, string> = {
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
   "acts": "ff830f3d37f64416362401fa66710c9fc8e770429b6bc5f2af84baffd3f35a3c",
   "spine": "c863ba664639c6debfecd74cd86481a53c64ccdad550d37adacc96c4eb0e630f",
-  "d1.draft": "089f1b416898560df5252cd533b70717d73b57a09658fc3394b712fba2d07dd0",
+  "d1.draft": "6893cde874f1d5701164ae1a0c6e7bdaceeb8bb0549142d13cc5796001d77991",
   "d1.review": "23af042296cf7f7d3ee97332f0caaf1fac7ab240199ce23d96a33f9c65fc2693",
   "d1.review-independent": "ae78dbf15aa677be04d6d44d0b91d63c34fd2fa03754e51350a6941413143d70",
   "d1.review-wording": "da1716d02cfb2df4b1f9fe71ceec32c3ffe41e66070f508a765ef7aa81e3792a",

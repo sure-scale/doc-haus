@@ -7,7 +7,7 @@ import { TOOL_SYNTAX_ISSUE, checkDraft, printedToolCall, readParagraphs } from "
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { matterSourceIDs } from "./quotes"
 import {
-  LEAN_COVERAGE_SCHEMA, coveragePlacementPrompt, coveragePlanHash, coverageScopeQuestion, foldedCoverage, parseCoveragePlacement, planCoverageCurrent, planCoverageIssues, recordedActs, separateFileChosen,
+  LEAN_COVERAGE_SCHEMA, coveragePlacementPrompt, coveragePlanHash, coverageScopeQuestion, foldedCoverage, parseCoveragePlacement, planCoverageCurrent, planCoverageIssues, recordedActs, revisionCoverageIssues, separateFileChosen,
   type CoverageAct, type InstructedAct, type LeanCoverage,
 } from "./package-coverage"
 import { answeredScopeQuestion, openScopeQuestion } from "./package-scope"
@@ -66,7 +66,7 @@ import {
 // stops, blocked on one package-scope question for the lawyer about those acts
 // only; the answer joins the outline basis, so the plan is drawn up again with
 // it. An act an answered question showed is saved as uncovered and disclosed,
-// never asked about again. While the gate's
+// never asked about again nor sent back for a revision. While the gate's
 // package-scope question is open, the step asks none of its own: it saves the
 // plan, the act is disclosed, and the open question stays the one to answer. A
 // coverage reply that never passed its check (unchecked) does not stop the step,
@@ -117,7 +117,8 @@ export type DraftStageRun =
   | { status: "failed"; reason: string }
 
 type Checked<T> = { issues: string[]; value?: T }
-type Coverage = { acts?: CoverageAct[]; issues: string[] }
+// `feedback` is the issues an outline revision is asked to settle (revisionCoverageIssues).
+type Coverage = { acts?: CoverageAct[]; issues: string[]; feedback?: string[] }
 
 /** Revised outlines the coverage job's issues may ask for before the plan is saved. */
 export const PLAN_COVERAGE_REVISIONS = 2
@@ -190,17 +191,24 @@ export async function runDraftStage(
   // The placement job reads the plan in a fresh session of its own for each
   // plan it checks, so the outline's reasoning does not steer it; with no act
   // listed it is not asked. Errors from the session calls, including a pause or
-  // restart, propagate and leave the plan unwritten.
+  // restart, propagate and leave the plan unwritten. The issues of an act an
+  // answered package-scope question settled are recorded but never sent back
+  // as revision feedback.
   const covering = async (documents: PlannedDocument[]): Promise<Coverage> => {
     const listed = listing()
     if (!listed.value) return { issues: listed.issues }
     const acts = listed.value
-    if (!acts.length) return { acts: [], issues: planCoverageIssues([], documents, directory) }
+    if (!acts.length) {
+      const issues = planCoverageIssues([], documents, directory)
+      return { acts: [], issues, feedback: issues }
+    }
     const coverageAgent = LEAN_STAGE_AGENTS.coverage
     const id = await coverageSession(coverageAgent, "coverage")
     const checked = await exchange({ id, agent: coverageAgent })("coverage", coveragePlacementPrompt(directory, documents, acts),
       (reply, final) => parseCoveragePlacement(reply, directory, documents, acts, { final }))
-    return checked.value ? { acts: checked.value, issues: planCoverageIssues(checked.value, documents, directory) } : { issues: checked.issues }
+    if (!checked.value) return { issues: checked.issues }
+    const issues = planCoverageIssues(checked.value, documents, directory)
+    return { acts: checked.value, issues, feedback: revisionCoverageIssues(issues, checked.value, documents, readQuestions(directory).filter(answeredScopeQuestion)) }
   }
   const writeCoverage = (documents: PlannedDocument[], actingFor: ActingFor | undefined, coverage: Coverage) => {
     const record: LeanCoverage = {
@@ -379,11 +387,11 @@ export async function runDraftStage(
     let value = outline.value ?? best.value
     if (!value) return failed("outline", outline.issues)
     let coverage = await covering(withDocumentIDs(value.documents))
-    // The coverage issues go back to the outline session as a revision request;
-    // a revision that yields no usable outline keeps the last one.
-    for (let revision = 1; coverage.acts && coverage.issues.length && revision <= PLAN_COVERAGE_REVISIONS; revision++) {
+    // The coverage feedback goes back to the outline session as a revision
+    // request; a revision that yields no usable outline keeps the last one.
+    for (let revision = 1, feedback = coverage.feedback ?? []; feedback.length && revision <= PLAN_COVERAGE_REVISIONS; revision++, feedback = coverage.feedback ?? []) {
       delete best.value
-      const revised = await ask<LeanOutline>(`outline revision ${revision}/${PLAN_COVERAGE_REVISIONS}`, retryPrompt("draft", coverage.issues), checkOutline, 0, coverage.issues)
+      const revised = await ask<LeanOutline>(`outline revision ${revision}/${PLAN_COVERAGE_REVISIONS}`, retryPrompt("draft", feedback), checkOutline, 0, feedback)
       const next = revised.value ?? best.value
       if (!next) continue
       value = next

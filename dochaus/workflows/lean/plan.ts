@@ -377,8 +377,15 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
   }
   const titles = duplicates(documents.map(document => document.title))
   // A memo planned without parts takes the skeleton, so it may list none.
-  const memo = outlineMemo(memos[0], request)
-  const named = memo.name ? documents.filter(document => repeatsMemo(plainTitle(document.title), memo.name!)) : []
+  const lined = outlineMemo(memos[0], request)
+  // With no Memo line standing, the one document titled a memo and planned as
+  // advice, when no other document is advice, is the memo, named by its title.
+  // A memorandum planned in another form (one of understanding, say) is not.
+  const titled = lined.name ? [] : documents.filter(document => titledMemo(plainTitle(document.title)))
+  const advice = documents.filter(document => documentForm(document.form) === "advice")
+  const lone = titled.length === 1 && advice.length === 1 && advice[0] === titled[0] ? titled[0] : undefined
+  const memo = lone ? { name: plainTitle(lone.title), issues: lined.issues } : lined
+  const named = lone ? [lone] : memo.name ? documents.filter(document => repeatsMemo(plainTitle(document.title), memo.name!)) : []
   // With no title naming the memo, the last attempt adopts the one document
   // planned as advice or titled a memo before adding the memo as its own.
   const adoptable = memo.name && !named.length ? documents.filter(document => documentForm(document.form) === "advice" || titledMemo(plainTitle(document.title))) : []
@@ -568,7 +575,8 @@ function requestedFile(title: string, file: string | undefined, request: string 
 }
 
 /** A "Memo:" line's name, kept only when it is words the request uses and can
- * be part of a file name. List markers, bold and code marks, wrapping quotes,
+ * be part of a file name. A file name the request gives counts as its words,
+ * its hyphens and underscores as spaces ("cover-memo.docx" uses "cover memo"). List markers, bold and code marks, wrapping quotes,
  * trailing full stops and one leading article are not part of the name; only a
  * value that is wholly a non-answer is no memo. */
 function outlineMemo(line: string | undefined, request: string | undefined): { name?: string; issues: string[] } {
@@ -577,7 +585,7 @@ function outlineMemo(line: string | undefined, request: string | undefined): { n
   if (!name || MEMO_NON_ANSWER.test(name)) return { issues: [] }
   if (FILE_NAME_FORBIDDEN.test(name) || FILE_IN_TITLE.test(name) || name.length > MEMO_NAME_MAX)
     return { issues: [`The "Memo:" line gives "${name}", which cannot be part of a file name. Name the memo in a few of the request's own words, without a folder, file extension, Markdown or any of \\ / : * ? " < > |.`] }
-  if (request !== undefined && !namedIn(request, name))
+  if (request !== undefined && !namedIn(request, name) && !namedIn(request.replace(/[-_]+/g, " "), name))
     return { issues: [`The "Memo:" line names "${name}", but the request does not use those words. Write a "Memo:" line only when the request asks for a memo or note to accompany the documents, naming it in the request's own words; otherwise leave the line out.`] }
   return { name, issues: [] }
 }

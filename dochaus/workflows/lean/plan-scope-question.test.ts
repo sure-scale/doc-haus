@@ -181,10 +181,11 @@ describe("the plan step's package-scope question", () => {
 
     const answered = scriptedModel(replies())
     expect((await runLean(directory, { sessions: answered.port })).status).toBe("completed")
-    // The outline is asked again, with the answer, and its coverage checked again.
+    // The outline is asked again, with the answer, and its coverage checked again;
+    // the act the answer settled is never sent back for a revision.
     const outline = answered.prompts.find(prompt => prompt.agent === AGENT.draft)!
     expect(outline.text).toContain(ANSWER)
-    expect(revisions(answered)).toHaveLength(PLAN_COVERAGE_REVISIONS)
+    expect(revisions(answered)).toEqual([])
     expect(readLeanPlan(directory)).toMatchObject({ basis: outlineBasis(directory), documents: [expect.objectContaining({ title: "Release letter" })] })
     expect(readLeanCoverage(directory)).toMatchObject({ status: "uncovered", acts: [act] })
     expect(planCoverageCurrent(directory)).toBe(true)

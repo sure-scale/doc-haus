@@ -230,16 +230,29 @@ describe("plan coverage at the outline step", () => {
   // Without an answered package-scope question that showed the act the step
   // stops instead (plan-scope-question.test.ts); once one that showed it is
   // answered it saves the plan.
-  test("once a package-scope question that showed the act is answered, issues left after the allowed revisions are recorded as uncovered and the last plan is saved", async () => {
+  test("once a package-scope question that showed the act is answered, its issue is never sent back for a revision: it is recorded as uncovered and the plan is saved", async () => {
     const { directory, state } = prepared()
     writeQuestions(directory, [{ id: `${PACKAGE_SCOPE_QUESTION}earlier`, stage: "draft", question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in d1 "Release letter", executed by "Kestrel Works".`, context: "", status: "answered", answer: "The release letter only." }])
     const model = scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => ACTS) })
     expect((await run(directory, state, model)).status).toBe("done")
 
-    expect(revisions(model)).toHaveLength(PLAN_COVERAGE_REVISIONS)
-    expect(coverageSessions(model)).toHaveLength(PLAN_COVERAGE_REVISIONS + 1)
+    expect(revisions(model)).toEqual([])
+    expect(coverageSessions(model)).toHaveLength(1)
     expect(readLeanCoverage(directory)).toMatchObject({ status: "uncovered", acts: [act], issues: [expect.stringContaining(MISPLACED)] })
     expect(readLeanPlan(directory)!.documents.map(row => row.title)).toEqual(["Release letter"])
+
+    // An act no answer settled still goes back for the allowed revisions beside it.
+    const released = { act: "release the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works"] }
+    const both = prepared([act, released])
+    writeQuestions(both.directory, readQuestions(directory))
+    const unplaced = scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => JSON.stringify({ acts: [act, { ...released, document: null }] })) })
+    expect((await run(both.directory, both.state, unplaced)).status).toBe("blocked")
+    expect(revisions(unplaced)).toHaveLength(PLAN_COVERAGE_REVISIONS)
+    for (const revision of revisions(unplaced)) {
+      expect(revision.text).toContain('"release the deposit"')
+      expect(revision.text).not.toContain(MISPLACED)
+    }
+    expect(readLeanCoverage(both.directory)).toMatchObject({ status: "uncovered", issues: [expect.stringContaining(MISPLACED), expect.stringContaining('"release the deposit"')] })
 
     // An answered question that showed no act settles none: the step stops on one about it.
     const other = prepared()

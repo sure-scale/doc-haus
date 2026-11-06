@@ -63,6 +63,33 @@ describe("where the feedback places a template part", () => {
     expect(shown).toContain("prints its \"## \" labels as its headings, so name each in the scope line of the part that carries it, never in the label")
     expect(shown).toContain('add a line "Left out:')
   })
+
+  test("a cover block's restated title is the title, not a part the outline must account for", () => {
+    const template = [
+      "CONSULTANCY AGREEMENT",
+      "Between the client and the consultant named below, dated the day both of them sign it.",
+      "CONSULTANCY AGREEMENT",
+      "This agreement is made between the client and the consultant named on the cover page, who agree as follows.",
+      "1. Consultancy\nThe consultant shall provide the advice described in the brief and deliver a written report at the end of each stage.",
+      "2. Charges\nThe client shall pay the day rate set out in the brief for each day worked, invoiced monthly in arrears.",
+    ].join("\n\n")
+    const built = contractOf(template, ["# Consultancy agreement", "## 1. Consultancy", "## 2. Charges"].join("\n"), "consultancy.docx")
+    expect(built.contract.units.filter(unit => unit.title).map(unit => unit.label)).toEqual(["CONSULTANCY AGREEMENT", "CONSULTANCY AGREEMENT"])
+    expect(built.contract.unaccounted).toEqual([])
+    expect(outlineCoverageIssues(built.directory, built.documents)).toEqual([])
+  })
+
+  test("every part the outline does not account for is named, however many there are", () => {
+    const names = ["Definitions", "Services", "Charges", "Payment", "Credits", "Duration", "Termination", "Confidentiality",
+      "Liability", "Insurance", "Notices", "Assignment", "Variation", "Waiver", "Severance", "Disputes"]
+    const template = ["SUPPLY AGREEMENT", ...names.map((name, at) =>
+      `${at + 1}. ${name}\nThe parties agree that the ${name.toLowerCase()} terms set out in this clause apply for the whole term.`)].join("\n\n")
+    const built = contractOf(template, ["# Supply agreement", "## Signatures"].join("\n"), "supply.docx")
+    expect(built.contract.unaccounted).toHaveLength(names.length)
+    const [issue] = outlineCoverageIssues(built.directory, built.documents)
+    for (const [at, name] of names.entries()) expect(issue).toContain(`"${at + 1} ${name}"`)
+    expect(issue).not.toContain(" more.")
+  })
 })
 
 function pair(built: ReturnType<typeof contractOf>) {
