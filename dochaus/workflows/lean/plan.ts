@@ -290,8 +290,8 @@ export function earlierDocuments(directory: string, id: DocID): PlannedDocument[
  * attempt, of several, the one planned as advice, else the last, is the memo;
  * of none, the one document planned as advice or titled a memo, if only one
  * is, else the memo is added as its own document. With no Memo line standing,
- * the one document planned as advice, when no other is, is the memo whatever
- * its title.
+ * the one document planned as advice, when no other is and another document is
+ * planned, is the memo whatever its title: a memo accompanies something.
  * "Deliverable: combined" puts one document and that memo in one file: it needs
  * the memo, goes under a document other than the memo, and only one document
  * may have it; otherwise it is retry feedback and, on the last attempt, the
@@ -385,10 +385,11 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
   // A memo planned without parts takes the skeleton, so it may list none.
   const lined = outlineMemo(memos[0], request)
   // With no Memo line standing, the one document planned as advice, when no
-  // other is, is the memo whatever its title, named by its title. Only the
-  // internal advice form is adopted: an advice letter is not.
+  // other is and it is not the only document, is the memo whatever its title,
+  // named by its title: a memo accompanies something. Only the internal advice
+  // form is adopted: an advice letter is not.
   const advice = lined.name ? [] : documents.filter(document => documentForm(document.form) === "advice")
-  const lone = advice.length === 1 ? advice[0] : undefined
+  const lone = advice.length === 1 && documents.length > 1 ? advice[0] : undefined
   const memo = lone ? { name: plainTitle(lone.title), issues: lined.issues } : lined
   const named = lone ? [lone] : memo.name ? documents.filter(document => repeatsMemo(plainTitle(document.title), memo.name!)) : []
   // With no title naming the memo, the last attempt adopts the one document
