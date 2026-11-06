@@ -84,6 +84,9 @@ export function scriptedModel(replies: Record<string, Reply>) {
         [AGENT.spine]: () => JSON.stringify({ entries: [], limitations: [] }),
         // Every spine entry already states one point.
         [AGENT.split]: () => JSON.stringify({ atomic: true }),
+        // No spine entry says the sources do not record something, and any claim checked stands.
+        [AGENT.absence]: () => JSON.stringify({ claims: [] }),
+        [AGENT["absence-verify"]]: () => JSON.stringify({ verdict: "stands" }),
         [AGENT["review-independent"]]: () => NO_FINDINGS,
         [AGENT["review-wording"]]: () => NO_FINDINGS,
         [AGENT["review-client-disadvantage"]]: () => NO_FINDINGS,

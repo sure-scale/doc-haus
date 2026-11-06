@@ -23,6 +23,7 @@ import { packageReviewPrompt, readPackageReview, recordPackageFindings } from ".
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, repairedChecklistItems, startRepairRound, startUnverifiedRepairRound } from "./repairs"
 import { acceptEvidenceReply, checkEvidenceReply, evidencePrompt } from "./evidence"
 import { splitSpineEntries } from "./spine-split"
+import { checkAbsenceClaims } from "./spine-absence"
 import { checkAdoptedAgainstResearch } from "./research-check"
 import { researchPermissions, acceptResearchReply, researchPrompt, startResearchGapRound } from "./research"
 import { runApply, writeProjectedNumbers } from "./apply-stage"
@@ -787,7 +788,8 @@ function roundPlanned(directory: string, state: LeanState, recorded: LeanStageSt
  * findings it cannot verify (disclosed as research limitations), and package review
  * withholds delivery rows its check still refuses, or reads a missing delivery
  * list as none (the planned names stand), and the spine keeps an entry figure
- * none of its quotes states (recorded in the checker event);
+ * none of its quotes states, or an absence claim a source contradicts (both
+ * recorded in the checker event, the claim also as an open item);
  * any other fourth failed check stops the run with those issues. */
 async function runModelStage(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, prepared?: PreparedReview): Promise<StageRun> {
   const stage = stepStage(step) as ModelStageID
@@ -797,17 +799,26 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
     directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, step), model: state.model, permissions: stage === "research" ? researchPermissions : LEAN_CHILD_PERMISSIONS,
   })
   progress({ session_id: sessionID })
+  // The spine's absence and split jobs each report their own sessions; the step lists them all.
+  const jobSessions = new Set<string>()
+  const jobProgress: Progress = patch => {
+    patch.session_ids?.forEach(id => jobSessions.add(id))
+    progress(patch.session_ids ? { ...patch, session_ids: [...jobSessions] } : patch)
+  }
   const attempt = async (index: number, text: string): Promise<StageRun> => {
     appendLeanEvent(directory, { stage, document, event: index ? "retry" : "model_call", attempt: index, session_id: sessionID })
     const asked = performance.now()
     const reply = await (index === 0 && prepared ? prepared.reply : deps.sessions.prompt({ directory, sessionID, agent, text }))
     const answered = performance.now()
-    // A spine that passes its check is split into atoms before spine.json is
-    // written. On the last attempt an unquoted figure no longer fails it: the
-    // checker event records it.
+    // A spine that passes its check has its parent entries' absence claims
+    // verified against the sources (spine-absence.ts), and is then split into
+    // atoms before spine.json is written. On the last attempt an unquoted
+    // figure or a contradicted claim no longer fails it: the checker event
+    // records it, and a contradicted claim is also an open item.
     const spine = stage === "spine" ? checkEvidenceReply(directory, stage, reply, { final: index >= LEAN_MAX_RETRIES }) : undefined
+    const absence = spine?.value ? await checkAbsenceClaims(directory, state, deps, spine.value, { final: index >= LEAN_MAX_RETRIES }, jobProgress) : undefined
     const accepted = spine
-      ? { issues: spine.issues, outputs: [], openItems: [] }
+      ? { issues: [...spine.issues, ...absence?.issues ?? []], outputs: [], openItems: absence?.openItems ?? [] }
       : stage === "instructions"
       ? acceptInstructionsReply(directory, reply)
       : stage === "discrepancy"
@@ -817,8 +828,8 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
       : await acceptStageReply(directory, step, reply, { final: index >= LEAN_MAX_RETRIES })
     const timing = { wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) }
     progress({ attempts: index + 1, calls: index + 1, feedback: accepted.issues })
-    appendLeanEvent(directory, { stage, document, event: "checker", attempt: index, issues: [...accepted.issues, ...spine?.recorded ?? []], ...timing })
-    if (spine?.value) accepted.outputs = await splitSpineEntries(directory, state, deps, spine.value, progress)
+    appendLeanEvent(directory, { stage, document, event: "checker", attempt: index, issues: [...accepted.issues, ...spine?.recorded ?? [], ...absence?.recorded ?? []], ...timing })
+    if (spine?.value && !accepted.issues.length) accepted.outputs = await splitSpineEntries(directory, state, deps, spine.value, jobProgress)
     if (!accepted.issues.length)
       return { status: (stage === "intake" || stage === "change-plan") && accepted.questions?.length ? "blocked" : "done", outputs: accepted.outputs, openItems: accepted.openItems, questions: accepted.questions,
         ...((stage === "intake" || stage === "change-plan") && accepted.questions?.length ? { reason: stage === "intake" ? "Waiting for your answers before legal research and drafting." : "Waiting for your answers before drafting amendments." } : {}) }

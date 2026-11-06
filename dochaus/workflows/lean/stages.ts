@@ -92,9 +92,10 @@ const GATE_CONTRACT = "checklist-open-delivery-6"
 /** Keys the act-record step: a change to its jobs, prompts or checks re-runs it. */
 const ACT_RECORD_CONTRACT = "act-record-7"
 /** Keys the spine step and each saved split of one of its entries: a change to
- * the spine's checks, the split job's prompt or checks, or the files the step
- * writes re-runs the step and every split. */
-export const SPINE_CONTRACT = "spine-atoms-4"
+ * the spine's checks (its absence-claim jobs included, spine-absence.ts), the
+ * split job's prompt or checks, or the files the step writes re-runs the step
+ * and every split. */
+export const SPINE_CONTRACT = "spine-atoms-5"
 /** Keys the guidance review: its guidance list and the template's focus. */
 const GUIDANCE_REVIEW_CONTRACT = "template-guidance-1"
 export const LEAN_MAX_RETRIES = 3
@@ -131,6 +132,10 @@ export const LEAN_STAGE_AGENTS = {
   files: "lean-files",
   // A job of the spine, not a stage: it splits one spine entry into atoms that each state one point.
   split: "lean-spine-split",
+  // A job of the spine, not a stage: one per spine entry, it lists what the entry says the sources do not record.
+  absence: "lean-spine-absence",
+  // A job of the spine, not a stage: one per absence claim, it checks the sources for what the entry says they do not record.
+  "absence-verify": "lean-spine-absence-verify",
   // A job of the asking step, not a stage: it advises on one question before it is recorded.
   advise: "lean-advise",
   // A job of taking an answer, not a stage: it reads how the lawyer's own words answer one question.
@@ -228,8 +233,9 @@ export function stepOutputs(step: StepID): string[] {
 }
 
 // Items the drafting notes must disclose. Draft and review findings are re-derived from the
-// final body at apply, so the notes disclose what the delivered body still has.
-const DISCLOSED_STAGES: StageID[] = ["research", "research-review", "change-plan", "change-prepare", "changes", "change-review", "apply"]
+// final body at apply, so the notes disclose what the delivered body still has. The spine's
+// are absence claims a source contradicts that it kept on its final attempt (spine-absence.ts).
+const DISCLOSED_STAGES: StageID[] = ["spine", "research", "research-review", "change-plan", "change-prepare", "changes", "change-review", "apply"]
 
 /** Named inputs of each step: everything its prompt or code step reads. Their
  * content hash is the step's resume key and nothing more. A document's accepted

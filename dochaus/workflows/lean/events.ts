@@ -52,6 +52,11 @@ export type LeanEventName =
    * split or kept as they were because their job never passed, and how many
    * atoms spine-atoms.json holds, as `counts`. */
   | "spine_split"
+  /** The spine step's check of its entries' absence claims (spine-absence.ts):
+   * how many entries it had, how many claims they made, how many jobs reused
+   * a saved answer or never passed, and how many claims stood or a source
+   * contradicted, as `counts`. */
+  | "spine_absence"
 
 export type LeanEvent = {
   stage: StageID | "run"
@@ -75,7 +80,7 @@ export type LeanEvent = {
   /** Milliseconds of deterministic work: on checker events the reply's check, on
    * started and skipped events keying the step and deciding whether to skip it. */
   check_ms?: number
-  /** Act-record and spine-split events: the record's counts. */
+  /** Act-record, spine-split and spine-absence events: the record's counts. */
   counts?: Record<string, number>
   /** Act-record events: each job's check, "passed", "failed" or, for WHO and
    * HOW with no listed act, "not_asked". */

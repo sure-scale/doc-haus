@@ -8,6 +8,7 @@ import { Permission } from "@opencode/core/permission"
 import { LEAN_CHILD_PERMISSIONS, LEAN_READ_TOOLS, LEAN_STAGE_AGENTS } from "../workflows/lean/stages"
 import { ACT_RECORD_AGENT } from "../workflows/lean/act-record"
 import { SPINE_SPLIT_PERMISSIONS } from "../workflows/lean/spine-split"
+import { SPINE_ABSENCE_PERMISSIONS } from "../workflows/lean/spine-absence"
 
 // The lean stage agents load through the same native markdown + v1 migration
 // path the engine uses, and their own frontmatter (not only the session rules)
@@ -16,7 +17,7 @@ import { SPINE_SPLIT_PERMISSIONS } from "../workflows/lean/spine-split"
 const core = path.resolve(path.dirname(Bun.resolveSync("@opencode/core/session", import.meta.dir)), "..")
 const { Schema } = await import(Bun.resolveSync("effect", core))
 const root = path.resolve(import.meta.dir, "..")
-const agents = Object.values(LEAN_STAGE_AGENTS).filter(id => id !== "lean-research" && id !== "lean-spine-split")
+const agents = Object.values(LEAN_STAGE_AGENTS).filter(id => id !== "lean-research" && id !== "lean-spine-split" && id !== "lean-spine-absence")
 
 function loadAgent(id: string) {
   const markdown = ConfigMarkdown.parse(readFileSync(path.join(root, "agent", `${id}.md`), "utf8"))
@@ -31,7 +32,7 @@ const TOOLS = [
 ]
 
 test("each lean stage agent loads as a hidden subagent whose own rules allow only the coordinator's read tools", () => {
-  expect(agents.toSorted()).toEqual(["lean-act-record", "lean-advise", "lean-answer", "lean-answer-reconcile", "lean-change-plan", "lean-change-prepare", "lean-change-review", "lean-changes", "lean-coverage", "lean-discrepancy", "lean-draft", "lean-drafting-notes", "lean-files", "lean-instructions", "lean-intake", "lean-package-review", "lean-placement", "lean-research-review", "lean-review", "lean-review-client-disadvantage", "lean-review-independent", "lean-review-playbook", "lean-review-wording", "lean-spine", "lean-spine-level"])
+  expect(agents.toSorted()).toEqual(["lean-act-record", "lean-advise", "lean-answer", "lean-answer-reconcile", "lean-change-plan", "lean-change-prepare", "lean-change-review", "lean-changes", "lean-coverage", "lean-discrepancy", "lean-draft", "lean-drafting-notes", "lean-files", "lean-instructions", "lean-intake", "lean-package-review", "lean-placement", "lean-research-review", "lean-review", "lean-review-client-disadvantage", "lean-review-independent", "lean-review-playbook", "lean-review-wording", "lean-spine", "lean-spine-absence-verify", "lean-spine-level"])
   // The act-record step's agent is the one its jobs run as.
   expect(LEAN_STAGE_AGENTS.acts).toBe(ACT_RECORD_AGENT)
   for (const id of agents) {
@@ -49,16 +50,18 @@ test("each lean stage agent loads as a hidden subagent whose own rules allow onl
   }
 })
 
-// A spine split job reads only the one entry it is sent, so neither its own
-// rules nor its session's allow any tool.
-test("spine split agent loads as a hidden subagent with every tool denied", () => {
-  const agent = loadAgent("lean-spine-split")
-  expect(agent.mode).toBe("subagent")
-  expect(agent.hidden).toBe(true)
-  expect(agent.system?.trim()).toStartWith("You ")
-  const tools = [...new Set([...TOOLS, ...LEAN_READ_TOOLS])]
-  expect(tools.filter(action => Permission.evaluate(action, "*", agent.permissions ?? []).effect === "allow")).toEqual([])
-  expect(tools.filter(action => Permission.evaluate(action, "*", [...(agent.permissions ?? []), ...SPINE_SPLIT_PERMISSIONS]).effect === "allow")).toEqual([])
+// A spine split job and a spine absence classifier read only the one entry
+// they are sent, so neither their own rules nor their session's allow any tool.
+test("spine split and absence classifier agents load as hidden subagents with every tool denied", () => {
+  for (const [id, permissions] of [["lean-spine-split", SPINE_SPLIT_PERMISSIONS], ["lean-spine-absence", SPINE_ABSENCE_PERMISSIONS]] as const) {
+    const agent = loadAgent(id)
+    expect(agent.mode).toBe("subagent")
+    expect(agent.hidden).toBe(true)
+    expect(agent.system?.trim()).toStartWith("You ")
+    const tools = [...new Set([...TOOLS, ...LEAN_READ_TOOLS])]
+    expect(tools.filter(action => Permission.evaluate(action, "*", agent.permissions ?? []).effect === "allow")).toEqual([])
+    expect(tools.filter(action => Permission.evaluate(action, "*", [...(agent.permissions ?? []), ...permissions]).effect === "allow")).toEqual([])
+  }
 })
 
 // The drafting narrator restates run progress for the lawyer; it reads only the
