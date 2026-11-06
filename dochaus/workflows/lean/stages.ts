@@ -76,7 +76,7 @@ import {
 // one planned document keep their files under that document's id (d1/, d2/...).
 
 export const LEAN_PROMPT_VERSION = "lean-29-discrepancy-gaps"
-const OUTLINE_CONTRACT = "spine-placement-14"
+const OUTLINE_CONTRACT = "spine-level-15"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
 const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-plain-refs-3"
@@ -118,7 +118,9 @@ export const LEAN_STAGE_AGENTS = {
   finalize: "lean-drafting-notes",
   // A job of the outline, not a stage: it places each act the act record lists in the planned document that carries it.
   coverage: "lean-coverage",
-  // A job of the outline, not a stage: one per spine entry, it names the planned parts that rest on that entry.
+  // A job of the outline, not a stage: one per spine entry, it says whether the entry binds some part's text or the package.
+  level: "lean-spine-level",
+  // A job of the outline, not a stage: one per text spine entry, it names the planned parts that rest on that entry.
   placement: "lean-placement",
   // A job of the outline, not a stage: it reads the files the lawyer asks to receive.
   files: "lean-files",

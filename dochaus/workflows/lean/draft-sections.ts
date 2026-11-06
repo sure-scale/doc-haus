@@ -38,10 +38,11 @@ import { outlineCoverageIssues, partCarries, plannedContract } from "./template-
 import { draftStatusItems } from "./draft-status"
 import { draftTemplateItems } from "./template-coverage"
 import { originalTables, originalTablesBlock, partTableIssues, tableParts } from "./original-tables"
-import { workflowConcurrency } from "./model-concurrency"
+import { parallel } from "./checklist-flow"
 import {
-  PLAN_PLACEMENT_REVISIONS, documentGrounds, groundsBlock, parseEntryPlacement, planPlacementCurrent, planPlacementIssues, spineEntries, spinePlacementPrompt, writePlacement,
-  type EntryPlacement, type Placement, type SpineEntry,
+  PLAN_PLACEMENT_REVISIONS, documentGrounds, groundsBlock, parseEntryLevel, parseEntryPlacement, planPlacementCurrent, planPlacementIssues, readSpineLevels, saveSpineLevel, spineEntries, spineLevelKey,
+  spineLevelPrompt, spinePlacementPrompt, writePlacement,
+  type EntryLevel, type EntryPlacement, type Placement, type SpineEntry,
 } from "./spine-placement"
 
 // Sectioned draft step. A long document can need more tokens than one model
@@ -93,14 +94,15 @@ import {
 // step: the draft is never rewritten for it, the change cycle receives it as a
 // required repair, and the apply step records any gap left in the final body.
 // Once the coverage loop is done and no package-scope question stops the step,
-// each drafting-spine entry is placed in the planned parts that rest on it
-// (spine-placement.ts), one focused job per entry in a session of its own, run
-// in parallel within the installation's limit. A requirement or decision no
-// part rests on goes back to the outline session for at most
-// PLAN_PLACEMENT_REVISIONS revised outlines, each covered and placed again;
-// what is left is recorded in placement.json as unplaced and disclosed, never
-// blocking. A saved plan whose record is stale is placed again before the first
-// document is drafted, and each part prompt is told the entries it rests on.
+// each drafting-spine entry's level job, then for a text entry its placement
+// job, finds the planned parts that rest on it (spine-placement.ts), each job
+// in a session of its own, the entries in parallel within the installation's
+// limit. A text requirement or decision no part covers goes back to the outline
+// session for one revised outline (PLAN_PLACEMENT_REVISIONS), covered and
+// placed again; what is left is recorded in placement.json as unplaced and
+// disclosed, never blocking. A saved plan whose record is stale is placed again
+// before the first document is drafted, and each part prompt is told the text
+// entries it rests on.
 
 export type DraftOutline = Pick<PlannedDocument, "title" | "parts" | "form" | "mode" | "template">
 
@@ -225,23 +227,45 @@ export async function runDraftStage(
     return { status: "blocked", outputs: ["coverage.json"], openItems: [], questions: [question],
       reason: `${step}: the document plan leaves an instructed act without a document its parties execute; drafting waits for your answer on the package's scope.` }
   }
-  // Each spine entry's placement job reads the plan in a fresh session of its
-  // own; an entry whose reply never passed its check is recorded unchecked and
-  // raises no revision. Errors from the session calls propagate.
+  // Each spine entry's level job reads that entry alone in a fresh session of
+  // its own, once per step for each content key; a level it settles is saved
+  // at once (spine-levels.json) and never asked again, so a re-run or resume
+  // skips it. A level reply that never passed its check places the entry as
+  // text, so no requirement is left out of placement.
+  const levelAgent = LEAN_STAGE_AGENTS.level
+  const levels = new Map<string, Promise<{ level: EntryLevel; unchecked?: true }>>()
+  const leveling = (entry: SpineEntry) => {
+    const key = spineLevelKey(entry)
+    const job = levels.get(key) ?? (async () => {
+      const saved = readSpineLevels(directory)[key]
+      if (saved) return { level: saved }
+      const id = await coverageSession(levelAgent, `level: entry ${entry.index}`)
+      const checked = await exchange({ id, agent: levelAgent })(`level entry ${entry.index}`, spineLevelPrompt(entry), reply => parseEntryLevel(reply))
+      if (!checked.value) return { level: "text" as const, unchecked: true as const }
+      saveSpineLevel(directory, key, checked.value)
+      return { level: checked.value }
+    })()
+    levels.set(key, job)
+    return job
+  }
+  // Each text entry's placement job then reads the plan in a fresh session of
+  // its own; a package entry is recorded with its level and placed nowhere. An
+  // entry whose placement reply never passed its check is recorded unchecked
+  // and raises no revision. Errors from the session calls propagate.
   const placing = async (documents: PlannedDocument[]): Promise<Placement> => {
     const entries = spineEntries(directory)
     const placements: EntryPlacement[] = []
     const placementAgent = LEAN_STAGE_AGENTS.placement
     const place = async (entry: SpineEntry): Promise<EntryPlacement> => {
+      const { level, unchecked } = await leveling(entry)
+      const levelled = { entry: entry.index, level, ...(unchecked ? { level_unchecked: true as const } : {}) }
+      if (level === "package") return { ...levelled, parts: [] }
       const id = await coverageSession(placementAgent, `placement: entry ${entry.index}`)
       const checked = await exchange({ id, agent: placementAgent })(`placement entry ${entry.index}`, spinePlacementPrompt(documents, entry),
         (reply, final) => parseEntryPlacement(reply, documents, { final }))
-      return checked.value ? { entry: entry.index, parts: checked.value } : { entry: entry.index, parts: [], unchecked: true }
+      return checked.value ? { ...levelled, parts: checked.value } : { ...levelled, parts: [], unchecked: true }
     }
-    let next = 0
-    await Promise.all(Array.from({ length: Math.min(workflowConcurrency(), entries.length) }, async () => {
-      for (let at = next++; at < entries.length; at = next++) placements[at] = await place(entries[at]!)
-    }))
+    await parallel(entries, async (entry, at) => { placements[at] = await place(entry) })
     return { entries: placements, issues: planPlacementIssues(entries, placements) }
   }
   const recordPlacement = (documents: PlannedDocument[], placement: Placement) => {
@@ -318,8 +342,8 @@ export async function runDraftStage(
       value = next
       coverage = await covering(withDocumentIDs(value.documents))
     }
-    // The spine entries no part rests on go back to the outline session as a
-    // revision request; each revised outline is covered and placed again. A
+    // The text entries no part covers go back to the outline session as one
+    // revision request; the revised outline is covered and placed again. A
     // plan the package-scope question stops is drawn up again, so not placed.
     let placement: Placement | undefined
     if (!scopeBlock(withDocumentIDs(value.documents), coverage)) {

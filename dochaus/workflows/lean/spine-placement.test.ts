@@ -6,16 +6,19 @@ import { readLeanEvents } from "./events"
 import { readLeanPlan, type PlannedDocument } from "./plan"
 import { stagePrompt } from "./prompts"
 import {
-  PLAN_PLACEMENT_REVISIONS, documentGrounds, groundsBlock, parseEntryPlacement, placementPlanHash, planPlacementCurrent, planPlacementIssues, readLeanPlacement, spineEntries, spinePlacementPrompt,
+  PLAN_PLACEMENT_REVISIONS, documentGrounds, groundsBlock, parseEntryLevel, parseEntryPlacement, placementItems, placementPlanHash, planPlacementCurrent, planPlacementIssues, readLeanPlacement, readSpineLevels,
+  spineEntries, spineLevelKey, spineLevelPrompt, spinePlacementPrompt, writePlacement,
 } from "./spine-placement"
-import { disclosableItems } from "./stages"
+import { LEAN_MAX_RETRIES, disclosableItems } from "./stages"
 import { leanFile, readLeanState, readLeanText, writeLeanText } from "./state"
 import { AGENT, cleanupMatters, matter, scriptedModel } from "./test-support"
 
-// Spine placement: one focused job per drafting-spine entry names the planned
-// parts that rest on it; a requirement or decision placed in no part goes back
-// to the outline, what is left is recorded unplaced and disclosed, and each
-// part prompt is told the entries it rests on. Synthetic matter only.
+// Spine placement: one focused job per drafting-spine entry says whether it
+// binds some part's text or the package, and one per text entry names the
+// planned parts that rest on it; a text requirement or decision placed in no
+// part goes back to the outline once, what is left is recorded unplaced and
+// disclosed, and each part prompt is told the text entries it rests on.
+// Synthetic matter only.
 
 afterEach(cleanupMatters)
 
@@ -52,10 +55,37 @@ function prepared(spine = SPINE) {
   return { directory, state: readLeanState(directory)! }
 }
 
+/** The level agent: the delivery entry binds the package, every other entry some part's text. */
+const packageDelivery = (text: string) => JSON.stringify({ level: text.includes(DELIVERY) ? "package" : "text" })
+
 const run = (directory: string, model: ReturnType<typeof scriptedModel>, document: "d1" | "d2" = "d1") =>
   runDraftStage(directory, readLeanState(directory)!, { sessions: model.port }, () => {}, document, () => {})
 const placementPrompts = (model: ReturnType<typeof scriptedModel>) => model.prompts.filter(prompt => prompt.agent === AGENT.placement)
+const levelPrompts = (model: ReturnType<typeof scriptedModel>) => model.prompts.filter(prompt => prompt.agent === AGENT.level)
+const revisions = (model: ReturnType<typeof scriptedModel>) => model.prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.startsWith(REVISE))
 const partPrompts = (model: ReturnType<typeof scriptedModel>) => model.prompts.filter(prompt => prompt.agent === AGENT.draft && /^Draft part \d+ of /m.test(prompt.text))
+
+describe("spine entry level", () => {
+  test("a reply must be {\"level\": \"text\"} or {\"level\": \"package\"}", () => {
+    expect(parseEntryLevel(JSON.stringify({ level: "text" }))).toEqual({ issues: [], value: "text" })
+    expect(parseEntryLevel(JSON.stringify({ level: "package" }))).toEqual({ issues: [], value: "package" })
+    for (const reply of ["text", JSON.stringify({ level: "part" }), JSON.stringify({ parts: [] })])
+      expect(parseEntryLevel(reply)).toEqual({ issues: ['Reply with the JSON object only: {"level":"text"} or {"level":"package"}.'] })
+  })
+
+  test("one entry's level prompt holds that entry and the question, and no document", () => {
+    const { directory } = prepared()
+    const [delivery] = spineEntries(directory)
+    const prompt = spineLevelPrompt(delivery!)
+    expect(prompt).toStartWith("<entry>\n")
+    expect(prompt.indexOf("<entry>")).toBeLessThan(prompt.indexOf("<question>"))
+    expect(prompt).toContain(DELIVERY)
+    expect(prompt).not.toContain(PAYMENT)
+    expect(prompt).not.toContain("<documents>")
+    // The entry reads as it does in its placement job.
+    expect(spinePlacementPrompt(documents, delivery!)).toContain(prompt.split("\n\n<question>")[0]!)
+  })
+})
 
 describe("spine placement parser", () => {
   test("a reply must be {\"parts\": [...]}; known refs are kept once, in plan order", () => {
@@ -75,16 +105,19 @@ describe("spine placement parser", () => {
     expect(parseEntryPlacement(JSON.stringify({ parts: ["d1/1", "d1/3"] }), documents, { final: true }).value).toEqual(["d1/1"])
   })
 
-  test("a requirement or decision placed in no part is an outline issue; a fact or an unchecked entry is not", () => {
+  test("a text requirement or decision placed in no part is a gap for the outline; a fact, a package entry or an unchecked entry is not", () => {
     const entries = [
       { index: 0, kind: "requirement", detail: DELIVERY, evidence: [{ source_id: "supply-terms.docx", quote: "q" }] },
       { index: 1, kind: "fact", detail: PAYMENT, evidence: [] },
       { index: 2, kind: "decision", detail: "Deliver to the buyer's yard.", evidence: [] },
+      { index: 3, kind: "requirement", detail: "Return the note as one file.", evidence: [] },
     ]
-    expect(planPlacementIssues(entries, [{ entry: 0, parts: [] }, { entry: 1, parts: [] }, { entry: 2, parts: [], unchecked: true }])).toEqual([
-      `No planned part sets out or reasons from the requirement "${DELIVERY}" [source: supply-terms.docx]. Plan the part whose scope states or applies it, or widen the scope of the part that should.`,
-    ])
-    expect(planPlacementIssues(entries, [{ entry: 0, parts: ["d1/1"] }, { entry: 1, parts: [] }, { entry: 2, parts: ["d1/1"] }])).toEqual([])
+    expect(planPlacementIssues(entries, [
+      { entry: 0, level: "text", parts: [] }, { entry: 1, level: "text", parts: [] }, { entry: 2, level: "text", parts: [], unchecked: true }, { entry: 3, level: "package", parts: [] },
+    ])).toEqual([`No part covers requirement: ${DELIVERY}. Plan the part, or extend the scope of the part that should.`])
+    expect(planPlacementIssues(entries, [
+      { entry: 0, level: "text", parts: ["d1/1"] }, { entry: 1, level: "text", parts: [] }, { entry: 2, level: "text", parts: ["d1/1"] }, { entry: 3, level: "package", parts: [] },
+    ])).toEqual([])
   })
 
   test("one entry's prompt: the shared documents first, then that entry, then the question", () => {
@@ -116,13 +149,15 @@ describe("spine placement at the outline step", () => {
     const { directory } = prepared()
     const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.placement]: placer })
     expect((await run(directory, model)).status).toBe("done")
-    expect(placementPrompts(model).map(prompt => prompt.sessionID).toSorted()).toEqual(
-      model.sessions.flatMap((session, at) => session.agent === AGENT.placement ? [`ses_child${at + 1}`] : []).toSorted())
-    expect(new Set(placementPrompts(model).map(prompt => prompt.sessionID)).size).toBe(2)
-    expect(placementPrompts(model).filter(prompt => prompt.text.includes(DELIVERY) && prompt.text.includes(PAYMENT))).toEqual([])
+    for (const prompts of [levelPrompts(model), placementPrompts(model)]) {
+      expect(prompts.map(prompt => prompt.sessionID).toSorted()).toEqual(
+        model.sessions.flatMap((session, at) => session.agent === prompts[0]!.agent ? [`ses_child${at + 1}`] : []).toSorted())
+      expect(new Set(prompts.map(prompt => prompt.sessionID)).size).toBe(2)
+      expect(prompts.filter(prompt => prompt.text.includes(DELIVERY) && prompt.text.includes(PAYMENT))).toEqual([])
+    }
     const record = readLeanPlacement(directory)!
     expect(record.status).toBe("placed")
-    expect(record.entries.toSorted((a, b) => a.entry - b.entry)).toEqual([{ entry: 0, parts: ["d1/1"] }, { entry: 1, parts: ["d1/2"] }])
+    expect(record.entries).toEqual([{ entry: 0, level: "text", parts: ["d1/1"] }, { entry: 1, level: "text", parts: ["d1/2"] }])
     expect(planPlacementCurrent(directory)).toBe(true)
     expect(readLeanEvents(directory).filter(event => event.event === "placement").map(event => event.outcome)).toEqual(["placed"])
   })
@@ -131,20 +166,24 @@ describe("spine placement at the outline step", () => {
     const { directory } = prepared()
     const model = scriptedModel({ [AGENT.draft]: outliner(ONE, TWO), [AGENT.placement]: placer })
     expect((await run(directory, model)).status).toBe("done")
-    const revisions = model.prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.startsWith(REVISE))
-    expect(revisions).toHaveLength(1)
-    expect(revisions[0]!.text).toContain(`No planned part sets out or reasons from the requirement "${DELIVERY}"`)
+    expect(revisions(model)).toHaveLength(1)
+    expect(revisions(model)[0]!.text).toContain(`- No part covers requirement: ${DELIVERY}. Plan the part, or extend the scope of the part that should.\n`)
+    expect(revisions(model)[0]!.text).not.toContain("widen")
     expect(placementPrompts(model)).toHaveLength(4)
+    // Levels read the entry alone, so the revised plan asks none again.
+    expect(levelPrompts(model)).toHaveLength(2)
     expect(readLeanPlan(directory)!.documents[0]!.parts.map(part => part.heading)).toEqual(["Delivery", "Payment"])
     expect(readLeanPlacement(directory)!.status).toBe("placed")
     expect(disclosableItems(directory).filter(item => item.detail.includes(DELIVERY))).toEqual([])
   })
 
-  test("a requirement still unplaced after the revisions is recorded unplaced and disclosed, and the step drafts", async () => {
+  test("a requirement still unplaced after the one revision is recorded unplaced and disclosed, and the step drafts", async () => {
     const { directory } = prepared()
     const model = scriptedModel({ [AGENT.draft]: outliner(ONE), [AGENT.placement]: placer })
     expect((await run(directory, model)).status).toBe("done")
-    expect(model.prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.startsWith(REVISE))).toHaveLength(PLAN_PLACEMENT_REVISIONS)
+    expect(PLAN_PLACEMENT_REVISIONS).toBe(1)
+    expect(revisions(model)).toHaveLength(1)
+    expect(placementPrompts(model)).toHaveLength(4)
     const record = readLeanPlacement(directory)!
     expect(record.status).toBe("unplaced")
     expect(record.issues).toHaveLength(1)
@@ -158,20 +197,22 @@ describe("spine placement at the outline step", () => {
     const { directory } = prepared()
     const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.placement]: text => text.includes("<entry>") && text.includes(DELIVERY) ? "Delivery" : text.startsWith("Your reply") ? "Delivery" : placer(text) })
     expect((await run(directory, model)).status).toBe("done")
-    expect(model.prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.startsWith(REVISE))).toEqual([])
-    expect(readLeanPlacement(directory)!.entries.find(row => row.entry === 0)).toEqual({ entry: 0, parts: [], unchecked: true })
+    expect(revisions(model)).toEqual([])
+    expect(readLeanPlacement(directory)!.entries.find(row => row.entry === 0)).toEqual({ entry: 0, level: "text", parts: [], unchecked: true })
     expect(readLeanPlacement(directory)!.status).toBe("placed")
   })
 
-  test("a stale record is placed again before the first document is drafted", async () => {
+  test("a stale record is placed again before the first document is drafted, asking only a changed entry's level", async () => {
     const { directory } = prepared()
     const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.placement]: placer })
     await run(directory, model)
     expect(placementPrompts(model)).toHaveLength(2)
+    expect(levelPrompts(model)).toHaveLength(2)
     writeLeanText(directory, "spine.json", SPINE.replace("thirty days", "forty days"))
     expect(planPlacementCurrent(directory)).toBe(false)
     await run(directory, model)
     expect(placementPrompts(model)).toHaveLength(4)
+    expect(levelPrompts(model).slice(2).map(prompt => prompt.text.includes("forty days"))).toEqual([true])
     expect(planPlacementCurrent(directory)).toBe(true)
     expect(documentGrounds(directory, "d1").map(grounds => grounds.map(entry => entry.index))).toEqual([[0], [1]])
   })
@@ -181,13 +222,58 @@ describe("spine placement at the outline step", () => {
     const outline = `${TWO}\n# Payment receipt\nForm: other\n## Payment\nThe payment received.`
     const model = scriptedModel({ [AGENT.draft]: outliner(outline), [AGENT.placement]: placer })
     expect((await run(directory, model)).status).toBe("done")
-    expect(readLeanPlacement(directory)!.entries).toEqual([{ entry: 0, parts: ["d1/2", "d2/1"] }])
+    expect(readLeanPlacement(directory)!.entries).toEqual([{ entry: 0, level: "text", parts: ["d1/2", "d2/1"] }])
     const placed = placementPrompts(model).length
     expect((await run(directory, model, "d2")).status).toBe("done")
     expect(placementPrompts(model)).toHaveLength(placed)
     const d2 = partPrompts(model).at(-1)!.text
     expect(d2).toContain(`Draft part 1 of 1 of "Payment receipt"`)
     expect(d2).toContain(`<rests_on>\nThis part rests on:\n- requirement: ${PAYMENT}\n`)
+  })
+
+  test("a package entry is recorded with its level and never placed, raises no revision and is not disclosed", async () => {
+    const { directory } = prepared()
+    const model = scriptedModel({ [AGENT.draft]: outliner(ONE), [AGENT.level]: packageDelivery, [AGENT.placement]: placer })
+    expect((await run(directory, model)).status).toBe("done")
+    expect(levelPrompts(model)).toHaveLength(2)
+    expect(placementPrompts(model).map(prompt => prompt.text.includes(DELIVERY))).toEqual([false])
+    expect(revisions(model)).toEqual([])
+    const record = readLeanPlacement(directory)!
+    expect(record).toMatchObject({ status: "placed", issues: [] })
+    expect(record.entries).toEqual([{ entry: 0, level: "package", parts: [] }, { entry: 1, level: "text", parts: ["d1/1"] }])
+    expect(placementItems(directory)).toEqual([])
+    expect(disclosableItems(directory).filter(item => item.detail.includes(DELIVERY))).toEqual([])
+  })
+
+  test("a level reply is retried in its session; one that never passes places the entry as text", async () => {
+    const { directory } = prepared()
+    // Delivery's level job answers in prose once, then passes; payment's never passes.
+    const level = (text: string, _index: number, sessionID?: string) => {
+      const first = levelPrompts(model).find(prompt => prompt.sessionID === sessionID)!.text
+      if (first.includes(PAYMENT)) return "text"
+      return text.startsWith("Your reply") ? JSON.stringify({ level: "text" }) : "It binds the text."
+    }
+    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.level]: level, [AGENT.placement]: placer })
+    expect((await run(directory, model)).status).toBe("done")
+    const asked = (session: string) => levelPrompts(model).filter(prompt => prompt.sessionID === session).length
+    expect([...new Set(levelPrompts(model).map(prompt => prompt.sessionID))].map(asked).toSorted()).toEqual([2, 1 + LEAN_MAX_RETRIES])
+    expect(readLeanPlacement(directory)!.entries).toEqual([{ entry: 0, level: "text", parts: ["d1/1"] }, { entry: 1, level: "text", parts: ["d1/2"], level_unchecked: true }])
+    // Only the settled level is kept for a resume.
+    expect(Object.values(readSpineLevels(directory))).toEqual(["text"])
+  })
+
+  test("levels settled before a pause are kept, so the resumed step asks none again", async () => {
+    const { directory } = prepared()
+    const stop = new Error("pause requested")
+    const paused = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.level]: packageDelivery, [AGENT.placement]: () => { throw stop } })
+    await expect(run(directory, paused)).rejects.toBe(stop)
+    expect(readLeanPlan(directory)).toBeUndefined()
+    const [delivery, payment] = spineEntries(directory)
+    expect(readSpineLevels(directory)).toEqual({ [spineLevelKey(delivery!)]: "package", [spineLevelKey(payment!)]: "text" })
+    const resumed = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.placement]: placer })
+    expect((await run(directory, resumed)).status).toBe("done")
+    expect(levelPrompts(resumed)).toEqual([])
+    expect(readLeanPlacement(directory)!.entries).toEqual([{ entry: 0, level: "package", parts: [] }, { entry: 1, level: "text", parts: ["d1/2"] }])
   })
 })
 
@@ -208,6 +294,21 @@ describe("spine placement in the part prompts", () => {
     const draft = readLeanText(directory, "d1/draft.md")!
     expect(draft).not.toContain(DELIVERY)
     expect(draft).not.toContain("rests on")
+  })
+
+  test("rests_on carries text entries only: a package entry reaches no part prompt or outline grounds", async () => {
+    const { directory } = prepared()
+    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.level]: packageDelivery, [AGENT.placement]: placer })
+    await run(directory, model)
+    expect(partPrompts(model).map(prompt => prompt.text.includes(DELIVERY))).toEqual([false, false])
+    expect(documentGrounds(directory, "d1").map(grounds => grounds.map(entry => entry.index))).toEqual([[], [1]])
+    // It still rides the drafting spine every stage reads.
+    const review = stagePrompt(directory, "d1.review")
+    expect(review.split("<drafting_spine>")[1]).toContain(DELIVERY)
+    expect(review.split("<document_outline>\n")[1]!.split("\n</document_outline>")[0]).not.toContain(DELIVERY)
+    // A record that names parts for a package entry still grounds none of them.
+    writePlacement(directory, readLeanPlan(directory)!.documents, { entries: [{ entry: 0, level: "package", parts: ["d1/1"] }, { entry: 1, level: "text", parts: ["d1/2"] }], issues: [] })
+    expect(documentGrounds(directory, "d1").map(grounds => grounds.map(entry => entry.index))).toEqual([[], [1]])
   })
 
   test("the reviews' outline names each part's grounds; with none placed a part prompt has no block", async () => {
