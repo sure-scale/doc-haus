@@ -24,6 +24,7 @@ type Connection =
   | { type: "env"; name: string }
   | { type: "host" }
   | { type: "new" }
+  | { type: "external"; methodID: string }
   | { type: "reuse"; sourceId: string; connectionId: string }
 export type CandidateInput = {
   providerID: string
@@ -45,6 +46,12 @@ const modelReference = (value: unknown): value is string => {
 const keys = (value: Record<string, unknown>, allowed: string[]) =>
   Object.keys(value).every((key) => allowed.includes(key))
 export class ProviderCandidateError extends Error {}
+// An external sign-in belongs to a program on this computer, such as Claude
+// Code. Its native integration checks it without a model request.
+export type ExternalStatus =
+  | { status: "ready" }
+  | { status: "checking" }
+  | { status: "needs_auth"; message: string; url?: string }
 const compatible = (provider: Provider.Info) =>
   /(?:openai-compatible|ollama)$/.test(provider.package) || provider.id === "ollama"
 
@@ -109,6 +116,8 @@ export function candidateInput(value: unknown): value is CandidateInput {
         connection.sourceId.length <= 256 &&
         connection.connectionId.length <= 256
       )
+    case "external":
+      return keys(connection, ["type", "methodID"]) && identifier(connection.methodID)
     case "host":
     case "new":
       return keys(connection, ["type"])
@@ -224,6 +233,34 @@ export function providerCandidates(options: {
     if (saving === id) saving = undefined
     await run(Scope.close(entry.scope, Exit.void))
   }
+  // The integration reports a problem on the active connection, and a finished
+  // check fills the draft's empty model list. Messages pass through unchanged.
+  const externalStatus = (session: SetupSession, providerID: string, integrationID: Integration.ID) =>
+    run(
+      session.provide(
+        Effect.gen(function* () {
+          let listed = false
+          for (let attempt = 0; attempt < 240; attempt++) {
+            const snapshot = yield* Provider.Service.use((providers) => providers.snapshot())
+            const models = snapshot.records.get(Provider.ID.make(providerID))?.models.size ?? 0
+            const integration = yield* Integration.Service.use((service) => service.get(integrationID))
+            const problem = integration?.connections[0]?.status
+            if (problem)
+              return {
+                status: problem.status,
+                message: problem.message,
+                ...(problem.url ? { url: problem.url } : {}),
+              } satisfies ExternalStatus
+            // Separate listeners record models and problems, so a ready check
+            // is read once more before it is reported.
+            if (models && listed) return { status: "ready" } satisfies ExternalStatus
+            listed = models > 0
+            yield* Effect.sleep("250 millis")
+          }
+          return { status: "checking" } satisfies ExternalStatus
+        }),
+      ),
+    )
   const within = <A, E>(
     entry: Entry,
     effect: Effect.Effect<A, E, Instance.Services | Credential.Service | Scope.Scope>,
@@ -311,6 +348,11 @@ export function providerCandidates(options: {
         if (credential?.integrationID !== integrationID)
           throw new ProviderCandidateError("Select an existing connection for this provider.")
       } else if (
+        selected.type === "external" &&
+        !integration?.methods.some((method) => method.type === "external" && method.id === selected.methodID)
+      )
+        throw new ProviderCandidateError("Select an available sign-in for this provider.")
+      else if (
         selected.type === "host" &&
         !["google-vertex", "google-vertex-anthropic", "amazon-bedrock", "ollama"].includes(provider.id) &&
         !compatible(provider)
@@ -349,6 +391,22 @@ export function providerCandidates(options: {
           )
             throw new ProviderCandidateError("Complete the provider connection fields.")
         }
+        // The native external route records the choice; the sign-in itself
+        // stays with the external program and is never copied.
+        if (selected.type === "external")
+          await run(
+            session.provide(
+              Integration.Service.use((service) =>
+                service.connection.external({ integrationID, methodID: Integration.MethodID.make(selected.methodID) }),
+              ),
+            ),
+          ).catch(() => {
+            throw new ProviderCandidateError("Select an available sign-in for this provider.")
+          })
+        const external =
+          selected.type === "external" || credential?.value.type === "external"
+            ? await externalStatus(session, input.providerID, integrationID)
+            : undefined
         const id = crypto.randomUUID()
         const entry: Entry = {
           session,
@@ -363,7 +421,7 @@ export function providerCandidates(options: {
           customModels: !!input.local || (!!input.options?.baseURL && compatible(provider)),
         }
         sessions.set(id, entry)
-        return { sessionID: id }
+        return { sessionID: id, ...(external ? { external } : {}) }
       } catch (error) {
         await run(Scope.close(scope, Exit.void))
         throw error

@@ -24,3 +24,12 @@ test("catalog removes exact opencode while preserving Go and Console aliases wit
   expect(result.every(provider => !("models" in provider) && !("settings" in provider) && !("connected" in provider))).toBe(true)
   expect(JSON.stringify(result)).not.toContain("synthetic-private")
 })
+
+test("catalog lists an external sign-in provider without host detection or its settings", () => {
+  const result = providerCatalog([
+    { id: "claude-agent", name: "Claude Agent", activation: "auto", integrationID: "claude-agent",
+      settings: { apiKey: "synthetic-private-key", baseURL: "https://synthetic.example/v1" } },
+  ], { OPENCODE_CLAUDE_PATH: "/synthetic/claude" }, "/fixture-home", () => true)
+  expect(result).toEqual([{ id: "claude-agent", name: "Claude Agent", activation: "auto", integrationID: "claude-agent" }])
+  expect(JSON.stringify(result)).not.toContain("synthetic")
+})
