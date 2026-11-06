@@ -180,10 +180,14 @@ test("native provider turn executes a legal tool through the v2 plugin", async (
       return last?.role === "user" && JSON.stringify(last.content).includes("anchored legal-matter handoff")
     })
     expect(summaries.length).toBeGreaterThan(0)
-    // The handoff template is the final user message; the host system prompt is
-    // kept so the summary request can reuse the session's cached prefix.
-    expect(summaries.every((request) => request.messages.some((message) => message.role === "system") &&
-      request.messages.filter((message) => message.role === "system").every((message) => !JSON.stringify(message.content).includes("anchored legal-matter handoff")))).toBe(true)
+    // The handoff template is the final user message and the summary request
+    // repeats the normal request's system prompt byte for byte, so the provider
+    // can serve the conversation from the session's prompt cache.
+    const normal = requests.slice(0, beforeCompaction).findLast((request) => request.tools?.length &&
+      JSON.stringify(request.messages).includes("Check the indexed matter using grep-matter for agreement"))
+    const system = (request: { messages: Array<{ role: string; content?: unknown }> }) => request.messages.filter((message) => message.role === "system")
+    expect(JSON.stringify(system(normal!))).toContain("<untrusted-documents>")
+    for (const summary of summaries) expect(system(summary)).toEqual(system(normal!))
     expect(JSON.stringify(requests.slice(beforeCompaction))).not.toContain("## Relevant Files")
     const beforeFollowup = requests.length
     expect((await request("/api/session/ses_provider_fixture/prompt", { id: "msg_followup_fixture", text: "Confirm completion after compaction." })).status).toBe(200)

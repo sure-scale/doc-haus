@@ -43,6 +43,21 @@ export default Plugin.define({
 
     const readNative = (await observeStartup("legal.reader", directory, () => nativeSessionReader(directory, context.session))).read
     const policy = await observeStartup("legal.policy", directory, () => LegalPlugin({ directory }))
+    const selectModel = async (ref: { providerID: string; id: string }) => {
+      const selected = (await context.model.list()).data.find(model => model.providerID === ref.providerID && model.id === ref.id)
+      if (!selected) throw new Error("The selected generation model is unavailable.")
+      return { ...selected, capabilities: { ...selected.capabilities, reasoning: declaredModelReasoning(readEffectiveSettings(), selected) } }
+    }
+    // Normal and compaction requests carry the same legal system parts, so a
+    // summary request keeps the session's prompt prefix and its cache.
+    const legalSystem = async (sessionID: string, agent: string, model: Awaited<ReturnType<typeof selectModel>>, metadata: Record<string, unknown> | undefined) => {
+      recordSessionAgent(sessionID, agent)
+      const system = { system: [] as string[] }
+      // This capability comes from the durable session, never source text or
+      // model output. Host adapters assemble their authorized evidence explicitly.
+      await policy["experimental.chat.system.transform"]?.({ sessionID, model, suppliedContext: metadata?.contextMode === "supplied" } as never, system)
+      return system.system.map(text => ({ type: "text" as const, text }))
+    }
 
     await context.session.hook("context", async event => {
       if (!event.messageID) throw new Error("Engine request identity is unavailable.")
@@ -54,10 +69,7 @@ export default Plugin.define({
         !history.slice(history.indexOf(latestUser) + 1).some(message => message.info.role === "assistant" && message.info.summary))
         throw new Error("The current durable input is absent without a durable compaction checkpoint")
       const before = structuredClone(history)
-      const models = await context.model.list()
-      const selectedModel = models.data.find(model => model.providerID === event.model.providerID && model.id === event.model.id)
-      const model = selectedModel && { ...selectedModel, capabilities: { ...selectedModel.capabilities, reasoning: declaredModelReasoning(readEffectiveSettings(), selectedModel) } }
-      if (!model) throw new Error("The selected generation model is unavailable.")
+      const model = await selectModel(event.model)
       const agents = (await context.agent.list()).data
       Object.assign(event.options, nativeAgentSampling(agents.find(agent => agent.id === event.agent)?.request?.body))
       const params = {
@@ -86,12 +98,7 @@ export default Plugin.define({
           selected.permissions.findLast(rule => Wildcard.match("subagent", rule.action) && Wildcard.match(agent.id, rule.resource))?.effect !== "deny")
         event.tools.task.description += "\n\nAvailable subagents:\n" + available.map(agent => `- ${agent.id}: ${agent.description ?? agent.name}`).join("\n")
       }
-      const system = { system: [] as string[] }
-      // This capability comes from the durable session, never source text or
-      // model output. Host adapters assemble their authorized evidence explicitly.
-      const metadata = current.session.metadata as Record<string, unknown> | undefined
-      await policy["experimental.chat.system.transform"]?.({ sessionID: event.sessionID, model, suppliedContext: metadata?.contextMode === "supplied" } as never, system)
-      event.system.push(...system.system.map(text => ({ type: "text" as const, text })))
+      event.system.push(...await legalSystem(event.sessionID, event.agent, model, current.session.metadata as Record<string, unknown> | undefined))
     })
 
     await context.session.hook("http.request", async event => {
@@ -107,11 +114,14 @@ export default Plugin.define({
       providerCapture.response(event, event.kind === "primary" ? preparedAssistantMessages.get(event.sessionID) : undefined)
     })
 
-    await context.session.hook("compaction", (event) => {
+    await context.session.hook("compaction", async (event) => {
+      // Repeat the normal request's system prompt so the summary request shares
+      // the session's cached prefix; the handoff template travels as the final
+      // user message. The summariser reads the same untrusted documents.
+      const current = await readNative(event.sessionID)
+      event.system.push(...await legalSystem(event.sessionID, event.agent, await selectModel(event.model), current.session.metadata as Record<string, unknown> | undefined))
       const prompt = { context: [] as string[], prompt: "" }
       writeLegalCompactionPrompt(directory, prompt)
-      // Keep the host-built system so the summary request shares the session's
-      // cached prefix; the handoff template travels as the final user message.
       event.prompt = prompt.prompt
     })
 
