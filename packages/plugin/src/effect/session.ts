@@ -35,6 +35,8 @@ export interface SessionRequest {
 }
 
 export interface SessionContext extends SessionRequest {
+  /** Durable assistant identity for a primary request; absent for auxiliary requests. */
+  readonly messageID?: SessionMessage.ID
   readonly agent: Agent.ID
   tools: Record<string, { description: string; input: JsonSchema.JsonSchema }>
 }

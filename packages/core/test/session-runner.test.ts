@@ -1215,6 +1215,24 @@ describe("SessionRunnerLLM", () => {
     expect(s.executions).toEqual(["renamed"])
   })
 
+  scenario("gives the primary context hook the assistant message it prepares", function* (s) {
+    const hooks = yield* PluginHooks.Service
+    const seen: Array<SessionMessage.ID | undefined> = []
+    yield* hooks.register("session", "context", (event) =>
+      Effect.sync(() => {
+        seen.push(event.messageID)
+      }),
+    )
+    yield* s.admit("Answer once")
+    yield* s.llm.push(TestLLM.text("Answered", "text-answered"))
+
+    yield* s.resume
+
+    const assistant = (yield* s.context).find((message) => message.type === "assistant")
+    expect(assistant).toBeDefined()
+    expect(seen).toEqual([assistant?.id])
+  })
+
   for (const resume of [false, true]) {
     scenario(
       `continues instead of going idle when a session idle hook admits input (resume: ${resume})`,

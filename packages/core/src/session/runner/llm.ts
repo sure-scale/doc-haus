@@ -256,6 +256,7 @@ const layer = Layer.effect(
         })
         const prepared = yield* context.request
           .primary({
+            messageID: assistantMessageID,
             session: loaded.session,
             agent: loaded.agent.id,
             model: loaded.model,
