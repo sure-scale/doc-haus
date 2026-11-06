@@ -156,7 +156,8 @@ test("the outline, review, change plan, part, notes and package review prompts r
   const first = (agent: string) => model.prompts.find(prompt => prompt.agent === agent)!.text
   for (const agent of [AGENT.draft, AGENT.review, AGENT["change-plan"], AGENT.finalize, AGENT["package-review"]]) expect({ agent, spine: first(agent).includes(spine.trim()) }).toEqual({ agent, spine: true })
   // Each part prompt points the drafter at the same record.
-  const parts = model.prompts.filter(prompt => prompt.agent === AGENT.draft).slice(1)
+  // Retry feedback (the placement revision) is not a part prompt.
+  const parts = model.prompts.filter(prompt => prompt.agent === AGENT.draft && !prompt.text.startsWith("Your reply did not pass")).slice(1)
   expect(parts.length).toBeGreaterThan(0)
   for (const part of parts) expect(part.text).toContain(".dochaus/lean/spine.json")
   // No model job is shown the compound entry outside its own split.
