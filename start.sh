@@ -211,6 +211,8 @@ export DOC_HAUS_ENGINE_PORT="${ENGINE_PORT}"
   # the repository-shipped doc.haus config directory. Do not let a developer's
   # shell inject an alternate config body or permission map.
   unset OPENCODE_CONFIG OPENCODE_CONFIG_CONTENT OPENCODE_PERMISSION
+  # Keep HOME and PATH (and OPENCODE_CLAUDE_PATH when set): the optional Claude
+  # Agent provider finds a local `claude` and its own sign-in through them.
   export DOCHAUS_MANAGED_RESTART=1
   exec "$BUN_BIN" run services/engine/src/server.ts
 ) &

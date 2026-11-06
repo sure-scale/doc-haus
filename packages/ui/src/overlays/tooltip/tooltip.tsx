@@ -17,11 +17,13 @@ export interface TooltipProps extends ComponentProps<typeof Root> {
 
 export function Tooltip(props: TooltipProps) {
   let ref: HTMLDivElement | undefined
+
   const [state, setState] = createStore({
     open: false,
     block: false,
     expand: false,
   })
+
   const [local, others] = splitProps(props, [
     "children",
     "appearance",
@@ -40,25 +42,36 @@ export function Tooltip(props: TooltipProps) {
 
   const inside = () => {
     const active = document.activeElement
+
     if (!ref || !active) return false
+
     return ref.contains(active)
   }
 
   const drop = (expand = state.expand) => {
     if (expand || !state.block) return
+
     if (ref?.matches(":hover")) return
+
     if (inside()) return
     setState("block", false)
   }
 
   const sync = () => {
-    const expand = !!ref?.querySelector('[aria-expanded="true"], [data-expanded]')
+    // Expanded panels still need tooltips; only an open popup suppresses its trigger's tooltip.
+    const expand = !!ref?.querySelector(
+      '[aria-haspopup]:not([aria-haspopup="false"]):is([aria-expanded="true"], [data-expanded])',
+    )
+
     setState("expand", expand)
+
     if (expand) {
       setState("block", true)
       close()
+
       return
     }
+
     drop(expand)
   }
 
@@ -68,8 +81,12 @@ export function Tooltip(props: TooltipProps) {
   }
 
   const leave = () => {
-    if (!inside()) close()
-    drop()
+    // Kobalte's own pointerleave handler runs after this one and only starts the
+    // skip-delay window for neighbouring tooltips if it still sees this one open.
+    queueMicrotask(() => {
+      if (!inside()) close()
+      drop()
+    })
   }
 
   createEffect(() => {
@@ -80,7 +97,7 @@ export function Tooltip(props: TooltipProps) {
       subtree: true,
       childList: true,
       attributes: true,
-      attributeFilter: ["aria-expanded", "data-expanded"],
+      attributeFilter: ["aria-expanded", "data-expanded", "aria-haspopup"],
     })
     onCleanup(() => obs.disconnect())
   })
@@ -101,11 +118,15 @@ export function Tooltip(props: TooltipProps) {
           open={controlled() ? local.forceOpen : state.open}
           onOpenChange={(open) => {
             if (controlled()) return
+
             if (state.block && open) return
+
             if (justClickedTrigger) {
               justClickedTrigger = false
+
               return
             }
+
             setState("open", open)
           }}
         >
@@ -129,6 +150,7 @@ export function Tooltip(props: TooltipProps) {
             <Content
               ref={(el) => {
                 const theme = ref?.closest("[data-theme]")?.getAttribute("data-theme")
+
                 if (theme) el.setAttribute("data-theme", theme)
               }}
               data-component="tooltip-v2"
@@ -141,6 +163,7 @@ export function Tooltip(props: TooltipProps) {
                 if (ref === e.target || (e.target instanceof Node && ref?.contains(e.target))) {
                   justClickedTrigger = true
                 }
+
                 e.preventDefault()
               }}
             >

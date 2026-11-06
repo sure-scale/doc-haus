@@ -266,7 +266,7 @@ try {
     const matter = await (await api("/matters", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Synthetic Counterparty Replies" }) })).json() as { id: string; dir: string }
     expect(matter.dir.startsWith(dataRoot)).toBe(true)
     Object.assign(file, { matter: matter.id, dir: matter.dir })
-    const source = new FormData(); source.append("file", new File([counterpartyMarkupDocx({ footnote: true })], NAME))
+    const source = new FormData(); source.append("file", new File([new Uint8Array(counterpartyMarkupDocx({ footnote: true }))], NAME))
     expect((await api(`/matters/${matter.id}/documents`, { method: "POST", body: source })).status).toBe(200)
   })
 
@@ -571,7 +571,7 @@ try {
   }
 
   await step("15 a reply on a clause the Save rejects is refused on its thread card, and nothing is saved", async () => {
-    const source = new FormData(); source.append("file", new File([counterpartyMarkupDocx({ waiver: true })], WAIVER_NAME))
+    const source = new FormData(); source.append("file", new File([new Uint8Array(counterpartyMarkupDocx({ waiver: true }))], WAIVER_NAME))
     expect((await api(`/matters/${file.matter}/documents`, { method: "POST", body: source })).status).toBe(200)
     await openDocument(true, WAIVER_NAME)
     await waiverTab("Comments").click()

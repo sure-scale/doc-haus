@@ -6,7 +6,7 @@ import { settingsClient } from "../../api/opencode/client"
 import { isRemovedModel, isRemovedProvider } from "../../api/opencode/provider-readiness"
 import { providerHealth } from "../../api/opencode/provider-health"
 import { listReusableSignIns } from "../../api/ingest/credential-reuse"
-import { candidateAuth, candidateModels, createCandidate, discardCandidate, saveCandidate, SaveUnconfirmedError, testCandidate, type CandidateAuthResult, type CandidateConnection, type CandidateInput } from "../../api/opencode/provider-candidate"
+import { candidateAuth, candidateModels, createCandidate, discardCandidate, saveCandidate, SaveUnconfirmedError, testCandidate, type CandidateAuthResult, type CandidateConnection, type CandidateExternalStatus, type CandidateInput } from "../../api/opencode/provider-candidate"
 import { OPENCODE_URL } from "../../config"
 import { providerOf, type ModelOption } from "../../models"
 import type { Provider } from "../settings/types"
@@ -102,6 +102,8 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   const [aiDirty, setAIDirty] = useState(false)
   const [attempt, setAttempt] = useState<(CandidateAuthResult & { type: "oauth" | "command" })>()
   const [authCode, setAuthCode] = useState("")
+  const [external, setExternal] = useState<CandidateExternalStatus>()
+  const [checking, setChecking] = useState(false)
   const connectionHeading = useRef<HTMLHeadingElement>(null)
   const [focusConnection, setFocusConnection] = useState(false)
   const revision = useRef(0)
@@ -115,7 +117,8 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   const endpoint = endpointProvider(provider, config)
   const integration = integrations.find(item => item.id === (selected?.integrationID ?? provider))
   const matching = reusable.filter(item => item.integrationID === (selected?.integrationID ?? provider))
-  const method = connectionChoices(selected, integration, matching, endpoint).find(item => item.value === draft.choice)?.method
+  const choice = connectionChoices(selected, integration, matching, endpoint).find(item => item.value === draft.choice)
+  const method = choice?.method
   const chosenFast = fast || primary
   const choiceValid = Boolean(primary && chosenFast && providerOf(primary) === actualProvider && providerOf(chosenFast) === actualProvider && (customModels || primaryChoices.some(item => item.value === primary) && models.some(item => item.value === chosenFast)))
   const fingerprint = JSON.stringify([sessionID, primary, chosenFast])
@@ -129,7 +132,7 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   function resetCandidate() {
     clearTest()
     const old = session.current
-    session.current = ""; setSessionID(""); setModelReady(false); setModels([]); setPrimaryChoices([]); setAttempt(undefined); setAuthCode(""); setCustomModels(false)
+    session.current = ""; setSessionID(""); setModelReady(false); setModels([]); setPrimaryChoices([]); setAttempt(undefined); setAuthCode(""); setCustomModels(false); setExternal(undefined)
     if (old) { forgetSignIn(old); void discardCandidate(old) }
   }
   async function load(expected?: { providerID: string; models: string[] }) {
@@ -227,7 +230,11 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
       const active = new Set(visibleFields(fields, draft.answer, true).map(field => field.key))
       connection = { type: "key", key: draft.key.trim(), answer: Object.fromEntries(Object.entries(draft.answer).filter(([key]) => active.has(key))) }
     } else if (method?.type === "oauth" || method?.type === "command") connection = { type: "new" }
-    else throw new Error("Choose a connection method.")
+    else if (method?.type === "external") {
+      const active = new Set(visibleFields(method.form ?? [], draft.answer, true).map(field => field.key))
+      const answer = Object.fromEntries(Object.entries(draft.answer).filter(([key]) => active.has(key)))
+      connection = { type: "external", methodID: method.id, ...(Object.keys(answer).length ? { answer } : {}) }
+    } else throw new Error("Choose a connection method.")
     return { providerID: actualProvider, options, connection }
   }
 
@@ -243,13 +250,16 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   }
   async function prepare(advance = true) {
     if (busy) return
-    setBusy(true); if (advance) setError("")
+    setBusy(true); setChecking(Boolean(choice?.external)); if (advance) setError("")
     const current = revision.current
     try {
       const created = await createCandidate(input())
       if (revision.current !== current) { void discardCandidate(created.sessionID); return }
       if (session.current) void discardCandidate(session.current)
       session.current = created.sessionID; setSessionID(created.sessionID); setResults([]); setVerified("")
+      // An external sign-in that needs attention offers Check again, not models.
+      setExternal(created.external)
+      if (created.external && created.external.status !== "ready") { setModelReady(false); setModels([]); setPrimaryChoices([]); return }
       if (method?.type === "oauth" || method?.type === "command") {
         const result = await candidateAuth(created.sessionID, `${method.type}.connect`, { methodID: method.id, answer: Object.fromEntries(Object.entries(draft.answer).filter(([key]) => visibleFields("form" in method ? method.form ?? [] : [], draft.answer, true).some(field => field.key === key))) })
         if (revision.current !== current) return
@@ -264,7 +274,7 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
         if (advance && revision.current === current) callbacks.current.onPhaseChange?.("models")
       }
     } catch (failure) { if (revision.current === current) setError(message(failure, "Could not prepare this connection. Check the details and retry.")) }
-    finally { if (revision.current === current) setBusy(false) }
+    finally { setChecking(false); if (revision.current === current) setBusy(false) }
   }
   async function authAction(action: "complete" | "status" | "cancel") {
     if (!attempt || !sessionID || busy) return
@@ -369,10 +379,10 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
     {show("connection") && <section className="settings-section">
       {mode === "settings" && <h3 ref={connectionHeading} tabIndex={-1} className="ai-setup-section-title"><span>2</span> Connection</h3>}
       {provider ? <>
-        <ConnectionEditor provider={selected} integration={integration} reusable={matching} draft={draft} onChange={changeDraft} disabled={busy || loading} local={local} endpoint={endpoint} sourceOptions={sourceOptions} attempt={attempt} authCode={authCode} onAuthCode={setAuthCode} onAuthAction={action => void authAction(action)} />
+        <ConnectionEditor provider={selected} integration={integration} reusable={matching} draft={draft} onChange={changeDraft} disabled={busy || loading} local={local} endpoint={endpoint} sourceOptions={sourceOptions} attempt={attempt} authCode={authCode} onAuthCode={setAuthCode} onAuthAction={action => void authAction(action)} external={external} checking={checking} onCheckAgain={() => void prepare()} />
         {!attempt && (mode === "onboarding" || !configured) && <div className="ai-setup-actions">
           {mode === "onboarding" && <button type="button" className="onboarding-back" disabled={busy} onClick={() => onPhaseChange?.("provider")}>Back to providers</button>}
-          <button type="button" className="primary" disabled={busy || (!local && !draft.choice)} onClick={() => configured && mode === "onboarding" ? onPhaseChange?.("models") : void prepare()}>{busy ? "Preparing connection…" : configured && mode === "onboarding" ? "Continue to models" : prepareLabel}</button>
+          {(!external || external.status === "ready") && <button type="button" className="primary" disabled={busy || (!local && !draft.choice)} onClick={() => configured && mode === "onboarding" ? onPhaseChange?.("models") : void prepare()}>{checking && !external ? selected?.id === "claude-agent" ? "Checking Claude Code sign-in…" : "Checking sign-in…" : busy && !checking ? "Preparing connection…" : configured && mode === "onboarding" ? "Continue to models" : prepareLabel}</button>}
         </div>}
         {attempt?.status === "complete" && (mode === "onboarding" || !configured) && <div className="ai-setup-actions"><button type="button" disabled={busy} onClick={() => {
           if (configured && mode === "onboarding") { onPhaseChange?.("models"); return }

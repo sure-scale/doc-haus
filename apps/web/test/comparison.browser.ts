@@ -104,7 +104,7 @@ const server = Bun.serve({
     if (request.method === "GET" && pathname === "/ingest/matters/material/compare") {
       if (url.searchParams.get("right") === "Unavailable.docx") return Response.json({ error: "missing_document", message: "The later version is no longer available in this matter." }, { status: 404 })
       if (url.searchParams.get("format") === "json") return Response.json(fixture)
-      return new Response(blackline, { headers: { "content-type": `${CT}.document` } })
+      return new Response(new Uint8Array(blackline), { headers: { "content-type": `${CT}.document` } })
     }
     return Response.json({ error: "Unexpected request" }, { status: 404 })
   },

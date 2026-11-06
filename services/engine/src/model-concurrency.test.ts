@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Stream } from "effect"
-import { LLM, LLMClient } from "@opencode/ai"
+import { ai, LLMClient } from "@opencode/ai/effect"
 import { configure } from "@opencode/ai/providers/openai"
 import { llmClient } from "@opencode/core/effect/app-node-platform"
 import { httpClient } from "@opencode/util/effect/app-node-platform"
 import { LayerNode } from "@opencode/util/effect/layer-node"
-import { FetchHttpClient } from "effect/unstable/http"
+import { FetchHttpClient } from "effect/http"
 import { ModelAdmission, limitModelClient, makeModelConcurrencyNode } from "./model-concurrency"
 import type { Context } from "effect"
 
@@ -62,7 +62,7 @@ describe("model request admission", () => {
       { type: "response.completed", response: { id: "response" } },
     ].map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } })
     const fake = Object.assign(async () => { const index = started++; await controls[index]!.promise; return response() }, { preconnect: fetch.preconnect })
-    const request = LLM.request({ model: configure({ apiKey: "fixture", baseURL: "https://model.invalid/v1" }).responses("fixture"), prompt: "Hello" })
+    const request = ai.request({ model: configure({ apiKey: "fixture", baseURL: "https://model.invalid/v1" }).responses("fixture"), prompt: "Hello" })
     const graph = LayerNode.group([llmClient, httpClient])
     const run = (stream: boolean) => Effect.runPromise(Effect.scoped(
       (stream ? LLMClient.stream(request).pipe(Stream.runCollect, Effect.asVoid) : LLMClient.generate(request).pipe(Effect.asVoid)).pipe(

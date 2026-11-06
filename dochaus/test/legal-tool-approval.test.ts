@@ -2,8 +2,10 @@ import { expect, test } from "bun:test"
 import { readdirSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { ConfigMarkdown } from "@opencode/core/config/markdown"
+import { ConfigNormalize } from "@opencode/core/config/normalize"
 import { ConfigAgentV1 } from "@opencode/core/v1/config/agent"
 import { ConfigMigrateV1 } from "@opencode/core/v1/config/migrate"
+import { Info } from "@opencode/schema/config"
 import { Permission } from "@opencode/core/permission"
 import { assertPermission } from "../tool/register-v2"
 
@@ -11,7 +13,10 @@ const core = path.resolve(path.dirname(Bun.resolveSync("@opencode/core/session",
 const { Schema } = await import(Bun.resolveSync("effect", core))
 const root = path.resolve(import.meta.dir, "..")
 const shipped = JSON.parse(readFileSync(path.join(root, "opencode.json"), "utf8"))
-const globalRules = ConfigMigrateV1.migrate({ permission: shipped.permission }).permissions ?? []
+// Use the native config loader's pipeline: legacy normalization, then canonical decoding.
+const normalized = ConfigNormalize.normalize({ permission: shipped.permission })
+if (normalized.type === "rejected") throw new Error(`Shipped permissions were rejected: ${JSON.stringify(normalized.diagnostics)}`)
+const globalRules = Schema.decodeUnknownSync(Info)(normalized.encoded, { errors: "all", onExcessProperty: "ignore" }).permissions ?? []
 const askActions = Object.entries(shipped.permission).filter(([, effect]) => effect === "ask").map(([action]) => action)
 const agents = ["agent", "mode"].flatMap(directory => readdirSync(path.join(root, directory))
   .filter(file => file.endsWith(".md"))

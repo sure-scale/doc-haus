@@ -34,7 +34,6 @@ target
 # Local dev files
 CLAUDE.local.md
 opencode-dev
-UPCOMING_CHANGELOG.md
 RELEASE_REVIEW.md
 logs/
 *.bun-build
@@ -97,3 +96,4 @@ id_ed25519.*
 /sandbox/*.tar
 **/private-notes/
 **/internal-notes/
+/artifacts/

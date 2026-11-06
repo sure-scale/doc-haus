@@ -51,13 +51,25 @@ describe("Session.log", () => {
       const created = yield* session.create({ location, title: "Original" })
       const held = yield* Deferred.make<void>()
       const release = yield* Deferred.make<void>()
-      yield* Effect.acquireRelease(bus.listen(event => event.type === SessionEvent.AgentSelected.type
-        ? Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release))) : Effect.void), unsubscribe => unsubscribe)
+      yield* Effect.acquireRelease(
+        bus.listen((event) =>
+          event.type === SessionEvent.AgentSelected.type
+            ? Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Effect.void,
+        ),
+        (unsubscribe) => unsubscribe,
+      )
       yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
-      const holder = yield* session.switchAgent({ sessionID: created.id, agent: Agent.ID.make("one") }).pipe(Effect.forkScoped({ startImmediately: true }))
+      const holder = yield* session
+        .switchAgent({ sessionID: created.id, agent: Agent.ID.make("one") })
+        .pipe(Effect.forkScoped({ startImmediately: true }))
       yield* Deferred.await(held)
-      const manual = yield* session.rename({ sessionID: created.id, title: "Manual" }).pipe(Effect.forkScoped({ startImmediately: true }))
-      const conditional = yield* session.rename({ sessionID: created.id, title: "Generated", expectedTitle: "Original" }).pipe(Effect.forkScoped({ startImmediately: true }))
+      const manual = yield* session
+        .rename({ sessionID: created.id, title: "Manual" })
+        .pipe(Effect.forkScoped({ startImmediately: true }))
+      const conditional = yield* session
+        .rename({ sessionID: created.id, title: "Generated", expectedTitle: "Original" })
+        .pipe(Effect.forkScoped({ startImmediately: true }))
       yield* Effect.yieldNow
       yield* Deferred.succeed(release, undefined)
       yield* Fiber.join(holder)

@@ -26,6 +26,15 @@ describe("start.sh isolated OpenCode runtime", () => {
     expect(engine).toContain("Remote configuration discovery is disabled in the legal engine")
   })
 
+  test("keeps HOME and PATH for a locally selected Claude Code", async () => {
+    const script = await startScript()
+
+    expect(script).not.toMatch(/^\s*unset\s[^\n]*\b(?:HOME|PATH|OPENCODE_CLAUDE_PATH)\b/m)
+    expect(script).not.toMatch(/^\s*(?:export\s+)?(?:HOME|OPENCODE_CLAUDE_PATH)=/m)
+    // Every PATH change only prepends Bun.
+    expect(script).not.toMatch(/^\s*(?:export\s+)?PATH=(?![^\n]*:\$PATH")/m)
+  })
+
   test("leaves provider retry timing and attempts to OpenCode", async () => {
     const script = await startScript()
 

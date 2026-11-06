@@ -1,11 +1,13 @@
 import { describe, expect } from "bun:test"
-import { Effect } from "effect"
-import { LLM, AIError, LLMRequest, Message, ToolCallPart, ToolDefinition, Usage, Media } from "../../src/index.js"
+import { Deferred, Effect, Fiber } from "effect"
+import * as TestClock from "effect/testing/TestClock"
+import { ai, AIError, isRetryable, LLMEvent, LLMRequest, Media, Message, ToolCallPart, ToolDefinition, Usage } from "../../src/effect.js"
 import { Auth, LLMClient } from "../../src/route.js"
 import { compileRequest } from "../../src/route/client.js"
 import * as Gemini from "../../src/protocols/gemini.js"
+import { Google } from "../../src/providers.js"
 import { it } from "../lib/effect.js"
-import { fixedResponse } from "../lib/http.js"
+import { dynamicResponse, fixedResponse } from "../lib/http.js"
 import { sseEvents, sseRaw } from "../lib/sse.js"
 
 const model = Gemini.route
@@ -22,7 +24,7 @@ const gemini3 = Gemini.route
   })
   .model({ id: "gemini-3-flash-preview" })
 
-const request = LLM.request({
+const request = ai.request({
   id: "req_1",
   model,
   system: "You are concise.",
@@ -110,7 +112,7 @@ describe("Gemini route", () => {
   it.effect("forwards standard Gemini generation options", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           prompt: "Say hello.",
           generation: {
@@ -143,7 +145,7 @@ describe("Gemini route", () => {
   it.effect("lowers chronological system updates to wrapped user text in order", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [Message.user("Before."), Message.system("Update."), Message.assistant("After.")],
         }),
@@ -159,7 +161,7 @@ describe("Gemini route", () => {
   it.effect("keeps system updates separate from function responses", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.assistant([ToolCallPart.make({ id: "call_1", name: "lookup", input: { query: "weather" } })]),
@@ -173,7 +175,12 @@ describe("Gemini route", () => {
       expect(prepared.body.contents).toEqual([
         {
           role: "model",
-          parts: [{ functionCall: { name: "lookup", args: { query: "weather" } } }],
+          parts: [
+            {
+              functionCall: { name: "lookup", args: { query: "weather" } },
+              thoughtSignature: "skip_thought_signature_validator",
+            },
+          ],
         },
         {
           role: "user",
@@ -200,7 +207,7 @@ describe("Gemini route", () => {
   it.effect("merges parallel tool results into one function-response turn", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.assistant([
@@ -217,8 +224,14 @@ describe("Gemini route", () => {
         {
           role: "model",
           parts: [
-            { functionCall: { name: "lookup", args: { query: "weather" } } },
-            { functionCall: { name: "lookup", args: { query: "time" } } },
+            {
+              functionCall: { name: "lookup", args: { query: "weather" } },
+              thoughtSignature: "skip_thought_signature_validator",
+            },
+            {
+              functionCall: { name: "lookup", args: { query: "time" } },
+              thoughtSignature: "skip_thought_signature_validator",
+            },
           ],
         },
         {
@@ -245,7 +258,7 @@ describe("Gemini route", () => {
   it.effect("lowers function call ids for gemini 3 models", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model: gemini3,
           messages: [
             Message.assistant([ToolCallPart.make({ id: "call_1", name: "lookup", input: { query: "weather" } })]),
@@ -286,9 +299,9 @@ describe("Gemini route", () => {
         Message.assistant([ToolCallPart.make({ id: "call_1", name: "lookup", input: { query: "weather" } })]),
         Message.tool({ id: "call_1", name: "lookup", result: "done", resultType: "text" }),
       ]
-      const legacy = yield* compileRequest(LLM.request({ model, messages }))
+      const legacy = yield* compileRequest(ai.request({ model, messages }))
       const older = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model: Gemini.route
             .with({
               endpoint: { baseURL: "https://generativelanguage.test/v1beta/" },
@@ -300,7 +313,15 @@ describe("Gemini route", () => {
       )
 
       expect(legacy.body.contents).toEqual([
-        { role: "model", parts: [{ functionCall: { name: "lookup", args: { query: "weather" } } }] },
+        {
+          role: "model",
+          parts: [
+            {
+              functionCall: { name: "lookup", args: { query: "weather" } },
+              thoughtSignature: "skip_thought_signature_validator",
+            },
+          ],
+        },
         {
           role: "user",
           parts: [{ functionResponse: { name: "lookup", response: { name: "lookup", content: "done" } } }],
@@ -314,7 +335,7 @@ describe("Gemini route", () => {
   it.effect("includes function call ids for non-gemini model ids", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model: Gemini.route
             .with({
               endpoint: { baseURL: "https://generativelanguage.test/v1beta/" },
@@ -329,7 +350,15 @@ describe("Gemini route", () => {
       )
 
       expect(prepared.body.contents).toEqual([
-        { role: "model", parts: [{ functionCall: { id: "call_1", name: "lookup", args: { query: "weather" } } }] },
+        {
+          role: "model",
+          parts: [
+            {
+              functionCall: { id: "call_1", name: "lookup", args: { query: "weather" } },
+              thoughtSignature: "skip_thought_signature_validator",
+            },
+          ],
+        },
         {
           role: "user",
           parts: [
@@ -343,7 +372,7 @@ describe("Gemini route", () => {
   it.effect("prepares multimodal user input and tool history", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           id: "req_tool_result",
           model,
           tools: [
@@ -378,7 +407,12 @@ describe("Gemini route", () => {
           },
           {
             role: "model",
-            parts: [{ functionCall: { name: "lookup", args: { query: "weather" } } }],
+            parts: [
+              {
+                functionCall: { name: "lookup", args: { query: "weather" } },
+                thoughtSignature: "skip_thought_signature_validator",
+              },
+            ],
           },
           {
             role: "user",
@@ -411,7 +445,7 @@ describe("Gemini route", () => {
   it.effect("continues media tool results as inline model input without base64 text", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.assistant([ToolCallPart.make({ id: "call_image", name: "read", input: { path: "pixel.png" } })]),
@@ -432,7 +466,15 @@ describe("Gemini route", () => {
       )
 
       expect(prepared.body.contents).toEqual([
-        { role: "model", parts: [{ functionCall: { name: "read", args: { path: "pixel.png" } } }] },
+        {
+          role: "model",
+          parts: [
+            {
+              functionCall: { name: "read", args: { path: "pixel.png" } },
+              thoughtSignature: "skip_thought_signature_validator",
+            },
+          ],
+        },
         {
           role: "user",
           parts: [
@@ -460,7 +502,7 @@ describe("Gemini route", () => {
   it.effect("strips matching data URLs to raw base64 inlineData", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.user({ type: "media", media: Media.fromDataUrl("data:image/png;base64,AAEC") }),
@@ -502,7 +544,7 @@ describe("Gemini route", () => {
   it.effect("nests media inside function responses for gemini 3", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model: gemini3,
           messages: [
             Message.assistant([
@@ -555,10 +597,90 @@ describe("Gemini route", () => {
     }),
   )
 
+  it.effect("forwards native video URLs in user and tool input", () =>
+    Effect.gen(function* () {
+      const uri = "https://example.test/clip.mp4"
+      const messages = [
+        Message.user(Message.media(Media.url(uri, { mediaType: "video/mp4" }))),
+        Message.assistant([ToolCallPart.make({ id: "call_video", name: "read", input: {} })]),
+        Message.tool({
+          id: "call_video",
+          name: "read",
+          result: { type: "content", value: [{ type: "file", uri, mime: "video/mp4" }] },
+        }),
+      ]
+      const gemini = yield* compileRequest(ai.request({ model: gemini3, messages }))
+      expect(gemini.body).toEqual({
+        contents: [
+          { role: "user", parts: [{ fileData: { mimeType: "video/mp4", fileUri: uri } }] },
+          {
+            role: "model",
+            parts: [
+              {
+                functionCall: { id: "call_video", name: "read", args: {} },
+                thoughtSignature: "skip_thought_signature_validator",
+              },
+            ],
+          },
+          {
+            role: "user",
+            parts: [
+              { functionResponse: { id: "call_video", name: "read", response: { name: "read", content: "" } } },
+            ],
+          },
+          {
+            role: "user",
+            parts: [
+              { text: "Attached media from tool result:" },
+              { fileData: { mimeType: "video/mp4", fileUri: uri } },
+            ],
+          },
+        ],
+      })
+
+      const interactions = yield* compileRequest(
+        ai.request({
+          model: Google.configure({ apiKey: "test" }).interactions("gemini-3-flash-preview"),
+          messages,
+        }),
+      )
+      expect(interactions.body).toEqual({
+        model: "gemini-3-flash-preview",
+        input: [
+          { type: "user_input", content: [{ type: "video", uri, mime_type: "video/mp4" }] },
+          {
+            type: "function_call",
+            id: "call_video",
+            name: "read",
+            arguments: {},
+            signature: "skip_thought_signature_validator",
+          },
+          {
+            type: "function_result",
+            call_id: "call_video",
+            name: "read",
+            result: [{ type: "video", uri, mime_type: "video/mp4" }],
+          },
+        ],
+        stream: true,
+        store: false,
+        generation_config: {},
+      })
+
+      const error = yield* compileRequest(
+        ai.request({
+          model: gemini3,
+          prompt: Message.media(Media.url("https://example.test/image.png", { mediaType: "image/png" })),
+        }),
+      ).pipe(Effect.flip)
+      expect(error.reason._tag).toBe("InvalidRequest")
+    }),
+  )
+
   it.effect("flushes pending media before system update text", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.assistant([ToolCallPart.make({ id: "call_1", name: "shot", input: {} })]),
@@ -576,7 +698,10 @@ describe("Gemini route", () => {
       )
 
       expect(prepared.body.contents).toEqual([
-        { role: "model", parts: [{ functionCall: { name: "shot", args: {} } }] },
+        {
+          role: "model",
+          parts: [{ functionCall: { name: "shot", args: {} }, thoughtSignature: "skip_thought_signature_validator" }],
+        },
         {
           role: "user",
           parts: [{ functionResponse: { name: "shot", response: { name: "shot", content: "" } } }],
@@ -596,7 +721,7 @@ describe("Gemini route", () => {
   it.effect("collects legacy tool media into one turn after merged responses", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.assistant([
@@ -626,7 +751,10 @@ describe("Gemini route", () => {
       expect(prepared.body.contents).toEqual([
         {
           role: "model",
-          parts: [{ functionCall: { name: "shot", args: {} } }, { functionCall: { name: "shot", args: {} } }],
+          parts: [
+            { functionCall: { name: "shot", args: {} }, thoughtSignature: "skip_thought_signature_validator" },
+            { functionCall: { name: "shot", args: {} }, thoughtSignature: "skip_thought_signature_validator" },
+          ],
         },
         {
           role: "user",
@@ -649,7 +777,7 @@ describe("Gemini route", () => {
   it.effect("passes encoded media through without local validation", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.user([
@@ -676,7 +804,7 @@ describe("Gemini route", () => {
   it.effect("keeps tools and sends function calling mode NONE", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           id: "req_tool_choice_none",
           model,
           prompt: "Say hello.",
@@ -696,7 +824,7 @@ describe("Gemini route", () => {
   it.effect("normalizes the JSON Schema shapes Gemini rejects", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           id: "req_schema_patch",
           model,
           prompt: "Use the tool.",
@@ -775,7 +903,7 @@ describe("Gemini route", () => {
   it.effect("preserves nested empty object tool schemas", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           prompt: "Use the tool.",
           tools: [
@@ -838,7 +966,7 @@ describe("Gemini route", () => {
         $defs: { Item: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
       }
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           prompt: "Use the tool.",
           tools: [{ name: "filter", description: "Filter values", inputSchema }],
@@ -846,6 +974,23 @@ describe("Gemini route", () => {
       )
 
       expect(prepared.body.tools?.[0]?.functionDeclarations[0]?.parametersJsonSchema).toEqual(inputSchema)
+    }),
+  )
+
+  it.effect("reports the cost the endpoint billed", () =>
+    Effect.gen(function* () {
+      const body = sseEvents({
+        candidates: [{ content: { role: "model", parts: [{ text: "Hello" }] }, finishReason: "STOP" }],
+        usageMetadata: {
+          promptTokenCount: 5,
+          candidatesTokenCount: 2,
+          cost: 0,
+          opencode: { allowance: 0.0042 },
+        },
+      })
+      const response = yield* LLMClient.generate(request).pipe(Effect.provide(fixedResponse(body)))
+
+      expect(response.usage).toMatchObject({ inputTokens: 5, outputTokens: 2, cost: 0 })
     }),
   )
 
@@ -1122,7 +1267,7 @@ describe("Gemini route", () => {
       )
 
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model: gemini3,
           messages: [
             Message.assistant([
@@ -1189,7 +1334,7 @@ describe("Gemini route", () => {
       })
 
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.assistant([{ type: "text", text: "All done.", providerMetadata: delta?.providerMetadata }]),
@@ -1230,7 +1375,7 @@ describe("Gemini route", () => {
   it.effect("replays unsigned Gemini 3 tool calls with the validator bypass sentinel", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model: gemini3,
           messages: [
             Message.assistant([ToolCallPart.make({ id: "tool_0", name: "lookup", input: { query: "weather" } })]),
@@ -1268,7 +1413,7 @@ describe("Gemini route", () => {
   it.effect("leaves unsigned parallel calls unchanged after a signed Gemini 3 call", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model: gemini3,
           messages: [
             Message.assistant([
@@ -1285,32 +1430,30 @@ describe("Gemini route", () => {
         }),
       )
 
-      expect(prepared.body.contents).toEqual([
-        {
-          role: "model",
-          parts: [
-            {
-              functionCall: { id: "tool_0", name: "lookup", args: { query: "weather" } },
-              thoughtSignature: "parallel_signature",
-            },
-            {
-              functionCall: { id: "tool_1", name: "lookup", args: { query: "news" } },
-              thoughtSignature: undefined,
-            },
-            {
-              functionCall: { id: "tool_2", name: "lookup", args: { query: "sports" } },
-              thoughtSignature: undefined,
-            },
-          ],
-        },
-      ])
+      expect(prepared.body.contents[0]).toEqual({
+        role: "model",
+        parts: [
+          {
+            functionCall: { id: "tool_0", name: "lookup", args: { query: "weather" } },
+            thoughtSignature: "parallel_signature",
+          },
+          {
+            functionCall: { id: "tool_1", name: "lookup", args: { query: "news" } },
+            thoughtSignature: undefined,
+          },
+          {
+            functionCall: { id: "tool_2", name: "lookup", args: { query: "sports" } },
+            thoughtSignature: undefined,
+          },
+        ],
+      })
     }),
   )
 
   it.effect("adds the validator bypass sentinel to every call in an unsigned Gemini 3 batch", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model: gemini3,
           messages: [
             Message.assistant([
@@ -1321,21 +1464,19 @@ describe("Gemini route", () => {
         }),
       )
 
-      expect(prepared.body.contents).toEqual([
-        {
-          role: "model",
-          parts: [
-            {
-              functionCall: { id: "tool_0", name: "lookup", args: { query: "weather" } },
-              thoughtSignature: "skip_thought_signature_validator",
-            },
-            {
-              functionCall: { id: "tool_1", name: "lookup", args: { query: "news" } },
-              thoughtSignature: "skip_thought_signature_validator",
-            },
-          ],
-        },
-      ])
+      expect(prepared.body.contents[0]).toEqual({
+        role: "model",
+        parts: [
+          {
+            functionCall: { id: "tool_0", name: "lookup", args: { query: "weather" } },
+            thoughtSignature: "skip_thought_signature_validator",
+          },
+          {
+            functionCall: { id: "tool_1", name: "lookup", args: { query: "news" } },
+            thoughtSignature: "skip_thought_signature_validator",
+          },
+        ],
+      })
     }),
   )
 
@@ -1712,6 +1853,7 @@ describe("Gemini route", () => {
           reason: { _tag: "InvalidProviderOutput", body: JSON.stringify(event), http: { status: 200 } },
           message: `Gemini stopped with ${raw}`,
         })
+        expect(isRetryable(error)).toBe(raw === "MALFORMED_RESPONSE")
       }
     }),
   )
@@ -1808,7 +1950,7 @@ describe("Gemini route", () => {
   it.effect("replays generated assistant media as model inline data", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           id: "req_media",
           model,
           messages: [
@@ -1833,6 +1975,319 @@ describe("Gemini route", () => {
           { inlineData: { mimeType: "image/png", data: "AAECAw==" }, thoughtSignature: "sig_1" },
         ],
       })
+    }),
+  )
+})
+
+describe("Gemini response continuation", () => {
+  const continuedRequest = ai.request({
+    model: Gemini.route
+      .with({
+        endpoint: { baseURL: "https://generativelanguage.test/v1beta/" },
+        auth: Auth.header("x-goog-api-key", "test"),
+      })
+      .model({ id: "gemini-test" }),
+    prompt: "Count.",
+    tools: [ToolDefinition.make({ name: "lookup", description: "Lookup data", inputSchema: { type: "object" } })],
+  })
+
+  // Serves one scripted SSE body per request, or a body whose connection drops after it, and records every sent body.
+  const scripted = (responses: ReadonlyArray<string | { readonly dropped: string } | ReadableStream<Uint8Array>>) => {
+    const bodies: Array<Record<string, unknown>> = []
+    const layer = dynamicResponse((input) =>
+      Effect.sync(() => {
+        bodies.push(JSON.parse(input.text))
+        const response = responses[bodies.length - 1]
+        if (typeof response === "string" || response instanceof ReadableStream)
+          return input.respond(response, { headers: { "content-type": "text/event-stream" } })
+        let sent = false
+        return input.respond(
+          new ReadableStream({
+            pull(controller) {
+              if (sent) return controller.error(new Error("connection reset"))
+              sent = true
+              controller.enqueue(new TextEncoder().encode(response.dropped))
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        )
+      }),
+    )
+    return { bodies, layer }
+  }
+  const chunks = (...values: ReadonlyArray<unknown>) =>
+    values.map((value) => sseRaw(`data: ${JSON.stringify(value)}`)).join("")
+
+  const text = (value: string, extra: Record<string, unknown> = {}) => ({
+    candidates: [{ content: { role: "model", parts: [{ text: value }] }, ...extra }],
+  })
+  const continuation = (token?: string) => ({
+    candidates: [
+      { content: { role: "model", parts: [{ text: "" }] }, finishReason: "CONTINUATION", continuationToken: token },
+    ],
+  })
+
+  it.effect("stitches text split across three requests into one block", () =>
+    Effect.gen(function* () {
+      const server = scripted([
+        sseEvents(
+          {
+            candidates: [
+              { content: { role: "model", parts: [{ text: "plan", thought: true, thoughtSignature: "sig_1" }] } },
+            ],
+          },
+          text("THIRTEEN THOUSAND TWO"),
+          continuation("token-1"),
+        ),
+        sseEvents(
+          text(" HUNDRED SEVEN"),
+          // The finishing chunk's token supersedes an earlier checkpoint's.
+          text("TY-TWO", { continuationToken: "checkpoint" }),
+          continuation("token-2"),
+        ),
+        sseEvents(text(" DONE", { finishReason: "STOP" })),
+      ])
+      const response = yield* LLMClient.generate(continuedRequest).pipe(Effect.provide(server.layer))
+
+      expect(response.text).toBe("THIRTEEN THOUSAND TWO HUNDRED SEVENTY-TWO DONE")
+      expect(response.reasoning).toBe("plan")
+      expect(response.events.filter((event) => event.type !== "text-delta").map((event) => event.type)).toEqual([
+        "step-start",
+        "reasoning-start",
+        "reasoning-delta",
+        "reasoning-end",
+        "text-start",
+        "text-end",
+        "step-finish",
+        "finish",
+      ])
+      expect(response.events.find((event) => event.type === "reasoning-end")).toMatchObject({
+        providerMetadata: { google: { thoughtSignature: "sig_1" } },
+      })
+      expect(response.finishReason).toEqual({ normalized: "stop", raw: "STOP" })
+      expect(server.bodies).toHaveLength(3)
+      expect(server.bodies[0]).not.toHaveProperty("continuationToken")
+      expect(server.bodies[1]).toEqual({ ...server.bodies[0], continuationToken: "token-1" })
+      expect(server.bodies[2]).toEqual({ ...server.bodies[0], continuationToken: "token-2" })
+    }),
+  )
+
+  it.effect("finishes with a signed tool call from a later request", () =>
+    Effect.gen(function* () {
+      const server = scripted([
+        sseEvents(text("Looking"), continuation("token-1")),
+        sseEvents({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  { text: " it up." },
+                  { functionCall: { id: "call_1", name: "lookup", args: {} }, thoughtSignature: "call_sig" },
+                ],
+              },
+              finishReason: "STOP",
+            },
+          ],
+        }),
+      ])
+      const response = yield* LLMClient.generate(continuedRequest).pipe(Effect.provide(server.layer))
+
+      expect(response.text).toBe("Looking it up.")
+      expect(response.events.filter((event) => event.type === "text-start")).toHaveLength(1)
+      expect(response.events.find((event) => event.type === "tool-call")).toMatchObject({
+        id: "call_1",
+        providerMetadata: { google: { thoughtSignature: "call_sig" } },
+      })
+      expect(response.finishReason).toEqual({ normalized: "tool-calls", raw: "STOP" })
+    }),
+  )
+
+  it.effect("forgets a block once the resumed request finishes", () =>
+    Effect.gen(function* () {
+      const server = scripted([
+        sseEvents(text("THIRTEEN", { continuationToken: "checkpoint-1" }), { promptFeedback: { blockReason: "OTHER" } }),
+        sseEvents(text(" THOUSAND", { finishReason: "STOP" })),
+      ])
+      const response = yield* LLMClient.generate(continuedRequest).pipe(Effect.provide(server.layer))
+
+      expect(response.text).toBe("THIRTEEN THOUSAND")
+      expect(response.finishReason).toEqual({ normalized: "stop", raw: "STOP" })
+      expect(response.events.filter(LLMEvent.is.finish).map((event) => event.providerMetadata)).toEqual([undefined])
+    }),
+  )
+
+  it.effect("resumes a dropped stream from its latest checkpoint", () =>
+    Effect.gen(function* () {
+      const server = scripted([
+        { dropped: chunks(text("THIRTEEN"), text(" THOUSAND", { continuationToken: "checkpoint-1" })) },
+        sseEvents(text(" TWO", { finishReason: "STOP" })),
+      ])
+      const response = yield* LLMClient.generate(continuedRequest).pipe(Effect.provide(server.layer))
+
+      expect(response.text).toBe("THIRTEEN THOUSAND TWO")
+      expect(response.finishReason).toEqual({ normalized: "stop", raw: "STOP" })
+      expect(server.bodies[1]).toEqual({ ...server.bodies[0], continuationToken: "checkpoint-1" })
+    }),
+  )
+
+  it.effect("counts the usage of a dropped request once resumed", () =>
+    Effect.gen(function* () {
+      const server = scripted([
+        {
+          dropped: chunks(
+            { ...text("THIRTEEN"), usageMetadata: { promptTokenCount: 120, candidatesTokenCount: 5 } },
+            {
+              ...text(" THOUSAND", { continuationToken: "checkpoint-1" }),
+              usageMetadata: { promptTokenCount: 142, candidatesTokenCount: 32768, totalTokenCount: 32910 },
+            },
+          ),
+        },
+        sseEvents({
+          ...text(" TWO", { finishReason: "STOP" }),
+          usageMetadata: { promptTokenCount: 32910, candidatesTokenCount: 100, totalTokenCount: 33010 },
+        }),
+      ])
+      const response = yield* LLMClient.generate(continuedRequest).pipe(Effect.provide(server.layer))
+
+      expect(response.usage).toEqual(
+        new Usage({
+          inputTokens: 142,
+          outputTokens: 32868,
+          nonCachedInputTokens: 142,
+          totalTokens: 33010,
+          providerMetadata: {
+            google: {
+              promptTokenCount: 33052,
+              candidatesTokenCount: 32868,
+              totalTokenCount: 65920,
+              requests: 2,
+            },
+          },
+        }),
+      )
+    }),
+  )
+
+  it.effect("continues a stream that ends at a checkpoint without finishing", () =>
+    Effect.gen(function* () {
+      const server = scripted([
+        sseEvents(text("THIRTEEN", { continuationToken: "checkpoint-1" })),
+        sseEvents(text(" THOUSAND", { finishReason: "STOP" })),
+      ])
+      const response = yield* LLMClient.generate(continuedRequest).pipe(Effect.provide(server.layer))
+
+      expect(response.text).toBe("THIRTEEN THOUSAND")
+      expect(server.bodies[1]).toEqual({ ...server.bodies[0], continuationToken: "checkpoint-1" })
+    }),
+  )
+
+  it.effect("fails a stream dropped before any checkpoint", () =>
+    Effect.gen(function* () {
+      const server = scripted([{ dropped: chunks(text("Partial")) }])
+      const error = yield* LLMClient.generate(continuedRequest).pipe(Effect.provide(server.layer), Effect.flip)
+
+      expect(error.reason._tag).toBe("Transport")
+      expect(server.bodies).toHaveLength(1)
+    }),
+  )
+
+  it.effect("does not resume a response cut off by its own timeout", () =>
+    Effect.gen(function* () {
+      const stalled = yield* Deferred.make<void>()
+      let sent = false
+      const server = scripted([
+        new ReadableStream({
+          pull(controller) {
+            if (sent) return new Promise<void>(() => Deferred.doneUnsafe(stalled, Effect.void))
+            sent = true
+            controller.enqueue(new TextEncoder().encode(chunks(text("THIRTEEN", { continuationToken: "checkpoint-1" }))))
+          },
+        }),
+      ])
+      const fiber = yield* LLMClient.generate(
+        LLMRequest.update(continuedRequest, { http: { timeout: 1_000 } }),
+      ).pipe(Effect.provide(server.layer), Effect.flip, Effect.forkChild({ startImmediately: true }))
+      yield* Deferred.await(stalled)
+      yield* TestClock.adjust("1 second")
+      const error = yield* Fiber.join(fiber)
+
+      expect(error.reason).toMatchObject({ _tag: "Transport", code: "Timeout" })
+      expect(server.bodies).toHaveLength(1)
+    }),
+  )
+
+  it.effect("fails a continuation without a token", () =>
+    Effect.gen(function* () {
+      const server = scripted([sseEvents(text("Partial"), continuation())])
+      const error = yield* LLMClient.generate(continuedRequest).pipe(Effect.provide(server.layer), Effect.flip)
+
+      expect(error).toMatchObject({
+        reason: { _tag: "InvalidProviderOutput", http: { status: 200 } },
+        message: "Gemini continued the response without a token",
+      })
+      expect(server.bodies).toHaveLength(1)
+    }),
+  )
+
+  it.effect("does not continue a length finish", () =>
+    Effect.gen(function* () {
+      const server = scripted([
+        sseEvents(text("Partial", { finishReason: "MAX_TOKENS", continuationToken: "token-1" })),
+      ])
+      const response = yield* LLMClient.generate(continuedRequest).pipe(Effect.provide(server.layer))
+
+      expect(response.finishReason).toEqual({ normalized: "length", raw: "MAX_TOKENS" })
+      expect(server.bodies).toHaveLength(1)
+    }),
+  )
+
+  it.effect("reports the first request's input with all output", () =>
+    Effect.gen(function* () {
+      const usage = [
+        { promptTokenCount: 142, candidatesTokenCount: 32768, totalTokenCount: 32910 },
+        { promptTokenCount: 32910, candidatesTokenCount: 32768, totalTokenCount: 65678 },
+        {
+          promptTokenCount: 65678,
+          cachedContentTokenCount: 32911,
+          candidatesTokenCount: 32768,
+          totalTokenCount: 98446,
+        },
+        {
+          promptTokenCount: 98446,
+          cachedContentTokenCount: 65679,
+          candidatesTokenCount: 7257,
+          totalTokenCount: 105703,
+        },
+      ]
+      const server = scripted([
+        sseEvents(
+          { ...text("a"), usageMetadata: { promptTokenCount: 120, candidatesTokenCount: 10, totalTokenCount: 130 } },
+          { ...continuation("token-1"), usageMetadata: usage[0] },
+        ),
+        sseEvents({ ...continuation("token-2"), usageMetadata: usage[1] }),
+        sseEvents({ ...continuation("token-3"), usageMetadata: usage[2] }),
+        sseEvents({ ...text("b", { finishReason: "STOP" }), usageMetadata: usage[3] }),
+      ])
+      const response = yield* LLMClient.generate(continuedRequest).pipe(Effect.provide(server.layer))
+
+      expect(response.usage).toEqual(
+        new Usage({
+          inputTokens: 142,
+          outputTokens: 105561,
+          nonCachedInputTokens: 142,
+          totalTokens: 105703,
+          providerMetadata: {
+            google: {
+              promptTokenCount: 197176,
+              cachedContentTokenCount: 98590,
+              candidatesTokenCount: 105561,
+              totalTokenCount: 302737,
+              requests: 4,
+            },
+          },
+        }),
+      )
     }),
   )
 })
