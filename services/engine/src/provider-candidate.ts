@@ -24,7 +24,7 @@ type Connection =
   | { type: "env"; name: string }
   | { type: "host" }
   | { type: "new" }
-  | { type: "external"; methodID: string }
+  | { type: "external"; methodID: string; answer?: FormSchema.Answer }
   | { type: "reuse"; sourceId: string; connectionId: string }
 export type CandidateInput = {
   providerID: string
@@ -117,7 +117,11 @@ export function candidateInput(value: unknown): value is CandidateInput {
         connection.connectionId.length <= 256
       )
     case "external":
-      return keys(connection, ["type", "methodID"]) && identifier(connection.methodID)
+      return (
+        keys(connection, ["type", "methodID", "answer"]) &&
+        identifier(connection.methodID) &&
+        (connection.answer === undefined || Schema.is(FormSchema.Answer)(connection.answer))
+      )
     case "host":
     case "new":
       return keys(connection, ["type"])
@@ -391,18 +395,38 @@ export function providerCandidates(options: {
           )
             throw new ProviderCandidateError("Complete the provider connection fields.")
         }
-        // The native external route records the choice; the sign-in itself
-        // stays with the external program and is never copied.
-        if (selected.type === "external")
+        // The native external route records the choice and its form answers;
+        // the sign-in itself stays with the external program and is never copied.
+        if (selected.type === "external") {
+          const definition = await run(
+            session.provide(Integration.Service.use((service) => service.get(integrationID))),
+          )
+          const method = definition?.methods.find(
+            (method) => method.type === "external" && method.id === selected.methodID,
+          )
+          const answer = selected.answer ?? {}
+          if (method?.type !== "external")
+            throw new ProviderCandidateError("Select an available sign-in for this provider.")
+          if (
+            method.form
+              ? Form.validateFields(method.form) || Form.validateAnswer(method.form, answer)
+              : Object.keys(answer).length
+          )
+            throw new ProviderCandidateError("Complete the provider connection fields.")
           await run(
             session.provide(
               Integration.Service.use((service) =>
-                service.connection.external({ integrationID, methodID: Integration.MethodID.make(selected.methodID) }),
+                service.connection.external({
+                  integrationID,
+                  methodID: method.id,
+                  ...(Object.keys(answer).length ? { answer } : {}),
+                }),
               ),
             ),
           ).catch(() => {
             throw new ProviderCandidateError("Select an available sign-in for this provider.")
           })
+        }
         const external =
           selected.type === "external" || credential?.value.type === "external"
             ? await externalStatus(session, input.providerID, integrationID)

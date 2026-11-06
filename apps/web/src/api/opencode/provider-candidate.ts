@@ -8,7 +8,7 @@ export type CandidateConnection =
   | { type: "host" }
   | { type: "reuse"; sourceId: string; connectionId: string }
   | { type: "new" }
-  | { type: "external"; methodID: string }
+  | { type: "external"; methodID: string; answer?: FormAnswer }
 
 export type CandidateInput = {
   providerID: string

@@ -13,12 +13,16 @@ import { credentialReuse } from "./credential-reuse"
 // never run a real `claude`: PATH is emptied or OPENCODE_CLAUDE_PATH points at a
 // synthetic stand-in that answers only the start-up request.
 const integrationID = Integration.ID.make("claude-agent")
-const saved = { PATH: process.env.PATH, OPENCODE_CLAUDE_PATH: process.env.OPENCODE_CLAUDE_PATH }
+const projectVariables = ["GOOGLE_VERTEX_PROJECT", "GOOGLE_CLOUD_PROJECT", "GCP_PROJECT", "GCLOUD_PROJECT"]
+const saved = Object.fromEntries(
+  ["PATH", "OPENCODE_CLAUDE_PATH", ...projectVariables].map((name) => [name, process.env[name]]),
+)
 const directories: string[] = []
 afterEach(() => {
-  process.env.PATH = saved.PATH
-  if (saved.OPENCODE_CLAUDE_PATH === undefined) delete process.env.OPENCODE_CLAUDE_PATH
-  else process.env.OPENCODE_CLAUDE_PATH = saved.OPENCODE_CLAUDE_PATH
+  for (const [name, value] of Object.entries(saved)) {
+    if (value === undefined) delete process.env[name]
+    else process.env[name] = value
+  }
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true })
 })
 
@@ -127,6 +131,10 @@ test("external connections accept only a method identifier", () => {
   expect(candidateInput({ ...input, connection: { type: "external" } })).toBe(false)
   expect(candidateInput({ ...input, connection: { type: "external", methodID: "../claude" } })).toBe(false)
   expect(candidateInput({ ...input, connection: { type: "external", methodID: "claude-login", key: "x" } })).toBe(false)
+  expect(
+    candidateInput({ ...input, connection: { type: "external", methodID: "adc", answer: { project: "p" } } }),
+  ).toBe(true)
+  expect(candidateInput({ ...input, connection: { type: "external", methodID: "adc", answer: "p" } })).toBe(false)
 })
 
 test("a missing Claude Code passes the native needs_auth message through unchanged", async () => {
@@ -196,4 +204,29 @@ test("a saved external connection is checked again and reports a signed-out Clau
     await manager.close(created.sessionID)
   })
   expect(claude.log().some((line) => line.received === "user")).toBe(false)
+})
+
+// Vertex's Google Cloud credentials are an external method with fields. The
+// answer configures the connection; no Google request is made.
+test("an external method with fields connects with its answers and rejects incomplete ones", async () => {
+  for (const name of projectVariables) delete process.env[name]
+  await withManager(undefined, async (manager) => {
+    const connect = (answer?: Record<string, string>) =>
+      manager.handle("session", {
+        providerID: "google-vertex",
+        connection: { type: "external", methodID: "google-adc", ...(answer ? { answer } : {}) },
+      }) as Promise<{ sessionID: string; external: unknown }>
+    await expect(connect()).rejects.toThrow("Complete the provider connection fields.")
+    await expect(connect({ location: "global" })).rejects.toThrow("Complete the provider connection fields.")
+    await expect(connect({ project: "synthetic-project", location: "global", extra: "x" })).rejects.toThrow(
+      "Complete the provider connection fields.",
+    )
+    // The native route validates the required project again, so success shows
+    // the answer reached it.
+    const created = await connect({ project: "synthetic-project", location: "global" })
+    expect(created.external).toEqual({ status: "ready" })
+    const models = (await manager.handle("models", { sessionID: created.sessionID })) as { data: unknown[] }
+    expect(models.data.length).toBeGreaterThan(0)
+    await manager.close(created.sessionID)
+  })
 })

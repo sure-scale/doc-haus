@@ -27,7 +27,7 @@ test("the Claude Code sign-in is offered once, as a new or a saved connection", 
   ])
 })
 
-test("external methods with fields stay with the server-credential setup", () => {
+test("a cloud setup's external sign-in stays with its server-credential setup", () => {
   const vertex = { ...provider, id: "google-vertex", integrationID: "google-vertex", name: "Vertex" }
   const methods: IntegrationInfo["methods"] = [
     { type: "env", names: ["GOOGLE_VERTEX_API_KEY"] },
@@ -56,4 +56,29 @@ test("the editor explains the sign-in before the check and shows the native prob
   expect(ready).toMatch(/<button type="button" class="ghost">Check again<\/button>/)
   expect(render({ external: { status: "ready" }, onCheckAgain: () => {}, checking: true, disabled: true })).toContain("Checking…")
   expect(render({ external: { status: "checking" }, onCheckAgain: () => {} })).toContain("Still checking the sign-in.")
+})
+
+test("an external sign-in with fields is offered with its fields and stays offered beside a saved one", () => {
+  const azure: Provider = { ...provider, id: "azure", integrationID: "azure", name: "Azure" }
+  const method: IntegrationInfo["methods"][number] = {
+    id: "azure-cli", type: "external", label: "Microsoft Entra ID (Azure CLI)",
+    form: [{ key: "resourceName", type: "string", title: "Azure resource", required: true, pattern: "^[a-zA-Z0-9][a-zA-Z0-9-]*$", description: "Enter the name of your Azure OpenAI or AI Services resource." }],
+  }
+  const info: IntegrationInfo = { id: "azure", name: "Azure", connections: [], methods: [{ type: "env", names: ["AZURE_API_KEY"] }, { type: "key", label: "API key" }, method] }
+  expect(connectionChoices(azure, info, [])).toEqual([
+    { value: "method:1", label: "API key", method: info.methods[1] },
+    { value: "method:2", label: "Microsoft Entra ID (Azure CLI)", method, external: true },
+  ])
+  const saved = { ...info, connections: [{ type: "credential" as const, id: "entra", label: "Azure", method: "external" as const }] }
+  expect(connectionChoices(azure, saved, []).map(choice => choice.value)).toEqual(["credential:entra", "method:1", "method:2"])
+
+  const form = { ...draft, choice: "method:2", answer: { resourceName: "synthetic-resource" } }
+  const before = render({ provider: azure, integration: info, draft: form })
+  expect(before).toContain("Azure resource")
+  expect(before).toContain('value="synthetic-resource"')
+  expect(before).toContain("Enter the name of your Azure OpenAI or AI Services resource.")
+  expect(before).toContain("Uses the sign-in on the computer running doc.haus.")
+  const ready = render({ provider: azure, integration: info, draft: form, external: { status: "ready" }, onCheckAgain: () => {} })
+  expect(ready).toContain("Connection prepared. Choose your models to test access.")
+  expect(ready).not.toContain("Check again")
 })

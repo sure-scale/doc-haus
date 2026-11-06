@@ -33,3 +33,12 @@ test("catalog lists an external sign-in provider without host detection or its s
   expect(result).toEqual([{ id: "claude-agent", name: "Claude Agent", activation: "auto", integrationID: "claude-agent" }])
   expect(JSON.stringify(result)).not.toContain("synthetic")
 })
+
+test("catalog lists a provider whose sign-in has fields without its configured values", () => {
+  const result = providerCatalog([
+    { id: "azure", name: "Azure", activation: "auto", integrationID: "azure",
+      settings: { resourceName: "synthetic-resource", apiKey: "synthetic-private-key" } },
+  ], { AZURE_API_KEY: "synthetic-private-key" }, "/fixture-home", () => true)
+  expect(result).toEqual([{ id: "azure", name: "Azure", activation: "auto", integrationID: "azure" }])
+  expect(JSON.stringify(result)).not.toContain("synthetic")
+})

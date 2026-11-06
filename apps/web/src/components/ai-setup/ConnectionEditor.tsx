@@ -38,9 +38,10 @@ export function connectionChoices(provider: Provider | undefined, integration: I
   saved.push(...reusable.map(connection => ({ value: `reuse:${connection.sourceId}:${connection.connectionId}`, label: `${connection.label} (${connection.sourceLabel})` })))
   if (endpoint && !integration?.connections.length) saved.push({ value: "host", label: "Endpoint without API key" })
   const methods = [...(integration?.methods ?? []), ...(endpoint && !integration?.methods.some(method => method.type === "key") ? [{ type: "key" as const, label: "New API key" }] : [])]
-  // External methods with fields duplicate the server-credential setup above,
-  // and a saved external sign-in is reused rather than recorded twice.
-  return [...saved, ...methods.flatMap((method, index): ConnectionChoice[] => method.type === "env" || method.type === "external" && (method.form?.length || savedExternal) ? []
+  // Server credentials and their fields below already cover a cloud setup's
+  // external sign-in, and a saved sign-in without fields is not recorded twice.
+  const cloud = CLOUD_SETUPS.some(item => item.ids.includes(provider.id))
+  return [...saved, ...methods.flatMap((method, index): ConnectionChoice[] => method.type === "env" || method.type === "external" && (cloud || !method.form?.length && savedExternal) ? []
     : method.type === "external" ? [{ value: `method:${index}`, label: externalLabel(provider.id, method.label), method, external: true }]
       : [{ value: `method:${index}`, label: method.label || (method.type === "key" ? "New API key" : "Sign in"), method }])]
 }
@@ -75,6 +76,7 @@ export default function ConnectionEditor({ provider, integration, reusable, draf
   const method = selected?.method
   const spec = CLOUD_SETUPS.find(item => item.ids.includes(provider?.id ?? ""))
   const fields = method && "form" in method ? method.form ?? [] : []
+  const claude = provider?.id === "claude-agent"
   const setOption = (key: string, value: string) => onChange({ ...draft, options: { ...draft.options, [key]: value } })
   return <div className="ai-setup-connection">
     {local ? <>
@@ -128,10 +130,10 @@ export default function ConnectionEditor({ provider, integration, reusable, draf
       {selected?.external && !external && <p className="settings-hint muted">Uses {externalProgram(provider?.id)} on the computer running doc.haus.</p>}
       {selected?.external && external && <div className="ai-setup-auth" aria-live="polite">
         <p className={external.status === "needs_auth" ? undefined : "settings-hint muted"}>{external.status === "needs_auth" ? withCode(external.message)
-          : external.status === "ready" ? provider?.id === "claude-agent" ? "Claude Code is signed in." : "Sign-in found."
+          : external.status === "ready" ? claude ? "Claude Code is signed in." : "Connection prepared. Choose your models to test access."
             : "Still checking the sign-in. Check again in a moment."}</p>
         {external.status === "needs_auth" && external.url && /^https:\/\//.test(external.url) && <a href={external.url} target="_blank" rel="noreferrer">Open setup guide</a>}
-        {onCheckAgain && <div className="ai-setup-actions"><button type="button" className={external.status === "ready" ? "ghost" : "primary"} disabled={disabled} onClick={onCheckAgain}>{checking ? "Checking…" : "Check again"}</button></div>}
+        {onCheckAgain && (claude || external.status !== "ready") && <div className="ai-setup-actions"><button type="button" className={external.status === "ready" ? "ghost" : "primary"} disabled={disabled} onClick={onCheckAgain}>{checking ? "Checking…" : "Check again"}</button></div>}
       </div>}
     </>}
     {attempt && <div className="ai-setup-auth" aria-live="polite">

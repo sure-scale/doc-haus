@@ -230,8 +230,11 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
       const active = new Set(visibleFields(fields, draft.answer, true).map(field => field.key))
       connection = { type: "key", key: draft.key.trim(), answer: Object.fromEntries(Object.entries(draft.answer).filter(([key]) => active.has(key))) }
     } else if (method?.type === "oauth" || method?.type === "command") connection = { type: "new" }
-    else if (method?.type === "external") connection = { type: "external", methodID: method.id }
-    else throw new Error("Choose a connection method.")
+    else if (method?.type === "external") {
+      const active = new Set(visibleFields(method.form ?? [], draft.answer, true).map(field => field.key))
+      const answer = Object.fromEntries(Object.entries(draft.answer).filter(([key]) => active.has(key)))
+      connection = { type: "external", methodID: method.id, ...(Object.keys(answer).length ? { answer } : {}) }
+    } else throw new Error("Choose a connection method.")
     return { providerID: actualProvider, options, connection }
   }
 
