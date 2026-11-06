@@ -9,7 +9,7 @@ import { comparisonBasis } from "./comparison"
 import { checkPackageReview, isLeftOpenPackageFinding, isWithheldDeliveryItem, readPackageReview, withholdUngroundedDelivery } from "./package-review"
 import { coverageItems, planCoverageCurrent } from "./package-coverage"
 import { placementItems, planPlacementCurrent, SPINE_ATOMS } from "./spine-placement"
-import { readActRecord } from "./act-record"
+import { ACT_RECORD_ANSWERS, readActRecord } from "./act-record"
 import { requestedFilesItems } from "./requested-files"
 import { draftedDefaultItems } from "./drafted-defaults"
 import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
@@ -63,6 +63,7 @@ import {
   writeLeanBytes,
   writeLeanText,
   WORKING_DRAFT,
+  type AnswerReader,
   type LeanModel,
   type OpenItem,
   type Question,
@@ -247,7 +248,10 @@ const DISCLOSED_STAGES: StageID[] = ["spine", "research", "research-review", "ch
  * gives its id to another document, drafts it again. Answers, updates,
  * research, an earlier document's final text and accepted explanations, and
  * whom the lawyer acts for reach a drafted document as amendments through its
- * review and change-plan keys. Answers are inputs of every other step. The
+ * review and change-plan keys. Answers are inputs of every other step; the
+ * preparation steps (instructions to spine) read only run-level answers, and
+ * the act record also a document's package-scope answers (ACT_RECORD_ANSWERS),
+ * as the document's own steps read its questions' answers. The
  * changes step's own previous output
  * and open questions are shown to it but are not inputs, so its output never
  * changes its own key. The planned documents' ids, titles and purposes are
@@ -317,7 +321,7 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
     return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), { name: "discrepancy.json", bytes: intakeDiscrepancy(directory) }, ...(client ? [{ name: "matter-client", bytes: client }] : [])]
   }
   // The act record reads the instructions, the sources and the approved research; it runs before the spine and reads no discrepancy record.
-  if (step === "acts") return [...outlineInputs(directory), file("intake.json"), file("research.json"), file("research-review.json"), { name: "act-record-contract", bytes: ACT_RECORD_CONTRACT }]
+  if (step === "acts") return [...outlineInputs(directory, ACT_RECORD_ANSWERS), file("intake.json"), file("research.json"), file("research-review.json"), { name: "act-record-contract", bytes: ACT_RECORD_CONTRACT }]
   // The spine is shown the act record when it plans documents, parties and signatories; its entries are then split into atoms.
   if (step === "spine") return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), file("discrepancy.json"), file("intake.json"), file("research.json"), file("research-review.json"), file("acts.json"), { name: "spine-contract", bytes: SPINE_CONTRACT }]
   // Applied deletion evidence includes the original paragraph's exact wording.
@@ -406,12 +410,12 @@ export function stageDraftingPreferences(directory: string) {
   return areas ? `${preferences}\n${areas}` : preferences
 }
 
-function outlineInputs(directory: string, options: { settled?: false } = {}) {
+function outlineInputs(directory: string, options: AnswerReader & { settled?: false } = {}) {
   const request = leanFile(directory, "request.md")
   const updates = readLeanText(directory, "updated-notes.md")
   // Only with a working draft, so a run without one keeps its keys.
   const working = readLeanText(directory, WORKING_DRAFT)
-  return [{ name: "drafting-preferences", bytes: stageDraftingPreferences(directory) }, { name: "source-content", bytes: matterSourceBasis(directory) }, { name: "answers", bytes: answeredQuestionsText(directory, options) }, ...(updates ? [{ name: "updated-notes.md", bytes: updates }] : []), { name: "request.md", bytes: existsSync(request) ? readFileSync(request) : "" }, { name: "sources", bytes: matterSourceIDs(directory).join("\n") }, ...(working ? [{ name: WORKING_DRAFT, bytes: working }] : [])]
+  return [{ name: "drafting-preferences", bytes: stageDraftingPreferences(directory) }, { name: "source-content", bytes: matterSourceBasis(directory) }, { name: "answers", bytes: answeredQuestionsText(directory, { documents: false, ...options }) }, ...(updates ? [{ name: "updated-notes.md", bytes: updates }] : []), { name: "request.md", bytes: existsSync(request) ? readFileSync(request) : "" }, { name: "sources", bytes: matterSourceIDs(directory).join("\n") }, ...(working ? [{ name: WORKING_DRAFT, bytes: working }] : [])]
 }
 
 /** Checks a model reply and, when it passes, writes the step's output files. */

@@ -7,7 +7,7 @@ import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearSpan, near
 import type { DocID } from "./plan"
 import { INSTRUCTIONS_FILE } from "./instructions"
 import { leanUserUpdates } from "./requests"
-import { readLeanText, readQuestions, shortHash, type OpenItem, type StageID } from "./state"
+import { readLeanText, readQuestions, readsQuestion, shortHash, type AnswerReader, type OpenItem, type StageID } from "./state"
 import { scanSourceQuotes, type SourceQuote, type SourceQuoteScanOptions } from "./source-quote-scan"
 
 // Source-quote helpers shared by the lean stage checks and the final gate. A
@@ -38,9 +38,10 @@ export function isAnswerSource(source_id: string) { return ANSWER_SOURCE.test(so
 export function adoptedSource(questionID: string) { return `adopted:${questionID}` }
 const ADOPTED_SOURCE = /^adopted:\S+$/
 
-/** The source names of the run's adopted recommendations, ordered by question id. */
-export function adoptedSources(directory: string) {
-  return adoptedQuestions(directory).map(question => adoptedSource(question.id))
+/** The source names of the run's adopted recommendations, ordered by question
+ * id: those of the questions `options` reads, as answeredQuestionsText. */
+export function adoptedSources(directory: string, options: AnswerReader = {}) {
+  return adoptedQuestions(directory).filter(readsQuestion(options)).map(question => adoptedSource(question.id))
 }
 
 function adoptedQuestions(directory: string) {

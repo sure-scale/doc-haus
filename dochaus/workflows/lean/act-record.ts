@@ -3,13 +3,14 @@ import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenanc
 import { TOOL_SYNTAX_ISSUE, parseJsonObject, printedToolCall, record } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { instructionSections, listedActIssues, mergeCoverageActs, namingTexts } from "./package-coverage"
+import { answeredScopeQuestion } from "./package-scope"
 import { nameKey, namedIn } from "./plan"
 import { retryPrompt, tagged } from "./prompts"
 import { REQUEST_SOURCE, adoptedSources, excerpt, matterSourceIDs, proseQuoteIssues, quoteFound, quoteMissIssue } from "./quotes"
 import { approvedResearch, researchHandoff } from "./research"
 import type { StageRun } from "./runner"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, type LeanDeps } from "./stages"
-import { readLeanJson, writeLeanText, type LeanStageState, type LeanState } from "./state"
+import { readLeanJson, writeLeanText, type AnswerReader, type LeanStageState, type LeanState } from "./state"
 
 // The act record: what the lawyer's instructions direct, read in focused jobs
 // that each answer one question. WHAT lists the legal acts the instructions
@@ -172,6 +173,11 @@ const HOW_JOB = [
   `- ${EVIDENCE_RULE}`,
 ].join("\n")
 
+/** The answers the act record reads, in its prompts and its key: the run-level
+ * ones, as every preparation step, and a document's package-scope answers,
+ * which can direct acts the plan's coverage then takes from the record. */
+export const ACT_RECORD_ANSWERS: AnswerReader = { documents: answeredScopeQuestion }
+
 /** The material every act-record prompt starts with, byte for byte: built only
  * from the run's saved instructions, approved research and source names, in a
  * fixed order, with no per-job value. */
@@ -179,14 +185,14 @@ export function actRecordPack(directory: string) {
   const provenance = sourceProvenance(directory)
   return [
     "This is a lean drafting run. The material below serves several focused questions about the legal acts the lawyer's instructions direct; the question this reply answers follows it.",
-    ...instructionSections(directory),
+    ...instructionSections(directory, ACT_RECORD_ANSWERS),
     tagged("legal_research", "Approved legal research: each finding's proposition, its source URL and its exact supporting words. Missing research is a limitation, never an invitation to rely on model memory.\n" +
       researchHandoff(directory)),
     tagged("sources", [
       "Matter documents (use these exact names with search-document and read-document, and as source names):",
       ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`),
       `To quote the request, the lawyer's updates or the lawyer's own answers, use the source name "${REQUEST_SOURCE}". To quote approved legal research, use its finding's "url" as the source name.`,
-      ...adoptedSources(directory).map(name => `To quote the recommendation adopted for question ${name.slice("adopted:".length)}, which the lawyer delegated, use the source name "${name}"; its words are the drafter's judgment, not the lawyer's.`),
+      ...adoptedSources(directory, ACT_RECORD_ANSWERS).map(name => `To quote the recommendation adopted for question ${name.slice("adopted:".length)}, which the lawyer delegated, use the source name "${name}"; its words are the drafter's judgment, not the lawyer's.`),
     ].join("\n")),
     tagged("rules", [
       "- Read the matter documents you rely on with search-document or read-document.",

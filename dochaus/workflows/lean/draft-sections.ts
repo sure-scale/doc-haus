@@ -64,8 +64,8 @@ import {
 // instructed act is still left without a document its parties execute and no
 // answered package-scope question has shown it, the step saves no plan and
 // stops, blocked on one package-scope question for the lawyer about those acts
-// only; the answer joins the outline basis, so the plan is drawn up again with
-// it. An act an answered question showed is saved as uncovered and disclosed,
+// only; the outline reads the answer, so the plan is drawn up again with it.
+// An act an answered question showed is saved as uncovered and disclosed,
 // never asked about again nor sent back for a revision. While the gate's
 // package-scope question is open, the step asks none of its own: it saves the
 // plan, the act is disclosed, and the open question stays the one to answer. A

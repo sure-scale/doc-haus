@@ -42,7 +42,7 @@ export function instructionsPrompt(directory: string) {
     "An explicit later instruction supersedes an earlier one on that point: list only the current instruction. Do not list questions, suggestions or open points as instructions.",
     "Original request:", readLeanText(directory, "request.md") ?? "",
     "Later instructions in arrival order:", readLeanText(directory, "updated-notes.md") || "None.",
-    "Lawyer's answers:", answeredQuestionsText(directory, { settled: false }) || "None.",
+    "Lawyer's answers:", answeredQuestionsText(directory, { settled: false, documents: false }) || "None.",
     "Matter source names (use these exact names with search-document and read-document):", ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`),
     `Reply with one JSON object only: ${contract}. documents is empty when no matter document gives directions for this work.`,
   ].filter(Boolean).join("\n\n")

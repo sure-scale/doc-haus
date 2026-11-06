@@ -482,7 +482,7 @@ export function researchPrompt(directory: string, stage: ResearchStage, basis: s
   // Intake alone reads the client recorded on the matter, as data.
   const client = stage === "intake" ? matterClient(directory) : ""
   const context = [boundPlaybookContext(directory), "Original request:", readLeanText(directory, "request.md"), "Later instructions in arrival order: an explicit later change supersedes an earlier instruction on that point. A question or tentative suggestion is not an agreed instruction; ask about unresolved contradictions.", readLeanText(directory, "updated-notes.md"),
-    "Lawyer's answers:", answeredQuestionsText(directory),
+    "Lawyer's answers:", answeredQuestionsText(directory, { documents: false }),
     client && `<matter_client>\nThe lawyer's client as recorded on the matter: ${client}\nThe lawyer acts for that client unless the request, later instructions or answers name a different party as the one the lawyer acts for, which then prevails. Do not ask whom the lawyer acts for only because the request does not say, or about a difference from this record.\n</matter_client>`,
     "Matter source names (use these exact names with search-document and read-document):", ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`)].filter(Boolean).join("\n\n")
   const instructions = stage === "intake" ? readLeanText(directory, INSTRUCTIONS_FILE) : undefined

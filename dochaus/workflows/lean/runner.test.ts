@@ -259,4 +259,31 @@ describe("lean drafting runner", () => {
     expect(readLeanState(directory)!.stop_reason).toBeNull()
     expect(readdirSync(leanFile(directory, "requests")).filter(name => name.endsWith(".json"))).toEqual([])
   }, 120_000)
+
+  test("an answer to a document's question keeps instructions through spine done and re-runs that document's review and change plan onward", async () => {
+    const preparation = ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine"] as const
+    const directory = matter()
+    const asking = sameSession(prompt => JSON.stringify({ ...JSON.parse(changes(prompt, 0)), questions: [{ question: "Should late delivery carry a remedy?", kind: "judgment", context: "The terms are silent." }] }))
+    const blocked = await runLean(directory, { sessions: scriptedModel({ ...happyPath, [AGENT.changes]: asking }).port })
+    const [question] = readQuestions(directory)
+    expect(question).toMatchObject({ stage: "changes", document: "d1", status: "open" })
+    expect(blocked.stages["d1.change-plan"]?.status).toBe("done")
+
+    enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: "No remedy; leave the terms silent." })
+    const answered = scriptedModel({ ...happyPath, [AGENT.changes]: asking })
+    const resumed = await runLean(directory, { sessions: answered.port })
+
+    expect(resumed.status).toBe("completed")
+    for (const step of preparation) {
+      expect([step, resumed.stages[step]?.status, resumed.stages[step]?.input_sha]).toEqual([step, "done", blocked.stages[step]!.input_sha!])
+      expect([step, answered.count(AGENT[step])]).toEqual([step, 0])
+    }
+    expect(answered.count(AGENT.draft)).toBe(0)
+    expect(resumed.stages["d1.draft"]?.input_sha).toBe(blocked.stages["d1.draft"]!.input_sha!)
+    // The document's own steps read the answer, from its review onward.
+    for (const step of ["d1.review", "d1.change-plan"] as const)
+      expect([step, resumed.stages[step]?.status, resumed.stages[step]?.input_sha === blocked.stages[step]!.input_sha]).toEqual([step, "done", false])
+    expect(answered.count(AGENT.review)).toBe(1)
+    expect(answered.prompts.find(prompt => prompt.agent === AGENT.changes)!.text).toContain("No remedy; leave the terms silent.")
+  }, 120_000)
 })

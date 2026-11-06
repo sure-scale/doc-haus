@@ -6,7 +6,7 @@ import { tagged } from "./prompts"
 import { approvedResearch, researchHandoff } from "./research"
 import { EXCERPT, REQUEST_SOURCE, adoptedSources, excerpt, lawyerWords, matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
 import { answeredScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows, type ScopeParties } from "./package-scope"
-import { answeredQuestionsText, hashStageInputs, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type QuestionOption } from "./state"
+import { answeredQuestionsText, hashStageInputs, questionOptions, readLeanJson, readLeanText, readQuestions, type AnswerReader, type OpenItem, type Question, type QuestionOption } from "./state"
 import { sourceText } from "./template-structure"
 
 // Package coverage: an instructed act needs an instrument executed by the
@@ -89,10 +89,11 @@ const COVERAGE_SHAPE = 'Reply with the JSON object only: {"acts":[{"act":"...","
 const PLACEMENT_SHAPE = 'Reply with the JSON object only: {"placements":[{"act":0,"document":"planned id or null"}]}.'
 const READ_ONLY = "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply."
 
-/** The lawyer's instructions the coverage and act-record jobs read: the request, the later updates and the answers. */
-export function instructionSections(directory: string) {
+/** The lawyer's instructions the coverage and act-record jobs read: the request, the later updates and the answers
+ * `options` reads (the act record's: ACT_RECORD_ANSWERS). */
+export function instructionSections(directory: string, options: AnswerReader = {}) {
   const updates = readLeanText(directory, "updated-notes.md")?.trim()
-  const answers = answeredQuestionsText(directory)
+  const answers = answeredQuestionsText(directory, options)
   return [
     tagged("request", readLeanText(directory, "request.md") ?? ""),
     updates ? tagged("user_updates", `Later instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n${updates}`) : "",

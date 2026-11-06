@@ -1,6 +1,11 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { providerStopKind } from "../../lib/provider-stop"
+import { PACKAGE_SCOPE_QUESTION } from "./package-scope"
+import { writeLeanPlan } from "./plan"
+import { stageInputSha } from "./runner"
 import { LEAN_CHILD_PERMISSIONS, engineSessionPort } from "./stages"
+import { writeQuestions, type Question } from "./state"
+import { cleanupMatters, matter } from "./test-support"
 
 // The engine session port runs through the real v2 adapter (engineV2Fetch and the
 // transcript projection). Only the engine is scripted: it stores what it is sent
@@ -161,5 +166,30 @@ describe("lean engine session port", () => {
     expect((failure as Error).message).toBe("The engine refused the expander prompt (HTTP 503).")
     expect((failure as Error).cause).toEqual(refusal)
     expect(engine.admitted).toHaveLength(0)
+  })
+})
+
+describe("lean stage keys", () => {
+  afterEach(cleanupMatters)
+
+  test("an answer to a document's question re-keys no preparation step but the act record for a package-scope answer, only that document's steps; a run-level answer re-keys them", () => {
+    const steps = ["instructions", "acts", "spine", "d1.review"] as const
+    const keys = (questions: Question[]) => {
+      const directory = matter()
+      writeLeanPlan(directory, [{ title: "Supply note", purpose: "Supply note", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
+      writeQuestions(directory, questions)
+      return Object.fromEntries(steps.map(step => [step, stageInputSha(directory, step)]))
+    }
+    const answered: Question = { id: "q-late", stage: "intake", question: "Should late delivery carry a remedy?", context: "The terms are silent.", status: "answered", answer: "No remedy.", kind: "judgment" }
+    const none = keys([])
+    const { "d1.review": review, ...preparation } = keys([{ ...answered, stage: "changes", document: "d1" }])
+    const { "d1.review": noneReview, ...nonePreparation } = none
+    expect(preparation).toEqual(nonePreparation)
+    expect(review).not.toBe(noneReview)
+    const intake = keys([answered])
+    for (const step of steps) expect([step, intake[step] === none[step]]).toEqual([step, false])
+    // A document's package-scope answer can direct acts, so it re-keys the act record too.
+    const scope = keys([{ ...answered, id: `${PACKAGE_SCOPE_QUESTION}late`, stage: "draft", document: "d1" }])
+    for (const step of steps) expect([step, scope[step] === none[step]]).toEqual([step, step !== "acts" && step !== "d1.review"])
   })
 })
