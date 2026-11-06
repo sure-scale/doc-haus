@@ -157,7 +157,9 @@ test("an id's digits are no number, and a dotted number after a reference label 
   expect(numbers("Section 7.12(c)")).toEqual(["7.12"])
   // Money, percentages and decimals stay figures, in a text that cites a part too.
   for (const [text, stated] of [["$1,500,000", ["1500000"]], ["12.5%", ["12.5"]], ["5-10%", ["10"]], ["a rate of 2.5", ["2.5"]], ["the section's 12.5% fee", ["12.5"]],
-    ["Section 3 sets a fee of $1,500.50", ["1500.50"]], ["Clause 4: 45000 units", ["45000"]]] as const)
+    ["Section 3 sets a fee of $1,500.50", ["1500.50"]], ["Clause 4: 45000 units", ["45000"]],
+    // An amount written against a currency code is money, not an id.
+    ["a cap of USD1,500,000", ["1500000"]], ["GBP250.50", ["250.50"]], ["ref ABC12345", []]] as const)
     expect({ text, figures: figures(text) }).toEqual({ text, figures: [...stated] })
 })
 

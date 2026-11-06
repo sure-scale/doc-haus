@@ -58,13 +58,16 @@ const DECIMAL = /^\d+\.\d+$/
 /** What ends just before the digits of an id: a letter or "_", with or without
  * a "-" ("a1", "src_12", "q-3"). A "-" after a digit or space ("5-10%", "-2%") is not. */
 const ATTACHED = /[\p{Script=Latin}_]-?$/u
+/** A currency code written against an amount ("USD1,500,000", "GBP250.50"): money, not an id. */
+const CODE = /(?<![\p{L}\d_-])[A-Z]{3}$/u
 /** A reference label, as checks.ts reads one, or "§", ending just before a number ("Section 7.12(c)", "§ 4.2"). */
 const LABEL = /(?<![\p{L}\d'])(?:(?:section|regulation|paragraph|clause|schedule|article|part|rule)s?|(?:ss?|regs?|paras?|cl|sch|arts?)\.|§§?) ?$/iu
 
 // Each number a text states, as written and as compared: normalised as
 // quotations are, without thousands separators, so "$1,000,000" and
 // "1,000,000" are one figure. A number written in words is not read, nor a
-// digit run attached to a letter, "-" or "_" (an id such as "q-3"). A number
+// digit run attached to a letter, "-" or "_" (an id such as "q-3"), unless
+// it is an amount written against a currency code ("USD1,500,000"). A number
 // is a figure when it carries a currency sign or %, a decimal point or
 // thousands separators, or has five digits or more; a bare number of up to
 // four digits (a list or part number, a count, a year), a date or a dotted
@@ -74,7 +77,7 @@ function statedNumbers(text: string) {
   return [...normalized.matchAll(NUMBER)].flatMap(match => {
     const written = match[0]
     const preceding = normalized.slice(Math.max(0, match.index - 24), match.index)
-    if (ATTACHED.test(preceding)) return []
+    if (ATTACHED.test(preceding) && !(CODE.test(preceding) && (GROUPED.test(written) || DECIMAL.test(written)))) return []
     const before = preceding.slice(-2)
     const after = normalized.slice(match.index + written.length, match.index + written.length + 2)
     const signed = /\p{Sc} ?$/u.test(before) || /^ ?[\p{Sc}%]/u.test(after)
