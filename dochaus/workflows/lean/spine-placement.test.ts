@@ -6,17 +6,20 @@ import { readLeanEvents } from "./events"
 import { readLeanPlan, type PlannedDocument } from "./plan"
 import { stagePrompt } from "./prompts"
 import {
-  PLAN_PLACEMENT_REVISIONS, SPINE_ATOMS, documentGrounds, groundsBlock, parseEntryLevel, parseEntryPlacement, placementItems, placementPlanHash, planPlacementCurrent, planPlacementIssues, readLeanPlacement, readSpineLevels,
-  spineEntries, spineLevelKey, spineLevelPrompt, spinePlacementPrompt, writePlacement,
+  PLAN_PLACEMENT_REVISIONS, SPINE_ATOMS, documentGrounds, groundLine, groundsBlock, parseEntryLevel, parseEntryPlacement, parsePartEntries, partEntriesPrompt, placementItems, placementPlanHash, planPlacementCurrent,
+  planPlacementIssues, readLeanPlacement, readPartEntries, readSpineLevels, spineEntries, spineLevelKey, spineLevelPrompt, spinePlacementPrompt, withPartEntries, writePlacement,
   type EntryPlacement,
 } from "./spine-placement"
 import { LEAN_MAX_RETRIES, disclosableItems } from "./stages"
 import { leanFile, readLeanState, readLeanText, writeLeanText } from "./state"
+import { writeLeanPlan } from "./plan"
 import { AGENT, cleanupMatters, matter, scriptedModel } from "./test-support"
 
 // Spine placement: for each drafting-spine entry, one focused job says whether
 // it binds some part's text or the package, and another, beside it, names the
-// planned parts that rest on it, which bind it at either level; a text
+// planned parts that rest on it, which bind it at either level, and each
+// planned part's reverse job names the entries it rests on, which only add to
+// those parts; a text
 // requirement or decision placed in no part goes back to the outline once, what
 // is left is recorded unplaced and disclosed, and each part prompt is told the
 // entries placed in it.
@@ -34,6 +37,10 @@ const SPINE = JSON.stringify({ entries: [
   { kind: "fact", detail: PAYMENT, evidence: [{ source_id: "supply-terms.docx", quote: "Payment is due on delivery." }], limitations: [] },
 ], limitations: [] })
 
+/** A limitation on the payment entry, where the spine says what the cover note must flag. */
+const FLAG = "The cover note must flag that the sources give no invoice date."
+const LIMITED = JSON.stringify({ ...JSON.parse(SPINE), entries: [JSON.parse(SPINE).entries[0], { ...JSON.parse(SPINE).entries[1], limitations: [FLAG] }] })
+
 const documents: PlannedDocument[] = [{ id: "d1", title: "Supply note", purpose: "Records the supply terms.", parts: [
   { heading: "Delivery", scope: "When the goods are delivered." }, { heading: "Payment", scope: "When payment falls due." },
 ] }]
@@ -42,13 +49,21 @@ const documents: PlannedDocument[] = [{ id: "d1", title: "Supply note", purpose:
 const outliner = (first: string, revised = first) => (text: string) =>
   /^Draft part \d+ of \d+ of "/m.test(text) ? "The terms are recorded." : text.startsWith(REVISE) ? revised : first
 
-/** The placement agent: each entry rests on the planned part of the heading its detail names, if planned. */
-const placer = (text: string) => {
+/** A part's reverse job, as the placement agent answers it: the part and every entry, without quotes. */
+const reverseJob = (text: string) => text.includes("<part>\n")
+const tag = (text: string, name: string) => text.split(`<${name}>\n`)[1]!.split(`\n</${name}>`)[0]!.split("\n").slice(1).join("\n")
+
+/** The placement agent: each entry rests on the planned part of the heading its
+ * detail names, if planned; `reverse` answers each part's reverse job (placer's
+ * names no entry). */
+const placerWith = (reverse: (part: { ref: string; heading: string }, entries: { index: number; detail: string }[]) => number[]) => (text: string) => {
+  if (reverseJob(text)) return JSON.stringify({ entries: reverse(JSON.parse(tag(text, "part")), tag(text, "entries").split("\n").map(line => JSON.parse(line))) })
   const planned = JSON.parse(text.split("<documents>\n")[1]!.split("\n</documents>")[0]!.split("\n").slice(1).join("\n")) as { parts: { ref: string; heading: string }[] }[]
   const entry = JSON.parse(text.split("<entry>\n")[1]!.split("\n</entry>")[0]!.split("\n").slice(1).join("\n")) as { detail: string }
   const heading = entry.detail.startsWith("The supplier must deliver") ? "Delivery" : "Payment"
   return JSON.stringify({ parts: planned.flatMap(document => document.parts.filter(part => part.heading === heading).map(part => part.ref)) })
 }
+const placer = placerWith(() => [])
 
 /** A matter whose spine's entries are each atomic: the atoms are the entries. */
 function prepared(spine = SPINE) {
@@ -64,7 +79,10 @@ const packageDelivery = (text: string) => JSON.stringify({ level: text.includes(
 
 const run = (directory: string, model: ReturnType<typeof scriptedModel>, document: "d1" | "d2" = "d1") =>
   runDraftStage(directory, readLeanState(directory)!, { sessions: model.port }, () => {}, document, () => {})
-const placementPrompts = (model: ReturnType<typeof scriptedModel>) => model.prompts.filter(prompt => prompt.agent === AGENT.placement)
+/** The sessions of the parts' reverse jobs. */
+const reverseSessions = (model: ReturnType<typeof scriptedModel>) => new Set(model.sessions.flatMap((session, at) => session.title?.includes("placement: part ") ? [`ses_child${at + 1}`] : []))
+const placementPrompts = (model: ReturnType<typeof scriptedModel>) => model.prompts.filter(prompt => prompt.agent === AGENT.placement && !reverseSessions(model).has(prompt.sessionID))
+const reversePrompts = (model: ReturnType<typeof scriptedModel>) => model.prompts.filter(prompt => prompt.agent === AGENT.placement && reverseSessions(model).has(prompt.sessionID))
 const levelPrompts = (model: ReturnType<typeof scriptedModel>) => model.prompts.filter(prompt => prompt.agent === AGENT.level)
 const revisions = (model: ReturnType<typeof scriptedModel>) => model.prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.startsWith(REVISE))
 const partPrompts = (model: ReturnType<typeof scriptedModel>) => model.prompts.filter(prompt => prompt.agent === AGENT.draft && /^Draft part \d+ of /m.test(prompt.text))
@@ -91,6 +109,19 @@ describe("spine entry level", () => {
     // The entry reads as it does in its placement job.
     expect(spinePlacementPrompt(documents, delivery!)).toContain(prompt.split("\n\n<question>")[0]!)
   })
+
+  test("an entry's limitations reach its level and placement jobs and the drafter's ground line", () => {
+    const { directory } = prepared(LIMITED)
+    const [delivery, payment] = spineEntries(directory)
+    expect(payment!.limitations).toEqual([FLAG])
+    expect(JSON.parse(tag(spineLevelPrompt(payment!), "entry"))).toEqual({ kind: "fact", detail: PAYMENT, limitations: [FLAG], sources: ["supply-terms.docx"], quote: "Payment is due on delivery." })
+    expect(tag(spinePlacementPrompt(documents, payment!), "entry")).toBe(tag(spineLevelPrompt(payment!), "entry"))
+    expect(groundLine(payment!)).toBe(`fact: ${PAYMENT} [source: supply-terms.docx] [limitations: ${FLAG}]`)
+    expect(groundsBlock([payment!])).toContain(`- fact: ${PAYMENT} [source: supply-terms.docx] [limitations: ${FLAG}] (evidence: "Payment is due on delivery."; retrieve the full words before quoting them)`)
+    // An entry without limitations reads as before.
+    expect(spineLevelPrompt(delivery!)).not.toContain("limitations")
+    expect(groundLine(delivery!)).toBe(`requirement: ${DELIVERY} [source: supply-terms.docx]`)
+  })
 })
 
 describe("spine placement parser", () => {
@@ -113,10 +144,10 @@ describe("spine placement parser", () => {
 
   test("a text requirement or decision placed in no part is a gap for the outline; a fact, a package entry or an unchecked entry is not", () => {
     const entries = [
-      { index: 0, kind: "requirement", detail: DELIVERY, evidence: [{ source_id: "supply-terms.docx", quote: "q" }] },
-      { index: 1, kind: "fact", detail: PAYMENT, evidence: [] },
-      { index: 2, kind: "decision", detail: "Deliver to the buyer's yard.", evidence: [] },
-      { index: 3, kind: "requirement", detail: "Return the note as one file.", evidence: [] },
+      { index: 0, kind: "requirement", detail: DELIVERY, evidence: [{ source_id: "supply-terms.docx", quote: "q" }], limitations: [] },
+      { index: 1, kind: "fact", detail: PAYMENT, evidence: [], limitations: [] },
+      { index: 2, kind: "decision", detail: "Deliver to the buyer's yard.", evidence: [], limitations: [] },
+      { index: 3, kind: "requirement", detail: "Return the note as one file.", evidence: [], limitations: [] },
     ]
     expect(planPlacementIssues(entries, [
       { entry: 0, level: "text", parts: [] }, { entry: 1, level: "text", parts: [] }, { entry: 2, level: "text", parts: [], unchecked: true }, { entry: 3, level: "package", parts: [] },
@@ -133,14 +164,14 @@ describe("spine placement parser", () => {
     const plan = readLeanPlan(directory)!.documents
     const rows: EntryPlacement[] = [{ entry: 0, level: "package", parts: ["d1/1"] }, { entry: 1, level: "text", parts: [] }, { entry: 2, level: "package", parts: [] }]
     expect(planPlacementIssues(spineEntries(directory), rows)).toEqual([])
-    writePlacement(directory, plan, { entries: rows, issues: [] })
+    writePlacement(directory, plan, { entries: rows, parts: [], issues: [] })
     expect(documentGrounds(directory, "d1").map(grounds => grounds.map(entry => entry.index))).toEqual([[0], []])
     expect(placementItems(directory)).toEqual([])
     // The same decision at the text level, placed nowhere, goes back to the outline and is disclosed.
     const gap = rows.map(row => row.entry === 2 ? { ...row, level: "text" as const } : row)
     const issues = planPlacementIssues(spineEntries(directory), gap)
     expect(issues).toEqual(["No part covers decision: Deliver to the buyer's yard. Plan the part, or extend the scope of the part that should."])
-    writePlacement(directory, plan, { entries: gap, issues })
+    writePlacement(directory, plan, { entries: gap, parts: [], issues })
     expect(placementItems(directory).map(item => item.detail)).toEqual([
       "Document plan: no planned part sets out or reasons from this decision: Deliver to the buyer's yard. The lawyer should confirm the drafts deal with it.",
     ])
@@ -160,7 +191,16 @@ describe("spine placement parser", () => {
     expect(first).not.toContain(PAYMENT)
   })
 
-  test("the record's key moves with the atoms' bytes and the documents' coverage view, not with spine.json", () => {
+  test("the placement jobs read each document's form, and the record's key moves with it", () => {
+    const { directory } = prepared()
+    const [delivery] = spineEntries(directory)
+    const formed: PlannedDocument[] = [{ ...documents[0]!, form: "agreement" }]
+    expect(JSON.parse(tag(spinePlacementPrompt(formed, delivery!), "documents"))[0]).toMatchObject({ id: "d1", purpose: "Records the supply terms.", form: "agreement" })
+    expect(spinePlacementPrompt(documents, delivery!)).not.toContain('"form"')
+    expect(placementPlanHash(directory, formed)).not.toBe(placementPlanHash(directory, documents))
+  })
+
+  test("the record's key moves with the atoms' bytes and the documents' placement view, not with spine.json", () => {
     const { directory } = prepared()
     const key = placementPlanHash(directory, documents)
     expect(placementPlanHash(directory, [{ ...documents[0]!, file: "note.docx" }])).toBe(key)
@@ -169,6 +209,12 @@ describe("spine placement parser", () => {
     expect(placementPlanHash(directory, documents)).toBe(key)
     writeLeanText(directory, SPINE_ATOMS, SPINE.replace("thirty", "forty"))
     expect(placementPlanHash(directory, documents)).not.toBe(key)
+    // A record of the earlier schema, without the parts' reverse jobs, is read as no record.
+    writePlacement(directory, documents, { entries: [{ entry: 0, level: "text", parts: ["d1/1"] }], parts: [], issues: [] })
+    expect(readLeanPlacement(directory)).toBeDefined()
+    const { parts: _parts, ...earlier } = JSON.parse(readLeanText(directory, "placement.json")!)
+    writeLeanText(directory, "placement.json", JSON.stringify({ ...earlier, schema: "dochaus.lean.placement/3" }))
+    expect(readLeanPlacement(directory)).toBeUndefined()
   })
 
   test("the level and placement jobs read the atoms, never the entries as the spine wrote them", () => {
@@ -180,6 +226,125 @@ describe("spine placement parser", () => {
   })
 })
 
+describe("reverse placement, one job per planned part", () => {
+  test("one part's prompt: every entry, without quotes, first, then its document, the part and the question", () => {
+    const { directory } = prepared(LIMITED)
+    const entries = spineEntries(directory)
+    const formed: PlannedDocument = { ...documents[0]!, form: "agreement" }
+    const [first, second] = [0, 1].map(index => partEntriesPrompt(formed, index, entries)) as [string, string]
+    expect(first).toStartWith("<entries>\n")
+    expect(first.indexOf("<entries>")).toBeLessThan(first.indexOf("<document>"))
+    expect(first.indexOf("<document>")).toBeLessThan(first.indexOf("<part>"))
+    expect(first.indexOf("<part>")).toBeLessThan(first.indexOf("<question>"))
+    // The entries are shared, so the prefix caches across the parts' jobs.
+    expect(first.split("<document>")[0]).toBe(second.split("<document>")[0]!)
+    expect(tag(first, "entries").split("\n").map(line => JSON.parse(line))).toEqual([
+      { index: 0, kind: "requirement", detail: DELIVERY }, { index: 1, kind: "fact", detail: PAYMENT, limitations: [FLAG] },
+    ])
+    // No quote or source: the payment entry's quote is not its detail.
+    for (const word of ['"quote"', "Payment is due on delivery.", "supply-terms.docx"]) expect(first).not.toContain(word)
+    expect(JSON.parse(tag(first, "document"))).toEqual({ id: "d1", title: "Supply note", purpose: "Records the supply terms.", form: "agreement" })
+    expect(JSON.parse(tag(first, "part"))).toEqual({ ref: "d1/1", heading: "Delivery", scope: "When the goods are delivered." })
+    expect(JSON.parse(tag(second, "part"))).toEqual({ ref: "d1/2", heading: "Payment", scope: "When payment falls due." })
+    expect(first).not.toContain("When payment falls due.")
+    expect(first).toContain("Which entries must this part set out or reason from?")
+  })
+
+  test("a reply must be {\"entries\": [...]}; known indexes are kept once, in spine order, and an empty list stands", () => {
+    const entries = spineEntries(prepared().directory)
+    const shape = 'Reply with the JSON object only: {"entries":[3,7]}, each an index from <entries>, or {"entries":[]} when the part rests on none.'
+    expect(parsePartEntries("Entry 1", entries)).toEqual({ issues: [`${shape} No JSON object was found in the reply.`] })
+    for (const reply of [{ entries: 1 }, { entries: ["1"] }, { entries: [0.5] }, { parts: ["d1/1"] }])
+      expect(parsePartEntries(JSON.stringify(reply), entries)).toEqual({ issues: [shape] })
+    expect(parsePartEntries(JSON.stringify({ entries: [1, 0, 1] }), entries)).toEqual({ issues: [], value: [0, 1] })
+    expect(parsePartEntries(JSON.stringify({ entries: [] }), entries)).toEqual({ issues: [], value: [] })
+  })
+
+  test("an unknown index is retry feedback naming it, and dropped on the last attempt", () => {
+    const entries = spineEntries(prepared().directory)
+    const unknown = (index: number) => `${index} is not an entry index. Name entries by the "index" each has in <entries>.`
+    expect(parsePartEntries(JSON.stringify({ entries: [1, 2, 7] }), entries)).toEqual({ issues: [unknown(2), unknown(7)] })
+    expect(parsePartEntries(JSON.stringify({ entries: [1, 7] }), entries, { final: true })).toEqual({ issues: [unknown(7)], value: [1] })
+  })
+
+  test("a reverse hit adds its part to the entry's placement, in plan order; a reverse miss never removes one", () => {
+    const two: PlannedDocument[] = [...documents, { id: "d2", title: "Cover note", purpose: "Flags the open points.", parts: [{ heading: "Open points", scope: "What the lawyer must confirm." }] }]
+    const rows: EntryPlacement[] = [{ entry: 0, level: "text", parts: ["d1/1"] }, { entry: 1, level: "text", parts: ["d1/2"] }, { entry: 2, level: "package", parts: [] }]
+    expect(withPartEntries(two, rows, [{ part: "d1/1", entries: [] }, { part: "d1/2", entries: [1] }, { part: "d2/1", entries: [1, 2] }])).toEqual([
+      { entry: 0, level: "text", parts: ["d1/1"] },
+      { entry: 1, level: "text", parts: ["d1/2", "d2/1"], added: ["d2/1"] },
+      { entry: 2, level: "package", parts: ["d2/1"], added: ["d2/1"] },
+    ])
+    expect(withPartEntries(two, [{ entry: 1, level: "text", parts: ["d2/1"] }], [{ part: "d1/1", entries: [1] }])).toEqual([{ entry: 1, level: "text", parts: ["d1/1", "d2/1"], added: ["d1/1"] }])
+    expect(withPartEntries(two, rows, [{ part: "d1/1", entries: [], unchecked: true }, { part: "d1/2", entries: [] }])).toEqual(rows)
+  })
+
+  test("a part's reverse hit gives its entry a second home, whose part prompt carries it with its limitations", async () => {
+    const { directory } = prepared(LIMITED)
+    // The delivery part also reasons from the payment entry.
+    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.placement]: placerWith(part => part.heading === "Delivery" ? [1] : []) })
+    expect((await run(directory, model)).status).toBe("done")
+    const record = readLeanPlacement(directory)!
+    expect(record.parts).toEqual([{ part: "d1/1", entries: [1] }, { part: "d1/2", entries: [] }])
+    expect(record.entries).toEqual([{ entry: 0, level: "text", parts: ["d1/1"] }, { entry: 1, level: "text", parts: ["d1/1", "d1/2"], added: ["d1/1"] }])
+    expect(documentGrounds(directory, "d1").map(grounds => grounds.map(entry => entry.index))).toEqual([[0, 1], [1]])
+    const [delivery] = partPrompts(model).map(prompt => prompt.text)
+    expect(delivery!.split("<rests_on>\n")[1]).toContain(`- fact: ${PAYMENT} [source: supply-terms.docx] [limitations: ${FLAG}]`)
+  })
+
+  test("a reverse hit fills the gap the entry's own job left, so the outline is not revised", async () => {
+    const { directory } = prepared()
+    // The plan has no delivery part, but its payment part reasons from the delivery requirement.
+    const model = scriptedModel({ [AGENT.draft]: outliner(ONE), [AGENT.placement]: placerWith(() => [0]) })
+    expect((await run(directory, model)).status).toBe("done")
+    expect(revisions(model)).toEqual([])
+    const record = readLeanPlacement(directory)!
+    expect(record).toMatchObject({ status: "placed", issues: [] })
+    expect(record.entries).toEqual([{ entry: 0, level: "text", parts: ["d1/1"], added: ["d1/1"] }, { entry: 1, level: "text", parts: ["d1/1"] }])
+  })
+
+  test("an unknown index is retried in the part's session; a reply that never passes adds nothing and is not saved", async () => {
+    const { directory } = prepared()
+    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.placement]: (text, _index, sessionID) => {
+      if (!reverseSessions(model).has(sessionID!)) return placer(text)
+      const part = JSON.parse(tag(model.prompts.find(prompt => prompt.sessionID === sessionID)!.text, "part")) as { ref: string }
+      if (part.ref === "d1/2") return "The payment entry."
+      return JSON.stringify({ entries: text.startsWith("Your reply") ? [1] : [9] })
+    } })
+    expect((await run(directory, model)).status).toBe("done")
+    const asked = (ref: string) => reversePrompts(model).filter(prompt => prompt.sessionID === reversePrompts(model).find(first => first.text.includes(`"ref": "${ref}"`))!.sessionID)
+    expect(asked("d1/1")).toHaveLength(2)
+    expect(asked("d1/1")[1]!.text).toContain('9 is not an entry index. Name entries by the "index" each has in <entries>.')
+    expect(asked("d1/2")).toHaveLength(1 + LEAN_MAX_RETRIES)
+    const record = readLeanPlacement(directory)!
+    expect(record.parts).toEqual([{ part: "d1/1", entries: [1] }, { part: "d1/2", entries: [], unchecked: true }])
+    expect(record.entries).toEqual([{ entry: 0, level: "text", parts: ["d1/1"] }, { entry: 1, level: "text", parts: ["d1/1", "d1/2"], added: ["d1/1"] }])
+    expect(Object.values(readPartEntries(directory))).toEqual([[1]])
+  })
+
+  test("an unchanged part is not asked again, in the revised plan or after the lawyer edits another part", async () => {
+    const { directory } = prepared()
+    const revised = `${ONE}\n## Delivery\nWhen the goods are delivered.`
+    const model = scriptedModel({ [AGENT.draft]: outliner(ONE, revised), [AGENT.placement]: placer })
+    expect((await run(directory, model)).status).toBe("done")
+    // The delivery requirement had no part, so the outline was revised once; its payment part was asked only for the first plan.
+    expect(revisions(model)).toHaveLength(1)
+    expect(reversePrompts(model).map(prompt => JSON.parse(tag(prompt.text, "part")).heading)).toEqual(["Payment", "Delivery"])
+    expect(readLeanPlacement(directory)!.parts).toEqual([{ part: "d1/1", entries: [] }, { part: "d1/2", entries: [] }])
+    // The lawyer edits the delivery part's scope: only that part's reverse job runs again, with every entry's own job.
+    const plan = readLeanPlan(directory)!
+    writeLeanPlan(directory, plan.documents.map(({ id: _id, ...document }) => ({ ...document, parts: document.parts.map(part => part.heading === "Delivery" ? { ...part, scope: "When and where the goods are delivered." } : part) })),
+      plan.basis, plan.acting_for, undefined, plan.posture, plan.dates)
+    expect(planPlacementCurrent(directory)).toBe(false)
+    const placed = placementPrompts(model).length
+    expect((await run(directory, model)).status).toBe("done")
+    expect(reversePrompts(model).slice(2).map(prompt => JSON.parse(tag(prompt.text, "part")).scope)).toEqual(["When and where the goods are delivered."])
+    expect(placementPrompts(model)).toHaveLength(placed + 2)
+    expect(Object.keys(readPartEntries(directory))).toHaveLength(3)
+    expect(planPlacementCurrent(directory)).toBe(true)
+  })
+})
+
 describe("spine placement at the outline step", () => {
   test("each entry is placed by a job in a session of its own and the record names its parts", async () => {
     const { directory } = prepared()
@@ -187,13 +352,17 @@ describe("spine placement at the outline step", () => {
     expect((await run(directory, model)).status).toBe("done")
     for (const prompts of [levelPrompts(model), placementPrompts(model)]) {
       expect(prompts.map(prompt => prompt.sessionID).toSorted()).toEqual(
-        model.sessions.flatMap((session, at) => session.agent === prompts[0]!.agent ? [`ses_child${at + 1}`] : []).toSorted())
+        model.sessions.flatMap((session, at) => session.agent === prompts[0]!.agent && !reverseSessions(model).has(`ses_child${at + 1}`) ? [`ses_child${at + 1}`] : []).toSorted())
       expect(new Set(prompts.map(prompt => prompt.sessionID)).size).toBe(2)
       expect(prompts.filter(prompt => prompt.text.includes(DELIVERY) && prompt.text.includes(PAYMENT))).toEqual([])
     }
     const record = readLeanPlacement(directory)!
     expect(record.status).toBe("placed")
     expect(record.entries).toEqual([{ entry: 0, level: "text", parts: ["d1/1"] }, { entry: 1, level: "text", parts: ["d1/2"] }])
+    // Each planned part's reverse job, in a session of its own, is recorded too.
+    expect(record.parts).toEqual([{ part: "d1/1", entries: [] }, { part: "d1/2", entries: [] }])
+    expect(reversePrompts(model)).toHaveLength(2)
+    expect(new Set(reversePrompts(model).map(prompt => prompt.sessionID)).size).toBe(2)
     expect(planPlacementCurrent(directory)).toBe(true)
     expect(readLeanEvents(directory).filter(event => event.event === "placement").map(event => event.outcome)).toEqual(["placed"])
   })
@@ -264,7 +433,7 @@ describe("spine placement at the outline step", () => {
     expect(placementPrompts(model)).toHaveLength(placed)
     const d2 = partPrompts(model).at(-1)!.text
     expect(d2).toContain(`Draft part 1 of 1 of "Payment receipt"`)
-    expect(d2).toContain(`<rests_on>\nThis part rests on:\n- requirement: ${PAYMENT}\n`)
+    expect(d2).toContain(`<rests_on>\nThis part rests on:\n- requirement: ${PAYMENT} [limitations: No source.]\n`)
   })
 
   test("a package entry is placed like any other; placed in no part, it raises no revision and is not disclosed", async () => {
@@ -343,7 +512,7 @@ describe("spine placement in the part prompts", () => {
     expect(review.split("<drafting_spine>")[1]).toContain(DELIVERY)
     expect(review.split("<document_outline>\n")[1]!.split("\n</document_outline>")[0]).toContain(DELIVERY)
     // Placed in no part, it still rides the drafting spine every stage reads, and grounds no part.
-    writePlacement(directory, readLeanPlan(directory)!.documents, { entries: [{ entry: 0, level: "package", parts: [] }, { entry: 1, level: "text", parts: ["d1/2"] }], issues: [] })
+    writePlacement(directory, readLeanPlan(directory)!.documents, { entries: [{ entry: 0, level: "package", parts: [] }, { entry: 1, level: "text", parts: ["d1/2"] }], parts: [], issues: [] })
     expect(documentGrounds(directory, "d1").map(grounds => grounds.map(entry => entry.index))).toEqual([[], [1]])
     expect(stagePrompt(directory, "d1.review").split("<document_outline>\n")[1]!.split("\n</document_outline>")[0]).not.toContain(DELIVERY)
   })

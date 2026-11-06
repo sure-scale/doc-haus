@@ -40,9 +40,9 @@ import { draftTemplateItems } from "./template-coverage"
 import { originalTables, originalTablesBlock, partTableIssues, tableParts } from "./original-tables"
 import { parallel } from "./checklist-flow"
 import {
-  PLAN_PLACEMENT_REVISIONS, documentGrounds, groundsBlock, parseEntryLevel, parseEntryPlacement, planPlacementCurrent, planPlacementIssues, readSpineLevels, saveSpineLevel, spineEntries, spineLevelKey,
-  spineLevelPrompt, spinePlacementPrompt, writePlacement,
-  type EntryLevel, type EntryPlacement, type Placement, type SpineEntry,
+  PLAN_PLACEMENT_REVISIONS, documentGrounds, groundsBlock, parseEntryLevel, parseEntryPlacement, parsePartEntries, partEntriesKey, partEntriesPrompt, planPlacementCurrent, planPlacementIssues, readPartEntries,
+  readSpineLevels, savePartEntries, saveSpineLevel, spineEntries, spineLevelKey, spineLevelPrompt, spinePlacementPrompt, withPartEntries, writePlacement,
+  type EntryLevel, type EntryPlacement, type PartPlacement, type Placement, type SpineEntry,
 } from "./spine-placement"
 
 // Sectioned draft step. A long document can need more tokens than one model
@@ -96,7 +96,9 @@ import {
 // Once the coverage loop is done and no package-scope question stops the step,
 // each drafting-spine entry's level and placement jobs, side by side, find the
 // planned parts that rest on it (spine-placement.ts), each job in a session of
-// its own, the entries in parallel within the installation's limit. The parts
+// its own, the entries in parallel within the installation's limit; beside
+// them, each planned part's reverse job names the entries that part rests on,
+// which only add to the entries' parts. The parts
 // a placement names bind the entry at either level. A text requirement or
 // decision no part covers goes back to the outline session for one revised
 // outline (PLAN_PLACEMENT_REVISIONS), covered and placed again; what is left
@@ -254,11 +256,34 @@ export async function runDraftStage(
   // whether an entry placed in no part is a gap. An entry whose placement
   // reply never passed its check is recorded unchecked and raises no revision.
   // Both jobs settle before an error from either propagates, so a level that
-  // passed is kept for the resume.
+  // passed is kept for the resume. Beside the entries' jobs, each planned part's
+  // reverse job reads that part and every entry in a fresh session of its own,
+  // once per step for each content key; the entries it settles are saved at
+  // once (part-entries.json), so a resume or a revised plan keeping the part
+  // does not ask it again. Its entries are added to their placements, never
+  // removing a part; a part whose reply never passed adds none. The two pools
+  // settle before an error from either propagates.
+  const partJobs = new Map<string, Promise<PartPlacement>>()
   const placing = async (documents: PlannedDocument[]): Promise<Placement> => {
     const entries = spineEntries(directory)
     const placements: EntryPlacement[] = []
     const placementAgent = LEAN_STAGE_AGENTS.placement
+    const reverse = (document: PlannedDocument, index: number) => {
+      const part = `${document.id}/${index + 1}`
+      const prompt = partEntriesPrompt(document, index, entries)
+      const key = partEntriesKey(prompt)
+      const job = partJobs.get(key) ?? (async (): Promise<PartPlacement> => {
+        const saved = readPartEntries(directory)[key]
+        if (saved) return { part, entries: saved }
+        const id = await coverageSession(placementAgent, `placement: part ${part}`)
+        const checked = await exchange({ id, agent: placementAgent })(`placement part ${part}`, prompt, (reply, final) => parsePartEntries(reply, entries, { final }))
+        if (!checked.value) return { part, entries: [], unchecked: true }
+        savePartEntries(directory, key, checked.value)
+        return { part, entries: checked.value }
+      })()
+      partJobs.set(key, job)
+      return job
+    }
     const place = async (entry: SpineEntry): Promise<EntryPlacement> => {
       const [levelled, placed] = await Promise.allSettled([leveling(entry), (async () => {
         const id = await coverageSession(placementAgent, `placement: entry ${entry.index}`)
@@ -271,8 +296,17 @@ export async function runDraftStage(
       const row = { entry: entry.index, level, ...(unchecked ? { level_unchecked: true as const } : {}) }
       return placed.value.value ? { ...row, parts: placed.value.value } : { ...row, parts: [], unchecked: true }
     }
-    await parallel(entries, async (entry, at) => { placements[at] = await place(entry) })
-    return { entries: placements, issues: planPlacementIssues(entries, placements) }
+    // With no entry there is nothing to place, so no part is asked.
+    const parts = entries.length ? documents.flatMap(document => document.parts.map((_, index) => ({ document, index }))) : []
+    const named: PartPlacement[] = []
+    const [placed, reversed] = await Promise.allSettled([
+      parallel(entries, async (entry, at) => { placements[at] = await place(entry) }),
+      parallel(parts, async ({ document, index }, at) => { named[at] = await reverse(document, index) }),
+    ])
+    if (placed.status === "rejected") throw placed.reason
+    if (reversed.status === "rejected") throw reversed.reason
+    const united = withPartEntries(documents, placements, named)
+    return { entries: united, parts: named, issues: planPlacementIssues(entries, united) }
   }
   const recordPlacement = (documents: PlannedDocument[], placement: Placement) => {
     const record = writePlacement(directory, documents, placement)

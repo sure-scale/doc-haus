@@ -200,7 +200,7 @@ test("a part's placed spine entries are its coverage too, so the role names them
     { kind: "requirement", detail: "Keep unconfirmed proposals open.", evidence: [{ source_id: "request", quote: "Keep unconfirmed proposals open." }], limitations: [] },
     { kind: "fact", detail: "The proposal is unconfirmed.", evidence: [{ source_id: "instructions.txt", quote: "subject to confirmation" }], limitations: [] },
   ], limitations: [] }))
-  writePlacement(directory, readLeanPlan(directory)!.documents, { entries: [{ entry: 0, level: "text", parts: ["d1/1"] }, { entry: 1, level: "text", parts: ["d1/1"] }], issues: [] })
+  writePlacement(directory, readLeanPlan(directory)!.documents, { entries: [{ entry: 0, level: "text", parts: ["d1/1"] }, { entry: 1, level: "text", parts: ["d1/1"] }], parts: [], issues: [] })
   expect(checklistProducerInputs(directory)[0].input.targets.slice(0, 2)).toEqual([
     { document: "d1", role: "Agreement: Record agreed terms. Parts: Terms (Terms; rests on: requirement: Keep unconfirmed proposals open. [source: request] | fact: The proposal is unconfirmed. [source: instructions.txt])" },
     { document: "d2", role: "Advice: Explain decisions. Parts: Advice (Decisions)" },
