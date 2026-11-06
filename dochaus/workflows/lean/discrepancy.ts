@@ -16,7 +16,8 @@ import { hashStageInputs, readLeanJson, writeLeanText, type LeanStageState, type
 // work must settle that the sources leave silent or only one source speaks to.
 // The two run in parallel. Each difference and each gap then gets a VERIFY job
 // of its own, run in parallel within the workflow limit: do the difference's
-// passages state its point differently? does a matter source supply the gap?
+// passages state its point differently? does a matter source, a lawyer's
+// answer or a later instruction supply the gap?
 // A difference whose passages agree is dropped. Code writes discrepancy.json
 // once (assembleDiscrepancy), checked as a whole by checkEvidence, and records
 // its counts in one discrepancy_record event. Each job's accepted reply is
@@ -41,7 +42,8 @@ function sourceInputs(directory: string) {
 }
 const differencesKey = (directory: string) => hashStageInputs("discrepancy", LEAN_PROMPT_VERSION, sourceInputs(directory))
 const gapsKey = (directory: string) => hashStageInputs("discrepancy", LEAN_PROMPT_VERSION, stageInputs(directory, "discrepancy"))
-/** A verify job's key: the sources it searches and the gap it is shown. */
+/** A verify job's key: the sources it searches, the answers and later
+ * instructions it reads (both among the stage's inputs), and the gap it is shown. */
 const verifyKey = (inputs: ReturnType<typeof sourceInputs>, gap: Gap) =>
   hashStageInputs("discrepancy", LEAN_PROMPT_VERSION, [...inputs, { name: "gap", bytes: JSON.stringify([gap.detail, gap.requirement.source_id, gap.requirement.quote]) }])
 /** A difference verify job's key: the sources and the entry and passages it is shown. */
@@ -132,7 +134,7 @@ export async function runDiscrepancyStage(directory: string, state: LeanState, d
 
   // A gap whose verify job never passes stays unverified (assembleDiscrepancy).
   const verifyGaps = (candidates: Gap[]) => verifyEach<Gap, GapVerify>(VERIFY_FILE, "verify gap", candidates, gap => verifyKey(inputs, gap), gap => gapVerifyPrompt(directory, gap),
-    (_gap, value) => checkGapVerify(directory, value),
+    (gap, value) => checkGapVerify(directory, value, gap),
     value => ({ supplied: value.supplied as boolean, evidence: value.evidence as SourceQuote[], limitations: value.limitations as string[] }))
 
   // Whether each difference's passages state its point differently; undefined
@@ -188,9 +190,10 @@ export async function runDiscrepancyStage(directory: string, state: LeanState, d
 }
 
 /** discrepancy.json, in order: the differences' kept entries; then the gaps no
- * matter source supplies, each with any passage its verify job found speaking
- * to it, less any that restates a difference (restatesDifference); then, under
- * `supplied`, the gaps a source supplies, each with the words that supply it.
+ * matter source, answer or later instruction supplies, each with any passage
+ * its verify job found speaking to it, less any that restates a difference
+ * (restatesDifference); then, under `supplied`, the gaps one supplies, each
+ * with the words that supply it.
  * A gap whose verify job never passed stays a gap, with UNVERIFIED_GAP among
  * its limitations. `supplied` is left out when empty, so a record with none
  * keeps its earlier form. */

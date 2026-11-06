@@ -125,28 +125,56 @@ test("each discrepancy job is checked by its own part; code tells a gap restatin
   expect(checkEvidence(directory, "discrepancy", { entries: [], gaps: [], supplied: {}, limitations: [] })).toEqual(["supplied, when given, must be an array of gaps a source supplies."])
 })
 
-test("a verify job asks one gap against the source index; a supplied answer rests on a matter source's found words", () => {
+test("a verify job asks one gap against the source index, the lawyer's later instructions and answers; a supplied answer rests on found words", () => {
   const directory = matter()
   const prompt = gapVerifyPrompt(directory, { ...GAP, detail: "No <b>governing</b> law." })
+  // Without updates or answers, their blocks are left out.
   expect([...prompt.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["gap", "sources", "question", "output_contract"])
   expect(prompt).toContain('<gap>\nA point another job found no matter source settles:\nNo \\u003cb>governing\\u003c/b> law.\nThe words that need it, in "request": "Draft a short supply note"\n</gap>')
   expect(prompt).toContain(`- ${SOURCE}`)
-  expect(prompt).toContain("<question>\nDoes any matter source supply this point")
-  // Only the gap's detail and requirement: not the gaps job's evidence, nor the request or instructions.
+  expect(prompt).toContain(`Use source_id "request" for exact words from the lawyer's later instructions or answers, and a matter source's exact name for its words.\n</sources>`)
+  expect(prompt).toContain("<question>\nDoes a matter source, one of the lawyer's answers or one of the lawyer's later instructions supply this point")
+  expect(prompt).toContain('"source_id":"request or exact matter source name"')
+  // Only the gap's detail and requirement: not the gaps job's evidence, nor the request.
   expect(prompt).not.toContain(GAP.evidence[0]!.quote)
   expect(prompt).not.toContain("<request>")
   const supplies = { supplied: true, evidence: [{ source_id: SOURCE, quote: "within thirty days of the order date" }], limitations: [] }
-  expect(checkGapVerify(directory, supplies)).toEqual([])
-  expect(checkGapVerify(directory, { supplied: false, evidence: [], limitations: [] })).toEqual([])
-  expect(checkGapVerify(directory, { ...supplies, supplied: false })).toEqual([])
-  expect(checkGapVerify(directory, { ...supplies, evidence: [] })).toEqual(["supplied is true but evidence is empty. Quote the words of the matter source that supply the point, or set supplied false."])
-  const [invented] = checkGapVerify(directory, { ...supplies, evidence: [{ source_id: SOURCE, quote: "Invented delivery period" }] })
+  expect(checkGapVerify(directory, supplies, GAP)).toEqual([])
+  expect(checkGapVerify(directory, { supplied: false, evidence: [], limitations: [] }, GAP)).toEqual([])
+  expect(checkGapVerify(directory, { ...supplies, supplied: false }, GAP)).toEqual([])
+  expect(checkGapVerify(directory, { ...supplies, evidence: [] }, GAP)).toEqual(["supplied is true but evidence is empty. Quote the words that supply the point, or set supplied false."])
+  const [invented] = checkGapVerify(directory, { ...supplies, evidence: [{ source_id: SOURCE, quote: "Invented delivery period" }] }, GAP)
   expect(invented).toStartWith('evidence[0] quotes "Invented delivery period" as from "supply-terms.docx", but those words are not in that document.')
-  // The words that need the point are not a source that supplies it.
-  const [requested] = checkGapVerify(directory, { ...supplies, evidence: [GAP.requirement] })
-  expect(requested).toStartWith(`evidence[0]: Unknown evidence source_id "request". Allowed source_id values: ${JSON.stringify([SOURCE])}.`)
-  expect(requested).toContain("Use a matter source's exact name as source_id.")
-  expect(checkGapVerify(directory, { supplied: "yes", evidence: [], limitations: [] })).toEqual(['Return JSON {"supplied":true or false,"evidence":[{"source_id","quote"}],"limitations":[]}.'])
+  const [unknown] = checkGapVerify(directory, { ...supplies, evidence: [{ source_id: "notes.md", quote: "Thirty days." }] }, GAP)
+  expect(unknown).toStartWith(`evidence[0]: Unknown evidence source_id "notes.md". Allowed source_id values: ${JSON.stringify(["request", SOURCE])}.`)
+  expect(unknown).toContain('Use source_id "request" for exact words from the lawyer\'s later instructions or answers')
+  // The words that need the point, or a part of them, never supply it; they may speak to it.
+  const needing = "supplied is true but evidence quotes only the words that need the point, which do not supply it. Quote the words that supply it, or set supplied false."
+  expect(checkGapVerify(directory, { ...supplies, evidence: [GAP.requirement] }, GAP)).toEqual([needing])
+  expect(checkGapVerify(directory, { ...supplies, evidence: [{ source_id: "request", quote: "short supply note" }] }, GAP)).toEqual([needing])
+  expect(checkGapVerify(directory, { ...supplies, evidence: [GAP.requirement, ...supplies.evidence] }, GAP)).toEqual([])
+  expect(checkGapVerify(directory, { ...supplies, supplied: false, evidence: [GAP.requirement] }, GAP)).toEqual([])
+  expect(checkGapVerify(directory, { supplied: "yes", evidence: [], limitations: [] }, GAP)).toEqual(['Return JSON {"supplied":true or false,"evidence":[{"source_id","quote"}],"limitations":[]}.'])
+
+  // The lawyer's later instructions and answers, in the gaps job's blocks, and
+  // their words quoted as "request"; an adopted recommendation is not the lawyer's.
+  writeLeanText(directory, "updated-notes.md", "Keep the note to one page.")
+  writeQuestions(directory, [
+    { id: "q-law", stage: "intake", question: "Which law governs the note?", context: "", status: "answered", answer: "Singapore law governs the note." },
+    { id: "q-venue", stage: "intake", question: "Which courts?", context: "", status: "answered", answer: "The Singapore courts.", answer_kind: "adopted" },
+  ])
+  const answered = gapVerifyPrompt(directory, GAP)
+  expect([...answered.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["gap", "user_updates", "answers", "sources", "question", "output_contract"])
+  expect(answered).toContain("<user_updates>\nLater instructions from the lawyer, in arrival order.")
+  expect(answered).toContain("Keep the note to one page.\n</user_updates>")
+  expect(answered).toContain("- [q-law] Q: Which law governs the note?\n  A: Singapore law governs the note.")
+  // Not the request, nor the rest of the matter.
+  expect(answered).not.toContain("<request>")
+  expect(answered).not.toContain("<instructions>")
+  expect(answered).not.toContain("from the supply terms")
+  expect(checkGapVerify(directory, { supplied: true, evidence: [{ source_id: "request", quote: "Singapore law governs the note." }], limitations: [] }, GAP)).toEqual([])
+  const [adopted] = checkGapVerify(directory, { supplied: true, evidence: [{ source_id: "request", quote: "The Singapore courts." }], limitations: [] }, GAP)
+  expect(adopted).toContain("Those words are the recommendation adopted for question q-venue, which the lawyer delegated; they are not the lawyer's words.")
 })
 
 test("a difference verify job asks one entry against its own passages; its reply is a differs boolean", () => {

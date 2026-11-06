@@ -6,7 +6,7 @@ import { withWorkflowLimit } from "./model-concurrency-test-support"
 import { researchPrompt } from "./research"
 import { researchBasis, stageInputs, type StageSessionPort } from "./stages"
 import { readLeanEvents } from "./events"
-import { readLeanJson, readLeanState, writeLeanText } from "./state"
+import { readLeanJson, readLeanState, writeLeanText, writeQuestions } from "./state"
 import { AGENT, cleanupMatters, matter, scriptedModel, SOURCE, SOURCE_TEXT, type Reply } from "./test-support"
 
 afterEach(cleanupMatters)
@@ -244,4 +244,24 @@ test("a difference whose verify reply never passes its check stays as it is, and
   const resumed = jobs({ differences: () => ({ entries: [ENTRY, AGREED], limitations: [] }) })
   expect((await run(directory, resumed.reply)).result.status).toBe("done")
   expect(resumed.attempts).toEqual({ differences: 0, gaps: 0, differs: 1, verify: 0 })
+})
+
+test("a gap the lawyer's own answer supplies, quoted as request, is recorded under supplied and kept from intake", async () => {
+  const directory = matter()
+  writeLeanText(directory, "updated-notes.md", "Keep the note to one page.")
+  writeQuestions(directory, [{ id: "q-law", stage: "intake", question: "Which law governs the note?", context: "", status: "answered", answer: "Singapore law governs the note." }])
+  const answered = { supplied: true, evidence: [{ source_id: "request", quote: "Singapore law governs the note." }], limitations: [] }
+  const scripted = jobs({ verify: () => answered })
+  const { result, model } = await run(directory, scripted.reply)
+  expect(result.status).toBe("done")
+  // Passed at once: the answer's words are found under "request".
+  expect(scripted.attempts).toEqual({ differences: 1, gaps: 1, differs: 1, verify: 1 })
+  const verify = model.prompts.find(prompt => kind(prompt.text) === "verify")!.text
+  expect([...verify.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["gap", "user_updates", "answers", "sources", "question", "output_contract"])
+  expect(verify).toContain("A: Singapore law governs the note.")
+  expect(verify).toContain("Keep the note to one page.")
+  expect(readLeanJson(directory, "discrepancy.json")).toEqual({ entries: [ENTRY], gaps: [], supplied: [{ ...GAP, evidence: answered.evidence }], limitations: ["Differences limit.", "Gaps limit."] })
+  expect(evidenceOutputValid(directory, "discrepancy")).toBe(true)
+  expect(readLeanEvents(directory).find(event => event.event === "discrepancy_record")?.counts).toMatchObject({ gaps: 1, gaps_supplied: 1, gaps_unchecked: 0 })
+  expect(researchPrompt(directory, "intake", researchBasis(directory))).not.toContain(GAP.detail)
 })
