@@ -339,11 +339,11 @@ function withdrawnIssues(value: unknown, prior: ResearchFinding[]) {
 /** A later research run adds to the reviewed authority the drafts were written
  * from rather than replacing it. Every earlier approved finding is kept unless
  * the new reply returns the same authority (`findingKey`), which replaces it, or
- * withdraws it with a reason because it no longer holds. Research that is no
- * longer needed keeps none. A malformed row or withdrawal replaces nothing; the
- * checks reject it. */
+ * withdraws it with a reason because it no longer holds. A reply that needs no
+ * new authority keeps them all, as the research prompt promises. A malformed
+ * row or withdrawal replaces nothing; the checks reject it. */
 function keptFindings(value: Record<string, unknown>, prior: ResearchFinding[]) {
-  if (value.status === "not-needed" || !prior.length) return []
+  if (!prior.length) return []
   const replaced = returnedKeys(value.findings)
   const withdrawn = withdrawals(value) ?? []
   return prior.filter(row => !replaced.has(findingKey(row)) && !withdrawn.some(entry => withdrawsFinding(entry, row)))
@@ -351,14 +351,19 @@ function keptFindings(value: Record<string, unknown>, prior: ResearchFinding[]) 
 
 /** The reply's findings with the earlier ones it keeps (keptFindings). Kept
  * findings take fresh ids after the new ones; the review covers the combined
- * set again. */
+ * set again. The status describes the combined set: it holds authority, so it
+ * is limited when the reply or a kept finding discloses a limit, else completed.
+ * A not-needed reply's limitations give its reason, not a research gap, so the
+ * set keeps none of them: "limited" tells the lawyer research is incomplete. */
 function withPriorFindings(value: Research, kept: ResearchFinding[]): Research {
   if (!kept.length) return value
   const used = new Set(value.findings.map(row => row.id))
   let next = 0
   const fresh = () => { while (used.has(`r${++next}`)); return `r${next}` }
   const carried = kept.map(row => ({ ...row, id: fresh() }))
-  return { ...value, status: value.status === "completed" && carried.some(row => row.limitations.trim()) ? "limited" : value.status, findings: [...value.findings, ...carried] }
+  const limitations = value.status === "not-needed" ? [] : value.limitations
+  const limited = value.status === "limited" || limitations.length > 0 || carried.some(row => row.limitations.trim())
+  return { ...value, status: limited ? "limited" : "completed", findings: [...value.findings, ...carried], limitations }
 }
 
 /** Before the last attempt an internal file path is reported with any other
@@ -391,13 +396,15 @@ export function acceptResearchReply(directory: string, stage: ResearchStage, rep
     : checkReview(directory, value)
   if (stage !== "intake" && !options.final) issues.push(...internalPathIssues(stage, value), ...omissionIssues(stage, value))
   if (issues.length) return { issues, outputs: [], openItems: [] }
+  // A not-needed reply's limitations give its reason, not a research gap, even
+  // when the authority it keeps makes the saved research completed or limited.
+  const limitations = stage === "intake" || stage === "research" && (value as Research).status === "not-needed" ? [] : (value as Research).limitations
   // Saved with the source each finding cites, as resolved from its URL and quotation.
   if (resolved) value = withPriorFindings({ ...(value as Research), findings: resolved.findings }, resolved.kept)
   if (stage === "research") writeLeanText(directory, "research-context.txt", readableResearchContext(directory, (value as Research).findings))
   writeLeanText(directory, `${stage}.json`, `${JSON.stringify(value, null, 2)}\n`)
   // The lawyer reads these as open items, so none names a finding by its id.
   const ids = researchFindingIDs(directory)
-  const limitations = stage === "intake" || stage === "research" && (value as Research).status === "not-needed" ? [] : (value as Research).limitations
   const rejected = stage === "research-review" ? (value as ResearchReview).rejected.map(row => rejectedText(row, ids)) : []
   // Disclosed like limitations; a review after the gap round replaces them.
   const gaps = stage === "research-review" ? ((value as ResearchReview).gaps ?? []).map(gapText) : []

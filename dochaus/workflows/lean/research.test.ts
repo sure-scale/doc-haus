@@ -633,10 +633,10 @@ test("a later research run keeps earlier approved findings, replaces a re-return
   const after = readLeanJson(directory, "research.json") as { status: string; findings: { citation: string }[] }
   expect(after.findings.map(row => row.citation)).toEqual(["Rule 3", "Rule 1"])
   expect(after.status).toBe("limited")
-  // Research that is no longer needed carries nothing forward.
+  // Was []: a reply that needs no new authority dropped every approved finding.
   acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1", "r2"], rejected: [], limitations: [], gaps: [] }))
   expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "not-needed", findings: [], limitations: ["No external authority is needed."] })).issues).toEqual([])
-  expect((readLeanJson(directory, "research.json") as { findings: unknown[] }).findings).toEqual([])
+  expect((readLeanJson(directory, "research.json") as { findings: { citation: string }[] }).findings.map(row => row.citation)).toEqual(["Rule 3", "Rule 1"])
 })
 
 /** Research accepted with one finding at Rule 1 and approved by its review. */
@@ -661,6 +661,22 @@ test("a later research run that finds nothing new is checked with the findings i
   expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "completed", findings: [], limitations: [] })).issues).toEqual([])
   expect(readLeanJson(directory, "research.json")).toEqual({ status: "completed", findings: [finding], limitations: [] })
   expect(checkResearch(directory, readLeanJson(directory, "research.json"))).toEqual([])
+})
+
+test("a not-needed targeted re-run keeps previously approved findings", () => {
+  const directory = matter()
+  const finding = approvedNotice(directory)
+  const reason = "The new issue needs no external authority."
+  const result = acceptResearchReply(directory, "research", JSON.stringify({ status: "not-needed", findings: [], limitations: [reason] }))
+  expect(result.issues).toEqual([])
+  // Was { status: "not-needed", findings: [] }: the approved authority the plan cites was lost.
+  // The saved set holds authority, so its status cannot stay not-needed; the reason is no research gap,
+  // so it is not saved as one ("limited" tells the lawyer research is incomplete).
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "completed", findings: [finding], limitations: [] })
+  expect(checkResearch(directory, readLeanJson(directory, "research.json"))).toEqual([])
+  expect(result.openItems).toEqual([])
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "not-needed", findings: [], limitations: [] })).issues).toEqual([])
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "completed", findings: [finding], limitations: [] })
 })
 
 test("research that runs again before its review keeps the findings that review has not covered; a current review's rejection is kept", () => {
