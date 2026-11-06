@@ -4,6 +4,7 @@ import { OpenAIChat } from "@opencode/ai/protocols"
 import { OpenAICompatible } from "@opencode/ai/providers/openai-compatible"
 import { RequestExecutor } from "@opencode/ai/route"
 import { TestLLM } from "@opencode/ai/testing"
+import { Generate } from "@opencode/core/generate"
 import { Model } from "@opencode/core/model"
 import { ModelResolver } from "@opencode/core/model-resolver"
 import { Cause, Effect, Layer } from "effect"
@@ -46,7 +47,10 @@ test("provider failures distinguish expired authentication from account allowanc
   const network = new AIError({ reason: new TransportError({ message: "Authentication server timeout", transport: "http", operation: "request" }) })
   expect(providerTestFailure(Cause.fail(network))).toMatchObject({ kind: "unavailable" })
   expect(providerTestFailure(Cause.interrupt())).toMatchObject({ kind: "unavailable" })
-  expect(providerTestFailure(Cause.fail({ _tag: "Generate.ModelSelectionError" }))).toMatchObject({ kind: "model" })
+  expect(providerTestFailure(Cause.fail(new Generate.ModelNotFoundError({ providerID: "synthetic", modelID: "note", message: "Model not found: synthetic/note" })))).toMatchObject({ kind: "model" })
+  expect(providerTestFailure(Cause.fail(new Generate.UnsupportedModelError({ providerID: "synthetic", modelID: "note", capability: "chat", message: "synthetic/note is an image model, not a chat model" })))).toMatchObject({ kind: "model" })
+  expect(providerTestFailure(Cause.fail(new Generate.InvalidRequestError({ message: "Variant unavailable", field: "model.variant" })))).toMatchObject({ kind: "model" })
+  expect(providerTestFailure(Cause.fail(new Generate.InvalidRequestError({ message: "Unsupported operation" })))).toMatchObject({ kind: "unavailable" })
 })
 
 test("native HTTP access restrictions are model failures, while identical 401 and generic 403 remain authentication failures", async () => {

@@ -84,7 +84,10 @@ export function providerTestFailure(error: unknown): ProviderTestResult {
           /\bkey\b[\s\S]{0,80}\bexpir(?:ed|y|ation)\b|\bexpir(?:ed|y|ation)\b[\s\S]{0,80}\bkey\b/i.test(text.slice(0, 8192)))
       }
     }
-    if (item._tag === "Generate.ModelSelectionError" || typeof item._tag === "string" && item._tag.startsWith("SessionRunnerModel.")) model = true
+    // Core Generate reports an unknown, unsupported or unresolvable model with these classes.
+    if (item._tag === "Generate.ModelNotFoundError" || item._tag === "Generate.UnsupportedModelError" ||
+      item._tag === "Generate.InvalidRequestError" && typeof item.field === "string" && /^model(?:\.|$)/.test(item.field) ||
+      typeof item._tag === "string" && item._tag.startsWith("SessionRunnerModel.")) model = true
     for (const key of ["reason", "cause", "error", "defect"]) if (item[key] !== undefined) queue.push(item[key])
     if (Array.isArray(item.reasons)) queue.push(...item.reasons.slice(0, 8))
   }
