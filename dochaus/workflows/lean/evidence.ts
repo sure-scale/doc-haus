@@ -24,14 +24,23 @@ export function checkEvidence(directory: string, stage: EvidenceStage, value: un
   return evidenceIssues(directory, stage, value, { final: false }).issues
 }
 
+/** A spine entry kept on the final attempt with figures none of its quotes states. */
+export type UnquotedFigures = { index: number; kind: string; figures: string[] }
+
+/** The retry issue for one figure a spine entry states that none of its quotes states. */
+export function unquotedFigureIssue(index: number, figure: string) {
+  return `entries[${index}] states ${JSON.stringify(figure)}, which none of its quotes states; quote the source words that state it.`
+}
+
 /** The issues a retry must correct. A spine entry's figure (figures) that
- * none of its quotes states is one of them until the final attempt, when it is
- * only recorded: the reply stands and nothing is demoted. */
-function evidenceIssues(directory: string, stage: EvidenceStage, value: unknown, options: { final: boolean }): { issues: string[]; recorded: string[] } {
+ * none of its quotes states is one of them until the final attempt, when the
+ * entry is only recorded with its figures: the reply stands, nothing is
+ * demoted, and the runner discloses each recorded entry as an open item. */
+function evidenceIssues(directory: string, stage: EvidenceStage, value: unknown, options: { final: boolean }): { issues: string[]; recorded: UnquotedFigures[] } {
   if (!record(value) || !Array.isArray(value.entries) || !strings(value.limitations) || (stage === "discrepancy" && !Array.isArray(value.gaps)))
     return { issues: [stage === "discrepancy" ? "Return JSON with entries, gaps and limitations arrays." : "Return JSON with entries and limitations arrays."], recorded: [] }
   const sources = evidenceSources(directory)
-  const recorded: string[] = []
+  const recorded: UnquotedFigures[] = []
   const entries = value.entries.flatMap((row: unknown, index: number) => {
     if (!record(row) || typeof row.detail !== "string" || !row.detail.trim() || !Array.isArray(row.evidence) || !strings(row.limitations))
       return ["Each entry needs detail, evidence [{source_id,quote}] and limitations arrays."]
@@ -43,8 +52,9 @@ function evidenceIssues(directory: string, stage: EvidenceStage, value: unknown,
     if (stage === "spine" && !(SPINE_KINDS as readonly string[]).includes(String(row.kind)))
       issues.push("A spine entry kind must be decision, recommendation, requirement, fact or open-item.")
     if (stage === "spine" && "question_id" in row) issues.push("A spine entry takes no question_id; remove it.")
-    if (stage === "spine") (options.final ? recorded : issues).push(...unquotedFigures(row.detail, row.evidence.flatMap((ref: unknown) => record(ref) && typeof ref.quote === "string" ? [ref.quote] : []))
-      .map(figure => `entries[${index}] states ${JSON.stringify(figure)}, which none of its quotes states; quote the source words that state it.`))
+    const unquoted = stage === "spine" ? unquotedFigures(row.detail, row.evidence.flatMap((ref: unknown) => record(ref) && typeof ref.quote === "string" ? [ref.quote] : [])) : []
+    if (options.final && unquoted.length) recorded.push({ index, kind: String(row.kind), figures: unquoted })
+    else issues.push(...unquoted.map(figure => unquotedFigureIssue(index, figure)))
     return issues
   })
   return { issues: stage === "discrepancy" ? [...entries, ...(value.gaps as unknown[]).flatMap((row, index) => gapIssues(directory, sources, row, index))] : entries, recorded }
@@ -67,22 +77,23 @@ const LABEL = /(?<![\p{L}\d'])(?:(?:section|regulation|paragraph|clause|schedule
 // quotations are, without thousands separators, so "$1,000,000" and
 // "1,000,000" are one figure. A number written in words is not read, nor a
 // digit run attached to a letter, "-" or "_" (an id such as "q-3"), unless
-// it is an amount written against a currency code ("USD1,500,000"). A number
-// is a figure when it carries a currency sign or %, a decimal point or
-// thousands separators, or has five digits or more; a bare number of up to
-// four digits (a list or part number, a count, a year), a date or a dotted
-// number after a reference label (a reference) is not.
+// it carries a currency sign or % (never an id: "up-to-10%") or is an amount
+// written against a currency code ("USD1,500,000"). A number is a figure when
+// it carries a currency sign or %, a decimal point or thousands separators; a
+// bare number (a count, a year, a list or part number, or an identifier such
+// as a postal code, phone or account number), a date or a dotted number after
+// a reference label (a reference) is not.
 function statedNumbers(text: string) {
   const normalized = normalize(text)
   return [...normalized.matchAll(NUMBER)].flatMap(match => {
     const written = match[0]
     const preceding = normalized.slice(Math.max(0, match.index - 24), match.index)
-    if (ATTACHED.test(preceding) && !(CODE.test(preceding) && (GROUPED.test(written) || DECIMAL.test(written)))) return []
     const before = preceding.slice(-2)
     const after = normalized.slice(match.index + written.length, match.index + written.length + 2)
     const signed = /\p{Sc} ?$/u.test(before) || /^ ?[\p{Sc}%]/u.test(after)
+    if (!signed && ATTACHED.test(preceding) && !(CODE.test(preceding) && (GROUPED.test(written) || DECIMAL.test(written)))) return []
     const reference = written.includes(".") && LABEL.test(preceding)
-    return [{ written, figure: written.replaceAll(",", ""), checked: !reference && (signed || GROUPED.test(written) || DECIMAL.test(written) || /^\d{5,}$/.test(written)) }]
+    return [{ written, figure: written.replaceAll(",", ""), checked: !reference && (signed || GROUPED.test(written) || DECIMAL.test(written)) }]
   })
 }
 
@@ -146,7 +157,7 @@ function discrepancyIssues(row: Record<string, unknown>, index: number) {
 
 /** The reply's checked value, or the issues a retry must correct. On the final
  * attempt an unquoted spine figure is recorded instead, and the value stands. */
-export function checkEvidenceReply(directory: string, stage: EvidenceStage, reply: string, options: { final?: boolean } = {}): { issues: string[]; recorded: string[]; value?: Record<string, unknown> } {
+export function checkEvidenceReply(directory: string, stage: EvidenceStage, reply: string, options: { final?: boolean } = {}): { issues: string[]; recorded: UnquotedFigures[]; value?: Record<string, unknown> } {
   const parsed = parseJsonObject(reply)
   if (!parsed.ok) return { issues: [`Reply with the requested JSON object only. ${parsed.error}`], recorded: [] }
   const value = parsed.value

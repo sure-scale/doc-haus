@@ -21,7 +21,7 @@ import { changePlanPrompt, changeReviewItem, changeReviewPrompt, readChangeRevie
 import { findingTextUnchanged, readChangeList } from "./checks"
 import { packageReviewPrompt, readPackageReview, recordPackageFindings } from "./package-review"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, repairedChecklistItems, startRepairRound, startUnverifiedRepairRound } from "./repairs"
-import { acceptEvidenceReply, checkEvidenceReply, evidencePrompt } from "./evidence"
+import { acceptEvidenceReply, checkEvidenceReply, evidencePrompt, unquotedFigureIssue, type UnquotedFigures } from "./evidence"
 import { splitSpineEntries } from "./spine-split"
 import { checkAbsenceClaims } from "./spine-absence"
 import { checkAdoptedAgainstResearch } from "./research-check"
@@ -788,8 +788,8 @@ function roundPlanned(directory: string, state: LeanState, recorded: LeanStageSt
  * findings it cannot verify (disclosed as research limitations), and package review
  * withholds delivery rows its check still refuses, or reads a missing delivery
  * list as none (the planned names stand), and the spine keeps an entry figure
- * none of its quotes states, or an absence claim a source contradicts (both
- * recorded in the checker event);
+ * none of its quotes states (an open item the notes disclose) or an absence
+ * claim a source contradicts (both recorded in the checker event);
  * any other fourth failed check stops the run with those issues. */
 async function runModelStage(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, prepared?: PreparedReview): Promise<StageRun> {
   const stage = stepStage(step) as ModelStageID
@@ -814,11 +814,11 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
     // verified against the sources (spine-absence.ts), and is then split into
     // atoms before spine.json is written. On the last attempt an unquoted
     // figure or a contradicted claim no longer fails it: the checker event
-    // records it.
+    // records it, and each entry kept with unquoted figures is an open item.
     const spine = stage === "spine" ? checkEvidenceReply(directory, stage, reply, { final: index >= LEAN_MAX_RETRIES }) : undefined
     const absence = spine?.value ? await checkAbsenceClaims(directory, state, deps, spine.value, { final: index >= LEAN_MAX_RETRIES }, jobProgress) : undefined
     const accepted = spine
-      ? { issues: [...spine.issues, ...absence?.issues ?? []], outputs: [], openItems: [] }
+      ? { issues: [...spine.issues, ...absence?.issues ?? []], outputs: [], openItems: spine.value ? unquotedFigureItems(spine.value, spine.recorded) : [] }
       : stage === "instructions"
       ? acceptInstructionsReply(directory, reply)
       : stage === "discrepancy"
@@ -828,7 +828,8 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
       : await acceptStageReply(directory, step, reply, { final: index >= LEAN_MAX_RETRIES })
     const timing = { wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) }
     progress({ attempts: index + 1, calls: index + 1, feedback: accepted.issues })
-    appendLeanEvent(directory, { stage, document, event: "checker", attempt: index, issues: [...accepted.issues, ...spine?.recorded ?? [], ...absence?.recorded ?? []], ...timing })
+    const figures = spine?.recorded.flatMap(row => row.figures.map(figure => unquotedFigureIssue(row.index, figure))) ?? []
+    appendLeanEvent(directory, { stage, document, event: "checker", attempt: index, issues: [...accepted.issues, ...figures, ...absence?.recorded ?? []], ...timing })
     if (spine?.value && !accepted.issues.length) accepted.outputs = await splitSpineEntries(directory, state, deps, spine.value, jobProgress)
     if (!accepted.issues.length)
       return { status: (stage === "intake" || stage === "change-plan") && accepted.questions?.length ? "blocked" : "done", outputs: accepted.outputs, openItems: accepted.openItems, questions: accepted.questions,
@@ -838,6 +839,15 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
     return attempt(index + 1, retryPrompt(stage, accepted.issues))
   }
   return attempt(0, stage === "change-plan" && document ? changePlanPrompt(directory, document) : stage === "change-review" && document ? changeReviewPrompt(directory, document) : stage === "package-review" ? `${packageReviewPrompt(directory)}\n\nFocused checklist findings are saved at .dochaus/lean/checklist/report.md and checklist/checks.json; use targeted read-record lookup when relevant. Open findings remain unresolved, not satisfied. In that report, a "Disclosed, not satisfied" line is an unresolved finding: it is disclosed with the review draft, is not a blocker for this review to clear, and is never treated as satisfied. Do not re-run every checklist item in this package review.` : stage === "instructions" ? instructionsPrompt(directory) : stage === "discrepancy" || stage === "spine" ? evidencePrompt(directory, stage) : stage === "intake" || stage === "research" || stage === "research-review" ? researchPrompt(directory, stage, researchBasis(directory)) : stagePrompt(directory, step))
+}
+
+// A spine entry kept on the final attempt with figures none of its quotes
+// states is never silent: each is an open item the drafting notes must name.
+function unquotedFigureItems(spine: Record<string, unknown>, rows: UnquotedFigures[]) {
+  const entries = spine.entries as { detail: string }[]
+  return rows.map(row => openItem("spine", "omission",
+    `Drafting spine: this ${row.kind} states ${row.figures.map(figure => JSON.stringify(figure)).join(", ")}, which none of its quoted source words states; confirm each against the sources.`,
+    { statement: entries[row.index].detail, repair_target: "memo" }))
 }
 
 /** The state's step rows follow the plan, whether the first draft wrote it or

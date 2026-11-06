@@ -9,7 +9,7 @@ import { readLeanEvents } from "./events"
 import { enqueueLeanRequest, drainLeanRequests } from "./requests"
 import { leanSteps } from "./plan"
 import { runLean, stageInputSha } from "./runner"
-import { answerQuestion, readLeanJson, writeQuestions, writeLeanText } from "./state"
+import { answerQuestion, readLeanJson, readOpenItems, writeQuestions, writeLeanText } from "./state"
 import { writeInstructionsFile } from "./instructions"
 import { AGENT, cleanupMatters, happyPath, matter, scriptedModel, SOURCE, SOURCE_TEXT } from "./test-support"
 
@@ -136,11 +136,13 @@ test("a spine entry's figures are stated by its own quotes, however the currency
   expect(checkEvidence(directory, "discrepancy", { ...priced("The price is $4,800,000.", ["Payment is due on delivery."], { material: false, status: "benign", resolution: "Distinct terms." }), gaps: [] })).toEqual([])
 })
 
-test("a figure carries a currency sign or %, a decimal point or thousands separators, or has five digits or more", () => {
-  for (const [text, figure] of [["$1,500,000", "1500000"], ["12.5", "12.5"], ["1.00%", "1.00"], ["45000", "45000"], ["15 %", "15"], ["€ 15", "15"], ["15€", "15"]])
+test("a figure carries a currency sign or %, a decimal point or thousands separators", () => {
+  for (const [text, figure] of [["$1,500,000", "1500000"], ["12.5", "12.5"], ["1.00%", "1.00"], ["15 %", "15"], ["€ 15", "15"], ["15€", "15"]])
     expect({ text, figures: figures(text) }).toEqual({ text, figures: [figure] })
-  // A bare number of up to four digits (a list or part number, a count, a year), a date or a dotted reference is not.
-  for (const text of ["1", "15", "2025", "§ 3", "(2)", "15/01/2025", "2025-01-15", "15.01.2025", "3.2.1", "USD 15"])
+  // A bare number (a list or part number, a count, a year, or an identifier
+  // such as a postal code or phone number, however many digits), a date or a
+  // dotted reference is not.
+  for (const text of ["1", "15", "2025", "45000", "02139", "5551234567", "§ 3", "(2)", "15/01/2025", "2025-01-15", "15.01.2025", "3.2.1", "USD 15"])
     expect({ text, figures: figures(text) }).toEqual({ text, figures: [] })
   // Every number can state a figure.
   expect(numbers("§ 3 of the 2025 terms: $1,500")).toEqual(["3", "2025", "1500"])
@@ -155,20 +157,20 @@ test("an id's digits are no number, and a dotted number after a reference label 
   for (const text of ["Section 7.12(c)", "sections 7.12", "clause 4.2", "Art. 3.1", "para. 12.5", "§ 4.2", "§§4.2", "Schedule 2.1"])
     expect({ text, figures: figures(text) }).toEqual({ text, figures: [] })
   expect(numbers("Section 7.12(c)")).toEqual(["7.12"])
-  // Money, percentages and decimals stay figures, in a text that cites a part too.
-  for (const [text, stated] of [["$1,500,000", ["1500000"]], ["12.5%", ["12.5"]], ["5-10%", ["10"]], ["a rate of 2.5", ["2.5"]], ["the section's 12.5% fee", ["12.5"]],
-    ["Section 3 sets a fee of $1,500.50", ["1500.50"]], ["Clause 4: 45000 units", ["45000"]],
+  // Money, percentages and decimals stay figures, in a text that cites a part
+  // too; a number carrying a sign or % is never an id, whatever it is attached to.
+  for (const [text, stated] of [["$1,500,000", ["1500000"]], ["12.5%", ["12.5"]], ["5-10%", ["10"]], ["up-to-10%", ["10"]], ["a rate of 2.5", ["2.5"]], ["the section's 12.5% fee", ["12.5"]],
+    ["Section 3 sets a fee of $1,500.50", ["1500.50"]], ["Clause 4: 45000 units", []],
     // An amount written against a currency code is money, not an id.
     ["a cap of USD1,500,000", ["1500000"]], ["GBP250.50", ["250.50"]], ["ref ABC12345", []]] as const)
     expect({ text, figures: figures(text) }).toEqual({ text, figures: [...stated] })
 })
 
-test("a spine entry's bare small numbers, years and dates are not asked of its quotes; a figure stated in any form is quoted", () => {
+test("a spine entry's bare numbers, years and dates are not asked of its quotes; a figure stated in any form is quoted", () => {
   const directory = matter(PRICED)
   expect(checkEvidence(directory, "spine", priced("Under clause 3 of the 2025 terms, delivery is due 15 days after 1 March 2026 (item 2).", ["Payment is due on delivery."]))).toEqual([])
   expect(checkEvidence(directory, "spine", priced("A 4.5% charge and 12000 units are stated.", ["Payment is due on delivery."]))).toEqual([
     'entries[0] states "4.5", which none of its quotes states; quote the source words that state it.',
-    'entries[0] states "12000", which none of its quotes states; quote the source words that state it.',
   ])
   // A small number with a currency sign is a figure; a quote stating it as a bare number states it.
   const fee = matter(`${PRICED} A fee of 30 is due on signing.`)
@@ -176,12 +178,12 @@ test("a spine entry's bare small numbers, years and dates are not asked of its q
   expect(checkEvidence(fee, "spine", priced("The fee is $30.", ["A fee of 30 is due on signing."]))).toEqual([])
 })
 
-test("on the final attempt the spine stands with its unquoted figure recorded, and a saved spine stays valid", () => {
+test("on the final attempt the spine stands with its entry's unquoted figures recorded, and a saved spine stays valid", () => {
   const directory = matter(PRICED)
   const reply = JSON.stringify(priced("The purchase price is $4,800,000.", ["Payment is due on delivery."]))
   expect(checkEvidenceReply(directory, "spine", reply)).toEqual({ issues: [UNQUOTED], recorded: [] })
   const final = checkEvidenceReply(directory, "spine", reply, { final: true })
-  expect(final).toEqual({ issues: [], recorded: [UNQUOTED], value: JSON.parse(reply) })
+  expect(final).toEqual({ issues: [], recorded: [{ index: 0, kind: "fact", figures: ["4,800,000"] }], value: JSON.parse(reply) })
   // Any other issue still fails the final attempt.
   expect(checkEvidenceReply(directory, "spine", JSON.stringify(priced("The price is $4,800,000.", ["Invented price"])), { final: true }).issues[0]).toContain("but those words are not in that document")
   writeLeanText(directory, "spine.json", reply)
@@ -191,7 +193,7 @@ test("on the final attempt the spine stands with its unquoted figure recorded, a
   expect(stageOutputValid(directory, "spine")).toBe(true)
 })
 
-test("a spine that keeps an unquoted figure is retried with the figure named, then accepted on the final attempt", async () => {
+test("a spine that keeps an unquoted figure is retried with the figure named, then accepted on the final attempt with the entry disclosed", async () => {
   const directory = matter(PRICED)
   const model = scriptedModel({ ...happyPath, [AGENT.spine]: () => JSON.stringify(priced("The purchase price is $4,800,000.", ["Payment is due on delivery."])) })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
@@ -201,6 +203,12 @@ test("a spine that keeps an unquoted figure is retried with the figure named, th
   const checks = readLeanEvents(directory).filter(event => event.stage === "spine" && event.event === "checker" && event.step === undefined)
   expect(checks.map(event => [event.attempt, event.issues])).toEqual([0, 1, 2, 3].map(attempt => [attempt, [UNQUOTED]]))
   expect((readLeanJson(directory, "spine.json") as { entries: { detail: string }[] }).entries.map(entry => entry.detail)).toEqual(["The purchase price is $4,800,000."])
+  // One open item for the entry, which the notes name and the gate discloses.
+  const items = readOpenItems(directory).filter(item => item.stage === "spine")
+  expect(items.map(item => [item.kind, item.detail, item.ref])).toEqual([["omission",
+    'Drafting spine: this fact states "4,800,000", which none of its quoted source words states; confirm each against the sources.',
+    { statement: "The purchase price is $4,800,000.", repair_target: "memo" }]])
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass" })
 })
 
 test("user instruction evidence uses the canonical request identity and rejects handoff aliases", () => {

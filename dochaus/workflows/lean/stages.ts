@@ -233,7 +233,8 @@ export function stepOutputs(step: StepID): string[] {
 }
 
 // Items the drafting notes must disclose. Draft and review findings are re-derived from the
-// final body at apply, so the notes disclose what the delivered body still has.
+// final body at apply, so the notes disclose what the delivered body still has. The spine's
+// are entries it kept on its final attempt with figures none of their quotes states (runner.ts).
 const DISCLOSED_STAGES: StageID[] = ["spine", "research", "research-review", "change-plan", "change-prepare", "changes", "change-review", "apply"]
 
 /** Named inputs of each step: everything its prompt or code step reads. Their
