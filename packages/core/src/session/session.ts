@@ -70,7 +70,10 @@ export const make = Effect.fn("Session.make")(function* () {
       return
     yield* bus.publish(SessionEvent.Viewed, { sessionID, idle: input.idle })
   })
-  const rename = Effect.fn("Session.rename")(function* (sessionID: SessionSchema.ID, input: { title: string; expectedTitle?: string }) {
+  const rename = Effect.fn("Session.rename")(function* (
+    sessionID: SessionSchema.ID,
+    input: { title: string; expectedTitle?: string },
+  ) {
     if (input.expectedTitle === undefined) {
       yield* get(sessionID)
       yield* bus.publish(SessionEvent.Renamed, { sessionID, title: input.title })
@@ -79,9 +82,15 @@ export const make = Effect.fn("Session.make")(function* () {
     const sequence = (yield* Bus.latestSequence(database.db, sessionID)) + 1
     const current = yield* get(sessionID)
     if (current.title !== input.expectedTitle) return
-    yield* bus.publish(SessionEvent.Renamed, { sessionID, title: input.title }, {
-      commit: actual => actual === sequence ? Effect.void : Effect.die(titleChanged),
-    }).pipe(Effect.catchDefect(defect => defect === titleChanged ? Effect.void : Effect.die(defect)))
+    yield* bus
+      .publish(
+        SessionEvent.Renamed,
+        { sessionID, title: input.title },
+        {
+          commit: (actual) => (actual === sequence ? Effect.void : Effect.die(titleChanged)),
+        },
+      )
+      .pipe(Effect.catchDefect((defect) => (defect === titleChanged ? Effect.void : Effect.die(defect))))
   })
   const archive = Effect.fn("Session.archive")(function* (sessionID: SessionSchema.ID) {
     const session = yield* get(sessionID)

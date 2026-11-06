@@ -64,3 +64,26 @@ it.live("archives and unarchives a session through PATCH", () =>
     expect(yield* listed(false)).toContain(created.data.id)
   }).pipe(Effect.scoped),
 )
+
+it.live("renames through PATCH only while expectedTitle still matches", () =>
+  Effect.gen(function* () {
+    const request = yield* makeRequest()
+    const created = Schema.decodeUnknownSync(SessionResponse)(
+      yield* request("/api/session", "POST", { title: "Original" }),
+    )
+    const title = () =>
+      request(`/api/session/${created.data.id}`, "GET").pipe(
+        Effect.map((body) => Schema.decodeUnknownSync(SessionResponse)(body).data.title),
+      )
+
+    yield* request(`/api/session/${created.data.id}`, "PATCH", { title: "Generated", expectedTitle: "Original" })
+    expect(yield* title()).toBe("Generated")
+
+    yield* request(`/api/session/${created.data.id}`, "PATCH", { title: "Stale", expectedTitle: "Original" })
+    expect(yield* title()).toBe("Generated")
+
+    // A conditional update with an empty title never requests native title generation.
+    yield* request(`/api/session/${created.data.id}`, "PATCH", { title: "", expectedTitle: "Generated" })
+    expect(yield* title()).toBe("Generated")
+  }).pipe(Effect.scoped),
+)
