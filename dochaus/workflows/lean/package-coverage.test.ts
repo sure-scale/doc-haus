@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { LEAN_ACTS_SCHEMA, type ActRecord } from "./act-record"
 import { TOOL_SYNTAX_ISSUE, checkDraftingNotes } from "./checks"
 import {
   LEAN_COVERAGE_SCHEMA, coverageCarries, coverageItems, coveragePlacementPrompt, coveragePlanHash, coverageScopeQuestion, mergeCoverageActs, parseCoverage,
-  parseCoveragePlacement, planCoverageIssues, type CoverageAct, type InstructedAct, type LeanCoverage,
+  parseCoveragePlacement, planCoverageIssues, recordedActs, type CoverageAct, type InstructedAct, type LeanCoverage,
 } from "./package-coverage"
 import { writeLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { EXCERPT, instructionFound } from "./quotes"
@@ -1304,5 +1305,67 @@ describe("sentence bounds: line labels in sequence", () => {
     const split = request("The papers:", `i. ${LEAVE}`, "", `ii. ${SIGNS}.`)
     kept(split, LEAVE)
     accepted(split, LEAVE)
+  })
+})
+
+describe("an act whose HOW records a conflict between the instructions and the authority", () => {
+  // The instructions have Kestrel Works release the deposit by its own letter;
+  // the source makes the release wait on the committee, so WHO, which follows
+  // the authority, names the committee.
+  const RELEASED = "Kestrel Works then releases the deposit"
+  const CONFLICT = {
+    instruction: { source: "request", quote: RELEASED },
+    authority: { source: SOURCE, quote: SOURCE_TEXT.replace(/\.$/, "") },
+    difference: "The instructions have Kestrel Works release the deposit by its own letter; the source makes the release wait for the committee's approval.",
+  }
+  const HOW = { instrument: "Release letter", executed_by: ["Kestrel Works"], requires: [], basis: [{ source: "request", quote: RELEASED }], reason: null, conflict: CONFLICT }
+  const release = (how: ActRecord["acts"][number]["how"], authorised_by = ["the Orchard Committee"], performed_by = ["Kestrel Works"]): ActRecord["acts"][number] => ({
+    act: "release the deposit", source: "request", quote: RELEASED,
+    who: { authorised_by, performed_by, basis: [{ source: SOURCE, quote: SOURCE_TEXT.replace(/\.$/, "") }], reason: null }, how,
+  })
+  const recordActs = (directory: string, ...acts: ActRecord["acts"]) =>
+    writeLeanText(directory, "acts.json", JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status: "listed", acts, verify: null, deliverables: [], issues: [] }))
+  const LETTER = planned("d1", "Release letter", ["Kestrel Works"])
+  const placedIn = (directory: string, document: DocID) => recordedActs(directory).value!.map(row => ({ ...row, document }))
+  const CONFLICT_ITEM = `Act record: for "release the deposit", the instructions direct "${RELEASED}" [source: request], ` +
+    `but "${CONFLICT.authority.quote}" [source: ${SOURCE}] requires otherwise: ${CONFLICT.difference} The lawyer should decide which governs.`
+
+  test("its parties are the signatories the instructions direct, so a plan that follows the instructions passes", () => {
+    const directory = prepared()
+    recordActs(directory, release(HOW))
+    expect(recordedActs(directory)).toEqual({ issues: [], value: [{ act: "release the deposit", source: "request", quote: RELEASED, parties: ["Kestrel Works"] }] })
+    expect(planCoverageIssues(placedIn(directory, "d1"), [LETTER], directory)).toEqual([])
+    // HOW leaves the signatories unsettled: no party, never the authority's.
+    recordActs(directory, release({ ...HOW, executed_by: [], reason: "The instructions name no signatory." }))
+    expect(recordedActs(directory).value!.map(row => row.parties)).toEqual([[]])
+    expect(planCoverageIssues(placedIn(directory, "d1"), [LETTER], directory)).toEqual([])
+  })
+
+  test("without a conflict, the parties are still WHO's: those who authorise the act, else those who carry it out, else none", () => {
+    const directory = prepared()
+    recordActs(directory, release({ ...HOW, conflict: null }))
+    expect(recordedActs(directory).value!.map(row => row.parties)).toEqual([["the Orchard Committee"]])
+    expect(planCoverageIssues(placedIn(directory, "d1"), [LETTER], directory)).toEqual([
+      `"release the deposit" ("${RELEASED}" [source: request]) must be taken by "the Orchard Committee", but d1 "Release letter" is executed by "Kestrel Works". ` +
+      move("Move"),
+    ])
+    recordActs(directory, release({ ...HOW, conflict: null }, []), release(null, [], []), { ...release(null), who: null })
+    expect(recordedActs(directory).value!.map(row => row.parties)).toEqual([["Kestrel Works"], [], []])
+  })
+
+  test("the conflict is still disclosed for the lawyer to decide, in place of a coverage or signer item, and never blocks", () => {
+    const directory = prepared()
+    recordActs(directory, release(HOW))
+    const plan = writeLeanPlan(directory, [LETTER])
+    const acts = placedIn(directory, plan.documents[0]!.id)
+    const issues = planCoverageIssues(acts, plan.documents, directory)
+    expect(issues).toEqual([])
+    const record: LeanCoverage = { schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(directory, plan.documents, plan.acting_for), status: "covered", acts, issues }
+    writeLeanText(directory, "coverage.json", `${JSON.stringify(record, null, 2)}\n`)
+    expect(coverageScopeQuestion(acts, plan.documents, [])).toBeUndefined()
+    const items = coverageItems(directory)
+    expect(items).toEqual([expect.objectContaining({ stage: "finalize", kind: "omission", status: "open", detail: CONFLICT_ITEM, ref: { repair_target: "memo" } })])
+    const notes = ["# Drafting notes", "", "The release letter is Kestrel Works' own.", "", `- ${CONFLICT_ITEM} [ref: ${items[0]!.id}]`].join("\n")
+    expect(checkDraftingNotes(directory, notes, disclosableItems(directory)).issues).toEqual([])
   })
 })

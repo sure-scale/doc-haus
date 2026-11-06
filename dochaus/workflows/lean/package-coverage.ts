@@ -14,10 +14,12 @@ import { sourceText } from "./template-structure"
 // (act-record.ts, acts.json), read blind to the plan so that the plan does not
 // anchor it: each act the lawyer's instructions direct, verified against the
 // matter, with the parties whose approval authorises it and those who carry it
-// out (recordedActs). A focused job places each recorded act in the planned
-// document that carries it; parseCoveragePlacement holds every act to one
-// placement and parseCoverage verifies the placed acts (each document a planned
-// id, any excluded_by the lawyer's own words). planCoverageIssues then holds
+// out, or, where the record states a conflict between the instructions and the
+// authority, the signatories the instructions direct (recordedActs). A focused
+// job places each recorded act in the planned document that carries it;
+// parseCoveragePlacement holds every act to one placement and parseCoverage
+// verifies the placed acts (each document a planned id, any excluded_by the
+// lawyer's own words). planCoverageIssues then holds
 // the plan to them, as retry feedback for the outline. Nothing here judges the
 // legal substance or supplies a party: an act
 // whose parties the record does not settle lists none, and a plan-declared
@@ -36,7 +38,7 @@ import { sourceText } from "./template-structure"
 // act. Each act whose instrument, as the act record reads it, is not executed
 // by every party whose authority the act needs (signerFlags), and each conflict
 // the act record states between the instructions and the authority, is
-// disclosed for the lawyer to confirm or decide.
+// disclosed for the lawyer to confirm or decide; a conflict never gates the plan.
 // What the saved plan still leaves open reaches the lawyer as open items derived
 // from that record (coverageItems), never stored. The gate reads the same record
 // (coverageCarries) to tell an instruction the plan carries from one it may
@@ -65,14 +67,19 @@ export type LeanCoverage = {
 /** The acts the run's act record lists, as placement reads them, each with the
  * parties who must take it: those whose approval authorises it (WHO
  * "authorised_by") when the record names any, otherwise those who carry it out
- * ("performed_by"), otherwise none. [] when the record lists no act. A missing
- * or unreadable record, or one whose listing never passed its check, gives its
- * issues and no acts, as an unchecked listing. */
+ * ("performed_by"), otherwise none. An act whose HOW records a conflict
+ * between the instructions and the authority is taken by the signatories the
+ * instructions direct (HOW "executed_by", none when HOW does not settle them):
+ * the package follows the instructions, and the authority's objection reaches
+ * the lawyer as the conflict's disclosed item (actRecordItems), never as a
+ * coverage issue. [] when the record lists no act. A missing or unreadable
+ * record, or one whose listing never passed its check, gives its issues and no
+ * acts, as an unchecked listing. */
 export function recordedActs(directory: string): Checked<InstructedAct[]> {
   const record = readActRecord(directory)
   if (!record || record.status === "unchecked") return { issues: record?.issues.find(row => row.job === "what")?.issues ?? ["The act record (acts.json) is missing or unreadable."] }
-  return { issues: [], value: record.acts.map(({ act, source, quote, who }) => ({
-    act, source, quote, parties: who?.authorised_by.length ? who.authorised_by : who?.performed_by ?? [],
+  return { issues: [], value: record.acts.map(({ act, source, quote, who, how }) => ({
+    act, source, quote, parties: how?.conflict ? how.executed_by : who?.authorised_by.length ? who.authorised_by : who?.performed_by ?? [],
   })) }
 }
 
