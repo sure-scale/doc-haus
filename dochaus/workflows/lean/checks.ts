@@ -147,6 +147,9 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   const markers = [...content.matchAll(REF_MARKER)].map(match => match[1]!)
   const undisclosed = items.filter(item => !markers.some(marker => standingID(item.id).test(marker)) && !(options.final && !memo && standingID(item.id).test(content)))
     .map(item => item.id)
+  // A marker holding only an id's last part ("[ref: 798598f814]") names no
+  // item; the retry shows the whole marker to copy.
+  const shortened = undisclosed.filter(id => id.includes(":") && markers.some(marker => standingID(id.slice(id.lastIndexOf(":") + 1)).test(marker)))
   // Each delegated question is listed (delegatedDecisionsText); on the last
   // attempt notes that miss one are saved as written.
   const unlisted = options.final ? [] : delegatedQuestions(directory).map(question => question.id).filter(id => !markers.some(marker => standingID(id).test(marker)))
@@ -179,6 +182,9 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
     issues: [
       ...(undisclosed.length
         ? [`The drafting notes do not mention these open items: ${undisclosed.join(", ")}. Say what each is and what the lawyer needs to do about it, ending that statement with its exact id as "[ref: <id>]".`]
+        : []),
+      ...(shortened.length
+        ? [`These markers hold only the last part of an id: ${shortened.map(id => `"[ref: ${id.slice(id.lastIndexOf(":") + 1)}]" must be "[ref: ${id}]"`).join("; ")}. Copy each marker whole, exactly as open_items lists it.`]
         : []),
       ...(unlisted.length
         ? [`The drafting notes do not list these delegated questions: ${unlisted.join(", ")}. For each, say in words what was decided and why, or why the point stays open, ending with its exact id as "[ref: <id>]".`]

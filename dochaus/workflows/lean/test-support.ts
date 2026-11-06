@@ -285,7 +285,7 @@ export const noChanges: Reply = () => JSON.stringify({ amendments: [], questions
 export const draftingNotes: Reply = prompt => {
   const blocks = [...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].map(match => match[1]!)
   const delegated = /<delegated_decisions>\n([\s\S]*?)\n<\/delegated_decisions>/.exec(prompt)?.[1] ?? ""
-  const ids = [...blocks.flatMap(block => [...block.matchAll(/^- (\S+):/gm)].map(match => match[1])), ...[...delegated.matchAll(/^- \[(\S+)\] Q:/gm)].map(match => match[1])]
+  const ids = [...blocks.flatMap(block => [...block.matchAll(/^- \[ref: (\S+)\]/gm)].map(match => match[1])), ...[...delegated.matchAll(/^- \[(\S+)\] Q:/gm)].map(match => match[1])]
   return ["# Drafting notes", "", "The draft states the delivery period from the supply terms.", "",
     ...ids.map(id => `- The lawyer must resolve this before the draft is used. [ref: ${id}]`)].join("\n")
 }

@@ -72,7 +72,7 @@ async function stubbornMemoRun(lines: (ids: string[]) => string[], replies: Reco
   let ids: string[] = [], written = ""
   const stubborn: Reply = prompt => {
     const blocks = [...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)]
-    if (blocks.length) ids = blocks.flatMap(match => [...match[1]!.matchAll(/^- (\S+):/gm)].map(row => row[1]!))
+    if (blocks.length) ids = blocks.flatMap(match => [...match[1]!.matchAll(/^- \[ref: (\S+)\]/gm)].map(row => row[1]!))
     return written = memo(...lines(ids))
   }
   // The memo document has no supply paragraph to review or change.
@@ -99,6 +99,16 @@ describe("a requested memo", () => {
     const directory = memoMatter()
     const notes = memo(`- ${CONDITION.id}: the condition standard is for the lawyer to confirm.`, `No authority was found for the delivery period. [ref: ${GAP.id}]`)
     expect(checkDraftingNotes(directory, notes, [GAP, CONDITION], { final: true }).issues).toEqual([MISSING([CONDITION.id])])
+  })
+
+  test("a marker holding only the last part of an id is retried with the whole marker to copy", () => {
+    const directory = memoMatter()
+    const hash = CONDITION.id.slice(CONDITION.id.lastIndexOf(":") + 1)
+    const notes = memo(`The delivery period has no authority. [ref: ${GAP.id}]`, `The condition standard needs confirming. [ref: ${hash}]`)
+    expect(checkDraftingNotes(directory, notes, [GAP, CONDITION]).issues).toEqual([
+      MISSING([CONDITION.id]),
+      `These markers hold only the last part of an id: "[ref: ${hash}]" must be "[ref: ${CONDITION.id}]". Copy each marker whole, exactly as open_items lists it.`,
+    ])
   })
 
   test("a marker written in any case discloses its ids, and delivery removes it", () => {
@@ -609,7 +619,7 @@ describe("without a requested memo", () => {
 
   test("the finalize prompt asks for each open item in words with a trailing ref marker", () => {
     const prompt = stagePrompt(memoMatter("none"), "finalize")
-    expect(prompt).toContain('- Say what each open item is and what the lawyer needs to do about it, and end that statement with the item\'s exact id as a trailing "[ref: <id>]". Write internal ids only in these markers')
+    expect(prompt).toContain('- Say what each open item is and what the lawyer needs to do about it, and end that statement with the item\'s marker copied whole, exactly as open_items lists it, as a trailing "[ref: <id>]". Write internal ids only in these markers')
     expect(prompt).not.toContain("Name every open item by its exact id")
   })
 

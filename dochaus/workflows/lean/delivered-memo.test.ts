@@ -816,7 +816,7 @@ test("through the run, the registered memo has no markers or ids while the worki
   const changes = sameSession((prompt, index) => listed(prompt, DRAFTED) ? JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED),
     updated: "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen].", reason: "Drafting judgment.", sources: [] }], questions: [] }) : noChanges(prompt, index))
   const memo: Reply = prompt => ["# Cover memo", "", "The draft follows the supply terms.", "",
-    ...[...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].flatMap(match => [...match[1]!.matchAll(/^- (\S+):/gm)])
+    ...[...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].flatMap(match => [...match[1]!.matchAll(/^- \[ref: (\S+)\]/gm)])
       .map(row => `- The condition standard is for the lawyer to confirm. [ref: ${row[1]}]`)].join("\n")
   const deliverables = registering()
   const model = scriptedModel({ ...happyPath, [AGENT.draft]: memoDrafter, [AGENT.review]: reviewFirst, [AGENT.changes]: changes, [AGENT.finalize]: memo })

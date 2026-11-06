@@ -222,6 +222,8 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // its absence check began to skip open items, to run on every shaped attempt
 // and to record only on the last, and a figure stopped being a bare run of
 // digits (spine-atoms-7).
+// Finalize was re-pinned when each open item began with the marker the notes
+// copy (lawyer-facing-notes-plain-refs-4).
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", `  A (${ADOPTED_ANSWER}): Singapore law.`)
 // A draft keys its outline contract and plan entry, never answers.
@@ -244,7 +246,7 @@ const INPUTS: Record<string, string> = {
   "d1.changes": "132f96d7b820a2985ed5f77066a603023e17b918e497b598473417b55df49396",
   "d1.change-review": "d73733fc9dcdafca5f02603c12d9ad948389a1185887622786bf27fc63ed74b7",
   "d1.apply": "010ef984a0764b469b3062366447829190a21d660fbf1d456b798728b3fb66d5",
-  "finalize": "e927aef313b8abe527e12ce7fdac01b0c6f89586bbd3d00431ec013cc074473d",
+  "finalize": "4a737a8b6f804029c2be63cd1ae4be838e7f1cb487ac9b6b9d923f6ca2e1abb8",
   "checklist-check": "a44b6aa518efe2b04874468e01db95a9323f20bf98dd2b7805d66e95e3632a20",
   "package-review": "d1c48bcf6dfe13c61403da6a6e73dbb9423d0a0ff5449c2ee5d0eb6bf7480783",
   "gate": "04cf9a0b7d6876b1afe64a4beb8abe0883d0c4a6e26baba2faef68a0220c5fe3",

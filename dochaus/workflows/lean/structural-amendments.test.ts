@@ -68,7 +68,7 @@ function replies() {
     [AGENT.changes]: changes,
     [AGENT.finalize]: (prompt: string) => {
       const blocks = [...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].map(match => match[1]!)
-      const ids = blocks.flatMap(block => [...block.matchAll(/^- (\S+):/gm)].map(match => match[1]))
+      const ids = blocks.flatMap(block => [...block.matchAll(/^- \[ref: (\S+)\]/gm)].map(match => match[1]))
       return ["# Drafting notes", "", DELETE_REASON, SPLIT_REASON, REPLACE_REASON,
         ...ids.map(id => `- The lawyer must review the disclosed limitation before use. [ref: ${id}]`)].join("\n\n")
     },

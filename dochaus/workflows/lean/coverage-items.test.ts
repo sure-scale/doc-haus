@@ -526,7 +526,7 @@ describe("plan coverage open items through the run", () => {
     const items = coverageItems(directory)
     expect(items).toEqual([expect.objectContaining({ detail: expect.stringContaining(question!.id) })])
     const finalize = model.prompts.find(prompt => prompt.agent === AGENT.finalize)!
-    expect(finalize.text).toContain(`- ${items[0]!.id}: `)
+    expect(finalize.text).toContain(`- [ref: ${items[0]!.id}] `)
     const result = readLeanJson(directory, "gate.json") as GateResult
     expect(result).toMatchObject({ status: "pass", delivery: "review_draft" })
     expect(result.disclosed).toContainEqual(expect.objectContaining({ id: items[0]!.id, status: "disclosed" }))

@@ -390,7 +390,7 @@ function draftingNotesSections(directory: string, request: string) {
       "- Explain what each drafted document does. Use change_origin to distinguish source-to-initial-draft revisions from later review amendments; an initial revision is not a change made during review.",
       "- State whom the documents were drafted for. Where acting_for says the side was taken from the sources, say so once, with that evidence, and that the lawyer must confirm it. Where it says no side was taken, say that the request did not say whom the lawyer acts for and the drafting is even-handed.",
       ...(memo ? ["- These notes are the requested memo; title it as that memo. Lead with the discrepancies found and the choices made, then give the recommendations and the open points, in plain language. The memo carries only what these records show."] : []),
-      "- Say what each open item is and what the lawyer needs to do about it, and end that statement with the item's exact id as a trailing \"[ref: <id>]\". Write internal ids only in these markers, and name each document by its title or file name, never by its internal id; describe each change by what it does, never by its change id.",
+      "- Say what each open item is and what the lawyer needs to do about it, and end that statement with the item's marker copied whole, exactly as open_items lists it, as a trailing \"[ref: <id>]\". Write internal ids only in these markers, and name each document by its title or file name, never by its internal id; describe each change by what it does, never by its change id.",
       "- For each marked drafted default, say what was chosen and that the lawyer must confirm it.",
       ...(delegated ? ['- delegated_decisions lists the questions the lawyer delegated to the drafter\'s judgment or did not answer. Give them a section of their own. For each decision taken, say in words what was decided, why, the evidence it rests on and the alternatives not taken, that the lawyer delegated it, and that it is for the lawyer to confirm. Where the final documents depart from it, say what they do instead and why. For each with no decision taken, say that the point stays open, why, and what the lawyer needs to do. End each statement with the question\'s exact id as "[ref: <id>]".'] : []),
       "- Use applied_changes.evidence_basis and the actual sources array to describe a change’s evidential basis. application_mode describes only how text was applied; code or already_applied says nothing about source support. Where source passages are provided, assess them before claiming support or a gap. For no-source-passage changes, disclose drafting judgment or a view of the law and the required lawyer confirmation. Do not invent an open-item marker or confirmation requirement that the final body and evidence do not show.",
@@ -448,11 +448,13 @@ function documentSections(directory: string, document: DocID, items: OpenItem[])
   ]
 }
 
-/** Open items as their blocks list them. An item's detail can carry a review
- * finding no plan adjudicated, the other side's words included, so every "<"
- * in it is escaped (escapeTagOpeners) and cannot close the block. */
+/** Open items as their blocks list them. Each line leads with the marker the
+ * notes must copy: an id is itself joined by colons, so "id: detail" let a
+ * model take only its last part for the id. An item's detail can carry a
+ * review finding no plan adjudicated, the other side's words included, so
+ * every "<" in it is escaped (escapeTagOpeners) and cannot close the block. */
 function openItemLines(items: OpenItem[]) {
-  return items.map(item => `- ${item.id}: ${escapeTagOpeners(item.detail)}`).join("\n")
+  return items.map(item => `- [ref: ${item.id}] ${escapeTagOpeners(item.detail)}`).join("\n")
 }
 
 function attribute(text: string) {

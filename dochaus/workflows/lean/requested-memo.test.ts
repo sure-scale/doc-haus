@@ -26,7 +26,7 @@ const JUDGED = "The supplier shall deliver the goods in good condition [open ite
 const MEMO_OPENING = 'The request asks for a memo to accompany the drafted documents, "cover memo". Write the drafting notes as that memo.'
 const MEMO_ORDER = "Lead with the discrepancies found and the choices made, then give the recommendations and the open points, in plain language."
 const NOTES_OPENING = "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents."
-const MARKER_RULE = 'end that statement with the item\'s exact id as a trailing "[ref: <id>]"'
+const MARKER_RULE = 'end that statement with the item\'s marker copied whole, exactly as open_items lists it, as a trailing "[ref: <id>]"'
 
 /** An outline with this Memo line, planning the memo titled `memo` when given. */
 const outline = (line: string, memo?: string) => `Acting for: not stated\n${line}\n# Supply note\nForm: other\n## Delivery${memo ? `\n# ${memo}\nForm: advice` : ""}`
@@ -39,7 +39,7 @@ const memoDrafter = (line: string, planned = true): Reply => {
 }
 /** A memo naming every listed open item in a trailing ref marker. */
 const memoReply: Reply = prompt => {
-  const ids = [...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].flatMap(match => [...match[1]!.matchAll(/^- (\S+):/gm)].map(row => row[1]!))
+  const ids = [...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].flatMap(match => [...match[1]!.matchAll(/^- \[ref: (\S+)\]/gm)].map(row => row[1]!))
   return ["# Cover memo", "", "The supply terms set the delivery period, and the draft states it.", "",
     ...ids.map(id => `- The condition standard is a drafting choice for the lawyer to confirm. [ref: ${id}]`)].join("\n")
 }
