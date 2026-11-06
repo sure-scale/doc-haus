@@ -45,7 +45,6 @@ import { createReusedCredential, credentialReuse, credentialReuseHandler, native
 import { researchConsentStatus } from "../../../dochaus/lib/research-consent-status"
 import { providerCandidates, ProviderCandidateError } from "./provider-candidate"
 import { providerCatalog } from "./provider-catalog"
-import { modelHttp } from "./model-http"
 import { probeProvider, providerTestCache, providerTestFailure, providerTestInput, unavailableModel } from "./provider-health"
 import { concurrencyProbe, runConcurrencyTest, type ConcurrencyProbe } from "./concurrency-test"
 import { limitModelClient, modelConcurrencyNode } from "./model-concurrency"
@@ -177,7 +176,6 @@ await runEngine(
       })
       const building = Layer.build(
         createRoutes(options, () => [], [
-            modelHttp,
             modelConcurrencyNode,
             Global.node.replace(Global.layerWith({
               data: path.join(runtime, "data", "opencode"),

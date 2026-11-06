@@ -24,7 +24,6 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { legalConfigLayer } from "./config-layer"
 import type { EngineSettings } from "./effective-settings"
-import { modelHttp } from "./model-http"
 
 export type SetupCredential = { integrationID: Integration.ID; label: string; value: Credential.Value }
 
@@ -107,7 +106,6 @@ export function createProviderSetupSession(options: {
       deps: [Watcher.node, Bus.node, FSUtil.node, Global.node, Location.node, Credential.node, WellKnown.node, AppProcess.node],
     })
     const built = AppNodeBuilder.build(LayerNode.group([Instance.graph, Bus.node, Credential.node]), [
-      modelHttp,
       Location.node.replace(Location.boundNode(Location.Ref.make({ directory: AbsolutePath.make(workspace) }))),
       Global.node.replace(Global.layerWith({
         home: directory, tmp: path.join(directory, "tmp"),

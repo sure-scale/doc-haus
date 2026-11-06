@@ -6,7 +6,6 @@ import { httpClient } from "@opencode/util/effect/app-node-platform"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Effect } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/http"
-import { modelHttp } from "./model-http"
 
 type FetchOptions = RequestInit & { timeout?: number | boolean }
 
@@ -23,31 +22,32 @@ const response = () => new Response([
   headers: { "content-type": "text/event-stream" },
 })
 
-for (const patched of [false, true]) {
-  test(`${patched ? "engine" : "unmodified"} native graph fetch options stay scoped to model execution`, async () => {
-    const calls: Array<{ url: string; options?: FetchOptions }> = []
-    const fake = Object.assign(async (input: string | URL | Request, options?: FetchOptions) => {
-      calls.push({ url: String(input), options })
-      return response()
-    }, { preconnect: fetch.preconnect })
-    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-      const result = yield* LLMClient.generate(request)
-      expect(result.text).toBe("Hello")
-      const http = yield* HttpClient.HttpClient
-      yield* http.get("https://shared.invalid/catalog")
-    }).pipe(
-      Effect.provide(LayerNode.compile(graph, { replacements: patched ? [modelHttp] : [] })),
-      Effect.provideService(FetchHttpClient.Fetch, fake),
-      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error", cache: "no-store" }),
-    )))
-    expect(calls.map(call => call.url)).toEqual(["https://model.invalid/v1/responses", "https://shared.invalid/catalog"])
-    expect(calls[0].options?.timeout).toBe(patched ? false : undefined)
-    expect(calls[0].options).toMatchObject({ redirect: "error", cache: "no-store", method: "POST" })
-    expect(calls[0].options?.signal).toBeInstanceOf(AbortSignal)
-    expect(calls[1].options?.timeout).toBeUndefined()
-    expect(calls[1].options?.redirect).toBe("error")
-  })
-}
+// Quiet model turns can exceed Bun's socket idle timeout. The native model
+// executor lifts it for model fetches only; the shared HTTP client keeps its
+// options and caller cancellation still reaches the fetch.
+test("native graph lifts the Bun fetch timeout only for model execution", async () => {
+  const calls: Array<{ url: string; options?: FetchOptions }> = []
+  const fake = Object.assign(async (input: string | URL | Request, options?: FetchOptions) => {
+    calls.push({ url: String(input), options })
+    return response()
+  }, { preconnect: fetch.preconnect })
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const result = yield* LLMClient.generate(request)
+    expect(result.text).toBe("Hello")
+    const http = yield* HttpClient.HttpClient
+    yield* http.get("https://shared.invalid/catalog")
+  }).pipe(
+    Effect.provide(LayerNode.compile(graph)),
+    Effect.provideService(FetchHttpClient.Fetch, fake),
+    Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error", cache: "no-store" }),
+  )))
+  expect(calls.map(call => call.url)).toEqual(["https://model.invalid/v1/responses", "https://shared.invalid/catalog"])
+  expect(calls[0].options?.timeout).toBe(false)
+  expect(calls[0].options).toMatchObject({ method: "POST" })
+  expect(calls[0].options?.signal).toBeInstanceOf(AbortSignal)
+  expect(calls[1].options?.timeout).toBeUndefined()
+  expect(calls[1].options?.redirect).toBe("error")
+})
 
 test("caller abort still cancels a quiet native model fetch", async () => {
   const started = Promise.withResolvers<void>()
@@ -61,7 +61,7 @@ test("caller abort still cancels a quiet native model fetch", async () => {
     })
   }, { preconnect: fetch.preconnect })
   const pending = Effect.runPromise(Effect.scoped(LLMClient.generate(request).pipe(
-    Effect.provide(LayerNode.compile(graph, { replacements: [modelHttp] })),
+    Effect.provide(LayerNode.compile(graph)),
     Effect.provideService(FetchHttpClient.Fetch, fake),
   )), { signal: controller.signal })
   await started.promise
