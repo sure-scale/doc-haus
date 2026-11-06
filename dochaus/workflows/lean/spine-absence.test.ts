@@ -12,8 +12,8 @@ import { AGENT, SOURCE, SOURCE_TEXT, cleanupMatters, happyPath, matter, scripted
 // The spine step's check of its parent entries' absence claims, driven through
 // the real coordinator with a scripted model: a classifier job per entry, a
 // verifier job per claim, a contradicted claim sent back to the spine with the
-// source's words, recorded with an open item on the final attempt, and every
-// settled job saved by content. All text is synthetic.
+// source's words, only recorded on the final attempt, an open item never
+// classified, and every settled job saved by content. All text is synthetic.
 
 afterEach(cleanupMatters)
 
@@ -21,7 +21,7 @@ const DIRECTORS = "The supplier's current directors are Alex Doe and Sam Roe."
 const SOURCE_WITH_DIRECTORS = `${SOURCE_TEXT} ${DIRECTORS}`
 const CLAIM = "the supplier's current directors"
 const ONLY = { kind: "fact", detail: "The supply terms are the only source of the note.", evidence: [{ source_id: "request", quote: "Draft a short supply note" }], limitations: [] }
-const SILENT = { kind: "open-item", detail: "The note names who signs for the supplier.", evidence: [], limitations: ["No supplied document identifies the supplier's current directors."] }
+const SILENT = { kind: "requirement", detail: "The note names who signs for the supplier.", evidence: [], limitations: ["No supplied document identifies the supplier's current directors."] }
 const CITED = { kind: "fact", detail: "The supplier's current directors are Alex Doe and Sam Roe.", evidence: [{ source_id: SOURCE, quote: DIRECTORS }], limitations: [] }
 const FOUND = { source_id: SOURCE, quote: DIRECTORS }
 const ISSUE = absenceIssue(1, CLAIM, FOUND)
@@ -36,7 +36,7 @@ const absenceCounts = (directory: string) => readLeanEvents(directory).filter(ev
 
 test("the classifier reads one entry's kind, detail and limitations; the verifier the sources, entry and claim, each in tagged blocks", () => {
   const classify = absenceClaimsPrompt(SILENT)
-  expect(classify).toContain(`<entry>\nkind: open-item\ndetail: ${SILENT.detail}\nlimitations:\n- ${SILENT.limitations[0]}\n</entry>`)
+  expect(classify).toContain(`<entry>\nkind: requirement\ndetail: ${SILENT.detail}\nlimitations:\n- ${SILENT.limitations[0]}\n</entry>`)
   expect(classify).toContain("<question>")
   expect(classify).toContain("no lookup is needed")
   expect(absenceClaimsPrompt({ ...SILENT, limitations: [] })).toContain("limitations:\nNone.")
@@ -119,7 +119,7 @@ test("a claim that stands passes the spine at once", async () => {
   expect((readLeanJson(directory, "spine.json") as { entries: object[] }).entries).toEqual([ONLY, SILENT])
 })
 
-test("a spine that keeps a contradicted claim is accepted on the final attempt with the issue recorded and an open item for the notes", async () => {
+test("a spine that keeps a contradicted claim is accepted on the final attempt with the issue recorded, and no open item", async () => {
   const directory = matter(SOURCE_WITH_DIRECTORS)
   const model = scriptedModel({ ...happyPath, [AGENT.spine]: () => spine(ONLY, SILENT), [AGENT.absence]: classifier, [AGENT["absence-verify"]]: contradicting })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
@@ -132,13 +132,8 @@ test("a spine that keeps a contradicted claim is accepted on the final attempt w
   expect(prompts(model, AGENT.absence)).toHaveLength(2)
   expect(prompts(model, AGENT["absence-verify"])).toHaveLength(1)
   expect((readLeanJson(directory, "spine.json") as { entries: object[] }).entries).toEqual([ONLY, SILENT])
-  const items = readOpenItems(directory).filter(item => item.stage === "spine")
-  expect(items).toEqual([expect.objectContaining({
-    stage: "spine", kind: "omission", ref: { ...FOUND, repair_target: "memo" },
-    detail: `Drafting spine: this open-item says the sources do not record ${CLAIM}, but "${SOURCE}" states: "${DIRECTORS}". The lawyer should confirm the drafts and notes rely on what the source states.`,
-  })])
-  // The drafting notes are shown it and name it, so the gate passes with it disclosed, never silent.
-  expect(prompts(model, AGENT.finalize).some(prompt => prompt.text.includes(`- ${items[0]!.id}:`))).toBe(true)
+  // The lawyer is asked to clear nothing from this check.
+  expect(readOpenItems(directory).filter(item => item.stage === "spine")).toEqual([])
   expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass" })
 })
 
@@ -149,21 +144,29 @@ test("saved claims and verdicts are reused for unchanged entries; a changed entr
   const check = (entries: AbsenceEntry[], final = false) => checkAbsenceClaims(directory, state, { sessions: model.port }, { entries, limitations: [] }, { final }, () => {})
 
   const first = await check([ONLY, SILENT])
-  expect(first).toEqual({ issues: [ISSUE], recorded: [], openItems: [] })
+  expect(first).toEqual({ issues: [ISSUE], recorded: [] })
   expect(model.prompts).toHaveLength(3)
   // Unchanged entries: no job is asked again, and the verdict is the saved one.
   expect(await check([ONLY, SILENT])).toEqual(first)
   expect(model.prompts).toHaveLength(3)
-  // Final: the same verdict is recorded, with its open item, instead of retried.
-  const final = await check([ONLY, SILENT], true)
-  expect(final.issues).toEqual([])
-  expect(final.recorded).toEqual([ISSUE])
-  expect(final.openItems.map(item => [item.stage, item.kind, item.ref.repair_target])).toEqual([["spine", "omission", "memo"]])
+  // Final: the same verdict is only recorded, instead of retried.
+  expect(await check([ONLY, SILENT], true)).toEqual({ issues: [], recorded: [ISSUE] })
   expect(model.prompts).toHaveLength(3)
   // A changed entry is classified and verified again.
   await check([ONLY, { ...SILENT, detail: "The note names who signs for the supplier, by role." }])
   expect(model.prompts).toHaveLength(5)
   expect(absenceCounts(directory).map(counts => counts?.reused)).toEqual([0, 3, 3, 1])
+})
+
+test("an open-item entry is not classified; the others keep their spine index in the issue", async () => {
+  const directory = matter(SOURCE_WITH_DIRECTORS)
+  const model = scriptedModel({ [AGENT.absence]: classifier, [AGENT["absence-verify"]]: contradicting })
+  const open = { ...SILENT, kind: "open-item" }
+  const checked = await checkAbsenceClaims(directory, readLeanState(directory)!, { sessions: model.port }, { entries: [ONLY, open, SILENT], limitations: [] }, { final: false }, () => {})
+  expect(checked).toEqual({ issues: [absenceIssue(2, CLAIM, FOUND)], recorded: [] })
+  expect(prompts(model, AGENT.absence).map(prompt => prompt.text.includes("kind: open-item"))).toEqual([false, false])
+  expect(prompts(model, AGENT["absence-verify"])).toHaveLength(1)
+  expect(absenceCounts(directory)).toEqual([{ entries: 2, claims: 1, reused: 0, unchecked: 0, stands: 0, contradicted: 1 }])
 })
 
 test("a verifier that never quotes the source leaves its claim standing, unverified, and is not saved", async () => {

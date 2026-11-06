@@ -135,8 +135,9 @@ test("spine-atoms.json holds the atoms in the entries' order, each split in its 
   expect(sessions).toHaveLength(3)
   for (const session of sessions) expect(session).toMatchObject({ parentID: "ses_owner", permissions: SPINE_SPLIT_PERMISSIONS })
   expect(LEAN_STAGE_AGENTS.split).toBe("lean-spine-split")
-  // The step reports its split sessions beside its own, as it does its three absence classifiers'.
-  expect(state.stages.spine?.session_ids).toHaveLength(6)
+  // The step reports its split sessions beside its own, as it does its absence
+  // classifiers': two, as the open-item entry is not classified.
+  expect(state.stages.spine?.session_ids).toHaveLength(5)
   expect(readLeanEvents(directory).filter(event => event.event === "spine_split")).toEqual([expect.objectContaining({
     stage: "spine", counts: { entries: 3, reused: 0, atomic: 2, split: 1, kept: 0, atoms: 4 },
   })])

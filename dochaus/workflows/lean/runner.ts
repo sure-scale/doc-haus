@@ -789,7 +789,7 @@ function roundPlanned(directory: string, state: LeanState, recorded: LeanStageSt
  * withholds delivery rows its check still refuses, or reads a missing delivery
  * list as none (the planned names stand), and the spine keeps an entry figure
  * none of its quotes states, or an absence claim a source contradicts (both
- * recorded in the checker event, the claim also as an open item);
+ * recorded in the checker event);
  * any other fourth failed check stops the run with those issues. */
 async function runModelStage(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, prepared?: PreparedReview): Promise<StageRun> {
   const stage = stepStage(step) as ModelStageID
@@ -814,11 +814,11 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
     // verified against the sources (spine-absence.ts), and is then split into
     // atoms before spine.json is written. On the last attempt an unquoted
     // figure or a contradicted claim no longer fails it: the checker event
-    // records it, and a contradicted claim is also an open item.
+    // records it.
     const spine = stage === "spine" ? checkEvidenceReply(directory, stage, reply, { final: index >= LEAN_MAX_RETRIES }) : undefined
     const absence = spine?.value ? await checkAbsenceClaims(directory, state, deps, spine.value, { final: index >= LEAN_MAX_RETRIES }, jobProgress) : undefined
     const accepted = spine
-      ? { issues: [...spine.issues, ...absence?.issues ?? []], outputs: [], openItems: absence?.openItems ?? [] }
+      ? { issues: [...spine.issues, ...absence?.issues ?? []], outputs: [], openItems: [] }
       : stage === "instructions"
       ? acceptInstructionsReply(directory, reply)
       : stage === "discrepancy"

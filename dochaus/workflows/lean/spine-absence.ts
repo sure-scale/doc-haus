@@ -3,24 +3,25 @@ import { parallel } from "./checklist-flow"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { OutputLimitError } from "./native-stage-result"
 import { retryPrompt, tagged } from "./prompts"
-import { matterSourceBasis, matterSourceIDs, openItem, quoteFound, quoteMissIssue, type SourceQuote } from "./quotes"
+import { matterSourceBasis, matterSourceIDs, quoteFound, quoteMissIssue, type SourceQuote } from "./quotes"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, stepSessionTitle, type LeanDeps, type PermissionRule } from "./stages"
-import { readLeanJson, shortHash, writeLeanText, type LeanStageState, type LeanState, type OpenItem } from "./state"
+import { readLeanJson, shortHash, writeLeanText, type LeanStageState, type LeanState } from "./state"
 
-// Absence claims on the drafting spine. Once the spine reply passes its
-// deterministic checks, and before its entries are split, each entry gets a
-// classifier job: in a fresh, tool-less session it reads that entry's kind,
+// Absence claims on the drafting spine. On each spine reply whose entries have
+// the spine's shape, and before its entries are split, each entry other than an
+// open item gets a classifier job: in a fresh, tool-less session it reads that entry's kind,
 // detail and limitations and lists what the entry says the sources do not
 // record (absenceClaimsPrompt). Each claim then gets a verifier job: in a
 // fresh session with the read-only tools it searches the matter's sources and
 // says whether the claim stands or a source records the thing after all,
 // quoting it (absenceVerifyPrompt). Code holds that quotation to the source
 // (quoteFound) and returns a near miss as retry feedback (quoteMissIssue). A
-// contradicted claim sends the spine back with the source's words; on the
-// spine's final attempt it is recorded in the checker event and becomes an
-// open item for the notes, so a false absence claim is never kept silently. A
-// job that never passes leaves the entry as it is: no claim, or a claim that
-// stands unverified. Settled claims and verdicts are saved by content key
+// contradicted claim sends the spine back with the source's words, in the same
+// retry as the reply's other issues; on the spine's final attempt it is only
+// recorded in the checker event. An open item is not classified: it already
+// records that no answer, instruction or source settles its point. A job that
+// never passes leaves the entry as it is: no claim, or a claim that stands
+// unverified. Settled claims and verdicts are saved by content key
 // (spine-absence.json), so an unchanged entry is not asked again.
 
 export const LEAN_SPINE_ABSENCE_SCHEMA = "dochaus.lean.spine-absence/1"
@@ -32,7 +33,7 @@ const FILE = "spine-absence.json"
 export type AbsenceEntry = { kind: string; detail: string; limitations: string[] }
 /** One claim's verdict: it stands, or a source records what the entry says no source does. */
 export type AbsenceVerdict = { verdict: "stands" } | ({ verdict: "contradicted" } & SourceQuote)
-export type AbsenceCheck = { issues: string[]; recorded: string[]; openItems: OpenItem[] }
+export type AbsenceCheck = { issues: string[]; recorded: string[] }
 type Checked<T> = { issues: string[]; value?: T }
 type Saved = { schema: typeof LEAN_SPINE_ABSENCE_SCHEMA; claims: Record<string, string[]>; verdicts: Record<string, AbsenceVerdict> }
 
@@ -112,12 +113,6 @@ export function absenceIssue(index: number, claim: string, found: SourceQuote) {
   return `entries[${index}] says the sources do not record ${JSON.stringify(claim)}; "${found.source_id}" states "${found.quote}". Cite it and restate the entry, or drop the claim.`
 }
 
-/** The disclosed item for a contradicted claim the spine kept on its final attempt. */
-export function absenceItem(entry: AbsenceEntry, claim: string, found: SourceQuote) {
-  return openItem("spine", "omission", `Drafting spine: this ${entry.kind} says the sources do not record ${claim}, but "${found.source_id}" states: "${found.quote}". The lawyer should confirm the drafts and notes rely on what the source states.`,
-    { source_id: found.source_id, quote: found.quote, repair_target: "memo" })
-}
-
 /** A classifier's content key: the contract and the prompt it reads, so a changed entry or question asks again. */
 export const absenceClaimsKey = (entry: AbsenceEntry) => shortHash(JSON.stringify([SPINE_ABSENCE_CONTRACT, absenceClaimsPrompt(entry)]), 40)
 /** A verifier's content key: the contract, the sources' content and the prompt it reads. */
@@ -143,16 +138,17 @@ function save(directory: string, update: (saved: Saved) => void) {
   writeLeanText(directory, FILE, `${JSON.stringify(saved, null, 2)}\n`)
 }
 
-/** Verifies the absence claims of the checked spine reply's entries, in
- * parallel within the concurrency limit. Returns a retry issue for each
- * contradicted claim or, on the `final` attempt, records it and its open item
- * instead. With no matter source there is nothing to check. Any error,
+/** Verifies the absence claims of the spine reply's entries other than its open
+ * items, in parallel within the concurrency limit. Returns a retry issue for
+ * each contradicted claim or, on the `final` attempt, only records it. With no
+ * matter source there is nothing to check. Any error,
  * including a pause, propagates once the jobs in flight settle; the jobs
  * settled by then stay saved. */
 export async function checkAbsenceClaims(directory: string, state: LeanState, deps: LeanDeps, spine: Record<string, unknown>, options: { final: boolean }, progress: (patch: Partial<LeanStageState>) => void): Promise<AbsenceCheck> {
-  const entries = (spine.entries as AbsenceEntry[]).map(({ kind, detail, limitations }) => ({ kind, detail, limitations }))
+  // Each entry keeps its index in the spine, which its retry issue names.
+  const entries = (spine.entries as AbsenceEntry[]).flatMap(({ kind, detail, limitations }, index) => kind === "open-item" ? [] : [{ entry: { kind, detail, limitations }, index }])
   const sources = matterSourceIDs(directory)
-  if (!entries.length || !sources.length) return { issues: [], recorded: [], openItems: [] }
+  if (!entries.length || !sources.length) return { issues: [], recorded: [] }
   const basis = matterSourceBasis(directory)
   const sessionIDs: string[] = []
   const started = (id: string) => {
@@ -168,23 +164,23 @@ export async function checkAbsenceClaims(directory: string, state: LeanState, de
   }
 
   const claims: string[][] = []
-  await parallel(entries, (entry, index) => settle(async () => {
+  await parallel(entries, ({ entry, index }, row) => settle(async () => {
     const key = absenceClaimsKey(entry)
     const saved = readSaved(directory).claims[key]
     if (saved) {
       counts.reused += 1
-      claims[index] = saved
+      claims[row] = saved
       return
     }
     const listed = await job(directory, state, deps, { agent: LEAN_STAGE_AGENTS.absence, permissions: SPINE_ABSENCE_PERMISSIONS, label: `absence entry ${index + 1}`, title: `spine absence: entry ${index + 1}` },
       absenceClaimsPrompt(entry), parseAbsenceClaims, started)
     if (!listed) counts.unchecked += 1
     else save(directory, saved => { saved.claims[key] = listed })
-    claims[index] = listed ?? []
+    claims[row] = listed ?? []
   }))
   if (failures.length) throw failures[0]
 
-  const asked = entries.flatMap((entry, index) => (claims[index] ?? []).map((claim, at) => ({ entry, index, claim, at })))
+  const asked = entries.flatMap(({ entry, index }, row) => (claims[row] ?? []).map((claim, at) => ({ entry, index, claim, at })))
   counts.claims = asked.length
   const verdicts: (AbsenceVerdict | undefined)[] = []
   await parallel(asked, ({ entry, index, claim, at }, row) => settle(async () => {
@@ -212,8 +208,7 @@ export async function checkAbsenceClaims(directory: string, state: LeanState, de
   })
   appendLeanEvent(directory, { stage: "spine", event: "spine_absence", step: "absence claims", counts })
   const issues = contradicted.map(row => absenceIssue(row.index, row.claim, row.found))
-  if (!options.final) return { issues, recorded: [], openItems: [] }
-  return { issues: [], recorded: issues, openItems: contradicted.map(row => absenceItem(row.entry, row.claim, row.found)) }
+  return options.final ? { issues: [], recorded: issues } : { issues, recorded: [] }
 }
 
 /** One job in a session of its own, retried there with the check's issues:
