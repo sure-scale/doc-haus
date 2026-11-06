@@ -110,8 +110,9 @@ test("native provider turn executes a legal tool through the v2 plugin", async (
         const { projectSessionMessages } = await import("../../../dochaus/lib/engine-v2-projection")
         const projected = projectSessionMessages(messages, { id: "ses_native_read", agent: "qa" })
         const read = projected.flatMap(message => message.parts).find(part => part.tool === "read")
-        expect(read?.state?.input).toMatchObject({ filePath: path.join(matter, "native-read.txt") })
-        expect((String(read?.state?.output).match(/End of file/g) ?? []).length).toBe(1)
+        const state = read?.state as { input?: unknown; output?: unknown } | undefined
+        expect(state?.input).toMatchObject({ filePath: path.join(matter, "native-read.txt") })
+        expect((String(state?.output).match(/End of file/g) ?? []).length).toBe(1)
         break
       }
       if (Date.now() > readDeadline) throw new Error(`Native read did not complete: ${JSON.stringify(messages)}`)

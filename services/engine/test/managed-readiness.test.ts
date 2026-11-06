@@ -51,13 +51,13 @@ async function fixture(research: "active" | "missing" | "failed") {
   const base = `http://127.0.0.1:${port}`
   const authorization = `Basic ${btoa("opencode:synthetic-password")}`
   const log = path.join(temporary, "engine.log")
-  const environment = { ...process.env, WORKSPACE_ROOT: workspace, DOCHAUS_RUNTIME_DIR: runtime,
+  const environment: Record<string, string | undefined> = { ...process.env, WORKSPACE_ROOT: workspace, DOCHAUS_RUNTIME_DIR: runtime,
     DOC_HAUS_ENGINE_PORT: String(port), OPENCODE_URL: base, OPENCODE_HOSTNAME: "127.0.0.1",
     OPENCODE_SERVER_PASSWORD: "synthetic-password", OPENCODE_DISABLE_MODELS_FETCH: "1" }
   delete environment.DOCHAUS_PROVIDER_CAPTURE_DIR
   for (const name of ["GOOGLE_VERTEX_PROJECT", "GOOGLE_CLOUD_PROJECT", "GCP_PROJECT", "GCLOUD_PROJECT", "GOOGLE_VERTEX_API_KEY",
     "AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_BEARER_TOKEN_BEDROCK"])
-    delete environment[name as keyof typeof environment]
+    delete environment[name]
   const engine = Bun.spawn([process.execPath, "run", "services/engine/src/server.ts"], { cwd: repository, env: environment, stdout: Bun.file(log), stderr: Bun.file(log) })
   const request = (route: string, body?: object, directory: string | null = matter, authorized = true) => fetch(base + route, {
     method: body ? "POST" : "GET", headers: { "Content-Type": "application/json", ...(directory ? { "x-opencode-directory": directory } : {}), ...(authorized ? { authorization } : {}), Origin: "http://localhost:5173" }, body: body ? JSON.stringify(body) : undefined,

@@ -20,7 +20,7 @@ test("native failure evidence bounds Fail and Die metadata without privileged te
   const result = sanitizeNativeDrainFailure(Cause.fromReasons([Cause.fail(error), Cause.die(foreign), Cause.die(accessor), Cause.die(hostile)].flatMap(cause => cause.reasons)), "ses_neutral_failure", repository)
   expect(result.reason_count).toBe(4)
   expect(result.reasons[0]!.kind).toBe("Fail")
-  expect(result.reasons[0]!.name).toBe("TypeError")
+  expect(result.reasons[0]).toMatchObject({ name: "TypeError" })
   expect(result.reasons[0]!.message_fingerprint?.ref).toBe(draftingTraceReference(secret))
   expect(result.reasons[0]!.frames).toEqual([{ file: "dochaus/plugin/legal-v2.ts", line: 29, column: 7 }])
   expect(result.reasons[1]!.kind).toBe("Die")
