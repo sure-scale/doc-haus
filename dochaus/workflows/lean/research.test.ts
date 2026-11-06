@@ -414,7 +414,7 @@ test("research review reports researchable gaps separately and the checker valid
   expect(accepted.openItems).toEqual([expect.objectContaining({ stage: "research-review", kind: "research_gap", detail: GAP_TEXT })])
   expect(JSON.parse(researchHandoff(directory)).limitations).toEqual(["Currency remains to be confirmed", GAP_TEXT])
   const prompt = researchPrompt(directory, "research-review", researchBasis(directory))
-  expect(prompt).toContain("A failed or unavailable provider, an inaccessible source, incomplete extraction and currency limits are limitations; a gap is material authority not yet retrieved that a targeted retrieval could find and on which a drafting choice depends.")
+  expect(prompt).toContain("A failed or unavailable provider, an inaccessible source, incomplete extraction and currency limits are limitations; a gap is material authority not yet retrieved that a targeted retrieval could find and on which a drafting choice depends; a proposition of law the documents assert or rely on with nothing retrieved for it is a gap, a not-needed status included.")
   expect(prompt).toContain('"limitations":["other remaining legal research limits the lawyer must see"],"gaps":[{"issue":"material authority not yet retrieved","affects":"the drafting choice that depends on it"}]}.')
   // A review saved before gaps were reported remains valid.
   writeLeanText(directory, "research-review.json", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [] }))
