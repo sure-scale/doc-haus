@@ -1,17 +1,17 @@
 import { expect, test } from "bun:test"
-import { LLM, LLMClient } from "@opencode/ai"
+import { ai, LLMClient } from "@opencode/ai/effect"
 import { configure } from "@opencode/ai/providers/openai"
 import { llmClient } from "@opencode/core/effect/app-node-platform"
 import { httpClient } from "@opencode/util/effect/app-node-platform"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Effect } from "effect"
-import { FetchHttpClient, HttpClient } from "effect/unstable/http"
+import { FetchHttpClient, HttpClient } from "effect/http"
 import { modelHttp } from "./model-http"
 
 type FetchOptions = RequestInit & { timeout?: number | boolean }
 
 const graph = LayerNode.group([llmClient, httpClient])
-const request = LLM.request({
+const request = ai.request({
   model: configure({ apiKey: "fixture", baseURL: "https://model.invalid/v1" }).responses("fixture"),
   prompt: "Hello",
 })

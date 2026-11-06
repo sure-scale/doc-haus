@@ -1,7 +1,7 @@
 import { RequestExecutor } from "@opencode/ai/route"
 import { requestExecutor } from "@opencode/core/effect/app-node-platform"
 import { Context, Effect, Layer } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
+import { FetchHttpClient } from "effect/http"
 
 // Quiet model turns can exceed Bun's socket idle timeout. Decorate only the
 // native model executor; the shared HTTP client and caller cancellation survive.

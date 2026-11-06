@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { AIError, AuthenticationError, LanguageModel, LLMClient, QuotaExceededError, TransportError } from "@opencode/ai"
+import { AIError, AuthenticationError, LanguageModel, LLMClient, QuotaExceededError, TransportError } from "@opencode/ai/effect"
 import { OpenAIChat } from "@opencode/ai/protocols"
 import { OpenAICompatible } from "@opencode/ai/providers/openai-compatible"
 import { RequestExecutor } from "@opencode/ai/route"
@@ -7,7 +7,7 @@ import { TestLLM } from "@opencode/ai/testing"
 import { Model } from "@opencode/core/model"
 import { ModelResolver } from "@opencode/core/model-resolver"
 import { Cause, Effect, Layer } from "effect"
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { probeProvider, providerTestCache, providerTestFailure, providerTestInput } from "../src/provider-health"
 
 test("native stateless probe preserves provider output limits and sends only its fixed prompt", async () => {

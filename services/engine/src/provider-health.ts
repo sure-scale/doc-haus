@@ -1,4 +1,4 @@
-import { LLM, LLMClient } from "@opencode/ai"
+import { ai, LLMClient } from "@opencode/ai/effect"
 import { Model } from "@opencode/core/model"
 import { ModelResolver } from "@opencode/core/model-resolver"
 import { SessionID } from "@opencode/schema/session-id"
@@ -38,7 +38,7 @@ export function probeProvider(ref: Model.Ref) {
     if (!model?.enabled) return unavailableModel
     const resolved = yield* ModelResolver.Service.use(resolver => resolver.resolve(ref))
     if (!resolved) return unavailableModel
-    yield* LLMClient.Service.use(client => client.generate(LLM.request({
+    yield* LLMClient.Service.use(client => client.generate(ai.request({
       model: resolved.model,
       prompt: "Reply with OK.",
       http: { headers: { "x-opencode-session": SessionID.create() } },
