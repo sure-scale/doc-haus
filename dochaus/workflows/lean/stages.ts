@@ -96,6 +96,8 @@ const ACT_RECORD_CONTRACT = "act-record-7"
  * split job's prompt or checks, or the files the step writes re-runs the step
  * and every split. */
 export const SPINE_CONTRACT = "spine-atoms-7"
+/** The discrepancy stage runs a differences job, then a gaps job shown its entries (discrepancy.ts). */
+const DISCREPANCY_CONTRACT = "differences-then-gaps-1"
 /** Keys the guidance review: its guidance list and the template's focus. */
 const GUIDANCE_REVIEW_CONTRACT = "template-guidance-1"
 export const LEAN_MAX_RETRIES = 3
@@ -305,8 +307,9 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   if (step === "checklist-check") return [{ name: "checklist-refinement-contract", bytes: "source-unit-refinement-1" }, { name: "checklist-refinement-selection", bytes: JSON.stringify(checklistRefinementSelections(directory)) }, file("checklist/refinements.json"), file("request.md"), file("plan.json"), file("checklist/extraction.json"), file("drafting-notes.docx"), file("research-context.txt"), ...planned.flatMap(id => [file(`${id}/body.docx`), file(`${id}/body-applied.docx`), file(`${id}/redline.docx`), file(`${id}/review-independent.json`), file(`${id}/changes.json`), file(`${id}/apply.json`)])]
   // What an instruction settled is not an input of the list it was settled by.
   if (step === "instructions") return outlineInputs(directory, { settled: false })
-  // The discrepancy job reads the instruction list to find what the sources leave silent.
-  if (step === "discrepancy") return [...outlineInputs(directory), file(INSTRUCTIONS_FILE)]
+  // The gaps job reads the instruction list to find what the sources leave
+  // silent; the differences job's own key leaves it out (differencesKey).
+  if (step === "discrepancy") return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), { name: "discrepancy-contract", bytes: DISCREPANCY_CONTRACT }]
   if (step === "intake") {
     // Only with a client recorded on the matter, so a matter without one keeps its key.
     const client = matterClient(directory)

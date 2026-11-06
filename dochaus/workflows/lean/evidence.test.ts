@@ -4,7 +4,7 @@ import { writeFileSync } from "node:fs"
 import path from "node:path"
 import { LEAN_MAX_RETRIES, researchBasis, stageOutputValid } from "./stages"
 import { researchPrompt } from "./research"
-import { acceptEvidenceReply, checkEvidence, checkEvidenceReply, evidencePrompt, figures, numbers } from "./evidence"
+import { acceptEvidenceReply, checkDifferences, checkEvidence, checkEvidenceReply, checkGaps, evidencePrompt, figures, gapsPrompt, numbers, type Discrepancy } from "./evidence"
 import { readLeanEvents } from "./events"
 import { enqueueLeanRequest, drainLeanRequests } from "./requests"
 import { leanSteps } from "./plan"
@@ -39,6 +39,7 @@ test("a quotation of the run's own record of a settled question points to the la
 
 // A gap is a point the request or instructions need that no source settles.
 // Its requirement quotes the words that need it, verified like evidence.
+const ENTRY: Discrepancy = { detail: "Delivery term appears in the source", evidence: [{ source_id: SOURCE, quote: SOURCE_TEXT }], limitations: [], material: false, status: "benign", resolution: "Delivery and payment are distinct events." }
 const GAP = { detail: "The supply terms state no governing law; the note needs one.", requirement: { source_id: "request", quote: "Draft a short supply note" },
   evidence: [{ source_id: SOURCE, quote: "Payment is due on delivery." }], limitations: [], material: true, lawyer: true }
 
@@ -71,16 +72,25 @@ test("a gap's requirement comes from the lawyer's words or a document the lawyer
   expect(checkEvidence(directory, "discrepancy", { entries: [], gaps: [fromSource], limitations: [] })).toEqual([])
 })
 
-test("the discrepancy job reads the instruction list and keys it; intake and the spine route its gaps", () => {
+test("the differences job asks the pre-split question; the gaps job reads the instruction list and the differences, in tags", () => {
   const directory = matter()
   const before = stageInputSha(directory, "discrepancy")
   writeLeanText(directory, "instructions.json", JSON.stringify({ items: [{ id: "i1", text: "Draft a short supply note.", source_id: "request", quote: "Draft a short supply note" }], documents: [] }))
   writeInstructionsFile(directory)
   expect(stageInputSha(directory, "discrepancy")).not.toBe(before)
-  const prompt = evidencePrompt(directory, "discrepancy")
-  expect(prompt).toContain("The lawyer's instructions for this work, as a concise list:\n# The lawyer's instructions")
-  expect(prompt).toContain("Then list gaps: each point the request or these instructions need settled that no source, answer or instruction settles.")
-  expect(prompt).not.toContain("record the difference as a limitation")
+  const differences = evidencePrompt(directory, "discrepancy")
+  expect(differences).toContain("Compare identities, roles, dates, figures, versions and instructions.")
+  expect(differences).not.toMatch(/gap/i)
+  expect(differences).not.toContain("# The lawyer's instructions")
+  expect(differences).toContain('Return JSON {"entries":[')
+  const gaps = gapsPrompt(directory, [ENTRY])
+  for (const tag of ["request", "instructions", "differences", "sources", "question", "output_contract"]) expect(gaps).toContain(`<${tag}>\n`)
+  expect(gaps).toMatch(/<instructions>\n[^<]*# The lawyer's instructions[\s\S]*Draft a short supply note\.[\s\S]*<\/instructions>/)
+  expect(gaps).toMatch(new RegExp(`<differences>\\n[^<]*"detail": "${ENTRY.detail}"[\\s\\S]*</differences>`))
+  expect(gaps).toMatch(/<request>\nDraft a short supply note from the supply terms\.\n<\/request>/)
+  expect(gaps).toContain(`- ${SOURCE}`)
+  expect(gaps).toContain("<question>\nWhich points must the instructed work settle that the sources leave silent, or that only one source speaks to")
+  expect(gaps).not.toContain("Compare identities")
   expect(evidencePrompt(directory, "spine")).toContain("record the difference as a limitation")
   expect(acceptEvidenceReply(directory, "discrepancy", JSON.stringify({ entries: [], gaps: [GAP], limitations: [] })).issues).toEqual([])
   const intake = researchPrompt(directory, "intake", researchBasis(directory))
@@ -89,6 +99,20 @@ test("the discrepancy job reads the instruction list and keys it; intake and the
   const spine = evidencePrompt(directory, "spine")
   expect(spine).toContain(GAP.detail)
   expect(spine).toContain("Record each discrepancy gap that no answer or approved research settles as an open-item entry.")
+})
+
+test("each discrepancy job is checked by its own part, and a gap quoting a difference's evidence restates it", () => {
+  const directory = matter()
+  expect(checkDifferences(directory, { entries: [ENTRY], limitations: [] })).toEqual([])
+  expect(checkDifferences(directory, { entries: [{ ...ENTRY, status: "maybe" }], limitations: [] })).toEqual(["entries[0] needs status resolved, unresolved, verify-source or benign."])
+  expect(checkGaps(directory, { gaps: [GAP], limitations: [] }, [ENTRY])).toEqual([])
+  expect(checkGaps(directory, { entries: [], limitations: [] }, [])).toEqual(["Return JSON with gaps and limitations arrays."])
+  const restated = { ...GAP, evidence: [{ source_id: SOURCE, quote: `  ${SOURCE_TEXT.replaceAll(" ", "\n")} ` }] }
+  expect(checkGaps(directory, { gaps: [GAP, restated], limitations: [] }, [ENTRY])).toEqual([
+    `gaps[1] quotes the same evidence as differences[0] ("${ENTRY.detail}"), so it restates that difference. Leave it out; a gap is a point the sources leave silent or only one source speaks to.`,
+  ])
+  // The assembled record is checked as before.
+  expect(checkEvidence(directory, "discrepancy", { entries: [ENTRY], gaps: [GAP], limitations: [] })).toEqual([])
 })
 
 test("later answers and same-name source revisions invalidate dependent work", () => {

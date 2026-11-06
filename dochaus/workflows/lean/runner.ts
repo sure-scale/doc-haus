@@ -21,7 +21,7 @@ import { changePlanPrompt, changeReviewItem, changeReviewPrompt, readChangeRevie
 import { findingTextUnchanged, readChangeList } from "./checks"
 import { packageReviewPrompt, readPackageReview, recordPackageFindings } from "./package-review"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, repairedChecklistItems, startRepairRound, startUnverifiedRepairRound } from "./repairs"
-import { acceptEvidenceReply, checkEvidenceReply, evidencePrompt, unquotedFigureIssue, type UnquotedFigures } from "./evidence"
+import { checkEvidenceReply, evidencePrompt, unquotedFigureIssue, type UnquotedFigures } from "./evidence"
 import { splitSpineEntries } from "./spine-split"
 import { checkAbsenceClaims } from "./spine-absence"
 import { checkAdoptedAgainstResearch } from "./research-check"
@@ -30,6 +30,7 @@ import { runApply, writeProjectedNumbers } from "./apply-stage"
 import { DELIVERED_NOTES, forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
 import { runDraftStage } from "./draft-sections"
 import { runActRecordStage } from "./act-record"
+import { runDiscrepancyStage } from "./discrepancy"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { checklistFindingLabel, deliveredNotes, finalGate, notesCoverageReport } from "./gate"
 import { issueRegister } from "./register"
@@ -725,6 +726,7 @@ function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDe
   if (stage === "gate") return runGate(directory)
   if (stage === "checklist-check") return runChecklistStage(directory, state, deps, reinspectChecklist)
   if (stage === "acts") return runActRecordStage(directory, state, deps, progress)
+  if (stage === "discrepancy") return runDiscrepancyStage(directory, state, deps, progress)
   // A review that re-ran since the plan has findings only a full plan sees.
   if (stage === "change-plan" && document && !roundPlanned(directory, state, recorded) && focusedChecklistRepairs(directory, document) && !unadjudicatedFindings(directory, document).length) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
   if (stage === "change-review" && document && focusedChecklistRepairs(directory, document)) return runFocusedChangeReview(directory, state, deps, document, progress)
@@ -823,8 +825,6 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
       ? { issues: [...spine.issues, ...absence?.issues ?? []], outputs: [], openItems: spine.value ? unquotedFigureItems(spine.value, spine.recorded) : [] }
       : stage === "instructions"
       ? acceptInstructionsReply(directory, reply)
-      : stage === "discrepancy"
-      ? acceptEvidenceReply(directory, stage, reply)
       : stage === "intake" || stage === "research" || stage === "research-review"
       ? acceptResearchReply(directory, stage, reply, { final: index >= LEAN_MAX_RETRIES })
       : await acceptStageReply(directory, step, reply, { final: index >= LEAN_MAX_RETRIES })
@@ -840,7 +840,7 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
       return { status: "failed", reason: `${step}: checker failed after ${LEAN_MAX_RETRIES} retries: ${accepted.issues.join(" ")}` }
     return attempt(index + 1, retryPrompt(stage, accepted.issues))
   }
-  return attempt(0, stage === "change-plan" && document ? changePlanPrompt(directory, document) : stage === "change-review" && document ? changeReviewPrompt(directory, document) : stage === "package-review" ? `${packageReviewPrompt(directory)}\n\nFocused checklist findings are saved at .dochaus/lean/checklist/report.md and checklist/checks.json; use targeted read-record lookup when relevant. Open findings remain unresolved, not satisfied. In that report, a "Disclosed, not satisfied" line is an unresolved finding: it is disclosed with the review draft, is not a blocker for this review to clear, and is never treated as satisfied. Do not re-run every checklist item in this package review.` : stage === "instructions" ? instructionsPrompt(directory) : stage === "discrepancy" || stage === "spine" ? evidencePrompt(directory, stage) : stage === "intake" || stage === "research" || stage === "research-review" ? researchPrompt(directory, stage, researchBasis(directory)) : stagePrompt(directory, step))
+  return attempt(0, stage === "change-plan" && document ? changePlanPrompt(directory, document) : stage === "change-review" && document ? changeReviewPrompt(directory, document) : stage === "package-review" ? `${packageReviewPrompt(directory)}\n\nFocused checklist findings are saved at .dochaus/lean/checklist/report.md and checklist/checks.json; use targeted read-record lookup when relevant. Open findings remain unresolved, not satisfied. In that report, a "Disclosed, not satisfied" line is an unresolved finding: it is disclosed with the review draft, is not a blocker for this review to clear, and is never treated as satisfied. Do not re-run every checklist item in this package review.` : stage === "instructions" ? instructionsPrompt(directory) : stage === "spine" ? evidencePrompt(directory, stage) : stage === "intake" || stage === "research" || stage === "research-review" ? researchPrompt(directory, stage, researchBasis(directory)) : stagePrompt(directory, step))
 }
 
 // A spine entry kept on the final attempt with figures none of its quotes

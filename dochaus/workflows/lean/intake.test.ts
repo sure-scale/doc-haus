@@ -36,7 +36,7 @@ test("conflicting material instructions can pause before a plan or draft is writ
     { question: "Which governing law should the draft use?", kind: "instruction", context: "The same decision affects the whole document." },
   ] }) })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
-  expect(model.prompts.map(row => row.agent)).toEqual([AGENT.instructions, AGENT.discrepancy, AGENT.intake, AGENT.advise])
+  expect(model.prompts.map(row => row.agent)).toEqual([AGENT.instructions, AGENT.discrepancy, AGENT.discrepancy, AGENT.intake, AGENT.advise])
   expect(readQuestions(directory)).toHaveLength(1)
   expect(readLeanText(directory, "plan.json")).toBeUndefined()
   expect(readLeanText(directory, "d1/draft.md")).toBeUndefined()

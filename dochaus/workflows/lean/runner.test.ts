@@ -54,7 +54,7 @@ describe("lean drafting runner", () => {
     expect(state.status).toBe("failed")
     expect(state.stop_reason).toStartWith("d1.draft: outline: checker failed after 3 retries: ")
     expect(state.stop_reason).toContain("has no \"# \" title line")
-    expect(state.stages["d1.draft"]).toMatchObject({ status: "failed", attempts: 4, calls: 4, session_id: "ses_child12" })
+    expect(state.stages["d1.draft"]).toMatchObject({ status: "failed", attempts: 4, calls: 4, session_id: "ses_child13" })
     expect(state.stages["d1.review"]?.status).toBe("pending")
     expect(model.sessions.find(row => row.agent === AGENT.draft)).toMatchObject({ parentID: "ses_owner", agent: AGENT.draft, permissions: LEAN_CHILD_PERMISSIONS })
     expect(existsSync(leanFile(directory, "d1/draft.md"))).toBe(false)

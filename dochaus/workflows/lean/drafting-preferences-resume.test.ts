@@ -93,7 +93,8 @@ test("a save during a sectioned draft rejects that attempt before accepting mixe
   expect(state.status).toBe("completed")
   expect(changed).toBe(true)
   expect(rejected).toBe(true)
-  expect(model.count(AGENT.discrepancy)).toBe(2)
+  // Its two jobs, differences and gaps, ran under each setting.
+  expect(model.count(AGENT.discrepancy)).toBe(4)
   expect(readLeanEvents(directory).filter(event => event.stage === "draft" && event.event === "done")).toHaveLength(1)
   for (const step of leanSteps(directory)) expect(state.stages[step]?.input_sha).toBe(stageInputSha(directory, step))
 }, 120_000)
@@ -148,7 +149,9 @@ test("an observed A to B to A change aborts a sectioned attempt before its next 
   expect(state.status).toBe("completed")
   expect(switched && restored).toBe(true)
   expect(staleSecondParts).toEqual([])
-  expect(model.count(AGENT.discrepancy)).toBe(2)
+  // Differences and gaps under A; the replay restored A, so its differences
+  // were kept and only the gaps job was asked again.
+  expect(model.count(AGENT.discrepancy)).toBe(3)
   expect(readLeanEvents(directory).filter(event => event.stage === "draft" && event.event === "done")).toHaveLength(1)
   for (const step of leanSteps(directory)) expect(state.stages[step]?.input_sha).toBe(stageInputSha(directory, step))
 }, 120_000)
@@ -220,7 +223,8 @@ test("helper-swallowed exchange invalidation restarts the walk without charging 
   expect(switched && restored).toBe(true)
   expect(model.count("lean-checklist-extract")).toBeGreaterThan(1)
   expect(model.count("lean-checklist-extract")).toBeLessThan(8)
-  expect(model.count(AGENT.discrepancy)).toBe(2)
+  // As above: the restored differences are kept and only the gaps job is asked again.
+  expect(model.count(AGENT.discrepancy)).toBe(3)
   expect(readLeanJson(directory, "repairs.json")).toBeUndefined()
   for (const step of leanSteps(directory)) expect(state.stages[step]?.input_sha).toBe(stageInputSha(directory, step))
 }, 120_000)

@@ -90,7 +90,9 @@ test("the outline freezes the run's Posture into the plan, and a settings or mat
   expect(readLeanPlan(directory)?.posture).toBe("conservative")
   expect(runPosture(directory)).toBe("conservative")
   // No stage was revisited: the change reached neither a running stage nor any key.
-  for (const agent of [AGENT.discrepancy, AGENT.review, AGENT["review-independent"], AGENT["change-plan"], AGENT.finalize]) expect(model.count(agent)).toBe(1)
+  for (const agent of [AGENT.review, AGENT["review-independent"], AGENT["change-plan"], AGENT.finalize]) expect(model.count(agent)).toBe(1)
+  // The discrepancy stage asks its differences job and its gaps job once each.
+  expect(model.count(AGENT.discrepancy)).toBe(2)
   for (const step of leanSteps(directory)) expect(state.stages[step]?.input_sha).toBe(stageInputSha(directory, step))
   expect(rendered(directory, "d1.review")).toBe(readFirmDraftingPreferences("full", "conservative"))
 }, 120_000)
