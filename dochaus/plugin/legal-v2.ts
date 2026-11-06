@@ -110,7 +110,8 @@ export default Plugin.define({
     await context.session.hook("compaction", (event) => {
       const prompt = { context: [] as string[], prompt: "" }
       writeLegalCompactionPrompt(directory, prompt)
-      event.system = [{ type: "text", text: prompt.prompt }]
+      // Keep the host-built system so the summary request shares the session's
+      // cached prefix; the handoff template travels as the final user message.
       event.prompt = prompt.prompt
     })
 
