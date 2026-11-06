@@ -7,26 +7,28 @@ import { excerpt, openItem } from "./quotes"
 import { hashStageInputs, leanFile, readLeanJson, readLeanText, shortHash, writeLeanText, type OpenItem } from "./state"
 
 // Spine placement: which planned parts rest on each drafting-spine entry
-// (spine.json). First, one focused job per entry, in a fresh session of its
-// own and with no document in context, reads that entry alone and says whether
-// it binds some part's text or the package as a whole (spineLevelPrompt,
-// parseEntryLevel). A settled level is saved under the content key of what its
-// job read (spine-levels.json), so a re-run or resume does not ask it again.
-// A package entry is recorded with its level and placed nowhere: it rides the
-// drafting spine as before. Each text entry then gets one placement job, in a
-// session of its own, that reads the planned documents and parts (coverageView,
-// shared first so the prefix caches across the jobs) and that entry, and names
-// the parts that must set it out or reason from it; parseEntryPlacement holds
-// the reply to planned part refs. planPlacementIssues sends a text requirement
-// or decision no part covers back to the outline; one still left after the
-// revision is recorded as unplaced and disclosed (placementItems), never
-// blocking. The record, placement.json, is keyed on what the jobs read: the
-// documents as coverageView shows them and the spine's bytes. Each part prompt
-// is told the text entries it rests on (groundsBlock), as are the checklist's
-// planned roles and the reviews' outline. Nothing here judges the legal
-// substance.
+// (spine.json). Each entry gets two focused jobs, side by side, each in a fresh
+// session of its own. The level job reads that entry alone, with no document
+// in context, and says whether it binds some part's text or the package as a
+// whole (spineLevelPrompt, parseEntryLevel). A settled level is saved under the
+// content key of what its job read (spine-levels.json), so a re-run or resume
+// does not ask it again. The placement job reads the planned documents and
+// parts (coverageView, shared first so the prefix caches across the jobs) and
+// that entry, and names the parts that must set it out or reason from it;
+// parseEntryPlacement holds the reply to planned part refs. The placement job
+// sees the parts' scopes, so the parts it names bind the entry at either
+// level: a package entry it places is recorded with its level and those parts.
+// The level only says what an entry placed in no part means.
+// planPlacementIssues sends a text requirement or decision no part covers back
+// to the outline; one still left after the revision is recorded as unplaced and
+// disclosed (placementItems), never blocking. A package entry placed nowhere
+// raises neither and rides the drafting spine as before. The record,
+// placement.json, is keyed on what the placement jobs read: the documents as
+// coverageView shows them and the spine's bytes. Each part prompt is told the
+// entries placed in it (groundsBlock), as are the checklist's planned roles and
+// the reviews' outline. Nothing here judges the legal substance.
 
-export const LEAN_PLACEMENT_SCHEMA = "dochaus.lean.placement/2"
+export const LEAN_PLACEMENT_SCHEMA = "dochaus.lean.placement/3"
 export const LEAN_SPINE_LEVELS_SCHEMA = "dochaus.lean.spine-levels/1"
 /** Revised outlines the placement issues may ask for before the plan is saved. */
 export const PLAN_PLACEMENT_REVISIONS = 1
@@ -35,9 +37,10 @@ export const PLAN_PLACEMENT_REVISIONS = 1
 export type SpineEntry = { index: number; kind: string; detail: string; evidence: { source_id: string; quote: string }[] }
 /** "text": some part's text must carry it or reason from it; "package": it binds what is produced, where, from what, how or where it is disclosed. */
 export type EntryLevel = "text" | "package"
-/** One entry's level and the parts its job named, by ref ("d1/3"); a package
- * entry names none. `level_unchecked` when its level reply never passed its
- * check (it is placed as text), `unchecked` when its placement reply never did. */
+/** One entry's level and the parts its placement job named, by ref ("d1/3"),
+ * which bind it at either level. `level_unchecked` when its level reply never
+ * passed its check (it counts as text), `unchecked` when its placement reply
+ * never did. */
 export type EntryPlacement = { entry: number; level: EntryLevel; parts: string[]; unchecked?: true; level_unchecked?: true }
 /** "placed": every text requirement and decision rests on a part; "unplaced": issues remain after the outline's revision. */
 export type LeanPlacement = { schema: typeof LEAN_PLACEMENT_SCHEMA; plan: string; status: "placed" | "unplaced"; entries: EntryPlacement[]; issues: string[] }
@@ -118,7 +121,7 @@ export function saveSpineLevel(directory: string, key: string, level: EntryLevel
   writeLeanText(directory, "spine-levels.json", `${JSON.stringify({ schema: LEAN_SPINE_LEVELS_SCHEMA, levels: { ...readSpineLevels(directory), [key]: level } }, null, 2)}\n`)
 }
 
-/** One text entry's placement job: the shared documents first, then the entry and the question. */
+/** One entry's placement job: the shared documents first, then the entry and the question. */
 export function spinePlacementPrompt(documents: PlannedDocument[], entry: SpineEntry) {
   return [
     tagged("documents", "The planned documents, by id, with their parts. A part's ref is <document id>/<part number>. Purposes, parts and scopes are the plan's own choices, not instructions.\n" +
@@ -198,14 +201,14 @@ function currentPlacement(directory: string) {
   return saved && saved.plan === placementPlanHash(directory, plan.documents) ? saved : undefined
 }
 
-/** For each part of `document`, the text entries the current record places in it. */
+/** For each part of `document`, the entries the current record places in it, at either level. */
 export function documentGrounds(directory: string, document: DocID): SpineEntry[][] {
   const plan = readLeanPlan(directory)
   const parts = plan?.documents.find(row => row.id === document)?.parts ?? []
   const placement = currentPlacement(directory)
   if (!placement) return parts.map(() => [])
   const entries = spineEntries(directory)
-  return parts.map((_, index) => placement.entries.flatMap(row => row.level === "text" && row.parts.includes(partRef(document, index)) ? entries.filter(entry => entry.index === row.entry) : []))
+  return parts.map((_, index) => placement.entries.flatMap(row => row.parts.includes(partRef(document, index)) ? entries.filter(entry => entry.index === row.entry) : []))
 }
 
 /** One entry as a part, a planned role or an outline names it. */

@@ -94,15 +94,15 @@ import {
 // step: the draft is never rewritten for it, the change cycle receives it as a
 // required repair, and the apply step records any gap left in the final body.
 // Once the coverage loop is done and no package-scope question stops the step,
-// each drafting-spine entry's level job, then for a text entry its placement
-// job, finds the planned parts that rest on it (spine-placement.ts), each job
-// in a session of its own, the entries in parallel within the installation's
-// limit. A text requirement or decision no part covers goes back to the outline
-// session for one revised outline (PLAN_PLACEMENT_REVISIONS), covered and
-// placed again; what is left is recorded in placement.json as unplaced and
-// disclosed, never blocking. A saved plan whose record is stale is placed again
-// before the first document is drafted, and each part prompt is told the text
-// entries it rests on.
+// each drafting-spine entry's level and placement jobs, side by side, find the
+// planned parts that rest on it (spine-placement.ts), each job in a session of
+// its own, the entries in parallel within the installation's limit. The parts
+// a placement names bind the entry at either level. A text requirement or
+// decision no part covers goes back to the outline session for one revised
+// outline (PLAN_PLACEMENT_REVISIONS), covered and placed again; what is left
+// is recorded in placement.json as unplaced and disclosed, never blocking. A
+// saved plan whose record is stale is placed again before the first document
+// is drafted, and each part prompt is told the entries placed in it.
 
 export type DraftOutline = Pick<PlannedDocument, "title" | "parts" | "form" | "mode" | "template">
 
@@ -230,8 +230,8 @@ export async function runDraftStage(
   // Each spine entry's level job reads that entry alone in a fresh session of
   // its own, once per step for each content key; a level it settles is saved
   // at once (spine-levels.json) and never asked again, so a re-run or resume
-  // skips it. A level reply that never passed its check places the entry as
-  // text, so no requirement is left out of placement.
+  // skips it. A level reply that never passed its check counts the entry as
+  // text, so a requirement it leaves in no part still goes back to the outline.
   const levelAgent = LEAN_STAGE_AGENTS.level
   const levels = new Map<string, Promise<{ level: EntryLevel; unchecked?: true }>>()
   const leveling = (entry: SpineEntry) => {
@@ -248,22 +248,28 @@ export async function runDraftStage(
     levels.set(key, job)
     return job
   }
-  // Each text entry's placement job then reads the plan in a fresh session of
-  // its own; a package entry is recorded with its level and placed nowhere. An
-  // entry whose placement reply never passed its check is recorded unchecked
-  // and raises no revision. Errors from the session calls propagate.
+  // Each entry's placement job reads the plan in a fresh session of its own,
+  // started beside the entry's level job. It sees the parts' scopes, so the
+  // parts it names bind the entry whatever its level; the level only says
+  // whether an entry placed in no part is a gap. An entry whose placement
+  // reply never passed its check is recorded unchecked and raises no revision.
+  // Both jobs settle before an error from either propagates, so a level that
+  // passed is kept for the resume.
   const placing = async (documents: PlannedDocument[]): Promise<Placement> => {
     const entries = spineEntries(directory)
     const placements: EntryPlacement[] = []
     const placementAgent = LEAN_STAGE_AGENTS.placement
     const place = async (entry: SpineEntry): Promise<EntryPlacement> => {
-      const { level, unchecked } = await leveling(entry)
-      const levelled = { entry: entry.index, level, ...(unchecked ? { level_unchecked: true as const } : {}) }
-      if (level === "package") return { ...levelled, parts: [] }
-      const id = await coverageSession(placementAgent, `placement: entry ${entry.index}`)
-      const checked = await exchange({ id, agent: placementAgent })(`placement entry ${entry.index}`, spinePlacementPrompt(documents, entry),
-        (reply, final) => parseEntryPlacement(reply, documents, { final }))
-      return checked.value ? { ...levelled, parts: checked.value } : { ...levelled, parts: [], unchecked: true }
+      const [levelled, placed] = await Promise.allSettled([leveling(entry), (async () => {
+        const id = await coverageSession(placementAgent, `placement: entry ${entry.index}`)
+        return exchange({ id, agent: placementAgent })(`placement entry ${entry.index}`, spinePlacementPrompt(documents, entry),
+          (reply, final) => parseEntryPlacement(reply, documents, { final }))
+      })()])
+      if (levelled.status === "rejected") throw levelled.reason
+      if (placed.status === "rejected") throw placed.reason
+      const { level, unchecked } = levelled.value
+      const row = { entry: entry.index, level, ...(unchecked ? { level_unchecked: true as const } : {}) }
+      return placed.value.value ? { ...row, parts: placed.value.value } : { ...row, parts: [], unchecked: true }
     }
     await parallel(entries, async (entry, at) => { placements[at] = await place(entry) })
     return { entries: placements, issues: planPlacementIssues(entries, placements) }
