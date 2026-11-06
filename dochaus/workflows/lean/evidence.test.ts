@@ -83,6 +83,9 @@ test("the differences job asks the pre-split question; the gaps job reads the in
   expect(differences).not.toMatch(/gap/i)
   expect(differences).not.toContain("# The lawyer's instructions")
   expect(differences).toContain('Return JSON {"entries":[')
+  // Each kind of context in its own tag, the question and output contract last.
+  expect([...differences.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["request", "sources", "instructions", "answers", "question", "output"])
+  expect(differences.trimEnd().endsWith("</output>")).toBe(true)
   const gaps = gapsPrompt(directory, [ENTRY])
   for (const tag of ["request", "instructions", "differences", "sources", "question", "output_contract"]) expect(gaps).toContain(`<${tag}>\n`)
   expect(gaps).toMatch(/<instructions>\n[^<]*# The lawyer's instructions[\s\S]*Draft a short supply note\.[\s\S]*<\/instructions>/)

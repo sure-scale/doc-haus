@@ -96,8 +96,8 @@ const ACT_RECORD_CONTRACT = "act-record-7"
  * split job's prompt or checks, or the files the step writes re-runs the step
  * and every split. */
 export const SPINE_CONTRACT = "spine-atoms-7"
-/** The discrepancy stage runs a differences job, then a gaps job shown its entries (discrepancy.ts). */
-const DISCREPANCY_CONTRACT = "differences-then-gaps-1"
+/** The discrepancy stage runs a differences job, then a gaps job shown its entries (discrepancy.ts); -2 tagged the differences prompt. */
+const DISCREPANCY_CONTRACT = "differences-then-gaps-2"
 /** Keys the guidance review: its guidance list and the template's focus. */
 const GUIDANCE_REVIEW_CONTRACT = "template-guidance-1"
 export const LEAN_MAX_RETRIES = 3

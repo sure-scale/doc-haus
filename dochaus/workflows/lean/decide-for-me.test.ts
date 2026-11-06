@@ -188,7 +188,8 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // instructions step was added, and intake and spine were re-pinned when they
 // began keying the instruction list (instructions.md), and the discrepancy
 // step when it began reading that list to list gaps and again when it split
-// into a differences job and a gaps job (differences-then-gaps-1). Every key that reads
+// into a differences job and a gaps job (differences-then-gaps-1), and once more
+// when the differences prompt was tagged (differences-then-gaps-2). Every key that reads
 // plan.json was re-pinned when whom the lawyer acts for gained its basis
 // (dochaus.lean.plan/2). The draft step was re-pinned when the outline
 // contract gained the statement form (statement-form-12), and again when the
@@ -221,7 +222,7 @@ const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", `  A (${ADOPTED_A
 const UNANSWERED_STEPS = ["d1.draft"]
 const INPUTS: Record<string, string> = {
   "instructions": "7db0182116d00b86390816e69312620dff6c36a8920d47b9190fb725b72906b6",
-  "discrepancy": "c4d9f86924cbb341f4f1c79d82c6ba730fbe6ae994277251d8a8c4df0c13717f",
+  "discrepancy": "2b839c4a936263b2490fe1a755c9d4027ba5018e08d7a787386ebc5b4b5e5d72",
   "intake": "097361ef1ee9a3958bc6d602d33eac98ff61d441ea7aa050c405152bf241c65d",
   "research": "64a0d22c3dd780907955b2e56b3122b94ea72101092d694f899a15e2af0cb13b",
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
