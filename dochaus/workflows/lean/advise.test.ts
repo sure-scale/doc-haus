@@ -278,6 +278,25 @@ describe("advising asked questions", () => {
     expect(reused).toMatchObject({ advice: UNAVAILABLE, group: "Notice period" })
   })
 
+  test("questions on one change-plan group's paragraphs are advised in turn, seeing their siblings' advice, and share a topic", async () => {
+    const directory = matter()
+    const rows = ["p1", "p2", "p3"].map(pid => ({ pid, sha256: pid, text: `Paragraph ${pid} of the note.` }))
+    writeLeanText(directory, "d1/paragraphs.json", `${JSON.stringify(rows, null, 2)}\n`)
+    const group = (id: string, pids: string[]) => ({ id, pids, goal: "Remove the repeated lines.", sources: [], limitations: [] })
+    writeLeanText(directory, "d1/change-plan.json", JSON.stringify({ shared_decisions: [], groups: [group("spare-lines", ["p1", "p2"]), group("other-lines", ["p3"])], dismissed: [], questions: [] }))
+    const ask = (pid: string): Question => ({ id: `q-line-${pid}`, stage: "changes", question: `Should paragraph ${pid} stay?`, context: "", status: "open", kind: "judgment", pid, document: "d1" })
+    const keep = { options: [{ text: "Keep it" }, { text: "Remove it" }], recommendation: { option: "Keep it", rationale: "The terms rely on it.", basis: BASIS } }
+    const model = scriptedModel({ [AGENT.advise]: prompt => JSON.stringify({ ...keep, group: `Topic for ${/Should paragraph (p\d) stay/.exec(prompt)![1]}` }) })
+    const advised = await adviseQuestions(directory, readLeanState(directory)!, "d1.changes", { sessions: model.port }, ["p1", "p2", "p3"].map(ask))
+    const prompts = (pid: string) => model.prompts.filter(row => row.agent === AGENT.advise && row.text.includes(`Kind: judgment\nShould paragraph ${pid} stay?`))
+    const block = (text: string) => /<sibling_questions>\n([\s\S]*?)\n<\/sibling_questions>/.exec(text)?.[1]
+    expect(prompts("p1").map(row => block(row.text))).toEqual([undefined])
+    expect(block(prompts("p2")[0]!.text)).toBe("Question: Should paragraph p1 stay?\nRecommended: Keep it\nWhy: The terms rely on it.")
+    expect(prompts("p2")[0]!.text).toContain("Advise alike unless a source treats those paragraphs differently.")
+    expect(prompts("p3").map(row => block(row.text))).toEqual([undefined])
+    expect(advised.map(row => row.group)).toEqual(["Topic for p1", "Topic for p1", "Topic for p3"])
+  })
+
   test("six questions respect the configured concurrency limit", async () => withWorkflowLimit(3, async () => {
     const directory = matter()
     const model = scriptedModel({ [AGENT.intake]: asks(...["one", "two", "three", "four", "five", "six"].map(n => ({ ...LAW, question: `Question ${n}?` }))) })
