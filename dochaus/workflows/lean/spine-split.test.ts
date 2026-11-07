@@ -78,7 +78,12 @@ test("the check refuses a kind, a reference or a detail the entry does not hold,
   const [first, second] = ATOMS as [typeof ATOMS[0], typeof ATOMS[0]]
   expect(issues([{ ...first, kind: "drafting-choice" }, second])).toEqual(["atoms[0] kind must be decision, recommendation, requirement, fact, open-item."])
   expect(issues([{ ...first, evidence: [0, 2] }, second])).toEqual(["atoms[0].evidence lists [2]: use evidence indexes 0 to 1."])
-  expect(issues([first, { ...second, evidence: [] }])).toEqual(["atoms[1] cites no evidence; cite the index of the evidence that supports it.", "Evidence [1] goes to no atom; cite it in the atom it supports."])
+  const uncited = "atoms[1] cites no evidence; a limitation does not replace evidence. Cite the index of the evidence that supports it, 0 to 1."
+  expect(issues([first, { ...second, evidence: [] }])).toEqual([uncited, "Evidence [1] goes to no atom; cite it in the atom it supports."])
+  // Under an entry with evidence, an atom carrying only a limitation is still uncited: the prompt asks a limitation only of an entry without evidence.
+  const limited = { ...COMPOUND, limitations: ["The order date is not stated."] }
+  expect(issues([{ ...first, limitations: [0] }, { ...second, evidence: [], limitations: [0] }], limited)).toEqual([uncited, "Evidence [1] goes to no atom; cite it in the atom it supports."])
+  expect(spineSplitPrompt(limited)).toContain("When the entry has no evidence, each atom carries at least one limitation.")
   expect(issues([first, { ...second, limitations: [0] }])).toEqual(["atoms[1].limitations lists [0], but the entry has no limitation; leave it empty."])
   // A figure, a quoted passage or a capitalised term the entry does not hold is added detail.
   expect(issues([{ ...first, detail: "The note states that the supplier delivers within thirty days of the order date, with 1.5% interest." }, second])).toEqual([

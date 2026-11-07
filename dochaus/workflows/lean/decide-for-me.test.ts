@@ -295,8 +295,9 @@ const spine = (...entries: object[]) => ({ entries, limitations: [] })
 const FACT = { kind: "fact", detail: "Delivery is within thirty days.", evidence: SUPPORT, limitations: [] }
 // Pinned on the code before hand-backs reached the spine; re-pinned when the
 // spine began carrying unsettled discrepancy gaps as open items, and when a
-// requirement began to record a working direction by its effect.
-const SPINE_PROMPT = "9161578720b30f1fff38d8c59e52fd9717fdba574476d8260c379a1fa7f993b7"
+// requirement began to record a working direction by its effect, and when the
+// adopted recommendation of a delegated question became citable.
+const SPINE_PROMPT = "3d4156ba1f9a00520ba8cfeeafed2ef435fbed4cce7ab7b3f30a10926bd47265"
 
 function spineMatter(late: "open" | "answered" | "adopted") {
   const directory = matter()
