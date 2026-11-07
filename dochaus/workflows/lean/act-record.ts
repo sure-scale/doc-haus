@@ -3,7 +3,7 @@ import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenanc
 import { TOOL_SYNTAX_ISSUE, parseJsonObject, printedToolCall, record } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { instructionSections, listedActIssues, mergeCoverageActs, namingTexts } from "./package-coverage"
-import { nameKey, namedIn } from "./plan"
+import { askedAtOrBefore, nameKey, namedIn } from "./plan"
 import { retryPrompt, tagged } from "./prompts"
 import { REQUEST_SOURCE, adoptedSources, excerpt, matterSourceIDs, proseQuoteIssues, quoteFound, quoteMissIssue } from "./quotes"
 import { approvedResearch, researchHandoff } from "./research"
@@ -172,13 +172,15 @@ const HOW_JOB = [
   `- ${EVIDENCE_RULE}`,
 ].join("\n")
 
-/** The answers the act record reads, in its prompts and its key: the run-level
- * ones alone, as every preparation step. A package-scope answer says where the
- * plan carries acts the instructions already direct; it directs none of its
- * own. The plan step's coverage settles it from questions.json, and it reaches
- * a drafted document through that document's own steps, so it re-keys neither
- * the record nor, through acts.json, the spine. */
-export const ACT_RECORD_ANSWERS: AnswerReader = { documents: false }
+/** The answers the act record reads, in its prompts and its key: those asked
+ * at or before its step, as every step (askedAtOrBefore). A package-scope
+ * answer says where the plan carries acts the instructions already direct; it
+ * directs none of its own. The plan step's coverage settles it from
+ * questions.json, and it reaches a drafted document through that document's
+ * own steps, so it re-keys neither the record nor, through acts.json, the spine. */
+export function actRecordAnswers(directory: string): AnswerReader {
+  return { asked: askedAtOrBefore(directory, "acts") }
+}
 
 /** The material every act-record prompt starts with, byte for byte: built only
  * from the run's saved instructions, approved research and source names, in a
@@ -187,14 +189,14 @@ export function actRecordPack(directory: string) {
   const provenance = sourceProvenance(directory)
   return [
     "This is a lean drafting run. The material below serves several focused questions about the legal acts the lawyer's instructions direct; the question this reply answers follows it.",
-    ...instructionSections(directory, ACT_RECORD_ANSWERS),
+    ...instructionSections(directory, actRecordAnswers(directory)),
     tagged("legal_research", "Approved legal research: each finding's proposition, its source URL and its exact supporting words. Missing research is a limitation, never an invitation to rely on model memory.\n" +
       researchHandoff(directory)),
     tagged("sources", [
       "Matter documents (use these exact names with search-document and read-document, and as source names):",
       ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`),
       `To quote the request, the lawyer's updates or the lawyer's own answers, use the source name "${REQUEST_SOURCE}". To quote approved legal research, use its finding's "url" as the source name.`,
-      ...adoptedSources(directory, ACT_RECORD_ANSWERS).map(name => `To quote the recommendation adopted for question ${name.slice("adopted:".length)}, which the lawyer delegated, use the source name "${name}"; its words are the drafter's judgment, not the lawyer's.`),
+      ...adoptedSources(directory, actRecordAnswers(directory)).map(name => `To quote the recommendation adopted for question ${name.slice("adopted:".length)}, which the lawyer delegated, use the source name "${name}"; its words are the drafter's judgment, not the lawyer's.`),
     ].join("\n")),
     tagged("rules", [
       "- Read the matter documents you rely on with search-document or read-document.",

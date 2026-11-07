@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { providerStopKind } from "../../lib/provider-stop"
+import { conflictQuestion } from "./answer-reconcile"
 import { PACKAGE_SCOPE_QUESTION } from "./package-scope"
 import { writeLeanPlan } from "./plan"
 import { stageInputSha } from "./runner"
@@ -173,7 +174,7 @@ describe("lean engine session port", () => {
 describe("lean stage keys", () => {
   afterEach(cleanupMatters)
 
-  test("an answer to a document's question re-keys the step that asked it and the document's later steps, no earlier one and no preparation step; a package-scope answer the document's steps only; a run-level answer re-keys them all", () => {
+  test("an answer re-keys the step that asked it and the steps after it, never an earlier one: a document's question its document's later steps, a package-scope answer the document's steps only, an intake answer intake onward", () => {
     const steps = ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.review", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review"] as const
     const keys = (questions: Question[]) => {
       const directory = matter()
@@ -190,7 +191,13 @@ describe("lean stage keys", () => {
     // and the preparation before it never read it and keep their keys.
     unchanged(keys([{ ...answered, stage: "changes", document: "d1" }]), step => step !== "d1.changes" && step !== "d1.change-review")
     unchanged(keys([{ ...answered, stage: "change-plan", document: "d1" }]), step => !step.startsWith("d1.change"))
-    unchanged(keys([answered]), () => false)
+    // Intake's own answer, whatever its kind, and a conflict question on
+    // intake's answers: the list and the discrepancy record never read them.
+    const preparation = (step: typeof steps[number]) => step === "instructions" || step === "discrepancy"
+    unchanged(keys([answered]), preparation)
+    unchanged(keys([{ ...answered, id: "q-site", kind: "fact", question: "Where are the goods delivered?", answer: "To the buyer's warehouse." }]), preparation)
+    const conflict = conflictQuestion([answered, { ...answered, id: "q-price" }], { questions: ["q-late", "q-price"], conflict: "One answer waives the remedy the other keeps." })
+    unchanged(keys([answered, { ...answered, id: "q-price" }, { ...conflict, status: "answered", answer: "Keep the remedy." }]), preparation)
     // The plan step's package-scope answer carries the step's document, as the
     // runner records every document step's questions: it re-keys the document's
     // steps after its draft, not the act record or the spine. The plan step

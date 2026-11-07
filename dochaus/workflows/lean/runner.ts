@@ -1,5 +1,5 @@
 import { adviseQuestions } from "./advise"
-import { acceptInstructionsReply, confirmationQuestions, instructionsPrompt, settleByInstructions } from "./instructions"
+import { acceptInstructionsReply, confirmationQuestions, instructionsPrompt, settleByInstructions, writeInstructionsFile } from "./instructions"
 import { proposedFactQuestions, questionReviewKey, reviewProposedQuestion, sourceFactsFeedback, type QuestionReview } from "./question-review"
 import { parallel } from "./checklist-flow"
 import { classifyAnswers } from "./answer-class"
@@ -236,6 +236,10 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     const stage = stepStage(step)
     const document = stepDocument(step) ?? undefined
     const changes = drainLeanRequests(directory)
+    // A confirmation's answer changes which listed documents the list follows:
+    // the list every later step reads and keys is made current before any
+    // step is keyed, as the instructions step itself stays done.
+    if (index === 0 || changes.answered) writeInstructionsFile(directory)
     // The gate asks its question after the walk; it holds back no step.
     const unanswered = readQuestions(directory).filter(question => question.status === "open" && question.stage !== "gate")
     if (unanswered.length)
@@ -389,6 +393,11 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     // A prefetched review's failure is settled when its own step takes the reply.
     if (provider.stop && ![...prepared.values()].some(row => row.sessionID === provider.sessionID))
       return { state: settleProviderStop(directory, state, provider.stop, step) }
+    // Once the list is made, the lawyer is asked whether to follow each listed
+    // document of directions the request does not designate, before any step
+    // reads the list; the step is done, so its answer runs the list once.
+    const confirmations = step === "instructions" && result.status === "done" ? confirmationQuestions(directory) : []
+    if (confirmations.length) appendLeanEvent(directory, { stage, document, event: "blocked", reason: ANSWERS_BEFORE_RESEARCH })
     appendLeanEvent(directory, result.status === "failed"
       ? { stage, document, event: "failed", reason: result.reason }
       : { stage, document, event: result.status, outputs: result.outputs, reason: result.reason })
@@ -396,9 +405,6 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       state = updateLeanStage(directory, state, step, { status: "failed", finished_at: now() })
       return { state: writeLeanState(directory, { ...state, status: "failed", stop_reason: result.reason }) }
     }
-    // Intake asks whether to follow each document of directions awaiting the
-    // lawyer's confirmation, with its own questions or alone once it is ready.
-    const confirmations = step === "intake" ? confirmationQuestions(directory) : []
     const asked = result.questions || confirmations.length ? [...confirmations, ...result.questions ?? []] : undefined
     // Every question the step asks is advised before anything from the step is
     // recorded; one a current instruction decides is settled by it, not asked.
@@ -417,12 +423,12 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     if (!exhaustedReview) replaceStageOpenItems(directory, stage, document ?? null, document ? result.openItems.map(item => inDocument(item, document)) : result.openItems)
     if (questions) replaceStageQuestions(directory, stage, document ?? null, questions)
     // A step blocked only by questions its instructions settled runs again,
-    // reading the settled answers; a confirmation blocks a ready intake.
+    // reading the settled answers.
     if (questions && !questions.some(question => question.status === "open") && result.status === "blocked" && result.questions?.length) {
       state = updateLeanStage(directory, state, step, { status: "pending", ...unkeyed(step), outputs: [], finished_at: null })
       return { state, restart: true }
     }
-    const status = confirmations.length ? "blocked" : result.status
+    const status = result.status
     snapshotStage(directory, state.revision, step, result.outputs)
     const review = stage === "change-review" && document ? readChangeReview(directory, document) : undefined
     // With the repair allowance used up the run goes on to a review draft, the
@@ -453,10 +459,10 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     // final body starts the round a Continue would, once per set of such items
     // and charged to the allowance; apply then marks what it leaves.
     if (stage === "gate" && status === "blocked" && startUnverifiedRepairRound(directory, blockedGateItems(directory))) return { state, restart: true }
-    if (status === "blocked") {
+    if (status === "blocked" || confirmations.length) {
       await recordLeanDocuments(directory, deps, false)
       if (preferencesChanged()) return { state, restart: true }
-      return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: result.reason ?? "Waiting for your answers before legal research and drafting." }) }
+      return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: result.reason ?? ANSWERS_BEFORE_RESEARCH }) }
     }
   }
   if (preferencesChanged()) return { state, restart: true }
@@ -565,6 +571,8 @@ async function reconcilePackageReview(directory: string, state: LeanState, deps:
 class ChecklistRefreshRestart extends Error {}
 
 export const LEAN_PAUSED_REASON = "Paused at your request."
+/** Why the run waits when a step before research asks the lawyer a question. */
+const ANSWERS_BEFORE_RESEARCH = "Waiting for your answers before legal research and drafting."
 
 /** The lawyer paused the run: no further model work starts or is accepted. */
 class LeanPauseRequested extends Error {
@@ -838,7 +846,7 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
     if (spine?.value && !accepted.issues.length) accepted.outputs = await splitSpineEntries(directory, state, deps, spine.value, jobProgress)
     if (!accepted.issues.length)
       return { status: (stage === "intake" || stage === "change-plan") && accepted.questions?.length ? "blocked" : "done", outputs: accepted.outputs, openItems: accepted.openItems, questions: accepted.questions,
-        ...((stage === "intake" || stage === "change-plan") && accepted.questions?.length ? { reason: stage === "intake" ? "Waiting for your answers before legal research and drafting." : "Waiting for your answers before drafting amendments." } : {}) }
+        ...((stage === "intake" || stage === "change-plan") && accepted.questions?.length ? { reason: stage === "intake" ? ANSWERS_BEFORE_RESEARCH : "Waiting for your answers before drafting amendments." } : {}) }
     if (index >= LEAN_MAX_RETRIES)
       return { status: "failed", reason: `${step}: checker failed after ${LEAN_MAX_RETRIES} retries: ${accepted.issues.join(" ")}` }
     return attempt(index + 1, retryPrompt(stage, accepted.issues))

@@ -5,6 +5,7 @@ import { stagePrompt } from "./prompts"
 import { checkChanges } from "./change-checks"
 import { readParagraphs } from "./checks"
 import type { GateResult } from "./gate"
+import { readLeanEvents } from "./events"
 import { packageScopeQuestionID } from "./package-scope"
 import { enqueueLeanRequest } from "./requests"
 import type { RepairRound } from "./repairs"
@@ -259,6 +260,40 @@ describe("lean drafting runner", () => {
     expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "execution_ready" })
     expect(readLeanState(directory)!.stop_reason).toBeNull()
     expect(readdirSync(leanFile(directory, "requests")).filter(name => name.endsWith(".json"))).toEqual([])
+  }, 120_000)
+
+  test("an answer to intake's question keeps the instruction list and the discrepancy record done and re-runs intake onward", async () => {
+    const directory = matter()
+    const ready = JSON.stringify({ ready: true, jurisdiction: "None needed", scope: "Supplied terms only", acting_for: { party: "", basis: "none" }, dates: { document_date: { date: "", basis: "today" }, operative_dates: [] } })
+    // Asks until its prompt carries the answer, as a model reading it would.
+    const asking: Reply = prompt => prompt.includes("No remedy; leave the terms silent.") ? ready : JSON.stringify({ questions: [{ question: "Should late delivery carry a remedy?", kind: "judgment", context: "The terms are silent." }] })
+    const blocked = await runLean(directory, { sessions: scriptedModel({ ...happyPath, [AGENT.intake]: asking }).port })
+    const [question] = readQuestions(directory)
+    expect(question).toMatchObject({ stage: "intake", status: "open" })
+    expect(question!.document).toBeUndefined()
+    expect(blocked.status).toBe("blocked")
+    expect(blocked.stages.instructions).toMatchObject({ status: "done" })
+    expect(blocked.stages.discrepancy).toMatchObject({ status: "done" })
+    const events = readLeanEvents(directory).length
+
+    enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: "No remedy; leave the terms silent." })
+    const answered = scriptedModel({ ...happyPath, [AGENT.intake]: asking })
+    const resumed = await runLean(directory, { sessions: answered.port })
+
+    expect(resumed.status).toBe("completed")
+    // The steps before intake never read its answer: each keeps its key and makes no call.
+    for (const step of ["instructions", "discrepancy"] as const) {
+      expect([step, resumed.stages[step]?.status, resumed.stages[step]?.input_sha]).toEqual([step, "done", blocked.stages[step]!.input_sha!])
+      expect([step, answered.count(AGENT[step])]).toEqual([step, 0])
+    }
+    const later = readLeanEvents(directory).slice(events)
+    expect(later.filter(event => event.event === "started").map(event => event.stage)).not.toContain("instructions")
+    expect(later.filter(event => event.event === "started").map(event => event.stage)).not.toContain("discrepancy")
+    // Intake reads it, in its prompt as in its key, and runs once more.
+    expect(resumed.stages.intake?.input_sha).not.toBe(blocked.stages.intake!.input_sha)
+    expect(answered.count(AGENT.intake)).toBe(1)
+    expect(answered.prompts.find(prompt => prompt.agent === AGENT.intake)!.text).toContain("No remedy; leave the terms silent.")
+    expect(stagePrompt(directory, "d1.review")).toContain("No remedy; leave the terms silent.")
   }, 120_000)
 
   test("an answer to a document's changes question keeps instructions through spine, the reviews, the change plan and its preparation done, and re-runs changes onward", async () => {

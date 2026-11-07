@@ -3,6 +3,9 @@ import { writeLegalCompactionPrompt } from "../../plugin/legal/compaction"
 import { acceptInstructionsReply, checkInstructions, confirmationQuestionID, confirmationQuestions, followsDocument, INSTRUCTIONS_FILE, instructionsPrompt } from "./instructions"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
+import { Database } from "bun:sqlite"
+import path from "node:path"
+import { readLeanEvents } from "./events"
 import { answeredQuestionsText, readLeanText, readQuestions, writeLeanText, writeQuestions } from "./state"
 import { AGENT, NO_FINDINGS, SOURCE, cleanupMatters, happyPath, matter, noChanges, scriptedModel, type Reply } from "./test-support"
 
@@ -81,25 +84,67 @@ test("a fact question is asked even when the advisor names an instruction", asyn
   expect(readQuestions(directory).map(row => row.status)).toEqual(["open"])
 }, 120_000)
 
-test("a document's directions wait for the lawyer's confirmation, then settle what they decide", async () => {
+test("a document's directions wait for the lawyer's confirmation, asked once the list is made and before any step reads it, then settle what they decide", async () => {
   const directory = matter()
   const delivery = { source_id: SOURCE, quote: "within thirty days of the order date" }
   const replies = {
     ...quiet,
     [AGENT.instructions]: () => JSON.stringify({ items: [{ text: "State delivery within thirty days of the order date.", ...delivery }], documents: [{ source_id: SOURCE, from: "the client", quote: delivery.quote }] }),
-    [AGENT.intake]: ((_prompt, index) => index < 2 ? JSON.stringify({ questions: [DELIVERY] }) : READY) as Reply,
+    [AGENT.intake]: ((_prompt, index) => index === 0 ? JSON.stringify({ questions: [DELIVERY] }) : READY) as Reply,
     [AGENT.advise]: deciding("i1", delivery),
   }
   const model = scriptedModel(replies)
-  expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
-  // Only the confirmation is asked: the point it would decide is left to it.
+  const blocked = await runLean(directory, { sessions: model.port })
+  expect(blocked.status).toBe("blocked")
+  // Asked at the first block, by the instructions step, which is done; the
+  // discrepancy record and intake wait for the confirmed list.
+  expect(blocked.stages.instructions?.status).toBe("done")
+  expect(model.count(AGENT.discrepancy)).toBe(0)
+  expect(model.count(AGENT.intake)).toBe(0)
+  const events = readLeanEvents(directory).filter(event => event.stage === "instructions" && ["blocked", "done"].includes(event.event)).map(event => event.event)
+  expect(events).toEqual(["blocked", "done"])
   const asked = readQuestions(directory)
   expect(asked.map(row => [row.id, row.status, row.options?.map(option => option.text)])).toEqual([[confirmationQuestionID(SOURCE), "open", ["Follow it as my instructions", "Treat it as evidence only"]]])
   expect(readLeanText(directory, INSTRUCTIONS_FILE)).toContain(`## Awaiting the lawyer's confirmation: ${SOURCE}`)
   enqueueLeanRequest(directory, { kind: "answer", question_id: confirmationQuestionID(SOURCE), option_id: "o1" })
-  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  const resumed = await runLean(directory, { sessions: model.port })
+  expect(resumed.status).toBe("completed")
+  // The list is made once; the confirmed list is the one every step read.
+  expect(model.count(AGENT.instructions)).toBe(1)
+  expect(resumed.stages.instructions?.input_sha).toBe(blocked.stages.instructions!.input_sha)
   expect(readLeanText(directory, INSTRUCTIONS_FILE)).not.toContain("Awaiting")
+  expect(model.prompts.find(row => row.agent === AGENT.discrepancy)!.text).not.toContain("Awaiting")
+  // The point it would decide was left to it, then settled by the followed document.
   expect(readQuestions(directory).find(row => row.question === DELIVERY.question)).toMatchObject({ status: "answered", answer_kind: "instruction", decided_by: { source_id: SOURCE } })
+}, 120_000)
+
+test("two documents awaiting confirmation are asked together in one round, each by a stable id", async () => {
+  const directory = matter()
+  const NOTES = "client-notes.docx", NOTES_TEXT = "Please cap liability at the contract price."
+  const db = new Database(path.join(directory, ".dochaus", "legal.db"))
+  db.query("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)").run(NOTES, "1", NOTES_TEXT, 0, NOTES_TEXT.length)
+  db.close()
+  const model = scriptedModel({
+    ...quiet,
+    [AGENT.instructions]: () => JSON.stringify({ items: [
+      { text: "State delivery within thirty days of the order date.", source_id: SOURCE, quote: "within thirty days of the order date" },
+      { text: "Cap liability at the contract price.", source_id: NOTES, quote: "cap liability at the contract price" },
+    ], documents: [{ source_id: SOURCE, from: "the client", quote: "within thirty days of the order date" }, { source_id: NOTES, from: "the client", quote: NOTES_TEXT }] }),
+    [AGENT.intake]: () => READY,
+  })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
+  const ids = [confirmationQuestionID(SOURCE), confirmationQuestionID(NOTES)]
+  expect(readQuestions(directory).map(row => [row.id, row.status])).toEqual(ids.map(id => [id, "open"]))
+  expect(model.count(AGENT.intake)).toBe(0)
+  for (const id of ids) enqueueLeanRequest(directory, { kind: "answer", question_id: id, option_id: id === ids[0] ? "o1" : "o2" })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(model.count(AGENT.instructions)).toBe(1)
+  expect(readQuestions(directory).map(row => [row.id, row.status])).toEqual(ids.map(id => [id, "answered"]))
+  expect(followsDocument(directory, SOURCE)).toBe(true)
+  expect(followsDocument(directory, NOTES)).toBe(false)
+  const list = readLeanText(directory, INSTRUCTIONS_FILE)!
+  expect(list).toContain("State delivery within thirty days")
+  expect(list).not.toContain("Cap liability")
 }, 120_000)
 
 test("the job is told a form's drafter-directed comments give directions to confirm, while a plain form stays evidence", () => {
@@ -130,7 +175,7 @@ test("the list keeps only instructions resting on verified words from the lawyer
     .toEqual(['items[0].source_id "q-delivery" is not a source name here. Use "request" for the lawyer\'s words. "q-delivery" names question q-delivery; its answer is the lawyer\'s own: quote the lawyer\'s own answer under "request".'])
 })
 
-test("the job reads no confirmation question, and the standing an adopted confirmation gives needs no designated_by", () => {
+test("the job reads no answer, and the standing an adopted confirmation gives needs no designated_by", () => {
   const directory = matter()
   writeLeanText(directory, "request.md", REQUEST)
   const delivery = { source_id: SOURCE, quote: "within thirty days of the order date" }
@@ -142,14 +187,15 @@ test("the job reads no confirmation question, and the standing an adopted confir
   ])
   expect(followsDocument(directory, SOURCE)).toBe(true)
   const prompt = instructionsPrompt(directory)
-  expect(prompt).toContain("- [q-law] Q:")
+  expect(prompt).not.toContain("- [q-law] Q:")
+  expect(prompt).not.toContain("Singapore law governs.")
   expect(prompt).not.toContain(confirmation!.question)
   expect(prompt).not.toContain("Follow it as my instructions")
   // Its label is not a designation, and no longer offered as one.
   expect(checkInstructions(directory, { items: [], documents: [{ source_id: SOURCE, from: "the client", quote: delivery.quote, designated_by: "Follow it as my instructions" }] }).issues).toHaveLength(1)
 })
 
-test("a document is designated by the lawyer's words, those of an option the lawyer chose, or the recommendation adopted for a delegated question", () => {
+test("a document is designated by the lawyer's words, in the request or an option the lawyer chose, never by an adopted recommendation the job does not read", () => {
   const directory = matter()
   writeLeanText(directory, "request.md", REQUEST)
   writeQuestions(directory, [
@@ -159,15 +205,16 @@ test("a document is designated by the lawyer's words, those of an option the law
   const designated = (designated_by: string) => checkInstructions(directory, { items: [], documents: [{ source_id: SOURCE, from: "the client", quote: "within thirty days of the order date", designated_by }] })
   expect(designated("from the supply terms").issues).toEqual([])
   expect(designated("Apply the supply terms throughout.").issues).toEqual([])
-  expect(designated("Follow the supply terms as the instructions.").issues).toEqual([])
-  expect(designated("Follow the supply terms as the instructions.").list?.documents[0]?.designated_by).toBe("Follow the supply terms as the instructions.")
+  expect(designated("Follow the supply terms as the instructions.").issues).toEqual([expect.stringContaining("documents[0].designated_by")])
   expect(designated("Follow the other terms.").issues).toEqual([expect.stringContaining('documents[0].designated_by quotes "Follow the other terms." as from "request", but those words are not in the request')])
 })
 
-test("an instruction from the lawyer's answer is cited as that answer, verified against its words", () => {
+test("the job is shown no answer; an item resting on an answer's words is still cited as that answer, verified against its words", () => {
   const directory = matter()
   writeLeanText(directory, "request.md", REQUEST)
   writeQuestions(directory, [{ id: "q-delivery", stage: "intake", question: DELIVERY.question, context: DELIVERY.context, kind: "judgment", status: "answered", answer: "Deliver within thirty days of the order." }])
+  // A new direction arrives as a later instruction, which lists them again; an answer re-keys no list.
+  expect(instructionsPrompt(directory)).not.toContain("Deliver within thirty days of the order.")
   const item = (quote: string) => ({ items: [{ text: "Deliver within thirty days.", source_id: "request", quote }], documents: [] })
   expect(checkInstructions(directory, item("within thirty days")).list?.items[0]).toMatchObject({ source_id: "answer:q-delivery", quote: "within thirty days" })
   // Words in the request stay cited as the request; words in no answer are refused.

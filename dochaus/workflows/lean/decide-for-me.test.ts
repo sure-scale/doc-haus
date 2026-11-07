@@ -234,10 +234,11 @@ test("the same words typed or picked give the same answers text and keys; adopte
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", `  A (${ADOPTED_ANSWER}): Singapore law.`)
 // A draft keys its outline contract and plan entry, never answers.
-const UNANSWERED_STEPS = ["d1.draft"]
+// The steps that read no intake answer: the list and the discrepancy record before it, and a draft.
+const UNANSWERED_STEPS = ["instructions", "discrepancy", "d1.draft"]
 const INPUTS: Record<string, string> = {
-  "instructions": "bbc62fbfe8db5893736f3c3ae57343ae29629795613d8965d5915f71d4d2310b",
-  "discrepancy": "c86093192c6f4ad39f0bf3f95d31344342ecc7a6ae5be661068b3d0c5b010f08",
+  "instructions": "45ef72519d0f9443b4d3ee328737731146358b6133e95340634e314d28a54383",
+  "discrepancy": "a55dcd1402cd56afcfae4ab00ba3a8581c1d64fbb674c6dc93b2c9f2cbc25cc6",
   "intake": "587857f0517ea6f653cbebbefd4d3a695f2de7c7c9a482217ba77e8afe15460e",
   "research": "1ebbf37d1439992955bc19c9e57ebbe89d9232f7d75d7a1040b9e8715a953833",
   "research-review": "d46bb345a28e68d58f42bdee05c7eb4f5e513513edeba8006b6b73c014df397c",
