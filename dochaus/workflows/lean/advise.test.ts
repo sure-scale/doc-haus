@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import path from "node:path"
-import { adviseQuestions, advisePrompt, checkAdvice } from "./advise"
+import { ADVISOR_FAILED, adviseQuestions, advisePrompt, checkAdvice } from "./advise"
 import { questionIssues } from "./change-checks"
 import { openItem } from "./quotes"
 import { runLean, stageInputSha } from "./runner"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, type StageSessionPort } from "./stages"
-import { keepAskedQuestions, readLeanState, readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
+import { keepAskedQuestions, readLeanState, readQuestions, writeLeanText, writeQuestions, type Question, type QuestionAdvice } from "./state"
 import { FIXED_PLAN, writeLeanPlan } from "./plan"
 import { confirmationQuestions, writeInstructionsFile } from "./instructions"
 import { AGENT, SOURCE, SOURCE_TEXT, cleanupMatters, matter, scriptedModel } from "./test-support"
@@ -262,6 +262,21 @@ describe("advising asked questions", () => {
         advice: { unavailable: { reason: expect.any(String), reason_code: "advisor_failed" } } })])
     }
   }, 120_000)
+
+  test("a preflight review whose advisor failed is advised again; a checked one is reused", async () => {
+    const directory = matter()
+    const key = (question: Question) => JSON.stringify([question.question, question.context, question.kind, question.document, question.pid])
+    const other: Question = { ...QUESTION, id: "q-notice", question: "Which notice period should the note state?" }
+    const reviewed = new Map<string, { advice?: QuestionAdvice; group?: string }>([
+      [key(QUESTION), { advice: { unavailable: { reason: ADVISOR_FAILED, reason_code: "advisor_failed" } } }],
+      [key(other), { advice: UNAVAILABLE, group: "Notice period" }],
+    ])
+    const model = scriptedModel({ [AGENT.advise]: () => JSON.stringify(VALID) })
+    const [retried, reused] = await adviseQuestions(directory, readLeanState(directory)!, "d1.draft", { sessions: model.port }, [QUESTION, other], reviewed)
+    expect(model.count(AGENT.advise)).toBe(1)
+    expect(retried!.advice).toMatchObject({ recommendation: { option: "o1", basis: BASIS } })
+    expect(reused).toMatchObject({ advice: UNAVAILABLE, group: "Notice period" })
+  })
 
   test("six questions respect the configured concurrency limit", async () => withWorkflowLimit(3, async () => {
     const directory = matter()

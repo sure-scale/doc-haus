@@ -23,7 +23,7 @@ import { answeredQuestionsText, readLeanText, readQuestions, type LeanState, typ
 // its retries run out the question is recorded all the same, its advice
 // unavailable with reason_code advisor_failed.
 
-const ADVISOR_FAILED = "No checked recommendation is available for this question."
+export const ADVISOR_FAILED = "No checked recommendation is available for this question."
 
 /** `questions`, each one not already answered carrying its advice. An open
  * question asked again with the same words and code-given options keeps the
@@ -44,7 +44,9 @@ export async function adviseQuestions(directory: string, state: LeanState, step:
     // A stale recommendation cannot be adopted as though still checked.
     return { ...(advice.options ? { options: advice.options } : {}), unavailable: { reason: "The question or its supporting inputs changed. Check the current sources before choosing an earlier option, or answer in your own words." } }
   })
+  // A review whose advisor ran out of retries is no advice: the question is advised again.
   const cached = questions.map(question => reviewed?.get(JSON.stringify([question.question, question.context, question.kind, question.document, question.pid])))
+    .map(review => review?.advice && "unavailable" in review.advice && review.advice.unavailable.reason_code === "advisor_failed" ? undefined : review)
   const advised = questions.map((question, index) => kept[index] ? { ...question, ...(open.get(question.id)?.group ? { group: open.get(question.id)!.group } : {}), advice: kept[index] } : cached[index]?.advice ? { ...question, ...cached[index] } : question)
   await parallel(questions.flatMap((question, index) => answered.has(question.id) || kept[index] || cached[index]?.advice ? [] : [index]), async index => {
     advised[index] = { ...questions[index]!, ...await adviseQuestion(directory, state, step, deps, questions[index]!) }

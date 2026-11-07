@@ -1,7 +1,7 @@
 import { UNTRUSTED_RECORD_NOTICE } from "../../lib/untrusted"
 import { normalize } from "../../lib/quote-verify"
 import { parseJsonObject, record } from "./checks"
-import { advisePrompt, basisIssues, checkAdvice } from "./advise"
+import { ADVISOR_FAILED, advisePrompt, basisIssues, checkAdvice } from "./advise"
 import type { DocID } from "./plan"
 import { matterSourceIDs } from "./quotes"
 import { LEAN_CHILD_PERMISSIONS, LEAN_STAGE_AGENTS, type StageSessionPort } from "./stages"
@@ -51,7 +51,7 @@ export async function reviewProposedQuestion(directory: string, question: Questi
 }
 
 function failed(): QuestionReview {
-  return { advice: { unavailable: { reason: "The evidence review was unavailable. Please decide this question from the sources.", reason_code: "advisor_failed" } } }
+  return { advice: { unavailable: { reason: ADVISOR_FAILED, reason_code: "advisor_failed" } } }
 }
 
 /** Candidates are inspected before a stage checker stores any human question.
