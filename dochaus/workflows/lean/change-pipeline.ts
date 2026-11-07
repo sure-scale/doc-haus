@@ -119,7 +119,7 @@ export function checkChangePlan(directory: string, document: DocID, value: unkno
     ...value.groups.flatMap((group, index) => {
       const at = `groups[${index}]`
       if (!record(group) || !nonempty(group.id) || !strings(group.pids) || !group.pids.length || !nonempty(group.goal) || !Array.isArray(group.sources) || !strings(group.limitations) || !resolvesShape(group))
-        return [`${at} needs id, nonempty pids, goal, sources, limitations and a resolves list of review finding ids.`]
+        return [`${at} needs id, nonempty pids, goal, sources, limitations and a resolves list of review finding ids.${record(group) ? fieldIssues(group, GROUP_FIELDS) : ""}`]
       const issues = seen.has(group.id) ? [`${at}: duplicate group id.`] : []
       seen.add(group.id)
       for (const pid of group.pids) {
@@ -139,12 +139,12 @@ export function checkChangePlan(directory: string, document: DocID, value: unkno
       const at = `findings[${index}]`
       if (!record(finding) || !FINDING_DISPOSITIONS.includes(String(finding.disposition)) ||
         !FINDING_KINDS.includes(String(finding.kind)) || !nonempty(finding.detail) || !nonempty(finding.reason) ||
-        !strings(finding.documents) || !finding.documents.length || !Array.isArray(finding.sources) || !strings(finding.limitations) || !resolvesShape(finding))
-        return [`${at} needs disposition, kind, detail, reason, affected documents, sources, limitations and a resolves list of review finding ids.${record(finding) ? findingValueIssues(finding) : ""}`]
+        !(finding.documents === undefined || strings(finding.documents)) || !Array.isArray(finding.sources) || !strings(finding.limitations) || !resolvesShape(finding))
+        return [`${at} needs disposition, kind, detail, reason, affected documents, sources, limitations and a resolves list of review finding ids.${record(finding) ? findingValueIssues(finding) + fieldIssues(finding, FINDING_FIELDS) : ""}`]
       const key = finding.detail.trim().toLowerCase().replace(/\s+/g, " ")
       const issues = findings.has(key) ? [`${at}: consolidate duplicate findings into one disposition with all affected documents.`] : []
       findings.add(key)
-      if (finding.documents.some(id => !documents.has(id as DocID))) issues.push(`${at}: affected documents must be planned document ids.`)
+      if ((finding.documents ?? []).some(id => !documents.has(id as DocID))) issues.push(`${at}: affected documents must be planned document ids.`)
       finding.sources.forEach((source, n) => {
         const named = sourceNameIssues(`${at}.sources[${n}]`, source, sources)
         if (named.length || !record(source) || !nonempty(source.source_id) || !nonempty(source.quote)) return void issues.push(...named)
@@ -173,6 +173,26 @@ function findingValueIssues(finding: Record<string, unknown>) {
   return named("disposition", FINDING_DISPOSITIONS) + named("kind", FINDING_KINDS)
 }
 
+type FieldShape = [shape: string, ok: (value: unknown) => boolean]
+const listed = (value: unknown) => value === undefined || strings(value)
+const GROUP_FIELDS: Record<string, FieldShape> = {
+  id: ["a nonempty label", nonempty], pids: ["a nonempty list of initial draft pids", value => strings(value) && value.length > 0],
+  goal: ["nonempty text", nonempty], sources: ["a list of source passages, possibly empty", Array.isArray],
+  limitations: ["a list of nonempty text, possibly empty", strings], resolves: ["a list of review finding ids", listed],
+}
+// No affected documents means the document whose review raised the finding.
+const FINDING_FIELDS: Record<string, FieldShape> = {
+  detail: ["nonempty text", nonempty], reason: ["nonempty text", nonempty], documents: ["a list of planned document ids", listed],
+  sources: GROUP_FIELDS.sources!, limitations: GROUP_FIELDS.limitations!, resolves: GROUP_FIELDS.resolves!,
+}
+
+/** Each field a row lacks or has in the wrong shape, with the shape it takes:
+ * the list of every field alone left a model unsure which one to fix. */
+function fieldIssues(row: Record<string, unknown>, fields: Record<string, FieldShape>) {
+  return Object.entries(fields).map(([field, [shape, ok]]) => ok(row[field]) ? "" :
+    ` Its ${field} is ${row[field] === undefined ? "missing" : "the wrong shape"}; give ${shape}.`).join("")
+}
+
 /** Ids a plan names that are not listed review findings are dropped. On the
  * last attempt (`final`), a plan that leaves review findings unadjudicated is
  * saved as it is; the findings it leaves out are disclosed
@@ -189,7 +209,7 @@ export function acceptChangePlan(directory: string, document: DocID, reply: stri
   const kept = askedQuestions(raw, asked, document).map((row, index) => row && { question: { ...row, stage: "change-plan" as const }, resolves: raw[index]!.resolves as string[] | undefined })
   const questions = kept.flatMap(row => row ? [row.question] : [])
   const plan: ChangePlan = { ...value as ChangePlan, groups: (value.groups as ChangeGroup[]).map(row => keepKnown(row)),
-    ...(value.findings ? { findings: (value.findings as ReviewDisposition[]).map(row => keepKnown(row)) } : {}),
+    ...(value.findings ? { findings: (value.findings as ReviewDisposition[]).map(row => keepKnown({ ...row, documents: row.documents?.length ? row.documents : [document] })) } : {}),
     questions: kept.flatMap(row => row ? [keepKnown({ ...row.question, ...(row.resolves ? { resolves: row.resolves } : {}) })] : []) }
   const named = resolvedIDs(plan)
   const missing = [...known].filter(id => !named.has(id))
