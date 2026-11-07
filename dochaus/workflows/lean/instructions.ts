@@ -212,7 +212,9 @@ export function confirmationQuestions(directory: string): Question[] {
  * instruction, which the lawyer can change, and one a document awaiting
  * confirmation decides is left to that confirmation, asked with it; if the
  * document is read as evidence, intake asks the point again. A fact, a
- * confirmation and a code-written question are always asked. */
+ * confirmation and a code-written question are always asked, unless it
+ * repeats a question already answered: the changes check drops that repeat,
+ * a fact's included, before it is advised (askedQuestions). */
 export function settleByInstructions(directory: string, questions: Question[]): Question[] {
   const items = new Map(currentInstructions(directory).map(item => [item.id, item]))
   const confirming = new Set(questions.filter(question => question.status === "open").map(question => question.id))
