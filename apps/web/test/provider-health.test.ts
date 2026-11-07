@@ -220,6 +220,22 @@ test("unknown or auth-only restriction fields cannot change the model-access gui
   } finally { globalThis.fetch = saved }
 })
 
+test("a typed credit reason reaches the connection without the engine's text; other reasons are dropped", async () => {
+  const saved = globalThis.fetch
+  try {
+    let body: object = { ok: false, kind: "unavailable", reason: "credit", error: "synthetic-private-diagnostic" }
+    globalThis.fetch = (async () => Response.json(body, { status: 503 })) as unknown as typeof fetch
+    expect(await testModelConnection("fixture", "primary", false)).toEqual({ ok: false, kind: "unavailable", reason: "credit" })
+    const monitor = createProviderHealthMonitor(config)
+    await monitor.check()
+    expect(monitor.getSnapshot()).toEqual([{ providerID: "fixture", modelID: "primary", status: "unavailable", reason: "credit" }])
+    body = { ok: false, kind: "unavailable", reason: "unknown" }
+    expect(await testModelConnection("fixture", "primary", false)).toEqual({ ok: false, kind: "unavailable" })
+    body = { ok: false, kind: "auth", reason: "credit" }
+    expect(await testModelConnection("fixture", "primary", false)).toEqual({ ok: false, kind: "auth", expired: false })
+  } finally { globalThis.fetch = saved }
+})
+
 
 test("connection checks use the underlying catalog model once across generation variants", async () => {
   const calls: string[] = []
@@ -290,7 +306,7 @@ test("an unreachable account shows a calm banner after one recheck and never ope
   Object.defineProperties(globalThis, Object.fromEntries(names.map(name => [name, { configurable: true, writable: true,
     value: name === "IS_REACT_ACT_ENVIRONMENT" ? true : browser[name as keyof Window] }])))
   const originalFetch = globalThis.fetch
-  let outcome: object = { ok: false, kind: "unavailable" }
+  let outcome: object = { ok: false, kind: "unavailable", reason: "credit" }
   let probes = 0
   globalThis.fetch = (async (input: unknown) => {
     if (String(input).endsWith("/engine/config")) return Response.json({ model: "fixture/primary", small_model: "fixture/primary" })
@@ -314,21 +330,25 @@ test("an unreachable account shows a calm banner after one recheck and never ope
     await until(() => banner() !== null)
     expect(probes).toBe(2)
     expect(banner()?.getAttribute("role")).toBe("status")
-    expect(banner()?.textContent).toContain("credit")
+    expect(banner()?.textContent).toContain("Your AI account has run out of credit.")
     // A confirmed outage waits for the lawyer instead of rechecking in a loop.
     await act(() => new Promise(resolve => setTimeout(resolve, 1300)))
     expect(probes).toBe(2)
     expect(opened).toEqual([])
+    outcome = { ok: false, kind: "unavailable" }
+    await act(async () => { container.querySelector("button")!.click() })
+    await until(() => probes === 3 && container.querySelector("button")?.textContent === "Check again")
+    expect(banner()?.textContent).toContain("Check your network")
     outcome = { ok: true }
     await act(async () => { container.querySelector("button")!.click() })
     await until(() => banner() === null)
-    expect(probes).toBe(3)
+    expect(probes).toBe(4)
     // Rejected credentials still open the recovery Settings after one recheck.
     outcome = { ok: false, kind: "auth" }
     await act(() => providerHealth.check(true))
     await until(() => opened.length > 0)
     expect(opened).toEqual(["fixture"])
-    expect(probes).toBe(5)
+    expect(probes).toBe(6)
     expect(banner()).toBeNull()
   } finally {
     await act(async () => root.unmount())
