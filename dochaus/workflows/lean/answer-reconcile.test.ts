@@ -1,17 +1,20 @@
 import { afterEach, expect, test } from "bun:test"
-import { checkConflicts } from "./answer-reconcile"
+import { checkConflicts, conflictQuestion, reconcilePrompt } from "./answer-reconcile"
 import { OutputLimitError } from "./native-stage-result"
+import { writeLeanPlan } from "./plan"
 import { enqueueLeanRequest } from "./requests"
-import { runLean } from "./runner"
-import { answeredQuestionsText, delegable, readLeanJson, readQuestions } from "./state"
+import { runLean, stageInputSha } from "./runner"
+import { answerQuestion, answeredQuestionsText, delegable, readLeanJson, readQuestions, writeQuestions, type Question } from "./state"
 import { AGENT, cleanupMatters, happyPath, matter, NO_FINDINGS, noChanges, scriptedModel, SUPPORT, type Reply } from "./test-support"
 
 // Answers given one question at a time, each recommendation adopted in its own
-// job, are read together once before any step reads them: answers that cannot
-// all be followed become one advised question for the lawyer, and the run
-// waits for it. An unchanged set of answers is not read again, and the
-// lawyer's answer to that question settles the point for good. Synthetic
-// matter; only the model is scripted.
+// job, are read together once before any step reads them, each with the
+// document and paragraph it was asked about: answers that cannot all be
+// followed become one advised question for the lawyer, and the run waits for
+// it. An unchanged set of answers is not read again, and the lawyer's answer to
+// that question settles the point for good. A conflict between one document's
+// answers is that document's question, so only its steps read the answer.
+// Synthetic matter; only the model is scripted.
 
 afterEach(cleanupMatters)
 
@@ -59,19 +62,25 @@ test("two adopted recommendations that cannot both be followed become one open, 
   const [late, price] = ids()
   expect(readQuestions(directory).filter(question => question.id === late || question.id === price).map(question => [question.answer, question.answer_kind])).toEqual([[NO_REMEDY, "adopted"], [REDUCTION, "adopted"]])
 
-  // The job read every answer, each marked as adopted.
+  // The job read every answer, each marked as adopted and as asked about the whole work.
   expect(model.count(AGENT.reconcile)).toBe(1)
   const read = model.prompts.find(prompt => prompt.agent === AGENT.reconcile)!.text
   for (const text of [LATE, PRICE, NO_REMEDY, REDUCTION]) expect(read).toContain(text)
   expect(read.match(/the recommended option was adopted/g)).toHaveLength(2)
+  expect(read.match(/\n {2}Asked about: the whole work\n/g)).toHaveLength(2)
 
-  // One question, asked at intake and advised; no step ran on the conflicting answers.
+  // One run-level question, asked at intake and advised, quoting the questions
+  // it replaces and carrying their ids apart from its words; no step ran on
+  // the conflicting answers.
   const [asked, ...more] = combined(directory)
   expect(more).toEqual([])
-  expect(asked).toMatchObject({ stage: "intake", kind: "judgment", status: "open" })
+  expect(asked).toMatchObject({ stage: "intake", kind: "judgment", status: "open", replaces: [late, price].toSorted() })
+  expect(asked).not.toHaveProperty("document")
   expect(asked!.question).toContain(CONFLICT)
-  expect(asked!.question).toEndWith(`in place of the answers to ${[late, price].toSorted().map(id => `[${id}]`).join(", ")}.`)
-  for (const text of [NO_REMEDY, REDUCTION, late, price]) expect(asked!.context).toContain(text)
+  expect(asked!.question).toMatch(/in place of the answers to "[^"]+" and "[^"]+"\.$/)
+  for (const text of [LATE, PRICE]) expect(asked!.question).toContain(`"${text}"`)
+  for (const text of [NO_REMEDY, REDUCTION, LATE, PRICE]) expect(asked!.context).toContain(text)
+  for (const text of [late, price]) expect(`${asked!.question}\n${asked!.context}`).not.toContain(text)
   expect(asked!.advice).toHaveProperty("recommendation")
   expect(delegable(asked!)).toBe(true)
   expect(state).toMatchObject({ status: "blocked", stop_reason: `Waiting for your answers: ${asked!.id}` })
@@ -162,4 +171,54 @@ test("once the lawyer settles a conflict, the same answers flagged again ask not
   // Every step reads the lawyer's answer as settling the point in place of the earlier ones.
   expect(answeredQuestionsText(directory)).toContain(`[${asked!.id}] Q: Some of your answers cannot all be followed together: ${CONFLICT}`)
   expect(answeredQuestionsText(directory)).toContain("This answer settles the point in place of the answers to")
+})
+
+const PID = "p0123456789ab"
+const PLAN = [{ title: "Supply note", purpose: "Supply note", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }]
+/** An answered question, run-level unless `scope` names a document or paragraph. */
+const decided = (id: string, question: string, answer: string, scope: Partial<Pick<Question, "document" | "pid" | "stage">> = {}): Question =>
+  ({ id, stage: "intake", question, context: "", status: "answered", answer, answer_kind: "option", option_id: "o1", options: [{ id: "o1", text: answer }], kind: "judgment", ...scope })
+
+test("the job is told what each answer was asked about: its document and paragraph, or else the whole work", () => {
+  const titles = new Map([["d1", "Supply note"]])
+  const prompt = reconcilePrompt([decided("q-a", LATE, NO_REMEDY, { stage: "changes", document: "d1", pid: PID }), decided("q-b", PRICE, REDUCTION, { stage: "changes", document: "d1" }), decided("q-c", LATE, NO_REMEDY)], "Draft the note.", "", titles)
+  expect(prompt).toContain(`[q-a] Q: ${LATE}\n  Asked about: Supply note, paragraph [${PID}]\n`)
+  expect(prompt).toContain(`[q-b] Q: ${PRICE}\n  Asked about: Supply note\n`)
+  expect(prompt).toContain(`[q-c] Q: ${LATE}\n  Asked about: the whole work\n`)
+  expect(prompt).toContain("Answers asked about different paragraphs are different points unless following one makes the other impossible.")
+})
+
+test("a conflict question belongs to the one document every answer it names belongs to, and is run-level otherwise", () => {
+  const a = decided("q-a", LATE, NO_REMEDY, { stage: "changes", document: "d1", pid: PID })
+  const b = decided("q-b", PRICE, REDUCTION, { stage: "changes", document: "d1" })
+  const c = decided("q-c", "Should the note name a delivery address?", "Name the address given in the terms.")
+  const same = conflictQuestion([a, b, c], { questions: ["q-a", "q-b"], conflict: CONFLICT })
+  expect(same).toMatchObject({ stage: "intake", document: "d1", replaces: ["q-a", "q-b"] })
+  expect(same).not.toHaveProperty("pid")
+  expect(conflictQuestion([a, b, c], { questions: ["q-a", "q-c"], conflict: CONFLICT })).not.toHaveProperty("document")
+  // The lawyer reads the questions by their words, however many; the ids stay apart.
+  const three = conflictQuestion([a, b, c], { questions: ["q-a", "q-b", "q-c"], conflict: CONFLICT })
+  expect(three.question).toEndWith(`in place of the answers to "${LATE}", "${PRICE}" and "${c.question}".`)
+  expect(three.replaces).toEqual(["q-a", "q-b", "q-c"])
+  expect(`${three.question}\n${three.context}`).not.toMatch(/\[q-|\[p0/)
+})
+
+test("a conflict between one document's answers is that document's question: answering it keeps the preparation steps done", async () => {
+  const directory = matter()
+  writeLeanPlan(directory, PLAN)
+  writeQuestions(directory, [decided("q-a", LATE, NO_REMEDY, { stage: "changes", document: "d1", pid: PID }), decided("q-b", PRICE, REDUCTION, { stage: "changes", document: "d1", pid: PID })])
+  const model = scriptedModel({ ...happyPath, [AGENT.reconcile]: () => flags(["q-a", "q-b"]), [AGENT.advise]: () => recommend(NO_REMEDY, REDUCTION) })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
+  const [asked, ...more] = combined(directory)
+  expect(more).toEqual([])
+  expect(asked).toMatchObject({ stage: "intake", document: "d1", status: "open", replaces: ["q-a", "q-b"] })
+
+  const keys = () => Object.fromEntries((["instructions", "spine", "d1.change-plan"] as const).map(step => [step, stageInputSha(directory, step)]))
+  const before = keys()
+  answerQuestion(directory, asked!.id, { text: NO_REMEDY })
+  const after = keys()
+  expect(answeredQuestionsText(directory, { documents: false })).toBe("")
+  expect(answeredQuestionsText(directory)).toContain(`[${asked!.id}] Q:`)
+  expect([after.instructions, after.spine]).toEqual([before.instructions, before.spine])
+  expect(after["d1.change-plan"]).not.toBe(before["d1.change-plan"])
 })
