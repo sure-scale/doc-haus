@@ -12,7 +12,7 @@ const STEP_NAMES: Record<string, string> = {
   research: "Legal research",
   "research-review": "Check legal research",
   acts: "List the instructed acts",
-  spine: "Build the drafting spine",
+  spine: "List the points for the draft",
   draft: "Draft",
   review: "Review",
   "review-playbook": "Check applicable playbook",

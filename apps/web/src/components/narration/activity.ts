@@ -62,7 +62,7 @@ const STAGES: Record<string, { during: string; done: string }> = {
   research: { during: "researching legal authority", done: "Research findings and limitations recorded" },
   "research-review": { during: "checking research against retrieved sources", done: "Research support and limitations reviewed" },
   acts: { during: "listing the legal acts your instructions direct", done: "Instructed acts listed" },
-  spine: { during: "building the source-backed drafting spine", done: "Drafting spine prepared" },
+  spine: { during: "listing the points the draft must cover, with their sources", done: "Points for the draft listed with their sources" },
   draft: { during: "drafting", done: "Draft written" },
   review: { during: "reviewing the draft", done: "Reviewed the draft" },
   "review-playbook": { during: "Checking the applicable playbook", done: "Checked the applicable playbook" },
