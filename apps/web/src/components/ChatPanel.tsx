@@ -1056,7 +1056,9 @@ export default function ChatPanel({
             ? "Applying or finishing this draft. Keep further changes for a later amendment. You can still answer specific questions."
             : clarifyingRun
               ? "Clarify the source or applicability for checklist inspection. This preserves the draft and proposed amendments. A supported wording correction can then be submitted with Continue drafting; clarification does not approve a proposal or edit wording."
-              : "Messages here update the current draft after the current step. Earlier work may be repeated to reflect your instructions."}
+              : drafted
+                ? "Messages here update the current draft after the current step. Earlier work may be repeated to reflect your instructions."
+                : "Messages here go to the drafting run after the current step. Earlier work may be repeated to reflect your instructions."}
         </p>
       )}
       {updatingRun && !own && actions.error && (
