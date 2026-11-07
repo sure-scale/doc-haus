@@ -618,6 +618,11 @@ function serialList(entries: string[]) {
   return entries.length > 1 ? `${entries.slice(0, -1).join(", ")}, and ${entries.at(-1)}` : entries.join("")
 }
 
+/** A revision of the outline moves an act into a planned document; adding a
+ * document the lawyer has not asked for is theirs to decide, so where none
+ * fits, the package-scope question asks them (coverageScopeQuestion). */
+export const NO_NEW_DOCUMENT = "A revision adds no document the lawyer's request or answers do not name: if no planned document fits, change nothing for this act; the run asks the lawyer whether to add one."
+
 /** `act`'s issues against the planned documents; `acts` is the whole record. */
 function actIssues(act: CoverageAct, documents: PlannedDocument[], acts: CoverageAct[]): string[] {
   const directed = `"${act.act}" ("${excerpt(act.quote)}" [source: ${act.source}])`
@@ -629,15 +634,15 @@ function actIssues(act: CoverageAct, documents: PlannedDocument[], acts: Coverag
     return [`The check read the instructions as leaving out of this package the document for ${directed}, which must be taken by ${who}, but ${planned}, ` +
       (leftOut.length > 1 ? `are planned and carry no instructed act. ${LEFT_OUT_DOCUMENTS_FIX}` : `is planned and carries no instructed act. ${LEFT_OUT_DOCUMENT_FIX}`)]
   }
-  const move = (verb: string) => `${verb} the act to a document executed by ${who}, or add a companion document executed by ${who}.`
+  const move = (verb: string) => `${verb} the act into a planned document executed by ${who}. ${NO_NEW_DOCUMENT}`
   const carrier = documents.find(document => document.id === act.document)
   if (!carrier) return [`The instructions direct ${directed}, but no planned document carries it. ` + (act.parties.length
-    ? `Plan it in a document executed by ${who}, adding one when none is planned.`
-    : "Plan it in the document that should carry it, adding a document when none is planned.")]
+    ? `Plan it in a planned document executed by ${who}. ${NO_NEW_DOCUMENT}`
+    : `Plan it in the planned document that should carry it. ${NO_NEW_DOCUMENT}`)]
   const executing = carrier.executed_by
   if (!act.parties.length) return executing?.length === 0 ? [`${directed} is carried by ${label(carrier)}, which is executed by no party (Executed by: none). ` +
-    'Plan the act in a document a party executes, naming that party as the request or sources name it; only when the record does not name who executes the document, leave its "Executed by:" line out instead of writing "none". ' +
-    "Never supply a party the record does not name."] : []
+    'Plan the act in a planned document a party executes, naming that party as the request or sources name it; only when the record does not name who executes the document, leave its "Executed by:" line out instead of writing "none". ' +
+    `Never supply a party the record does not name. ${NO_NEW_DOCUMENT}`] : []
   if (!executing) return [`${directed} must be taken by ${who}, and ${label(carrier)} carries it but has no "Executed by:" line. ` +
     `Add that line naming the parties who execute it, separated by ";". If they do not include ${who}, ${move("move")}`]
   const missing = act.parties.filter(party => !executing.some(name => nameKey(name) === nameKey(party)))

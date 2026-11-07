@@ -26,7 +26,8 @@ const SHAPE = 'Reply with the JSON object only: {"acts":[{"act":"...","source":"
 const rowIssue = (index: number) =>
   `acts[${index}] needs nonempty "act", "source" and "quote" strings, "parties" as a list of names ([] when the record does not settle them), and "document" as a planned id or null. ${SHAPE}`
 const DIRECTED = `"approve the revised schedule" ("${APPROVE}" [source: request])`
-const move = (verb: string, who = '"the Orchard Committee"') => `${verb} the act to a document executed by ${who}, or add a companion document executed by ${who}.`
+const NO_NEW_DOCUMENT = "A revision adds no document the lawyer's request or answers do not name: if no planned document fits, change nothing for this act; the run asks the lawyer whether to add one."
+const move = (verb: string, who = '"the Orchard Committee"') => `${verb} the act into a planned document executed by ${who}. ${NO_NEW_DOCUMENT}`
 const NOT_EXECUTED_BY_KESTREL = `${DIRECTED} must be taken by "the Orchard Committee", but d1 "Release letter" is executed by "Kestrel Works". ${move("Move")}`
 const unnamedParty = (party: string) =>
   `acts[0] ("approve the revised schedule") names the party "${party}", but neither the request, the lawyer's updates and answers nor any matter document names that party. ` +
@@ -51,11 +52,11 @@ describe("plan coverage issues", () => {
   test("an act no planned document carries is planned in a document its party executes", () => {
     const directory = prepared()
     expect(planCoverageIssues([act({ document: null })], [planned("d1", "Release letter", ["Kestrel Works"])], directory)).toEqual([
-      `The instructions direct ${DIRECTED}, but no planned document carries it. Plan it in a document executed by "the Orchard Committee", adding one when none is planned.`,
+      `The instructions direct ${DIRECTED}, but no planned document carries it. Plan it in a planned document executed by "the Orchard Committee". ${NO_NEW_DOCUMENT}`,
     ])
     // Without a settled party the act is still planned, but no party is supplied.
     expect(planCoverageIssues([act({ document: null, parties: [] })], [planned("d1", "Release letter")], directory)).toEqual([
-      `The instructions direct ${DIRECTED}, but no planned document carries it. Plan it in the document that should carry it, adding a document when none is planned.`,
+      `The instructions direct ${DIRECTED}, but no planned document carries it. Plan it in the planned document that should carry it. ${NO_NEW_DOCUMENT}`,
     ])
   })
 
@@ -109,8 +110,8 @@ describe("plan coverage issues", () => {
   test("an act carried by a document executed by no party is planned in a document a party executes", () => {
     expect(planCoverageIssues([act({ parties: [] })], [planned("d1", "Advice note", [])], prepared())).toEqual([
       `${DIRECTED} is carried by d1 "Advice note", which is executed by no party (Executed by: none). ` +
-      'Plan the act in a document a party executes, naming that party as the request or sources name it; only when the record does not name who executes the document, ' +
-      'leave its "Executed by:" line out instead of writing "none". Never supply a party the record does not name.',
+      'Plan the act in a planned document a party executes, naming that party as the request or sources name it; only when the record does not name who executes the document, ' +
+      'leave its "Executed by:" line out instead of writing "none". Never supply a party the record does not name. ' + NO_NEW_DOCUMENT,
     ])
   })
 
@@ -126,7 +127,7 @@ describe("plan coverage issues", () => {
       `${DIRECTED} must be taken by ${who}, but d1 "Advice note" is executed by no party (Executed by: none). ${move("Move", who)}`,
     ])
     expect(planCoverageIssues([act({ parties: ["the Orchard Committee", "Kestrel Works"], document: null })], [], directory)).toEqual([
-      `The instructions direct ${DIRECTED}, but no planned document carries it. Plan it in a document executed by ${who}, adding one when none is planned.`,
+      `The instructions direct ${DIRECTED}, but no planned document carries it. Plan it in a planned document executed by ${who}. ${NO_NEW_DOCUMENT}`,
     ])
   })
 
@@ -548,7 +549,7 @@ describe("an act whose document the instructions leave out", () => {
       const parsed = last(text)
       expect(parsed).toEqual({ issues: [], value: [act({ document: null })] })
       expect(planCoverageIssues(parsed.value!, documents, directory)).toEqual([
-        `The instructions direct ${DIRECTED}, but no planned document carries it. Plan it in a document executed by "the Orchard Committee", adding one when none is planned.`,
+        `The instructions direct ${DIRECTED}, but no planned document carries it. Plan it in a planned document executed by "the Orchard Committee". ${NO_NEW_DOCUMENT}`,
       ])
       expect(coverageScopeQuestion(parsed.value!, documents)?.id).toBe(scopeID(act()))
     }
@@ -567,7 +568,7 @@ describe("an act whose document the instructions leave out", () => {
     const open = last(reply({ document: null }, { act: " Approve  the revised SCHEDULE ", parties: ["Orchard committee"], document: null, excluded_by: EXCLUDE }))
     expect(open).toEqual({ issues: [], value: [act({ document: null })] })
     expect(planCoverageIssues(open.value!, documents, directory)).toEqual([
-      `The instructions direct ${DIRECTED}, but no planned document carries it. Plan it in a document executed by "the Orchard Committee", adding one when none is planned.`,
+      `The instructions direct ${DIRECTED}, but no planned document carries it. Plan it in a planned document executed by "the Orchard Committee". ${NO_NEW_DOCUMENT}`,
     ])
     // Other parties make another act, which keeps its words.
     expect(last(reply({ document: null, excluded_by: EXCLUDE }, { parties: ["Kestrel Works"] }))).toEqual({ issues: [], value: [excluded, act({ parties: ["Kestrel Works"] })] })
@@ -586,7 +587,7 @@ describe("an act whose document the instructions leave out", () => {
     expect(coverageScopeQuestion([excluded], documents)).toBeUndefined()
     const open = act({ act: "release the deposit", source: SOURCE, quote: RELEASE, parties: ["Kestrel Works"], document: null })
     expect(planCoverageIssues([excluded, open], documents, directory)).toEqual([
-      `The instructions direct "release the deposit" ("${RELEASE}" [source: ${SOURCE}]), but no planned document carries it. Plan it in a document executed by "Kestrel Works", adding one when none is planned.`,
+      `The instructions direct "release the deposit" ("${RELEASE}" [source: ${SOURCE}]), but no planned document carries it. Plan it in a planned document executed by "Kestrel Works". ${NO_NEW_DOCUMENT}`,
     ])
     const question = coverageScopeQuestion([excluded, open], documents)!
     expect(question.id).toBe(scopeID(open))
@@ -841,7 +842,7 @@ describe("final attempt: fix wave 2", () => {
   const LETTER = planned("d2", "Release letter", ["Kestrel Works"])
   const documents = [RESOLUTION, LETTER]
   const excluded = act({ document: null, excluded_by: EXCLUDE })
-  const UNCOVERED = `The instructions direct ${DIRECTED}, but no planned document carries it. Plan it in a document executed by "the Orchard Committee", adding one when none is planned.`
+  const UNCOVERED = `The instructions direct ${DIRECTED}, but no planned document carries it. Plan it in a planned document executed by "the Orchard Committee". ${NO_NEW_DOCUMENT}`
   const last = (directory: string, text: string) => parseCoverage(text, directory, documents, { final: true })
   function excluding() {
     const directory = matter(SOURCE_TEXT)
@@ -1072,7 +1073,7 @@ describe("dedup key", () => {
     expect(planCoverageIssues(parsed.value!, documents, directory)).toEqual([
       `The check read the instructions as leaving out of this package the document for ${DIRECTED}, which must be taken by "the Orchard Committee", ` +
         'but d1 "Committee resolution", executed by "the Orchard Committee", is planned and carries no instructed act. If the instructions leave that document out, do not plan it.',
-      `The instructions direct "release the deposit" ("${RELEASE}" [source: ${SOURCE}]), but no planned document carries it. Plan it in a document executed by "Kestrel Works", adding one when none is planned.`,
+      `The instructions direct "release the deposit" ("${RELEASE}" [source: ${SOURCE}]), but no planned document carries it. Plan it in a planned document executed by "Kestrel Works". ${NO_NEW_DOCUMENT}`,
     ])
     // Each act still reaches the lawyer in its own item.
     recorded(directory, parsed.value!)

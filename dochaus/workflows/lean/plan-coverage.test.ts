@@ -99,7 +99,8 @@ describe("plan coverage at the outline step", () => {
     expect(model.prompts.find(prompt => prompt.agent === AGENT.draft)!.text).toContain("- Under each title write \"Executed by: <party>; <party>\"")
     expect(model.prompts.find(prompt => prompt.agent === AGENT.draft)!.text).toContain("Leave the line out when neither says who executes it. " +
       "Plan no document the instructions leave out of this package. For each legal act the instructions direct, unless they leave out the document of the party who can take it, " +
-      "plan the act in a document that party executes, adding a companion document where none is planned.\n")
+      "plan the act in a document that party executes; plan a companion document for it only where the request or an answer names or clearly implies one. " +
+      "Where none fits, leave the act: whether to add a document is the lawyer's call, which the run asks before drafting.\n")
   }, 60_000)
 
   test("an act whose document the instructions leave out sends a plan with a document its parties execute back to the outline, and the revised plan without it is covered with no question", async () => {
@@ -151,7 +152,7 @@ describe("plan coverage at the outline step", () => {
     expect(readQuestions(directory)).toEqual([])
   }, 60_000)
 
-  test("a coverage issue goes back to the outline session, whose revised plan adds the companion document", async () => {
+  test("a coverage issue goes back to the outline session, whose revised plan, adding a companion document anyway, is kept", async () => {
     const { directory, state } = prepared()
     const model = scriptedModel({ [AGENT.draft]: outliner(ONE, TWO), ...placementJob(() => ACTS) })
     expect((await run(directory, state, model)).status).toBe("done")

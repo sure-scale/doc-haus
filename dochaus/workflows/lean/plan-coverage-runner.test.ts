@@ -4,7 +4,7 @@ import { ACT_RECORD_SAMPLES } from "./act-record"
 import { readParagraphs } from "./checks"
 import { readLeanDocuments } from "./deliverables"
 import type { GateResult } from "./gate"
-import { coverageItems, coveragePlanHash, readLeanCoverage } from "./package-coverage"
+import { NO_NEW_DOCUMENT, coverageItems, coveragePlanHash, readLeanCoverage } from "./package-coverage"
 import { readLeanPlan, type LeanPlan } from "./plan"
 import { openItem } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
@@ -104,7 +104,7 @@ async function laterPartiesEdited(part?: Reply) {
 }
 
 describe("plan coverage through the run", () => {
-  test("an act no planned document carries brings a companion document executed by its party; both are drafted and delivered and no question is asked", async () => {
+  test("an act no planned document carries: the revision is told to move it, not add a document; a revision that plans a companion anyway is drafted and delivered and no question is asked", async () => {
     const directory = prepared()
     const deliverables = registering()
     const model = scriptedModel(replies({
@@ -118,7 +118,7 @@ describe("plan coverage through the run", () => {
     expect(revisions(model)).toEqual([expect.objectContaining({ sessionID: outlinePrompt(model).sessionID })])
     const issues = revisions(model)[0]!.text.split("\n").filter(line => line.startsWith("- "))
     expect(issues).toEqual([`- The instructions direct "approve the revised schedule" ("${APPROVE}" [source: request]), but no planned document carries it. ` +
-      'Plan it in a document executed by "the Orchard Committee", adding one when none is planned.'])
+      'Plan it in a planned document executed by "the Orchard Committee". ' + NO_NEW_DOCUMENT])
     // The recorded acts are placed once per plan: the outline and its revision.
     expect(model.count(AGENT.coverage)).toBe(2)
 
@@ -157,7 +157,7 @@ describe("plan coverage through the run", () => {
       outline("# Schedule approval\nForm: other\nExecuted by: Kestrel Works\n## Approval\nThe approval.", RELEASE_LETTER),
       outline("# Schedule approval\nForm: other\nExecuted by: the Orchard Committee; Kestrel Works\n## Approval\nThe approval.", RELEASE_LETTER),
       { id: "d1", title: "Schedule approval", executed_by: ["the Orchard Committee", "Kestrel Works"] }],
-    ["the revision moves the act to a companion document executed by its party",
+    ["told to move the act, not add a document, the revision plans a companion document executed by its party anyway, which is kept",
       outline("# Schedule approval\nForm: other\nExecuted by: Kestrel Works\n## Approval\nThe approval.\n## Release\nThe release."),
       outline(RESOLUTION, RELEASE_LETTER),
       { id: "d1", title: "Committee resolution", executed_by: ["the Orchard Committee"] }],
@@ -170,7 +170,7 @@ describe("plan coverage through the run", () => {
       expect(revisions(model)).toEqual([expect.objectContaining({ sessionID: outlinePrompt(model).sessionID })])
       expect(revisions(model)[0]!.text.split("\n").filter(line => line.startsWith("- "))).toEqual([
         `- "approve the revised schedule" ("${APPROVE}" [source: request]) must be taken by "the Orchard Committee", but d1 "Schedule approval" is executed by "Kestrel Works". ` +
-        'Move the act to a document executed by "the Orchard Committee", or add a companion document executed by "the Orchard Committee".',
+        'Move the act into a planned document executed by "the Orchard Committee". ' + NO_NEW_DOCUMENT,
       ])
       const plan = readLeanPlan(directory)!
       expect(plan.documents.find(row => row.id === carrier.id)).toMatchObject({ title: carrier.title, executed_by: [...carrier.executed_by] })

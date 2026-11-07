@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { readLeanEvents } from "./events"
-import { readLeanCoverage, type CoverageAct } from "./package-coverage"
+import { NO_NEW_DOCUMENT, readLeanCoverage, type CoverageAct } from "./package-coverage"
 import { leanSteps, readLeanPlan } from "./plan"
 import { runLean } from "./runner"
 import { readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
@@ -61,7 +61,7 @@ describe("an act an answer moves to a separate document", () => {
     // The plan without the separate document is not taken as covered: the act goes back to the outline.
     const revisions = readLeanEvents(directory).filter(event => event.stage === "draft" && event.step?.startsWith("outline revision") && event.event === "model_call")
     expect(revisions).toEqual([expect.objectContaining({ issues: [`The instructions direct "approve the revised schedule" ("${APPROVE}" [source: request]), but no planned document carries it. ` +
-      'Plan it in a document executed by "the Orchard Committee", adding one when none is planned.'] })])
+      'Plan it in a planned document executed by "the Orchard Committee". ' + NO_NEW_DOCUMENT] })])
     expect(readLeanPlan(directory)!.documents.map(row => [row.id, row.title, row.executed_by])).toEqual([
       ["d1", "Release letter", ["Kestrel Works"]], ["d2", "Committee resolution", ["the Orchard Committee"]],
     ])
