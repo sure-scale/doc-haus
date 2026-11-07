@@ -136,7 +136,7 @@ describe("lean engine session port", () => {
     const engine = scriptedEngine({ text: "partial", outcome: "succeeded", interrupted: true, finalError: true })
     const port = engineSessionPort({ engineURL: "http://engine.test", fetch: engine.fetcher, pollMs: 1 })
     await expect(port.prompt({ directory: DIRECTORY, sessionID: "ses_child", agent: "expander", text: "Draft it." }))
-      .rejects.toThrow("The expander session ended succeeded: {\"type\":\"provider.transport\"")
+      .rejects.toThrow("The expander session ended succeeded: Decode error.")
   })
 
   test("a failed turn carries the native error's typed fields as its cause", async () => {
@@ -145,7 +145,8 @@ describe("lean engine session port", () => {
     const port = engineSessionPort({ engineURL: "http://engine.test", fetch: engine.fetcher, pollMs: 1 })
     const failure = await port.prompt({ directory: DIRECTORY, sessionID: "ses_child", agent: "expander", text: "Draft it." }).catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(Error)
-    expect((failure as Error).message).toBe(`The expander session ended failed: ${JSON.stringify(expired)}.`)
+    // The provider's one-line message, never its payload; the typed fields stay in the cause.
+    expect((failure as Error).message).toBe("The expander session ended failed: This API key has expired.")
     expect((failure as Error).cause).toEqual(expired)
   })
 
