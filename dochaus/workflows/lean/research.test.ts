@@ -679,6 +679,20 @@ test("a not-needed targeted re-run keeps previously approved findings", () => {
   expect(readLeanJson(directory, "research.json")).toEqual({ status: "completed", findings: [finding], limitations: [] })
 })
 
+test("a review of not-needed research discloses its gaps, not the restated reason", () => {
+  const directory = matter()
+  const reason = "The note records supplied facts and relies on no proposition of law."
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "not-needed", findings: [], limitations: [reason] })).openItems).toEqual([])
+  // Was one research_gap open item holding the reason: "Legal research is incomplete" for a note that needs none.
+  const restated = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [], limitations: [reason], gaps: [] }))
+  expect(restated.issues).toEqual([])
+  expect(restated.openItems).toEqual([])
+  const gap = { issue: "Whether the stated deadline is a statutory minimum.", affects: "The deadline the note records." }
+  const missed = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [], limitations: [reason], gaps: [gap] }))
+  expect(missed.issues).toEqual([])
+  expect(missed.openItems.map(row => row.detail)).toEqual([expect.stringContaining(gap.issue)])
+})
+
 test("research that runs again before its review keeps the findings that review has not covered; a current review's rejection is kept", () => {
   const directory = matter()
   const notice = approvedNotice(directory)

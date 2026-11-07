@@ -398,7 +398,12 @@ export function acceptResearchReply(directory: string, stage: ResearchStage, rep
   if (issues.length) return { issues, outputs: [], openItems: [] }
   // A not-needed reply's limitations give its reason, not a research gap, even
   // when the authority it keeps makes the saved research completed or limited.
-  const limitations = stage === "intake" || stage === "research" && (value as Research).status === "not-needed" ? [] : (value as Research).limitations
+  // A review of research saved as not-needed has no retrieved finding to limit:
+  // its limitations restate that reason, and a proposition of law left without
+  // authority is one of its gaps, which are still disclosed and re-researched.
+  const notNeeded = stage === "research" ? (value as Research).status === "not-needed"
+    : stage === "research-review" && (readLeanJson(directory, "research.json") as Research | undefined)?.status === "not-needed"
+  const limitations = stage === "intake" || notNeeded ? [] : (value as Research).limitations
   // Saved with the source each finding cites, as resolved from its URL and quotation.
   if (resolved) value = withPriorFindings({ ...(value as Research), findings: resolved.findings }, resolved.kept)
   if (stage === "research") writeLeanText(directory, "research-context.txt", readableResearchContext(directory, (value as Research).findings))
