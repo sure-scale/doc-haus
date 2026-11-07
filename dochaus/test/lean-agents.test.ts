@@ -9,6 +9,7 @@ import { LEAN_CHILD_PERMISSIONS, LEAN_READ_TOOLS, LEAN_STAGE_AGENTS } from "../w
 import { ACT_RECORD_AGENT } from "../workflows/lean/act-record"
 import { SPINE_SPLIT_PERMISSIONS } from "../workflows/lean/spine-split"
 import { SPINE_ABSENCE_PERMISSIONS } from "../workflows/lean/spine-absence"
+import { READER_CHECK_PERMISSIONS } from "../workflows/lean/reader-check"
 
 // The lean stage agents load through the same native markdown + v1 migration
 // path the engine uses, and their own frontmatter (not only the session rules)
@@ -17,7 +18,7 @@ import { SPINE_ABSENCE_PERMISSIONS } from "../workflows/lean/spine-absence"
 const core = path.resolve(path.dirname(Bun.resolveSync("@opencode/core/session", import.meta.dir)), "..")
 const { Schema } = await import(Bun.resolveSync("effect", core))
 const root = path.resolve(import.meta.dir, "..")
-const agents = Object.values(LEAN_STAGE_AGENTS).filter(id => id !== "lean-research" && id !== "lean-spine-split" && id !== "lean-spine-absence")
+const agents = Object.values(LEAN_STAGE_AGENTS).filter(id => id !== "lean-research" && id !== "lean-spine-split" && id !== "lean-spine-absence" && id !== "lean-reader-check")
 
 function loadAgent(id: string) {
   const markdown = ConfigMarkdown.parse(readFileSync(path.join(root, "agent", `${id}.md`), "utf8"))
@@ -50,10 +51,11 @@ test("each lean stage agent loads as a hidden subagent whose own rules allow onl
   }
 })
 
-// A spine split job and a spine absence classifier read only the one entry
-// they are sent, so neither their own rules nor their session's allow any tool.
-test("spine split and absence classifier agents load as hidden subagents with every tool denied", () => {
-  for (const [id, permissions] of [["lean-spine-split", SPINE_SPLIT_PERMISSIONS], ["lean-spine-absence", SPINE_ABSENCE_PERMISSIONS]] as const) {
+// A spine split job, a spine absence classifier and a part's reader check read
+// only the one entry or part they are sent, so neither their own rules nor
+// their session's allow any tool.
+test("spine split, absence classifier and reader check agents load as hidden subagents with every tool denied", () => {
+  for (const [id, permissions] of [["lean-spine-split", SPINE_SPLIT_PERMISSIONS], ["lean-spine-absence", SPINE_ABSENCE_PERMISSIONS], ["lean-reader-check", READER_CHECK_PERMISSIONS]] as const) {
     const agent = loadAgent(id)
     expect(agent.mode).toBe("subagent")
     expect(agent.hidden).toBe(true)

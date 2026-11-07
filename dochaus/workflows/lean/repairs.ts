@@ -30,8 +30,9 @@ export type RepairRound = { round: number; requested_at: string; items: OpenItem
 // heading, is an omission (draftTemplateItems): the draft is not rewritten for
 // it, so the change cycle repairs it.
 // Draft-status wording in an agreement (draft-status.ts) is taken out by the
-// same cycle.
-const REPAIRABLE_DRAFT_KINDS = new Set<OpenItem["kind"]>(["quote_miss", "citation_unsupported", "omission", "draft_status"])
+// same cycle, and so is a sentence written for the lawyer rather than the
+// document's reader (reader-check.ts).
+const REPAIRABLE_DRAFT_KINDS = new Set<OpenItem["kind"]>(["quote_miss", "citation_unsupported", "omission", "draft_status", "reader"])
 
 export function readRepairRound(directory: string): RepairRound | undefined {
   const value = readLeanJson(directory, "repairs.json")
@@ -167,6 +168,7 @@ const REPAIR_INSTRUCTIONS = [
   "For a template part missing or cut short in the draft, which names no paragraph, add the missing wording from the template: split the paragraph the part belongs after, or replace a paragraph of the part with its full wording. " +
   "For one in the draft without its heading, split the part's first paragraph to put its heading before it: the template's, or the heading the instructions give it.",
   "For an unanswered question, repeat it with its \"id\" and the \"pid\" of the paragraph it affects, and put a visible [open item: ...] marker in that paragraph.",
+  "For a sentence written for the lawyer rather than the document's reader, rewrite the paragraph for the reader, keeping what the sentence tells them; put the point for the lawyer in a visible [open item: ...] marker or leave it to the drafting notes.",
 ]
 
 /** Prompt sections for one document's changes step beyond its findings: the

@@ -853,6 +853,8 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
     return named ? disclosed("placeholder in the body; named in the drafting notes") : open("the drafting notes do not name this placeholder")
   if (item.kind === "draft_status")
     return named ? disclosed("draft-status wording left in the agreement; named in the drafting notes") : open("the drafting notes do not name this draft-status wording")
+  if (item.kind === "reader")
+    return named ? disclosed("a sentence for the lawyer left in the document; named in the drafting notes") : open("the drafting notes do not name this sentence written for the lawyer")
   if (named && item.ref.pid && marked(final, item.ref.pid))
     return disclosed("marked in the body and named in the drafting notes")
   return open(named
