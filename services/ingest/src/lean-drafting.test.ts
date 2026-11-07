@@ -1067,7 +1067,7 @@ test("checker events time the model wait and the check as numbers, never content
     expect(Object.keys(event).filter(key => !checkerKeys.has(key) && !(explanation && key === "outcome"))).toEqual([])
     if (explanation) {
       explanationChecks++
-      expect(["pass", "rewrite"]).toContain(event.outcome)
+      expect(event.outcome === "pass" || event.outcome === "rewrite").toBe(true)
     }
     expect(event.issues).toEqual([])
     expect(event.check_ms).toBeGreaterThanOrEqual(0)
