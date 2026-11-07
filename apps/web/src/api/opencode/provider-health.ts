@@ -8,8 +8,9 @@ export type ModelConnection = {
   status: "checking" | "ready" | "auth" | "model" | "unavailable"
   expired?: boolean
   restriction?: "free-tier" | "region"
+  reason?: "credit"
 }
-type ProbeResult = { ok: true } | { ok: false; kind: "auth" | "model" | "unavailable"; expired?: boolean; restriction?: "free-tier" | "region" }
+type ProbeResult = { ok: true } | { ok: false; kind: "auth" | "model" | "unavailable"; expired?: boolean; restriction?: "free-tier" | "region"; reason?: "credit" }
 
 export async function testModelConnection(providerID: string, modelID: string, force: boolean): Promise<ProbeResult> {
   if (isRemovedProvider(providerID)) return { ok: false, kind: "model" }
@@ -24,6 +25,7 @@ export async function testModelConnection(providerID: string, modelID: string, f
     // Only the managed endpoint's typed result can invalidate a saved sign-in.
     if (result.kind === "auth" || result.kind === "model") return { ok: false, kind: result.kind, expired: result.expired === true,
       ...(result.kind === "model" && (result.restriction === "free-tier" || result.restriction === "region") ? { restriction: result.restriction } : {}) }
+    if (result.kind === "unavailable" && result.reason === "credit") return { ok: false, kind: "unavailable", reason: "credit" }
   } catch { /* A timeout or offline endpoint does not prove expired credentials. */ }
   return { ok: false, kind: "unavailable" }
 }
@@ -63,7 +65,8 @@ export function createProviderHealthMonitor(
           if (result.ok) rejectedModels.delete(`${model.providerID}/${model.modelID}`)
           publish(snapshot.map(item => item.providerID === model.providerID && item.modelID === model.modelID
             ? { ...model, status: result.ok ? "ready" : result.kind, ...(!result.ok && result.expired ? { expired: true } : {}),
-              ...(!result.ok && result.kind === "model" && result.restriction ? { restriction: result.restriction } : {}) } : item))
+              ...(!result.ok && result.kind === "model" && result.restriction ? { restriction: result.restriction } : {}),
+              ...(!result.ok && result.kind === "unavailable" && result.reason ? { reason: result.reason } : {}) } : item))
         }))
       } catch {
         if (version === current) publish([{ providerID: "", modelID: "", status: "unavailable" }])

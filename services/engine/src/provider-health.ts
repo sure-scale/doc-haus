@@ -9,6 +9,8 @@ export type ProviderTestResult = { ok: true } | {
   kind: "auth" | "model" | "unavailable"
   expired?: boolean
   restriction?: "free-tier" | "region"
+  // Typed cause of an `unavailable` result the browser may name; raw provider text never leaves the engine.
+  reason?: "credit"
   error: string
 }
 
@@ -101,7 +103,7 @@ export function providerTestFailure(error: unknown): ProviderTestResult {
       : "The provider does not offer this model in your region. Choose another available model or provider in Settings." }
   if (model) return unavailableModel
   // Credit or usage caps keep kind `unavailable`: the saved connection still works.
-  if (quota) return { ok: false, kind: "unavailable",
+  if (quota) return { ok: false, kind: "unavailable", reason: "credit",
     error: "The AI account has run out of credit or reached its usage limit. Add credit with your provider, then retry." }
   return { ok: false, kind: "unavailable", error: "The provider could not be checked. Check the connection, model access or account allowance, then retry." }
 }
