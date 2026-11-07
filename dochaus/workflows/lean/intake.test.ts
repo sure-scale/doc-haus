@@ -63,6 +63,20 @@ test("an already answered intake question gets correction feedback instead of be
   expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: "q-existing", status: "answered" })])
 }, 120_000)
 
+test("an intake question naming an internal id gets feedback on how to say it, and is asked in words on the last attempt", async () => {
+  const directory = matter()
+  writeQuestions(directory, [{ id: "q-0a1b2c3d4e", stage: "draft", question: "Which law should govern?", context: "Legal basis.", status: "answered", answer: "Singapore law." }])
+  const model = scriptedModel({ ...quiet, [AGENT.intake]: () =>
+    JSON.stringify({ questions: [{ question: "Does the answer to q-0a1b2c3d4e also cover disputes?", kind: "instruction", context: "Disputes may need their own forum." }] }) })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
+  const intake = model.prompts.filter(row => row.agent === AGENT.intake)
+  expect(intake[0]!.text).toContain("The lawyer sees only words")
+  expect(intake[1]!.text).toContain('questions[0].question names the internal id "q-0a1b2c3d4e". The lawyer sees only words: name the question or answer by what it asked.')
+  const asked = readQuestions(directory).find(row => row.status === "open")!
+  expect(asked.question).not.toContain("q-0a1b2c3d4e")
+  expect(asked.question).toContain("Which law should govern?")
+}, 120_000)
+
 test("a changed answer during review re-runs the review and reaches the accepted draft as an amendment before delivery", async () => {
   const directory = matter()
   writeQuestions(directory, [{ id: "q-law", stage: "draft", question: "Which law should govern?", context: "Legal basis.", status: "answered", answer: "England and Wales law." }])

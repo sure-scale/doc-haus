@@ -1,7 +1,7 @@
 import { matterClient } from "../../lib/matter-client"
 import { normalize } from "../../lib/quote-verify"
 import { NOT_STATED, nameKey, readLeanPlan, type ActingFor, type ActingForBasis, type DocumentDateBasis, type MatterDate, type MatterDates } from "./plan"
-import { parseJsonObject } from "./checks"
+import { inQuestionWords, parseJsonObject, questionWordIssues } from "./checks"
 import { followsDocument } from "./instructions"
 import { REQUEST_SOURCE, isAnswerSource, quoteFound, quoteMissIssue } from "./quotes"
 import { questionKindIssues, readLeanJson, readQuestions, shortHash, type Question } from "./state"
@@ -11,8 +11,10 @@ type Checked<T> = { issues: string[]; value?: T }
 /** The intake exchange asks material questions before research. They
  * use the ordinary durable question store and dialog; no draft is written.
  * Undefined when the reply holds no questions: a reply parseJsonObject cannot
- * read is then refused, with why, as the readiness reply. */
-export function intakeQuestions(directory: string, reply: string, stage: Question["stage"] = "intake"): Checked<Question[]> | undefined {
+ * read is then refused, with why, as the readiness reply. A question naming an
+ * internal id is retried, or on the last attempt (`final`) asked in the
+ * lawyer's words (inQuestionWords). */
+export function intakeQuestions(directory: string, reply: string, stage: Question["stage"] = "intake", options: { final?: boolean } = {}): Checked<Question[]> | undefined {
   const parsed = parseJsonObject(reply)
   if (!parsed.ok) return
   const invalid = { issues: ['Reply with {"questions":[{"question":"...","kind":"fact|instruction|judgment","context":"why this blocks drafting"}]} or the readiness JSON when ready.'] }
@@ -31,7 +33,9 @@ export function intakeQuestions(directory: string, reply: string, stage: Questio
     if (!questions.some(question => question.id === id))
       questions.push({ id, stage, question: row.question.trim(), context: row.context.trim(), status: "open", kind: row.kind })
   }
-  return { issues: [], value: questions }
+  const worded = questionWordIssues(directory, questions)
+  if (worded.length && !options.final) return { issues: worded }
+  return { issues: [], value: worded.length ? questions.map(question => inQuestionWords(directory, question)) : questions }
 }
 
 /** Whom intake determined the lawyer acts for, as intake.json records it. */
