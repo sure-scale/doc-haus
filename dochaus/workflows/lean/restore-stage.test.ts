@@ -4,13 +4,14 @@ import path from "node:path"
 import { LEAN_ACTS_SCHEMA } from "./act-record"
 import { readLeanDocuments } from "./deliverables"
 import { readLeanEvents } from "./events"
+import { focusedNotesInputs } from "./focused-notes"
 import { writeLeanPlan } from "./plan"
 import { LEAN_COVERAGE_SCHEMA } from "./package-coverage"
 import { enqueueLeanRequest, pendingLeanRequests } from "./requests"
 import { restoreLeanStage } from "./restore-stage"
 import { runLean } from "./runner"
 import { LEAN_STAGE_AGENTS } from "./stages"
-import { leanDir, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText } from "./state"
+import { leanDir, leanFile, readLeanJson, readLeanState, readLeanText, readOpenItems, readQuestions, writeLeanText } from "./state"
 import { changes, happyLeanReplies, leanFixtureMatter, sameSession, scriptedLeanModel } from "./test-support"
 
 const directories: string[] = []
@@ -23,6 +24,7 @@ test("restoring to just after a step re-runs only the later steps, from that sta
   expect(first.status).toBe("completed")
   expect(readLeanDocuments(directory)?.status).toBe("completed")
   const draftedBody = readFileSync(leanFile(directory, "d1/body.docx"))
+  const notes = readLeanText(directory, "drafting-notes.md")
   const snapshots = path.join(leanDir(directory), "snapshots")
 
   const restored = restoreLeanStage(directory, "d1.changes")
@@ -40,7 +42,9 @@ test("restoring to just after a step re-runs only the later steps, from that sta
   const resume = scriptedLeanModel({ [LEAN_STAGE_AGENTS.finalize]: happyLeanReplies()[LEAN_STAGE_AGENTS.finalize] })
   const resumed = await runLean(directory, { sessions: resume.port })
   expect(resumed.status).toBe("completed")
-  expect(resume.agents()).toEqual(["lean-checklist-extract", LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS.finalize, LEAN_STAGE_AGENTS["package-review"]])
+  expect(resume.agents()).toEqual(["lean-checklist-extract", LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS["package-review"]])
+  expect(resumed.stages.finalize?.status).toBe("done")
+  expect(readLeanText(directory, "drafting-notes.md")).toBe(notes)
   expect(resumed.stages["d1.draft"]?.finished_at).toBe(first.stages["d1.draft"]?.finished_at)
   expect(resumed.stages["d1.apply"]?.finished_at).not.toBe(first.stages["d1.apply"]?.finished_at)
   expect(readLeanState(directory)?.stages.gate?.status).toBe("done")
@@ -87,7 +91,8 @@ test("restoring keeps a question whose answer is still queued, and the next run 
   // answer does not re-key it. The preparation steps read only run-level
   // answers and the accepted draft is kept.
   // The applied change amends a part, which the apply step's reader check reads again.
-  expect(resume.agents()).toEqual([LEAN_STAGE_AGENTS.answer, "lean-checklist-extract", LEAN_STAGE_AGENTS["review-wording"], LEAN_STAGE_AGENTS["review-client-disadvantage"], LEAN_STAGE_AGENTS["review-independent"], LEAN_STAGE_AGENTS["change-plan"], LEAN_STAGE_AGENTS.changes, LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS.reader, LEAN_STAGE_AGENTS.finalize, LEAN_STAGE_AGENTS["package-review"]])
+  expect(resume.agents().filter(agent => agent !== LEAN_STAGE_AGENTS.finalize)).toEqual([LEAN_STAGE_AGENTS.answer, "lean-checklist-extract", LEAN_STAGE_AGENTS["review-wording"], LEAN_STAGE_AGENTS["review-client-disadvantage"], LEAN_STAGE_AGENTS["review-independent"], LEAN_STAGE_AGENTS["change-plan"], LEAN_STAGE_AGENTS.changes, LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS.reader, LEAN_STAGE_AGENTS["package-review"]])
+  expect(resume.count(LEAN_STAGE_AGENTS.finalize)).toBe(focusedNotesInputs(directory).length)
   expect(readLeanJson(directory, `requests/done/${request.id}.json`)).toMatchObject({ kind: "answer", outcome: { status: "answered" } })
   expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: question.id, status: "answered", answer: "No remedy." })])
   const sinceRestore = readLeanEvents(directory).slice(readLeanEvents(directory).findIndex(event => event.event === "restored"))
@@ -109,7 +114,8 @@ test("restoring puts back the plan's coverage record with the plan, and restorin
   expect(readFileSync(leanFile(directory, "coverage.json"), "utf8")).toBe(record)
   const resume = scriptedLeanModel({ [LEAN_STAGE_AGENTS.finalize]: happyLeanReplies()[LEAN_STAGE_AGENTS.finalize] })
   expect((await runLean(directory, { sessions: resume.port })).status).toBe("completed")
-  expect(resume.agents()).toEqual(["lean-checklist-extract", LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS.finalize, LEAN_STAGE_AGENTS["package-review"]])
+  expect(resume.agents()).toEqual(["lean-checklist-extract", LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS["package-review"]])
+  expect(readLeanState(directory)?.stages.finalize?.status).toBe("done")
 
   restoreLeanStage(directory, "spine")
   expect(existsSync(leanFile(directory, "plan.json"))).toBe(false)

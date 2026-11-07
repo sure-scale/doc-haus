@@ -10,7 +10,7 @@ import { readParagraphs } from "./checks"
 import { runDraftStage } from "./draft-sections"
 import { finalGate } from "./gate"
 import { parsePlan, writeLeanPlan } from "./plan"
-import { READER_CHECK_PERMISSIONS, parseReaderHits, readReaderChecks, readerItems } from "./reader-check"
+import { READER_CHECK_PERMISSIONS, parseReaderHits, readReaderChecks, readerCheckKey, readerCheckPrompt, readerItems, saveReaderCheck } from "./reader-check"
 import { changesRepairSections } from "./repairs"
 import { stageInputSha } from "./runner"
 import { acceptStageReply, type PermissionRule, type StageSessionPort } from "./stages"
@@ -123,6 +123,50 @@ describe("parseReaderHits", () => {
     ]), part, kept)
     expect(checked).toEqual({ issues: [], value: [hit(part[3]!.pid, "Please verify the dates before sending.")] })
   })
+
+  test("a mixed prose-and-marker hit must quote the operative words alone, without hiding a real instruction beside the marker", () => {
+    const recipient = "You may send your reply to the address above."
+    const marker = "[open item: confirm the reply address before sending]"
+    const part = rows([`${recipient} ${marker} ${NOTE}`])
+    const mixed = hit(part[0]!.pid, `${recipient} ${marker}`)
+    const real = hit(part[0]!.pid, NOTE)
+    // Merely sharing a paragraph with a marker never shelters actual lawyer-facing prose.
+    expect(parseReaderHits(reply([real]), part)).toEqual({ issues: [], value: [real] })
+    const checked = parseReaderHits(reply([mixed, real]), part, [], { final: true })
+    expect(checked.issues).toEqual([expect.stringContaining("crosses a lawyer-instruction marker")])
+    expect(checked.value).toEqual([real])
+    expect(parseReaderHits(reply([mixed]), part).value).toBeUndefined()
+  })
+
+  test("a marker in the middle of prose cannot manufacture a word-for-word hit by joining its two sides", () => {
+    const part = rows(["Please verify [open item: identify the source] the reply date before sending."])
+    expect(parseReaderHits(reply([hit(part[0]!.pid, "Please verify the reply date before sending.")]), part).issues)
+      .toEqual([expect.stringContaining("the sentence is not in that paragraph word for word")])
+    expect(parseReaderHits(reply([hit(part[0]!.pid, "the reply date before sending.")]), part).value)
+      .toEqual([hit(part[0]!.pid, "the reply date before sending.")])
+  })
+})
+
+test("the reader prompt separates exact operative passages from all supported lawyer markers, retaining the canonical paragraph", () => {
+  const plan = { ...parsePlan(OUTLINE).value!.documents[0]!, id: "d1" as const }
+  const part = rows([
+    "You may reply [insert reply address] by the date stated. [open item: confirm the date]",
+    `${NOTE} [ATTORNEY NOTE: review the reply deadline]`,
+  ])
+  const prompt = readerCheckPrompt(plan, "", part, [])
+  expect(prompt).toContain(`<part>\n[${part[0]!.pid}] ${part[0]!.text}`)
+  const operative = JSON.parse(/<operative_prose>\n([\s\S]*?)\n<\/operative_prose>/.exec(prompt)![1]!)
+  const instructions = JSON.parse(/<lawyer_instructions>\n([\s\S]*?)\n<\/lawyer_instructions>/.exec(prompt)![1]!)
+  expect(operative).toEqual([
+    { pid: part[0]!.pid, passages: ["You may reply", "by the date stated."] },
+    { pid: part[1]!.pid, passages: [NOTE] },
+  ])
+  expect(instructions).toEqual([
+    { pid: part[0]!.pid, passages: ["[insert reply address]", "[open item: confirm the date]"] },
+    { pid: part[1]!.pid, passages: ["[ATTORNEY NOTE: review the reply deadline]"] },
+  ])
+  expect(prompt).toContain("does not resolve its factual gap")
+  expect(prompt).toContain("Do not join passages across a marker")
 })
 
 describe("reader items", () => {
@@ -219,46 +263,51 @@ describe("the draft step's reader check", () => {
 })
 
 describe("the apply step's reader check", () => {
-  test("checks only the parts the changes amended, and carries the draft's hit in another part while its sentence stands", async () => {
+  test("refreshes current parts after a contract change, retains genuine standing defects and then reuses unchanged parts", async () => {
     const directory = matter()
     letter(directory)
-    expect((await acceptStageReply(directory, "d1.draft", `# Notice letter\n\n## Background\n\nThe parties signed the terms.\n\n## Next steps\n\nWe will wait for a reply. ${NOTE}\n`)).issues).toEqual([])
+    const recipient = "We will wait for a reply. [open item: confirm the reply date]"
+    expect((await acceptStageReply(directory, "d1.draft", `# Notice letter\n\n## Background\n\nThe parties signed the terms.\n\n## Next steps\n\n${recipient} ${NOTE}\n`)).issues).toEqual([])
     const draft = readParagraphs(directory, "d1")
     const background = draft.find(row => row.text === "The parties signed the terms.")!
     const next = draft.find(row => row.text.includes(NOTE))!
-    const found = readerItems("draft", "d1", [hit(next.pid, NOTE)])
+    const obsolete = hit(next.pid, recipient)
+    const found = readerItems("draft", "d1", [obsolete, hit(next.pid, NOTE)])
     replaceStageOpenItems(directory, "draft", "d1", found)
-    const amend = (pid: string, updated: string) => {
-      const checked = checkChanges(directory, JSON.stringify({ amendments: [{ pid, updated, reason: "Review finding.", sources: [] }], questions: [] }), readParagraphs(directory, "d1"), { document: "d1" })
+    saveReaderCheck(directory, "d1", readerCheckKey("Previous reader contract"), [obsolete, hit(next.pid, NOTE)])
+    const amend = (changes: [string, string][]) => {
+      const checked = checkChanges(directory, JSON.stringify({ amendments: changes.map(([pid, updated]) => ({ pid, updated, reason: "Review finding.", sources: [] })), questions: [] }), readParagraphs(directory, "d1"), { document: "d1" })
       expect(checked.issues).toEqual([])
       writeLeanText(directory, "d1/changes.json", `${JSON.stringify(checked.changes, null, 2)}\n`)
     }
     // Each change rests on drafting judgment, so it carries a new marker for the lawyer.
-    amend(background.pid, "The parties signed the terms on the date stated. [open item: confirm the signing date]")
-    const model = port({ [AGENT.reader]: () => JSON.stringify({ hits: [] }) })
+    const changedBackground = "The parties signed the terms on the date stated. [open item: confirm the signing date]"
+    amend([[background.pid, changedBackground]])
+    const model = port({ [AGENT.reader]: readerReply })
     const applied = await runApply(directory, readLeanState(directory)!, "d1", { sessions: model.port })
     expect(applied.status).toBe("done")
     if (applied.status !== "done") throw new Error(applied.reason)
-    expect(model.prompts.map(row => row.agent)).toEqual([AGENT.reader])
+    expect(model.prompts.map(row => row.agent)).toEqual([AGENT.reader, AGENT.reader])
     expect(model.prompts[0]!.text).toContain("on the date stated")
     expect(model.prompts[0]!.text).not.toContain(NOTE)
-    expect(applied.openItems.filter(item => item.kind === "reader")).toEqual([expect.objectContaining({ stage: "apply", detail: found[0]!.detail, ref: { document: "d1", pid: next.pid, statement: NOTE } })])
+    expect(model.prompts[1]!.text).toContain(recipient)
+    expect(applied.openItems.filter(item => item.kind === "reader")).toEqual([expect.objectContaining({ stage: "apply", detail: found[1]!.detail, ref: { document: "d1", pid: next.pid, statement: NOTE } })])
 
     // A change that rewrites the sentence's own part is checked again there; the draft's hit is not carried.
-    amend(next.pid, "We will wait for a reply. [open item: confirm the reply date]")
+    amend([[background.pid, changedBackground], [next.pid, "We will wait for a reply. [open item: confirm the reply date and address]"]])
     const again = await runApply(directory, readLeanState(directory)!, "d1", { sessions: model.port })
     expect(again.status).toBe("done")
     if (again.status !== "done") throw new Error(again.reason)
-    expect(model.prompts.map(row => row.agent)).toEqual([AGENT.reader, AGENT.reader])
-    expect(model.prompts[1]!.text).toContain("We will wait for a reply.")
-    expect(model.prompts[1]!.text).not.toContain("The parties signed the terms")
+    expect(model.prompts.map(row => row.agent)).toEqual([AGENT.reader, AGENT.reader, AGENT.reader])
+    expect(model.prompts[2]!.text).toContain("We will wait for a reply.")
+    expect(model.prompts[2]!.text).not.toContain("The parties signed the terms")
     expect(again.openItems.filter(item => item.kind === "reader")).toEqual([])
 
     // Without a session port nothing is asked; a standing hit is still carried.
-    amend(background.pid, "The parties signed the terms on the date stated. [open item: confirm the signing date]")
+    amend([[background.pid, changedBackground]])
     const direct = await runApply(directory, readLeanState(directory)!, "d1")
     expect(direct.status).toBe("done")
-    expect(model.prompts).toHaveLength(2)
-    expect(direct.status === "done" ? direct.openItems.filter(item => item.kind === "reader") : []).toEqual([expect.objectContaining({ stage: "apply", ref: expect.objectContaining({ pid: next.pid }) })])
+    expect(model.prompts).toHaveLength(3)
+    expect(direct.status === "done" ? direct.openItems.filter(item => item.kind === "reader") : []).toHaveLength(2)
   }, 60_000)
 })

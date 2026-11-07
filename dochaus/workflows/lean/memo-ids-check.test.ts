@@ -7,15 +7,16 @@ import { checkDraftingNotes, readChangeList } from "./checks"
 import { DELIVERED_NOTES, memoNotesFile } from "./deliverables"
 import { runItemIDs, withoutRefMarkers } from "./delivered-memo"
 import { deliveredNotes, notesForReader, type GateResult } from "./gate"
+import { focusedNotesInputs, type FocusedNotesInput } from "./focused-notes"
 import { intakeQuestions } from "./intake"
 import { packageScopeQuestionID } from "./package-scope"
 import { readLeanPlan, writeLeanPlan } from "./plan"
 import { stagePrompt } from "./prompts"
 import { openItem } from "./quotes"
 import { runLean } from "./runner"
-import { acceptStageReply, disclosableItems, LEAN_MAX_RETRIES, stageOutputValid } from "./stages"
-import { leanFile, readLeanJson, readLeanState, readLeanText, writeLeanText, writeOpenItems, writeQuestions, type Question } from "./state"
-import { AGENT, COVER_MEMO, DRAFT, DRAFTED, changesFirst, cleanupMatters, drafter, draftingNotes, happyPath, listed, matter, noChanges, pidOf, reviewFirst, sameSession, scriptedModel, type Reply } from "./test-support"
+import { acceptStageReply, disclosableItems, stageOutputValid } from "./stages"
+import { leanFile, readLeanJson, readLeanText, writeLeanText, writeOpenItems, writeQuestions, type Question } from "./state"
+import { AGENT, COVER_MEMO, DRAFT, DRAFTED, changesFirst, cleanupMatters, drafter, happyPath, listed, matter, noChanges, pidOf, reviewFirst, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // In the drafting notes, a requested memo or not, an internal id may appear
 // only inside a "[ref: …]" marker. The drafting-notes check holds an item as
@@ -59,26 +60,58 @@ const addSource = (directory: string, name: string, text: string) => {
   db.close()
 }
 
-/** A supply note run with a requested cover memo whose finalize model writes
- * the same memo on every attempt: its title, then `lines` for the open item
- * ids its prompt lists. A retry in the same session does not list them again.
- * `written` is the memo the model last wrote; `model` resumes the run. With
- * `withMemo` false no memo is requested and the notes keep the same text. */
-async function stubbornMemoRun(lines: (ids: string[]) => string[], replies: Record<string, Reply> = {}, withMemo = true) {
+/** A strict fixture reads each section's actual assignment and keeps it on
+ * that native session for retries. Its access to refs deliberately lets these
+ * tests inject invalid prose; production writers receive no reference ids. */
+function sectionReplies(directory: string, reply: (input: FocusedNotesInput, attempt: number) => string): Reply {
+  const sessions = new Map<string | undefined, { input: FocusedNotesInput; attempts: number }>()
+  return (prompt, _index, sessionID) => {
+    let session = sessions.get(sessionID)
+    if (!session) {
+      const input = focusedNotesInputs(directory).find(input => input.text === prompt)
+      if (!input) throw new Error("The strict notes fixture received no matching section assignment.")
+      session = { input, attempts: 0 }
+      sessions.set(sessionID, session)
+    }
+    return reply(session.input, session.attempts++)
+  }
+}
+
+/** Deliberately bad prose in one kind of section is corrected on that
+ * section's own retry. Other accepted sections are never asked to rewrite. */
+async function correctedMemoRun(bad: (input: FocusedNotesInput) => string | undefined, corrected: string,
+  replies: Record<string, Reply> = {}, withMemo = true) {
   const directory = matter()
   if (withMemo) writeLeanText(directory, "request.md", "Draft a short supply note from the supply terms, with a cover memo on the open points.")
   const draft = withMemo ? drafter(DRAFT, COVER_MEMO) : drafter(DRAFT)
   const memoDrafter: Reply = (prompt, index) => withMemo ? draft(prompt, index).replace("Acting for: not stated", "Acting for: not stated\nMemo: cover memo") : draft(prompt, index)
-  let ids: string[] = [], written = ""
-  const stubborn: Reply = prompt => {
-    const blocks = [...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)]
-    if (blocks.length) ids = blocks.flatMap(match => [...match[1]!.matchAll(/^- \[ref: (\S+)\]/gm)].map(row => row[1]!))
-    return written = memo(...lines(ids))
-  }
+  const finalize = sectionReplies(directory, (input, attempt) => !attempt && bad(input) || (input.kind === "open-item" ? "The lawyer must resolve this before the draft is used." : corrected))
   // The memo document has no supply paragraph to review or change.
-  const model = scriptedModel({ ...happyPath, [AGENT.draft]: memoDrafter, [AGENT.review]: reviewFirst, [AGENT.changes]: changesFirst, [AGENT.finalize]: stubborn, ...replies })
+  const model = scriptedModel({ ...happyPath, [AGENT.draft]: memoDrafter, [AGENT.review]: reviewFirst, [AGENT.changes]: changesFirst, [AGENT.finalize]: finalize, ...replies })
   const run = await runLean(directory, { sessions: model.port })
-  return { directory, run, written, model }
+  return { directory, run, model }
+}
+
+function expectOnlySectionRetries(model: ReturnType<typeof scriptedModel>) {
+  const calls = model.prompts.filter(row => row.agent === AGENT.finalize)
+  const retries = calls.filter(row => row.text.includes("Correct only this section's errors"))
+  expect(retries.length).toBeGreaterThan(0)
+  for (const session of new Set(calls.map(row => row.sessionID)))
+    expect(calls.filter(row => row.sessionID === session)).toHaveLength(retries.some(row => row.sessionID === session) ? 2 : 1)
+}
+
+function expectCodeReferencesAndCleanDelivery(directory: string, prose: string) {
+  const ids = disclosableItems(directory).map(item => item.id)
+  const saved = readLeanText(directory, "drafting-notes.md")!
+  expect(saved).toContain(prose)
+  expect(checkDraftingNotes(directory, saved, disclosableItems(directory)).issues).toEqual([])
+  for (const id of ids) expect(saved.split(`[ref: ${id}]`)).toHaveLength(2)
+  for (const delivered of [readLeanText(directory, DELIVERED_NOTES.markdown)!, docxText(readFileSync(leanFile(directory, DELIVERED_NOTES.docx)))]) {
+    expect(delivered).toContain(prose)
+    expect(delivered).not.toContain("[ref")
+    for (const id of ids) expect(delivered).not.toContain(id)
+    expect(delivered).not.toMatch(/\b(?:d\d+|[awi]\d+)\b/)
+  }
 }
 
 describe("a requested memo", () => {
@@ -165,21 +198,18 @@ describe("a requested memo", () => {
     expect(stageOutputValid(directory, "finalize")).toBe(false)
   })
 
-  test("through the run, a memo that keeps naming open item ids in its prose completes on its last attempt as the model wrote it", async () => {
+  test("through the run, copied open-item ids retry only their section and code attaches every complete reference", async () => {
     // The applied change leaves an open item for the memo to disclose.
-    const { directory, run, written } = await stubbornMemoRun(ids => ["The draft follows the supply terms.", "",
-      ...ids.map(id => `- ${id}: The lawyer must resolve this before the draft is used. [ref: ${id}]`)], {
+    const { directory, run, model } = await correctedMemoRun(input => input.kind === "open-item"
+      ? `${input.refs[0]}: The lawyer must resolve this before the draft is used. [ref: ${input.refs[0]}]` : undefined, "The draft follows the supply terms.", {
       [AGENT.changes]: sameSession((prompt, index) => listed(prompt, DRAFTED) ? JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED),
         updated: "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen].", reason: "Drafting judgment.", sources: [] }], questions: [] }) : noChanges(prompt, index)),
     })
     expect(run.status).toBe("completed")
-    expect(readLeanState(directory)?.stages.finalize?.attempts).toBe(LEAN_MAX_RETRIES + 1)
+    expectOnlySectionRetries(model)
     const ids = disclosableItems(directory).map(item => item.id)
     expect(ids.length).toBeGreaterThan(0)
-    expect(readLeanText(directory, "drafting-notes.md")).toBe(written)
-    // Delivery removes the markers and the ids the model kept in its prose.
-    expect(readLeanText(directory, "delivered-notes.md")).toBe(memo("The draft follows the supply terms.", "",
-      ...ids.map(() => "- The lawyer must resolve this before the draft is used.")))
+    expectCodeReferencesAndCleanDelivery(directory, "The lawyer must resolve this before the draft is used.")
     expect(stageOutputValid(directory, "finalize")).toBe(true)
   }, 120_000)
 })
@@ -402,15 +432,13 @@ describe("a recorded change id in a requested memo", () => {
     expect(readLeanText(plain, "drafting-notes.md")).toBe(notes)
   })
 
-  test("through the run, a memo that keeps naming a change id completes on its last attempt as the model wrote it", async () => {
-    const { directory, run, written } = await stubbornMemoRun(ids => ["The delivery clause now states the period (a1).", "",
-      ...ids.map(id => `- The lawyer must resolve this before the draft is used. [ref: ${id}]`)])
+  test("through the run, a change id in prose retries its own section and corrected prose survives assembly", async () => {
+    const { directory, run, model } = await correctedMemoRun(input => input.kind === "change" ? "The delivery clause now states the period (a1)." : undefined,
+      "The delivery clause now states the period.")
     expect(run.status).toBe("completed")
     expect(readChangeList(directory, "d1")?.amendments.map(row => row.id)).toEqual(["a1"])
-    expect(readLeanState(directory)?.stages.finalize?.attempts).toBe(LEAN_MAX_RETRIES + 1)
-    expect(readLeanText(directory, "drafting-notes.md")).toBe(written)
-    // Delivery removes the markers and the change id the model kept.
-    expect(readLeanText(directory, "delivered-notes.md")).toBe(memo("The delivery clause now states the period.", ""))
+    expectOnlySectionRetries(model)
+    expectCodeReferencesAndCleanDelivery(directory, "The delivery clause now states the period.")
   }, 120_000)
 })
 
@@ -510,21 +538,20 @@ describe("a planned document id in a requested memo", () => {
     expect(stageOutputValid(directory, "finalize")).toBe(true)
   })
 
-  test("through the run, a memo that keeps naming a document id completes on its last attempt as the model wrote it", async () => {
-    const { directory, run, written, model } = await stubbornMemoRun(ids => ["d1 now states the delivery period.", "",
-      ...ids.map(id => `- The lawyer must resolve this before the draft is used. [ref: ${id}]`)])
+  test("through the run, a document id retries only the affected section and an unchanged resume keeps its corrected prose", async () => {
+    const { directory, run, model } = await correctedMemoRun(input => input.kind === "document" ? "d1 now states the delivery period." : undefined,
+      "The Supply note now states the delivery period.")
     expect(run.status).toBe("completed")
-    expect(readLeanState(directory)?.stages.finalize?.attempts).toBe(LEAN_MAX_RETRIES + 1)
-    expect(readLeanText(directory, "drafting-notes.md")).toBe(written)
-    // Delivery names the document the model kept by its id by its title.
-    const delivered = memo("The Supply note now states the delivery period.", "")
-    expect(readLeanText(directory, "delivered-notes.md")).toBe(delivered)
-    expect(docxText(readFileSync(leanFile(directory, DELIVERED_NOTES.docx)))).toBe("Cover memo\nThe Supply note now states the delivery period.")
+    expectOnlySectionRetries(model)
+    expectCodeReferencesAndCleanDelivery(directory, "The Supply note now states the delivery period.")
+    const saved = readLeanText(directory, "drafting-notes.md")
+    const delivered = readLeanText(directory, DELIVERED_NOTES.markdown)
     // A resume keeps the saved memo: finalize is not asked again.
     const calls = model.count(AGENT.finalize)
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
     expect(model.count(AGENT.finalize)).toBe(calls)
-    expect(readLeanText(directory, "drafting-notes.md")).toBe(written)
+    expect(readLeanText(directory, "drafting-notes.md")).toBe(saved)
+    expect(readLeanText(directory, DELIVERED_NOTES.markdown)).toBe(delivered)
   }, 120_000)
 })
 
@@ -623,17 +650,13 @@ describe("without a requested memo", () => {
     expect(prompt).not.toContain("Name every open item by its exact id")
   })
 
-  /** A supply note run with no memo whose applied change leaves an open item;
-   * finalize first names it by its bare id and the document by its id, then
-   * as the contract asks. */
+  /** A supply note run with no memo whose applied change leaves an open item.
+   * Its document section first uses a bare id, then corrects its own prose. */
   async function notesRun() {
     const directory = matter()
-    let first = ""
-    const finalize: Reply = (prompt, index) => {
-      first ||= prompt
-      const written = draftingNotes(first, index)
-      return index ? written : `${written.replace(/^- (.*) \[ref: (\S+)\]$/gm, "- $2: $1")}\n\nThe supply note (d1) states the delivery period.`
-    }
+    const finalize = sectionReplies(directory, (input, attempt) => input.kind === "document" && !attempt
+      ? "The supply note (d1) states the delivery period."
+      : input.kind === "open-item" ? "The lawyer must resolve this before the draft is used." : "The supply note states the delivery period.")
     const model = scriptedModel({ ...happyPath, [AGENT.finalize]: finalize,
       [AGENT.changes]: sameSession(prompt => JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED),
         updated: "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen].", reason: "Drafting judgment.", sources: [] }], questions: [] })) })
@@ -644,7 +667,7 @@ describe("without a requested memo", () => {
   test("through the run, the delivered notes name no item or document id and the gate discloses every item", async () => {
     const { directory, run, model } = await notesRun()
     expect(run.status).toBe("completed")
-    expect(model.count(AGENT.finalize)).toBe(2)
+    expectOnlySectionRetries(model)
     const ids = disclosableItems(directory).map(item => item.id)
     expect(ids.length).toBeGreaterThan(0)
     expect(readLeanText(directory, "drafting-notes.md")).toContain(`[ref: ${ids[0]}]`)
@@ -661,36 +684,34 @@ describe("without a requested memo", () => {
     }
   }, 120_000)
 
-  test("through the run, notes that keep bare ids on their last attempt are delivered with none", async () => {
-    const { directory, run, written } = await stubbornMemoRun(ids => ["The supply note (d1) now states the delivery period (a1).", "",
-      ...ids.map(id => `- ${id}: The lawyer must resolve this before the draft is used.`)], {
+  test("through the run, bare ids retry their section and no ids reach the delivered notes", async () => {
+    const { directory, run, model } = await correctedMemoRun(input => input.kind === "open-item"
+      ? `${input.refs[0]}: The lawyer must resolve this before the draft is used.`
+      : input.kind === "document" ? "The supply note (d1) now states the delivery period (a1)." : undefined,
+    "The supply note now states the delivery period.", {
       [AGENT.changes]: sameSession(prompt => JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED),
         updated: "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen].", reason: "Drafting judgment.", sources: [] }], questions: [] })),
     }, false)
     expect(run.status).toBe("completed")
-    expect(readLeanState(directory)?.stages.finalize?.attempts).toBe(LEAN_MAX_RETRIES + 1)
+    expectOnlySectionRetries(model)
     const ids = disclosableItems(directory).map(item => item.id)
     expect(ids.length).toBeGreaterThan(0)
-    expect(readLeanText(directory, "drafting-notes.md")).toBe(written)
+    expectCodeReferencesAndCleanDelivery(directory, "The lawyer must resolve this before the draft is used.")
     expect((readLeanJson(directory, "gate.json") as GateResult).disclosed.map(item => item.id).toSorted()).toEqual(ids.toSorted())
-    const delivered = memo("The supply note now states the delivery period.", "", ...ids.map(() => "- The lawyer must resolve this before the draft is used."))
-    expect(readLeanText(directory, DELIVERED_NOTES.markdown)).toBe(delivered)
-    expect(docxText(readFileSync(leanFile(directory, DELIVERED_NOTES.docx)))).toBe(delivered.trim().replace(/^# /, "").replace(/\n+(?:- )?/g, "\n"))
+    expectCodeReferencesAndCleanDelivery(directory, "The supply note now states the delivery period.")
   }, 120_000)
 
   test("through the run, notes made only of markers are retried, and the gate's delivered notes are written and kept on resume", async () => {
     const directory = matter()
-    let first = ""
-    const finalize: Reply = (prompt, index) => {
-      first ||= prompt
-      const written = draftingNotes(first, index)
-      return index ? written : written.replace(/^# .*$/m, "# [ref: notes]").replace(/^- .* (\[ref: \S+\])$/gm, "$1")
-    }
+    const finalize = sectionReplies(directory, (input, attempt) => input.kind === "open-item" && !attempt
+      ? `[ref: ${input.refs[0]}]`
+      : input.kind === "open-item" ? "The lawyer must resolve this before the draft is used." : "The supply note states the delivery period.")
     const model = scriptedModel({ ...happyPath, [AGENT.finalize]: finalize,
       [AGENT.changes]: sameSession(prompt => JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED),
         updated: "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen].", reason: "Drafting judgment.", sources: [] }], questions: [] })) })
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
-    expect(model.count(AGENT.finalize)).toBe(2)
+    expectOnlySectionRetries(model)
+    expectCodeReferencesAndCleanDelivery(directory, "The lawyer must resolve this before the draft is used.")
     expect(readLeanText(directory, DELIVERED_NOTES.markdown)).toContain("The lawyer must resolve this before the draft is used.")
     expect(existsSync(leanFile(directory, DELIVERED_NOTES.docx))).toBe(true)
     expect(stageOutputValid(directory, "gate")).toBe(true)
@@ -699,15 +720,13 @@ describe("without a requested memo", () => {
     expect(model.count(AGENT.finalize)).toBe(calls)
   }, 120_000)
 
-  /** A supply note run with no memo whose finalize model heads the notes with
-   * only a marker on every attempt: they are saved on the last. */
+  /** The model supplies section prose, while the notes title belongs to code.
+   * A heading-only section still needs an explanation and retries locally. */
   async function headlessRun() {
     const directory = matter()
-    let first = ""
-    const finalize: Reply = (prompt, index) => {
-      first ||= prompt
-      return draftingNotes(first, index).replace(/^# .*$/m, "# [ref: notes]")
-    }
+    const finalize = sectionReplies(directory, (input, attempt) => input.kind === "package" && !attempt
+      ? "# Only a heading"
+      : input.kind === "open-item" ? "The lawyer must resolve this before the draft is used." : "The draft states the delivery period.")
     const model = scriptedModel({ ...happyPath, [AGENT.finalize]: finalize,
       [AGENT.changes]: sameSession(prompt => JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED),
         updated: "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen].", reason: "Drafting judgment.", sources: [] }], questions: [] })) })
@@ -715,20 +734,20 @@ describe("without a requested memo", () => {
     return { directory, run, model }
   }
 
-  test("through the run, notes whose only heading is a marker on every attempt are saved on the last and delivered under a plain title", async () => {
+  test("through the run, a heading-only section retries locally and the delivered notes keep code's plain title", async () => {
     const { directory, run, model } = await headlessRun()
     expect(run.status).toBe("completed")
-    expect(model.count(AGENT.finalize)).toBe(LEAN_MAX_RETRIES + 1)
+    expectOnlySectionRetries(model)
     const saved = readLeanText(directory, "drafting-notes.md")!
-    expect(saved).toStartWith("# [ref: notes]\n")
-    const delivered = `# Drafting notes\n\n${withoutRefMarkers(saved).replace(/^(?:[ \t]*\n)+/, "")}`
-    expect(delivered).toContain("The lawyer must resolve this before the draft is used.")
-    expect(readLeanText(directory, DELIVERED_NOTES.markdown)).toBe(delivered)
-    expect(docxText(readFileSync(leanFile(directory, DELIVERED_NOTES.docx)))).toStartWith("Drafting notes\nThe draft states the delivery period")
+    expect(saved).toStartWith("# Drafting notes\n")
+    expect(saved).not.toContain("Only a heading")
+    expectCodeReferencesAndCleanDelivery(directory, "The lawyer must resolve this before the draft is used.")
+    expect(readLeanText(directory, DELIVERED_NOTES.markdown)).toStartWith("# Drafting notes\n")
+    expect(docxText(readFileSync(leanFile(directory, DELIVERED_NOTES.docx)))).toStartWith("Drafting notes\n")
     expect(stageOutputValid(directory, "gate")).toBe(true)
   }, 120_000)
 
-  test("a resume keeps notes saved on their last attempt without a heading of their own, and their delivered notes", async () => {
+  test("a resume keeps the accepted section prose, code title and delivered notes without added calls", async () => {
     const { directory, model } = await headlessRun()
     const saved = readLeanText(directory, "drafting-notes.md")
     const delivered = readLeanText(directory, DELIVERED_NOTES.markdown)

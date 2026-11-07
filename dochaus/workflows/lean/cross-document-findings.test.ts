@@ -52,9 +52,12 @@ describe("cross-document review findings", () => {
     const model = scriptedModel({ ...happyPath, [AGENT.draft]: drafter(DRAFT, LETTER), [AGENT.review]: reviews(), [AGENT.changes]: changesFirst })
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
-    const finalize = model.prompts.find(prompt => prompt.agent === AGENT.finalize)!.text
-    expect(/<document id="d1"[\s\S]*?<\/document>/.exec(finalize)![0]).toContain(BACKWARD)
-    expect((readLeanJson(directory, "gate.json") as GateResult).items.some(item => item.ref.document === "d1" && item.status === "disclosed" && item.detail.includes(BACKWARD))).toBe(true)
+    const finalize = model.prompts.find(prompt => prompt.agent === AGENT.finalize && prompt.text.includes("<open_point>") && prompt.text.includes(BACKWARD))!.text
+    expect(JSON.parse(/<open_point>\n([\s\S]*?)\n<\/open_point>/.exec(finalize)![1]!).location.document).toBe("d1")
+    expect(JSON.parse(/<document>\n([\s\S]*?)\n<\/document>/.exec(finalize)![1]!).title).toBe("Supply note")
+    const finding = (readLeanJson(directory, "gate.json") as GateResult).items.find(item => item.ref.document === "d1" && item.status === "disclosed" && item.detail.includes(BACKWARD))!
+    expect(finding).toBeDefined()
+    expect(readLeanText(directory, "drafting-notes.md")!.split(`[ref: ${finding.id}]`)).toHaveLength(2)
   }, 120_000)
 
   test("a finding for the accompanying memo reaches the notes", async () => {
@@ -65,8 +68,12 @@ describe("cross-document review findings", () => {
     const model = scriptedModel({ ...happyPath, [AGENT.draft]: outline, [AGENT.review]: reviews(true), [AGENT.changes]: changesFirst })
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
-    expect(model.prompts.find(prompt => prompt.agent === AGENT.finalize)!.text).toContain(MEMO)
-    expect((readLeanJson(directory, "gate.json") as GateResult).items.some(item => item.status === "disclosed" && item.detail.includes(MEMO))).toBe(true)
+    const finalize = model.prompts.find(prompt => prompt.agent === AGENT.finalize && prompt.text.includes("<open_point>") && prompt.text.includes(MEMO))!.text
+    expect(JSON.parse(/<open_point>\n([\s\S]*?)\n<\/open_point>/.exec(finalize)![1]!).location.document).toBeUndefined()
+    const finding = (readLeanJson(directory, "gate.json") as GateResult).items.find(item => item.status === "disclosed" && item.detail.includes(MEMO))!
+    expect(finding).toBeDefined()
+    expect(finding.ref.document).toBeUndefined()
+    expect(readLeanText(directory, "drafting-notes.md")!.split(`[ref: ${finding.id}]`)).toHaveLength(2)
   }, 120_000)
 
   test("the register lists every review finding with its document, origin, basis and disposition", async () => {

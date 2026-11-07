@@ -171,7 +171,7 @@ test("the drafting notes' input gives each delegated question its attribution an
   const decided = (id: string, how: string) => [
     `- [${id}] Q: ${QUESTION}`,
     `  ${how}`,
-    `  Decision taken, for the lawyer to confirm: ${RECOMMENDED}`,
+    `  Decision taken under the delegated judgment: ${RECOMMENDED}`,
     `  Reason: ${RATIONALE}`,
     `  Evidence: "within thirty days of the order date" [source: ${SOURCE}]`,
     `  Alternative not taken: ${OTHER}`,
@@ -287,10 +287,11 @@ test("a question delegated in the lawyer's own words runs through the queue as a
   for (const prompt of prompts.filter(prompt => prompt.agent !== AGENT.answer && prompt.agent !== AGENT.finalize))
     expect([prompt.agent, prompt.text.includes(DELEGATION)]).toEqual([prompt.agent, false])
   // Disclosed: the notes are given the decision with its attribution, reason and evidence, and list it.
-  const notesPrompt = prompts.findLast(prompt => prompt.agent === AGENT.finalize)!.text
-  expect(notesPrompt).toContain(`<delegated_decisions>\n- [${id}] Q: ${QUESTION}\n  Delegated by the lawyer, in their words: "${DELEGATION}"\n  Decision taken, for the lawyer to confirm: ${RECOMMENDED}\n  Reason: ${RATIONALE}`)
-  // The notes' list of questions points to that section rather than calling it answered.
-  expect(notesPrompt).toContain(`- (delegated; see delegated_decisions) ${QUESTION}\n`)
+  const notesPrompt = prompts.find(prompt => prompt.agent === AGENT.finalize && prompt.text.includes("<section_kind>\ndelegated\n"))!.text
+  expect(notesPrompt).toContain(`<decision>\nDelegated by the lawyer, in their words: "${DELEGATION}"\nDecision taken under the delegated judgment: ${RECOMMENDED}\nReason: ${RATIONALE}`)
+  // The focused job receives the actual choice and attribution; code owns its id.
+  expect(notesPrompt).toContain(`<question>\n${QUESTION}\n`)
+  expect(notesPrompt).not.toContain(id)
   expect(notesPrompt).not.toContain(`Answer: ${RECOMMENDED}`)
   expect(readLeanJson(directory, "state.json")).toMatchObject({ status: "completed" })
   const notes = readLeanJson(directory, "gate.json") as GateResult

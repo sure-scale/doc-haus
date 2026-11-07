@@ -67,7 +67,13 @@ function model(directory: string, status: "satisfied" | "open" | "unsatisfied" |
       return JSON.stringify({ status: correction ? "changes-required" : "pass", delivery: [], findings: correction ? [{ target: "memo", detail: "Explain the delivery period accurately." }] : [], limitations: [] })
     } } : {}),
     // A notes repair adds a paragraph addressing the supplied assessment.
-    ...(options.notes ? { [AGENT.finalize]: (text: string, index: number) => `${draftingNotes(text, index)}${text.includes("drafting notes against actual sources") ? "\n\nThe notes now address the assessed requirement." : ""}` } : {}),
+    ...(options.notes ? { [AGENT.finalize]: (text: string, index: number) => {
+      const reply = draftingNotes(text, index)
+      // Linking is a separate JSON decision; only the selected prose section
+      // adds its substantive correction to the explanation.
+      if (text.includes("This is a separate repair-link job")) return reply
+      return `${reply}${text.includes("<required_repairs>") && text.includes("drafting notes against actual sources") ? "\n\nThe notes now address the assessed requirement." : ""}`
+    } } : {}),
     ...(options.review ? { [AGENT["change-review"]]: (text: string) => {
       const correction = !reviewed && Boolean(readRepairRound(directory)?.items.some(item => item.stage === "checklist-check"))
       reviewed ||= correction
@@ -352,14 +358,18 @@ test("an omission in the drafting notes gets its one repair from the notes write
   // The notes are written again with the assessment as a required repair; the
   // body's stages and the body adjudicator do not run again.
   const notes = scripted.prompts.filter(row => row.agent === AGENT.finalize)
-  expect(notes).toHaveLength(2)
-  expect(notes[0]!.text).not.toContain(id)
-  expect(notes[1]!.text.split("<required_repairs>")[1]!.split("</required_repairs>")[0]).toContain(id)
+  const repaired = notes.filter(row => row.text.includes("<section_kind>") && row.text.includes("<required_repairs>"))
+  const links = notes.filter(row => row.text.includes("This is a separate repair-link job"))
+  expect(links).toHaveLength(1)
+  expect(repaired).toHaveLength(1)
+  expect(repaired[0]!.text).toContain("<section_kind>\npackage\n")
+  expect(repaired[0]!.text.split("<required_repairs>")[1]!.split("</required_repairs>")[0]).toContain(id)
+  expect(notes.filter(row => row.text.includes("<section_kind>") && !row.text.includes("<required_repairs>")).every(row => !row.text.includes(id))).toBe(true)
   expect(readFileSync(leanFile(directory, "drafting-notes.md"), "utf8")).toContain("The notes now address the assessed requirement.")
   const clean = matter(), baseline = model(clean, "satisfied", {}, { notes: true })
   expect((await runLean(clean, { sessions: baseline.port })).status).toBe("completed")
-  const [draft, review, changes, finalize] = baseline.counts()
-  expect(scripted.counts()).toEqual([draft, review, changes, finalize! + 1])
+  expect(scripted.counts().slice(0, 3)).toEqual(baseline.counts().slice(0, 3))
+  expect(notes.filter(row => row.text.includes("<section_kind>") && !row.text.includes("<required_repairs>"))).toHaveLength(baseline.count(AGENT.finalize))
   expect(focusedRepairs(scripted)).toBe(0)
   expect(scripted.count(CHECKLIST_JOB_AGENTS.check)).toBe(2)
   expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
@@ -374,8 +384,9 @@ test("a later notes finding of the package review keeps the checklist notes repa
   expect(readRepairRound(directory)).toMatchObject({ round: 1, substantive_attempts: 2, checklist_items: [id],
     items: [{ stage: "checklist-check", ref: { repair_target: "memo" } }, { stage: "package-review", ref: { repair_target: "memo" } }] })
   const notes = scripted.prompts.filter(row => row.agent === AGENT.finalize)
-  expect(notes).toHaveLength(3)
-  const required = notes[2]!.text.split("<required_repairs>")[1]!.split("</required_repairs>")[0]
+  const repaired = notes.filter(row => row.text.includes("<section_kind>") && row.text.includes("<required_repairs>"))
+  expect(repaired).toHaveLength(2)
+  const required = repaired.at(-1)!.text.split("<required_repairs>")[1]!.split("</required_repairs>")[0]
   expect(required).toContain(id)
   expect(required).toContain("Explain the delivery period accurately.")
 }, 120000)
@@ -426,7 +437,10 @@ test("unresolved findings lead the delivered notes, registered under the notes' 
   const docx = readFileSync(leanFile(directory, "delivered-notes.docx"))
   const text = readDocxCommentParagraphs(docx).map(row => row.paragraph_text)
   const at = (needle: string) => text.findIndex(line => line.includes(needle))
-  expect(requirements.map(at).every(index => index >= 0 && index < at("The draft states the delivery period from the supply terms."))).toBe(true)
+  const notesProse = draftingNotes("<section_kind>", 0)
+  expect(notes).toContain(notesProse)
+  expect(at(notesProse)).toBeGreaterThanOrEqual(0)
+  expect(requirements.map(at).every(index => index >= 0 && index < at(notesProse))).toBe(true)
   expect(notesRows(directory)).toEqual([["drafting_notes", ".dochaus/lean/delivered-notes.docx", NOTES_NAME], ["drafting_notes_markdown", ".dochaus/lean/delivered-notes.md", null]])
   expect(readFileSync(path.join(directory, NOTES_NAME))).toEqual(docx)
   expect(run.prompts.find(row => row.agent === AGENT["package-review"])!.text).toContain('a "Disclosed, not satisfied" line is an unresolved finding')
@@ -1116,9 +1130,12 @@ test("a source-backed omission is repaired automatically through cumulative chan
 async function declinedRepairRun(reinspected: "unsatisfied" | "open" = "unsatisfied") {
   const directory = matter()
   const checks: string[] = []
-  const outputs = () => ["d1/redline.docx", "d1/body-applied.docx", "drafting-notes.docx"].map(file => readFileSync(leanFile(directory, file)))
+  const outputs = () => ["d1/redline.docx", "d1/body-applied.docx"].map(file => readFileSync(leanFile(directory, file)))
   const initial: { delivered?: ReturnType<typeof outputs>; applied?: string } = {}
   const scripted = scriptedModel({ ...happyPath,
+    [AGENT.finalize]: (text, index) => text.includes("<section_kind>\ndisposition\n") && text.includes("DECLINED_REASON")
+      ? "The supplied terms already state the delivery period, so the proposed timing change was not made."
+      : draftingNotes(text, index),
     [AGENT["change-plan"]]: text => {
       const focused = text.includes("ONE supplied checklist assessment")
       if (focused) Object.assign(initial, { delivered: outputs(), applied: readLeanState(directory)!.stages["d1.apply"]!.started_at! })
@@ -1146,9 +1163,11 @@ async function declinedRepairRun(reinspected: "unsatisfied" | "open" = "unsatisf
   expect(focusedRepairs(scripted)).toBe(1)
   const round = readLeanJson(directory, "repairs.json")
   expect(round).toMatchObject({ round: 1, substantive_attempts: 1 })
-  // The declined repair applies nothing; re-applying and re-rendering the
-  // unchanged notes keep every Word output byte for byte.
+  // The declined repair applies nothing: the body and native comparison keep
+  // their bytes. Its newly explained disposition refreshes the notes once;
+  // the later unchanged-apply test compares that accepted notes file too.
   expect(outputs()).toEqual(initial.delivered!)
+  expect(readFileSync(leanFile(directory, "drafting-notes.md"), "utf8")).toContain("The supplied terms already state the delivery period, so the proposed timing change was not made.")
   expect(readLeanJson(directory, "d1/repair-adjudications.json")).toMatchObject({ assessments: [{ value: { groups: [], findings: [{ disposition: "rejected" }] } }] })
   expect(checks.some(text => text.includes("GENERATED, UNVERIFIED COUNTEREVIDENCE"))).toBe(false)
   return { directory, scripted, state, round, applied: initial.applied! }

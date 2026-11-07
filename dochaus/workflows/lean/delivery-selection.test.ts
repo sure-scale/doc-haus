@@ -381,9 +381,15 @@ test("grounded notes selection names the existing reviewed notes without reopeni
   expect(readFileSync(leanFile(directory, "d1/redline.docx")).toString("hex")).toEqual(comparison!)
   expect(model.count(AGENT.draft)).toBe(3)
   expect(model.count(AGENT.changes)).toBe(1)
-  expect(model.count(AGENT.finalize)).toBe(2)
+  expect(model.count(AGENT.finalize)).toBeGreaterThan(control.count(AGENT.finalize))
+  expect(model.prompts.some(prompt => prompt.agent === AGENT.finalize && prompt.text.includes('"planned_filename": "supply-advice.docx"'))).toBe(true)
   expect(model.count(AGENT["package-review"])).toBe(2)
   expect(readRepairRound(directory)?.substantive_attempts).toBe(1)
+  const calls = model.count(AGENT.finalize)
+  const notes = readLeanText(directory, "drafting-notes.md")
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(model.count(AGENT.finalize)).toBe(calls)
+  expect(readLeanText(directory, "drafting-notes.md")).toBe(notes)
 }, 120_000)
 
 

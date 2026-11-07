@@ -6,6 +6,8 @@ import { classifyAnswers, refreshFactAnswers } from "./answer-class"
 import { factOpenItems, waitingFactQuestions } from "./fact-answers"
 import { answersToReconcile, reconcileAnswers } from "./answer-reconcile"
 import { runFocusedChangeReview } from "./focused-change-review"
+import { runFocusedNotes } from "./focused-notes"
+import { reconcilePackageReaderItems } from "./reader-reconciliation"
 import { DRAFTING_STOPPED_REASON } from "../../lib/drafting-update-admission"
 import { PROVIDER_STOP_MESSAGES, providerStopKind, type ProviderStopKind } from "../../lib/provider-stop"
 import { existsSync, readFileSync, rmSync } from "node:fs"
@@ -578,6 +580,7 @@ function withholdReviewedChanges(directory: string, document: DocID, review: Cha
 async function reconcilePackageReview(directory: string, state: LeanState, deps: LeanDeps) {
   const review = readPackageReview(directory)
   if (!review) return
+  if (await reconcilePackageReaderItems(directory, state, deps, review)) return { state, restart: true }
   const plan = selectedDeliveryPlan(directory, review.delivery)
   const prior = readRepairRound(directory)
   const exhausted = (prior?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
@@ -776,6 +779,7 @@ function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDe
   if (stage === "checklist-check") return runChecklistStage(directory, state, deps, reinspectChecklist)
   if (stage === "acts") return runActRecordStage(directory, state, deps, progress)
   if (stage === "discrepancy") return runDiscrepancyStage(directory, state, deps, progress)
+  if (stage === "finalize") return runFocusedNotes(directory, state, deps, progress)
   // Focused repair amends the accepted plan. A review that re-ran since the plan
   // has findings only a full plan sees, and a saved plan that no longer checks
   // (research it cites was re-reviewed) is re-planned in full.

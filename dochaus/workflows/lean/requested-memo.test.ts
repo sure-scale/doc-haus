@@ -37,8 +37,12 @@ const memoDrafter = (line: string, planned = true): Reply => {
   const draft = planned ? drafter(DRAFT, COVER_MEMO) : drafter(DRAFT)
   return (prompt, index) => draft(prompt, index).replace("Acting for: not stated", `Acting for: not stated\n${line}`)
 }
-/** A memo naming every listed open item in a trailing ref marker. */
+/** Focused prose names the actual open point; code owns the memo title and
+ * references. Direct legacy prompt fixtures retain their full-note reply. */
 const memoReply: Reply = prompt => {
+  if (prompt.includes("<section_kind>")) return prompt.includes("<section_kind>\nopen-item\n")
+    ? "The condition standard is a drafting choice for the lawyer to confirm."
+    : "The supply terms set the delivery period, and the draft states it."
   const ids = [...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].flatMap(match => [...match[1]!.matchAll(/^- \[ref: (\S+)\]/gm)].map(row => row[1]!))
   return ["# Cover memo", "", "The supply terms set the delivery period, and the draft states it.", "",
     ...ids.map(id => `- The condition standard is a drafting choice for the lawyer to confirm. [ref: ${id}]`)].join("\n")
@@ -208,10 +212,14 @@ describe("a requested memo through the run", () => {
   test("a grounded Memo line names the notes at plan time, finalize writes the memo with ref markers, and the gate settles each id", async () => {
     const directory = matter()
     writeLeanText(directory, "request.md", REQUEST)
-    const first = { prompt: "" }
-    const notes: Reply = (prompt, index) => {
-      first.prompt ||= prompt
-      return index === 0 ? "# Cover memo\n\nThe draft follows the supply terms." : memoReply(first.prompt, index)
+    const first = new Map<string | undefined, string>()
+    const notes: Reply = (prompt, index, sessionID) => {
+      if (!first.has(sessionID)) {
+        first.set(sessionID, prompt)
+        if (prompt.includes("<section_kind>\nopen-item\n"))
+          return "The condition standard is a drafting choice for the lawyer to confirm. [ref: model-invented]"
+      }
+      return memoReply(first.get(sessionID)!, index)
     }
     // The memo document has no supply paragraph to review or change.
     const changes = sameSession((prompt, index) => listed(prompt, DELIVERY)
@@ -224,11 +232,23 @@ describe("a requested memo through the run", () => {
     expect(readLeanPlan(directory)?.documents.at(-1)).toMatchObject({ title: "Cover memo", form: "advice", executed_by: [] })
     expect(requestedMemo(directory)?.file).toBe("Supply note - cover memo.docx")
     const marker = readOpenItems(directory).find(item => item.kind === "placeholder" && item.stage === "apply")!
-    const [prompt, retry] = finalizePrompts(model)
-    expect(prompt).toContain(MEMO_OPENING)
-    expect(prompt).toContain(MARKER_RULE)
-    expect(retry).toContain(`do not mention these open items: ${marker.id}. Say what each is`)
-    expect(readLeanText(directory, "drafting-notes.md")).toContain(`[ref: ${marker.id}]`)
+    const prompts = finalizePrompts(model)
+    for (const prompt of prompts.filter(prompt => prompt.includes("<section_kind>"))) {
+      expect(prompt).toContain("<notes_role>\nThese sections form the requested accompanying memo, titled cover memo.")
+      expect(prompt).toContain(`<current_request>\n${REQUEST}`)
+      expect(prompt).not.toContain(MARKER_RULE)
+    }
+    const retry = model.prompts.find(prompt => prompt.agent === AGENT.finalize && prompt.text.includes("Correct only this section's errors"))!
+    expect(retry.text).toContain("The coordinator attaches its reference markers")
+    const sameSection = model.prompts.filter(prompt => prompt.agent === AGENT.finalize && prompt.sessionID === retry.sessionID)
+    expect(sameSection).toHaveLength(2)
+    expect(sameSection[0]!.text).toContain("<section_kind>\nopen-item\n")
+    expect(sameSection[0]!.text).not.toContain(marker.id)
+    const saved = readLeanText(directory, "drafting-notes.md")!
+    expect(saved).toStartWith("# cover memo\n")
+    expect(saved.split(`[ref: ${marker.id}]`)).toHaveLength(2)
+    expect(saved).toContain(`The condition standard is a drafting choice for the lawyer to confirm. [ref: ${marker.id}]`)
+    expect(saved).not.toContain("model-invented")
     expect(readLeanJson(directory, "gate.json") as GateResult).toMatchObject({ status: "pass", blocking: [] })
     expect((readLeanJson(directory, "gate.json") as GateResult).disclosed).toEqual([expect.objectContaining({ id: marker.id, status: "disclosed" })])
     expect(notesRow(directory)?.deliverable).toBe("Supply note - cover memo.docx")
@@ -277,8 +297,9 @@ describe("a requested memo through the run", () => {
     expect(readLeanPlan(directory)).not.toHaveProperty("memo_document")
     expect(readLeanPlan(directory)).not.toHaveProperty("memo")
     const [prompt] = finalizePrompts(model)
-    expect(prompt).toContain(NOTES_OPENING)
-    expect(prompt).toContain(MARKER_RULE)
+    expect(prompt).toContain("<notes_role>\nThese sections form the drafting notes for the lawyer accompanying the drafted documents.")
+    expect(prompt).not.toContain("These sections form the requested accompanying memo")
+    expect(readLeanText(directory, "drafting-notes.md")).toStartWith("# Drafting notes\n")
     expect(notesRow(directory)?.deliverable).toBe("Supply note - drafting notes.docx")
   }, 120_000)
 })

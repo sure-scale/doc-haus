@@ -3,12 +3,12 @@ import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { paragraphSha256 } from "../../lib/drafting-amendment"
 import { checkChanges } from "./change-checks"
-import { finalBodyItems, readChangeList, type ParagraphRow } from "./checks"
+import { finalBodyItems, finalBodyParagraphs, readChangeList, type ParagraphRow } from "./checks"
 import type { GateResult } from "./gate"
 import type { StepID } from "./plan"
 import { runLean } from "./runner"
 import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
-import { hashStageInputs, readLeanJson, readLeanState, readOpenItems, writeLeanState, writeQuestions } from "./state"
+import { hashStageInputs, readLeanJson, readLeanState, readLeanText, readOpenItems, writeLeanState, writeQuestions } from "./state"
 import { AGENT, SUPPORT, cleanupMatters, draftingNotes, happyPath, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // Amendments that rest on drafting judgment rather than a source passage. Real
@@ -35,6 +35,12 @@ const PARAGRAPHS = [row("p000000000001", DELIVERY), row("p000000000002", "Paymen
 const reply = (amendments: object[], questions: object[] = []) => JSON.stringify({ amendments, questions })
 const paragraph = (text: string) => [row(P1, text), PARAGRAPHS[1]!]
 const gateOf = (directory: string) => readLeanJson(directory, "gate.json") as GateResult
+const notesRecords = (model: ReturnType<typeof scriptedModel>, tag: string) => model.prompts
+  .filter(prompt => prompt.agent === AGENT.finalize)
+  .flatMap(prompt => {
+    const block = new RegExp(`<${tag}>\\n([\\s\\S]*?)\\n</${tag}>`).exec(prompt.text)?.[1]
+    return block ? [{ ...prompt, record: JSON.parse(block) }] : []
+  })
 
 describe("the changes checker admits unsourced judgment amendments only when marked", () => {
   test("empty sources with a visible confirm marker in the updated paragraph are accepted as they are", () => {
@@ -217,10 +223,16 @@ describe("on the last allowed attempt", () => {
     expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ applied: [{ id: "a1" }], unapplied: [] })
     expect(readChangeList(directory, "d1")?.withheld).toEqual([expect.objectContaining({ amendment: expect.objectContaining({ id: "a2" }) })])
     const item = readOpenItems(directory).find(row => row.kind === "unapplied_amendment")!
-    const finalize = model.prompts.find(prompt => prompt.agent === AGENT.finalize)!.text
-    expect(finalize).toContain("- a2 [")
-    expect(finalize).toContain("(withheld, not applied)")
-    expect(finalize).toContain(item.id)
+    const unapplied = notesRecords(model, "unapplied_change")
+    expect(unapplied).toHaveLength(1)
+    expect(unapplied[0]!.record).toMatchObject({ outcome: { reason: "withheld", issues: [expect.stringContaining("has no source passage")] },
+      proposal: { id: "a2", updated: "Payment is due within ten days of delivery.", reason: "Drafting judgment.", sources: [] } })
+    expect(unapplied[0]!.text).toContain("proposed change that was not made")
+    expect(notesRecords(model, "open_point").map(row => row.record)).toContainEqual({ kind: item.kind, detail: item.detail, location: item.ref })
+    expect(readLeanText(directory, "drafting-notes.md")!.split(`[ref: ${item.id}]`)).toHaveLength(2)
+    const final = finalBodyParagraphs(directory, "d1").map(row => row.text)
+    expect(final).toContain("Payment is due on delivery.")
+    expect(final).toContain("The supplier shall deliver the goods within thirty days of the order date.")
     expect(state.status).toBe("completed")
     expect(gateOf(directory)).toMatchObject({ status: "pass", delivery: "review_draft", disclosed: expect.arrayContaining([expect.objectContaining({ id: item.id })]) })
   }, 120_000)
@@ -274,8 +286,10 @@ describe("the request and the lawyer's answers are a quotable source", () => {
     const model = scriptedModel({ ...happyPath, [AGENT.changes]: changes })
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
     expect(model.prompts.find(prompt => prompt.agent === AGENT.changes)!.text).toContain('use the source name "request"')
-    const evidence = JSON.parse(/<applied_changes>\n([\s\S]*?)\n<\/applied_changes>/.exec(model.prompts.find(prompt => prompt.agent === AGENT.finalize)!.text)![1]!)
-    expect(evidence).toMatchObject([{ id: "a1", application_mode: "code", evidence_basis: "source-passages-provided", sources: BY_REQUEST("a short supply note") }])
+    const evidence = notesRecords(model, "change")
+    expect(evidence).toHaveLength(1)
+    expect(evidence[0]!.record).toMatchObject({ id: "a1", application_mode: "code", evidence_basis: "source-passages-provided", sources: BY_REQUEST("a short supply note") })
+    expect(evidence[0]!.text).toContain("application_mode says only how text was applied")
   }, 120_000)
 })
 
@@ -312,15 +326,21 @@ describe("a question whose marker only a withheld amendment carried", () => {
 })
 
 describe("a marked judgment amendment through the run", () => {
-  test("an unmarked one is retried with the issue; the marked retry is applied, its marker is disclosed, and the drafting notes must name it", async () => {
+  test("an unmarked one is retried; the marked amendment is applied, its open-point explanation retries alone and code discloses its marker", async () => {
     const directory = matter()
     const changes = sameSession((prompt, index) =>
       reply([{ pid: pidOf(prompt, DELIVERY), updated: index === 0 ? UNMARKED : JUDGED, reason: "Drafting judgment.", sources: [] }]))
-    // The retry does not repeat the open items, so the notes keep reading the first prompt.
-    const first = { prompt: "" }
-    const notes: Reply = (prompt, index) => {
-      first.prompt ||= prompt
-      return index === 0 ? "# Drafting notes\n\nThe draft follows the supply terms." : draftingNotes(first.prompt, index)
+    // A retry retains only its own assignment through the session, while
+    // the coordinator supplies references independently of the model's prose.
+    const first = new Map<string | undefined, string>()
+    const attempts = new Map<string | undefined, number>()
+    const notes: Reply = (prompt, index, sessionID) => {
+      if (!first.has(sessionID)) first.set(sessionID, prompt)
+      const assignment = first.get(sessionID)!
+      if (!assignment.includes("<open_point>")) return draftingNotes(assignment, index)
+      const attempt = attempts.get(sessionID) ?? 0
+      attempts.set(sessionID, attempt + 1)
+      return attempt === 0 ? "" : "The condition standard is a drafting judgment without a supporting source passage. The lawyer must confirm the chosen standard before use."
     }
     const model = scriptedModel({ ...happyPath, [AGENT.changes]: changes, [AGENT.finalize]: notes })
     const state = await runLean(directory, { sessions: model.port })
@@ -334,11 +354,18 @@ describe("a marked judgment amendment through the run", () => {
     const marker = readOpenItems(directory).find(item => item.kind === "placeholder" && item.stage === "apply")!
     expect(marker.ref).toMatchObject({ placeholder: "[open item: confirm the condition standard chosen]", document: "d1" })
     const finalize = model.prompts.filter(prompt => prompt.agent === AGENT.finalize)
-    expect(finalize).toHaveLength(2)
-    expect(finalize[0]!.text).toContain(marker.id)
-    const evidence = JSON.parse(/<applied_changes>\n([\s\S]*?)\n<\/applied_changes>/.exec(finalize[0]!.text)![1]!)
-    expect(evidence).toMatchObject([{ id: "a1", application_mode: "code", evidence_basis: "no-source-passage", reason: "Drafting judgment.", sources: [] }])
-    expect(finalize[1]!.text).toContain(`The drafting notes do not mention these open items: ${marker.id}.`)
+    const openPoints = notesRecords(model, "open_point")
+    expect(openPoints).toHaveLength(1)
+    expect(openPoints[0]!.record).toEqual({ kind: marker.kind, detail: marker.detail, location: marker.ref })
+    const retried = finalize.filter(prompt => prompt.sessionID === openPoints[0]!.sessionID)
+    expect(retried).toHaveLength(2)
+    expect(retried[1]!.text).toContain("This notes section is empty")
+    const neighbors = finalize.filter(prompt => prompt.sessionID !== openPoints[0]!.sessionID)
+    expect(new Set(neighbors.map(prompt => prompt.sessionID)).size).toBe(neighbors.length)
+    const evidence = notesRecords(model, "change")
+    expect(evidence).toHaveLength(1)
+    expect(evidence[0]!.record).toMatchObject({ id: "a1", application_mode: "code", evidence_basis: "no-source-passage", reason: "Drafting judgment.", sources: [] })
+    expect(readLeanText(directory, "drafting-notes.md")!.split(`[ref: ${marker.id}]`)).toHaveLength(2)
 
     expect(state.status).toBe("completed")
     const gate = gateOf(directory)

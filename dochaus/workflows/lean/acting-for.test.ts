@@ -9,7 +9,7 @@ import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES, LEAN_PROMPT_VERSION, stageInputs } from "./stages"
 import { checkIntakeActingFor, intakeActingFor } from "./intake"
 import { researchPrompt } from "./research"
-import { hashStageInputs, readLeanJson, writeLeanText, type OpenItem } from "./state"
+import { hashStageInputs, readLeanJson, readLeanText, writeLeanText, type OpenItem } from "./state"
 import { AGENT, DRAFT, SOURCE, cleanupMatters, drafter, happyPath, matter, scriptedModel, type Reply } from "./test-support"
 
 // Whom the lawyer acts for: read once by the outline, kept in the plan, shown to
@@ -325,7 +325,14 @@ describe("a side taken from the sources", () => {
     const items = (readLeanJson(directory, "gate.json") as { items: OpenItem[] }).items.filter(item => item.kind === "drafted_default")
     expect(items).toHaveLength(1)
     expect(items[0]).toMatchObject({ status: "disclosed", detail: expect.stringContaining("drafted for Kestrel Works") })
-    expect(promptsOf(model, AGENT.finalize)[0]).toContain(items[0]!.id)
+    const owningNotes = promptsOf(model, AGENT.finalize).filter(prompt => {
+      const point = /<open_point>\n([\s\S]*?)\n<\/open_point>/.exec(prompt)?.[1]
+      return point && JSON.parse(point).kind === "drafted_default"
+        && JSON.parse(point).detail.startsWith("The documents are drafted for Kestrel Works,")
+    })
+    expect(owningNotes).toHaveLength(1)
+    expect(owningNotes[0]).not.toContain(items[0]!.id)
+    expect(readLeanText(directory, "drafting-notes.md")!.split(`[ref: ${items[0]!.id}]`)).toHaveLength(2)
   }, 120_000)
 
   test("the client recorded on the matter prevails over a side taken from the sources", async () => {

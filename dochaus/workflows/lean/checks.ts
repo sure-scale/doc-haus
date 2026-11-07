@@ -139,7 +139,7 @@ export function settleApply(changes: ChangeList, result: ApplyResult | undefined
  * heading once delivery has removed their markers and ids (notesForReader);
  * notes saved without one are delivered under a plain title (deliveredNotes),
  * so they are never delivered empty. */
-export function checkDraftingNotes(directory: string, content: string, items: OpenItem[], options: { final?: boolean } = {}): StageCheck {
+export function checkDraftingNotes(directory: string, content: string, items: OpenItem[], options: { final?: boolean; delegatedIDs?: readonly string[] } = {}): StageCheck {
   const shape = documentShapeIssues(content, "drafting notes")
   if (shape.length) return { issues: shape, openItems: [] }
   if (!options.final && !/^#{1,6}[ \t]+\S/m.test(notesForReader(directory, content, items)))
@@ -153,7 +153,9 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   const shortened = undisclosed.filter(id => id.includes(":") && markers.some(marker => standingID(id.slice(id.lastIndexOf(":") + 1)).test(marker)))
   // Each delegated question is listed (delegatedDecisionsText); on the last
   // attempt notes that miss one are saved as written.
-  const unlisted = options.final ? [] : delegatedQuestions(directory).map(question => question.id).filter(id => !markers.some(marker => standingID(id).test(marker)))
+  // A focused notes section checks only its assigned delegated question. The
+  // assembled notes use the default and must still disclose every question.
+  const unlisted = options.final ? [] : (options.delegatedIDs ?? delegatedQuestions(directory).map(question => question.id)).filter(id => !markers.some(marker => standingID(id).test(marker)))
   const delivered = withoutRefMarkers(content)
   const ids = !options.final
   const stray = ids ? runItemIDs(directory, items).filter(id => readerVisibleID(id) && standingID(id).test(delivered)) : []

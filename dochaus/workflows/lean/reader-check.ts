@@ -33,13 +33,15 @@ import { sourceText } from "./template-structure"
 // are open items of kind "reader": in the draft, required repairs for the
 // change cycle (repairs.ts), which rewrites the sentence for the reader and
 // moves the point for the lawyer to a visible marker or the drafting notes; at
-// apply, the parts the changes amended are checked again in the final body, a
-// draft hit in a part the changes left alone is carried over while its
-// sentence stands, and a hit left in the final body is disclosed by the
+// apply, every current part uses the current prompt's content key, so unchanged
+// parts reuse their result and an old audience contract cannot carry stale
+// hits forward. A hit left in the final body is disclosed by the
 // drafting notes or holds delivery (gate.ts). The check never fails a draft: a
 // reply that never passes keeps its verified hits on the last attempt.
 
 export const LEAN_READER_CHECK_SCHEMA = "dochaus.lean.reader-check/1"
+/** Recheck current body parts when the reader's audience contract changes. */
+export const READER_CHECK_CONTRACT = "dochaus.lean.reader-check/audiences-1"
 
 /** The job reads only the part it is shown, so neither it nor its session may call a tool. */
 export const READER_CHECK_PERMISSIONS: PermissionRule[] = [{ action: "*", resource: "*", effect: "deny" }]
@@ -60,21 +62,30 @@ const READER: Record<DocumentForm, string> = {
   other: "the person it is addressed to, or the parties who sign it",
 }
 
-const SHAPE = 'Reply with the JSON object only: {"hits":[{"pid":"<paragraph id>","sentence":"<the sentence, word for word>","addressed_to":"<whom it speaks to>","keep":"<what it tells the reader, to keep>"}]}; {"hits":[]} when every sentence is for the reader.'
+const SHAPE = 'Reply with the JSON object only: {"hits":[{"pid":"<paragraph id>","sentence":"<the operative sentence or contiguous passage, word for word>","addressed_to":"<whom it speaks to>","keep":"<what it tells the reader, to keep>"}]}; {"hits":[]} when there are no wrong-audience operative passages.'
 
 const QUESTION = [
-  "Is each sentence of this part addressed to the document's reader, and still true and sensible on the day the document is sent or signed?",
+  "Read the two audiences separately: operative prose speaks to the document's reader; visible markers carry instructions or missing inputs for the lawyer.",
+  "Is each operative sentence addressed to the document's reader, and still true and sensible on the day the document is sent or signed?",
   "A sentence written for the lawyer instead (what to verify, how to serve or send the document, how to handle evidence, that this is a draft, a working assumption) is a hit.",
-  "Quote each hit's sentence word for word from its paragraph, say whom it speaks to, and say what it tells the reader that a rewrite keeps.",
+  "Read each lawyer instruction in its internal role. An instruction to confirm a missing input belongs to that audience and is not itself a reader hit; recognising its audience does not resolve its factual gap or approve release.",
+  "A marker does not shelter adjacent prose: check every operative passage, including prose sharing a sentence or paragraph with a marker. Do not flag recipient-facing prose merely because a neighbouring marker asks the lawyer to act before sending.",
+  "The part is the canonical text. Where a paragraph has markers, operative_prose and lawyer_instructions separate its exact contiguous passages by audience. Do not join passages across a marker or include a marker in a hit.",
+  "Quote only the actual wrong-audience operative sentence or contiguous passage, word for word from its paragraph; say whom it speaks to and what it tells the reader that a rewrite keeps.",
 ].join("\n")
 
 /** One part's reader job: the document, the lines code prints on its pages, the part's paragraphs, the question and the output contract. */
 export function readerCheckPrompt(plan: PlannedDocument, actingFor: string, rows: ParagraphRow[], furniture: string[]) {
   const form = plan.form ?? "other"
+  const split = rows.map(row => ({ pid: row.pid, ...readerAudiences(row.text) })).filter(row => row.instructions.length)
   return [
     tagged("document", JSON.stringify({ form, title: plan.title, purpose: plan.purpose, acting_for: actingFor || "not stated", reader: READER[form] }, null, 2)),
     ...(furniture.length ? [tagged("furniture", `Lines code prints on every page from the firm's settings:\n${furniture.join("\n")}`)] : []),
     tagged("part", rows.map(row => `[${row.pid}] ${row.text}`).join("\n\n")),
+    ...(split.length ? [
+      tagged("operative_prose", JSON.stringify(split.map(row => ({ pid: row.pid, passages: row.operative })), null, 2)),
+      tagged("lawyer_instructions", JSON.stringify(split.map(row => ({ pid: row.pid, passages: row.instructions })), null, 2)),
+    ] : []),
     tagged("question", QUESTION),
     tagged("output_contract", SHAPE),
   ].join("\n\n")
@@ -114,22 +125,59 @@ export function parseReaderHits(reply: string, rows: ParagraphRow[], kept: strin
     }
     const key = `${hit.pid}\0${sentence.toLowerCase()}`
     if (seen.has(key) || silent(text, sentence) || kept.some(block => flat(block).includes(flat(sentence)))) return
+    const normalized = normalize(text)
+    const markers = markerSpans(normalized)
+    if (!occurrences(normalized, sentence).some(([from, to]) => !markers.some(([start, end]) => from < end && start < to))) {
+      issues.push(`${at} ([${hit.pid}]): the sentence crosses a lawyer-instruction marker. Quote only the wrong-audience operative words, as one contiguous passage of the original paragraph; do not join words across a marker.`)
+      return
+    }
     seen.add(key)
     verified.push({ pid: hit.pid, sentence: hit.sentence.trim(), addressed_to: hit.addressed_to.trim(), keep: hit.keep.trim() })
   })
   return issues.length && !final ? { issues } : { issues, value: verified }
 }
 
-/** Markers, placeholders, instruction comments and quoted words carry no sentence of the text's own. */
-const SILENT = [OPEN_ITEM_PATTERN, PLACEHOLDER_PATTERN, INSTRUCTION_COMMENT_PATTERN, /"[^"\n]*"/g]
+type Span = readonly [from: number, to: number]
+const MARKERS = [OPEN_ITEM_PATTERN, PLACEHOLDER_PATTERN, INSTRUCTION_COMMENT_PATTERN]
+
+/** Merge overlapping marker matches before separating the two audiences. */
+function markerSpans(text: string): Span[] {
+  const spans = MARKERS.flatMap(pattern => [...text.matchAll(new RegExp(pattern.source, pattern.flags))]
+    .map(match => [match.index, match.index + match[0].length] as Span)).toSorted(([a], [b]) => a - b)
+  return spans.reduce<Span[]>((merged, span) => {
+    const previous = merged.at(-1)
+    if (previous && span[0] <= previous[1]) merged[merged.length - 1] = [previous[0], Math.max(previous[1], span[1])]
+    else merged.push(span)
+    return merged
+  }, [])
+}
+
+/** Exact contiguous passages keep a direct mapping to the original paragraph. */
+function readerAudiences(text: string) {
+  const operative: string[] = [], instructions: string[] = []
+  let at = 0
+  for (const [from, to] of markerSpans(text)) {
+    const passage = text.slice(at, from).trim()
+    if (passage) operative.push(passage)
+    instructions.push(text.slice(from, to))
+    at = to
+  }
+  const tail = text.slice(at).trim()
+  if (tail) operative.push(tail)
+  return { operative, instructions }
+}
+
+function occurrences(text: string, sentence: string): Span[] {
+  return [...text.matchAll(new RegExp(sentence.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))]
+    .map(match => [match.index, match.index + match[0].length])
+}
 
 /** Whether every occurrence of `sentence` in the paragraph sits inside a silent span. */
 function silent(text: string, sentence: string) {
   const normalized = normalize(text)
-  const spans = SILENT.flatMap(pattern => [...normalized.matchAll(new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`))]
-    .map(match => [match.index, match.index + match[0].length] as const))
-  const found = [...normalized.matchAll(new RegExp(sentence.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))]
-  return found.every(match => spans.some(([from, to]) => from <= match.index && match.index + match[0].length <= to))
+  const quotes = [...normalized.matchAll(/"[^"\n]*"/g)].map(match => [match.index, match.index + match[0].length] as Span)
+  const spans = [...markerSpans(normalized), ...quotes]
+  return occurrences(normalized, sentence).every(([from, to]) => spans.some(([start, end]) => start <= from && to <= end))
 }
 
 /** Lowercased words between single spaces, so a sentence matches whole words. */
@@ -215,14 +263,14 @@ function revisedOriginal(directory: string, plan: PlannedDocument) {
   return source && matterSourceIDs(directory).includes(source) ? sourceText(directory, source) : ""
 }
 
-/** The apply step's reader items: the parts the changes amended (`amended`,
- * the paragraphs the applied changes wrote), checked again in the final body
- * in jobs of their own, and the draft's hits in the other parts carried over
- * while their sentences stand. Without a session port nothing is asked. */
+/** The apply step checks every current part under the current prompt contract;
+ * unchanged parts reuse its content-keyed result. Without a session port, only
+ * standing draft hits in parts the changes left alone can be carried. */
 export async function applyReaderItems(directory: string, state: LeanState, document: DocID, final: ParagraphRow[], amended: Set<string>, deps?: Pick<LeanDeps, "sessions">): Promise<OpenItem[]> {
   const plan = plannedDocument(directory, document)
   if (!plan) return []
   const parts = readerParts(plan, readParagraphs(directory, document), final)
+  if (deps) return readerItems("apply", document, await checkReaderParts(directory, document, parts, readerAsk(directory, state, deps, document)))
   const changed = parts.filter(({ rows }) => rows.some(row => amended.has(row.pid)))
   const rechecked = new Set(changed.flatMap(({ rows }) => rows.map(row => row.pid)))
   const texts = new Map(final.map(row => [row.pid, normalize(row.text)]))
@@ -230,8 +278,7 @@ export async function applyReaderItems(directory: string, state: LeanState, docu
     .filter(item => item.stage === "draft" && item.kind === "reader" && (item.ref.document ?? FIRST_DOCUMENT) === document
       && item.ref.pid && !rechecked.has(item.ref.pid) && item.ref.statement && texts.get(item.ref.pid)?.includes(normalize(item.ref.statement)))
     .map(item => openItem("apply", "reader", item.detail, item.ref))
-  const hits = deps && changed.length ? await checkReaderParts(directory, document, changed, readerAsk(directory, state, deps, document)) : []
-  return [...carried, ...readerItems("apply", document, hits)]
+  return carried
 }
 
 /** The apply step's exchange with one reader job: a fresh session of its own

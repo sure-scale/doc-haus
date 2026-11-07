@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { readFileSync, writeFileSync } from "node:fs"
 import { checkChanges } from "./change-checks"
 import { readChangeList, readParagraphs, settleApply } from "./checks"
+import { focusedNotesInputs } from "./focused-notes"
 import { finalGate, paragraphShowsOpenItem, type GateResult } from "./gate"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
@@ -398,7 +399,7 @@ describe("questions for the lawyer", () => {
     const answered = scriptedModel({ ...happyPath, [AGENT.changes]: asking("Is a remedy for late delivery wanted?", true) })
     const state = await runLean(directory, { sessions: answered.port })
     // The answer reaches the accepted draft through its changes step; no redraft, no re-review.
-    expect(answered.counts()).toEqual([0, 0, 1, 1])
+    expect(answered.counts()).toEqual([0, 0, 1, focusedNotesInputs(directory).length])
     expect(state.status).toBe("completed")
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: question!.id, status: "answered", answer: "No remedy." })])
     expect(gateOf(directory)).toMatchObject({ status: "pass", delivery: "execution_ready" })

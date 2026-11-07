@@ -401,12 +401,12 @@ function draftingNotesSections(directory: string, request: string) {
       "- delivery_artifacts projects the bodies, comparisons and generated drafting-notes Word file from the same naming logic registration uses. planned_file, planned_role and planned_filename are the model's selections, not proof of what the user requested; compare them with the instructions. The notes file is the output you are writing, so its pending rendering is normal. A generated note can fulfill an explanatory-note request when its audience, content and naming fit that instruction; a distinct client advice function must be fulfilled by its own appropriate body. Do not describe an explanatory artifact as missing merely because it has no separately planned body. Registration may suffix names to preserve existing matter documents.",
       "- The final body is clean accepted text; native_export describes the separate comparison file, the naming plan and how many review changes were and were not applied. Use that record to check which files are delivered and which changes were not made, and keep source support and legal effect separate. The lawyer reads the documents, not the workflow: describe the files and the changes themselves, never the workflow's counts, record names or steps; naming files happens after the notes and is not an open item. Do not infer export absence from clean body text or fabricate application status from an empty list of explanatory records.\n- Describe each delivered redline only by its stated comparison baseline below. Identify any requested comparison not covered by that baseline as outstanding.",
       "- Explain what each drafted document does. Use change_origin to distinguish source-to-initial-draft revisions from later review amendments; an initial revision is not a change made during review.",
-      "- State whom the documents were drafted for. Where acting_for says the side was taken from the sources, say so once, with that evidence, and that the lawyer must confirm it. Where it says no side was taken, say that the request did not say whom the lawyer acts for and the drafting is even-handed.",
+      "- State whom the documents were drafted for. Only where acting_for expressly labels the side inferred, disclose that inference once with its evidence for the lawyer to confirm. A side stated by the lawyer or recorded on the matter is settled. Where no side was taken, say that the request did not say whom the lawyer acts for and the drafting is even-handed.",
       ...(memo ? ["- These notes are the requested memo; title it as that memo. Lead with the discrepancies found and the choices made, then give the recommendations and the open points, in plain language. The memo carries only what these records show."] : []),
       "- Say what each open item is and what the lawyer needs to do about it, and end that statement with the item's marker copied whole, exactly as open_items lists it, as a trailing \"[ref: <id>]\". Write internal ids only in these markers, and name each document by its title or file name, never by its internal id; describe each change by what it does, never by its change id.",
       "- For each marked drafted default, say what was chosen and that the lawyer must confirm it.",
-      ...(delegated ? ['- delegated_decisions lists the questions the lawyer delegated to the drafter\'s judgment or did not answer. Give them a section of their own. For each decision taken, say in words what was decided, why, the evidence it rests on and the alternatives not taken, that the lawyer delegated it, and that it is for the lawyer to confirm. Where the final documents depart from it, say what they do instead and why. For each with no decision taken, say that the point stays open, why, and what the lawyer needs to do. End each statement with the question\'s exact id as "[ref: <id>]".'] : []),
-      "- Use applied_changes.evidence_basis and the actual sources array to describe a change’s evidential basis. application_mode describes only how text was applied; code or already_applied says nothing about source support. Where source passages are provided, assess them before claiming support or a gap. For no-source-passage changes, disclose drafting judgment or a view of the law and the required lawyer confirmation. Do not invent an open-item marker or confirmation requirement that the final body and evidence do not show.",
+      ...(delegated ? ['- delegated_decisions lists the questions the lawyer delegated to the drafter\'s judgment or did not answer. Give them a section of their own. For each decision taken, say in words what was decided, why, the evidence it rests on and the alternatives not taken, and that the lawyer delegated it. An adopted judgment is settled unless contrary evidence prevents it; do not ask for confirmation again. Where the final documents depart from it, say what they do instead and why. For each with no decision taken, say that the point stays open, why, and what the lawyer needs to do. Delegation supplies neither a missing fact nor human release approval. End each statement with the question\'s exact id as "[ref: <id>]".'] : []),
+      "- Use applied_changes.evidence_basis and the actual sources array to describe a change’s evidential basis. application_mode describes only how text was applied; code or already_applied says nothing about source support. Where source passages are provided, assess them before claiming support or a gap. For no-source-passage changes, disclose drafting judgment or a view of the law and any actual remaining verification. A settled drafting choice needs no renewed confirmation. Do not invent an open-item marker or confirmation requirement that the final body and evidence do not show.",
       "- operation describes the requested amendment, the only one for its paragraph; result_paragraphs reports the paragraph's actual final wording, and an empty result records deletion. Describe the actual result and disclose unresolved explanations honestly.",
       "- Quote sources only word for word as \"exact words\" [source: document name], and cite only authority supported by matter sources or the approved legal research handoff.",
       "- Reply with the drafting notes in Markdown only, beginning with a \"# \" title.",
@@ -424,14 +424,14 @@ export function delegatedDecisionsText(directory: string) {
   return delegatedQuestions(directory).map(question => [`- [${question.id}] Q: ${question.question}`, ...delegatedLines(question).map(line => `  ${line}`)].join("\n")).join("\n")
 }
 
-function delegatedLines(question: Question) {
+export function delegatedLines(question: Question) {
   const words = question.lawyer_words ?? (question.answer_kind === "adopted" ? undefined : question.answer)
   const who = question.answer_class === "declined" ? "Not answered by the lawyer" : "Delegated by the lawyer"
   const attribution = words === undefined ? `${who}.` : `${who}, in their words: "${words}"`
   const advice = question.advice
   if (question.answer_kind === "adopted") {
     const recommendation = advice && "recommendation" in advice ? advice.recommendation : undefined
-    return [attribution, `Decision taken, for the lawyer to confirm: ${question.answer}`,
+    return [attribution, `Decision taken under the delegated judgment: ${question.answer}`,
       ...(recommendation ? [`Reason: ${recommendation.rationale}`, ...recommendation.basis.map(row => `Evidence: "${row.quote}" [source: ${row.source_id}]`)] : []),
       ...questionOptions(question).filter(option => option.id !== question.option_id).map(option => `Alternative not taken: ${option.text}`)]
   }
@@ -440,6 +440,29 @@ function delegatedLines(question: Question) {
     : advice && "unavailable" in advice ? `no option was supported: ${advice.unavailable.reason}`
     : "no checked recommendation is available."
   return [attribution, `No decision taken: ${why}`]
+}
+
+/** One prose assignment. Reference markers and section ordering belong to the
+ * coordinator; this writer receives only the evidence for its own question. */
+export function focusedNotesPrompt(input: { kind: string; question: string; context: { name: string; text: string }[]; repairs: string[] }) {
+  return [
+    tagged("assignment", `Write one section of the lawyer's drafting notes. ${input.question}`),
+    tagged("section_kind", input.kind),
+    ...input.context.map(row => tagged(row.name, escapeTagOpeners(row.text))),
+    ...(input.repairs.length ? [tagged("required_repairs", input.repairs.map(text => `- ${escapeTagOpeners(text)}`).join("\n"))] : []),
+    tagged("evidence_and_decisions", [
+      "The actual final wording controls statements about what was added, omitted, changed or retained. Proposed wording and review findings are history, not proof of application. Inspect relevant dependencies with the read tools before asserting their effect.",
+      "Explicit instructions, later updates and human answers settle their drafting decisions. An adopted delegated judgment is settled unless contrary evidence prevents it; explain the choice, delegation, reason, evidence and alternatives without asking for confirmation again. Delegation supplies neither a missing fact nor human release approval. Keep those unresolved where the records do.",
+      'Quote only exact source words as "exact words" [source: exact document name or approved URL]. Cite only matter sources or approved research; retrieve the relevant research-review.json/research.json passages before asserting law. A record or summary is a navigation aid, never authority.',
+      "Use targeted read-record, search-document and read-document retrieval for the assigned evidence and material dependencies. Current accepted text is available through read-document view=current_body, with document set to the provided document id; source is the original upload. Do not review unrelated documents or history. The instructions are in .dochaus/lean/request.md, updated-notes.md and instructions.md; current answers are in questions.json. Retrieve only the passages needed for this assignment and preserve their qualifications.",
+    ].join("\n")),
+    tagged("output_contract", [
+      "Follow the lawyer's explanation-detail, formality and house-style preferences. Explain the practical effect and source basis in plain words, naming documents by title or file name. Keep material limitations, unresolved action and proposal status.",
+      "Write only the prose for this assignment, in Markdown. The coordinator supplies the notes title, section headings and exact reference markers. Do not write reference markers, internal ids, coverage lists or another section. Do not ask the lawyer to repair internal mechanics. Read-only tools are available; do not write files.",
+      "Translate records into what the documents and comparisons contain, what changed and what remains to do. Never copy field names, raw paths, workflow counts or stage status into the notes. Distinguish drafting judgment from source-supported content and a drafting decision from approval to release.",
+      "A checker retry applies only to this section. Return its complete corrected prose, preserving its supported explanation; do not rewrite accepted sections or supply bookkeeping.",
+    ].join("\n")),
+  ].join("\n\n")
 }
 
 function documentSections(directory: string, document: DocID, items: OpenItem[]) {

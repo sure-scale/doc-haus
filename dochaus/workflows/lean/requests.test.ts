@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { readFileSync, readdirSync } from "node:fs"
 import path from "node:path"
+import { focusedNotesInputs } from "./focused-notes"
 import { drainLeanRequests, enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, checklistRefinementSelections, isChecklistRefinement } from "./requests"
 import { runLean } from "./runner"
 import { quoteFound } from "./quotes"
@@ -133,7 +134,11 @@ for (let i = 0; i < 20; i++) enqueueLeanRequest(process.argv[1], { kind: "contin
     const state = await runLean(directory, { sessions: model.port })
 
     expect(state.status).toBe("completed")
-    expect(model.counts()).toEqual([3, 1, 1, 1])
+    expect(model.counts().slice(0, 3)).toEqual([3, 1, 1])
+    // Continue does not repeat any accepted draft/review or focused notes assignment.
+    const notes = model.prompts.filter(prompt => prompt.agent === AGENT.finalize)
+    expect(notes.map(prompt => prompt.text).toSorted()).toEqual(focusedNotesInputs(directory).map(input => input.text).toSorted())
+    expect(new Set(notes.map(prompt => prompt.sessionID)).size).toBe(notes.length)
     expect(pendingLeanRequests(directory)).toEqual([])
     const done = readdirSync(path.join(requestsDir(directory), "done"))
     expect(done).toHaveLength(1)

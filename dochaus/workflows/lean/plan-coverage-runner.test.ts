@@ -254,8 +254,15 @@ describe("plan coverage through the run", () => {
     const items = coverageItems(directory)
     expect(items).toEqual([expect.objectContaining({ stage: "finalize", kind: "omission", detail: expect.stringContaining("Plan coverage could not be checked") })])
     const [item] = items
-    expect(model.prompts.find(prompt => prompt.agent === AGENT.finalize)!.text).toContain(`- [ref: ${item!.id}] `)
-    expect(readLeanText(directory, "drafting-notes.md")).toContain(`[ref: ${item!.id}]`)
+    const notes = model.prompts.filter(prompt => prompt.agent === AGENT.finalize)
+    const points = notes.flatMap(prompt => {
+      const block = /<open_point>\n([\s\S]*?)\n<\/open_point>/.exec(prompt.text)?.[1]
+      return block ? [JSON.parse(block)] : []
+    })
+    expect(points.filter(point => point.detail === item!.detail)).toEqual([{ kind: item!.kind, detail: item!.detail, location: item!.ref }])
+    // The focused writer explains the point; code attaches its exact reference once.
+    expect(notes.every(prompt => !prompt.text.includes(`[ref: ${item!.id}]`))).toBe(true)
+    expect(readLeanText(directory, "drafting-notes.md")!.split(`[ref: ${item!.id}]`)).toHaveLength(2)
     const gate = gateOf(directory)
     expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
     expect(gate.disclosed).toEqual([expect.objectContaining({ id: item!.id, status: "disclosed" })])

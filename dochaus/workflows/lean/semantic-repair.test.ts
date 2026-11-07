@@ -33,7 +33,8 @@ test("memo-only correction re-finalizes without body rework", async () => {
   })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
   expect(model.count(AGENT.changes)).toBe(1)
-  expect(model.count(AGENT.finalize)).toBe(2)
+  expect(model.prompts.filter(prompt => prompt.agent === AGENT.finalize && prompt.text.includes("This is a separate repair-link job"))).toHaveLength(1)
+  expect(model.prompts.filter(prompt => prompt.agent === AGENT.finalize && prompt.text.includes("<required_repairs>"))).toHaveLength(1)
 })
 
 test("a memo finding with a document owner repairs that deliverable, not the run-wide notes", async () => {

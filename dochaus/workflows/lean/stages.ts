@@ -12,6 +12,7 @@ import { placementItems, planPlacementCurrent, SPINE_ATOMS } from "./spine-place
 import { readActRecord } from "./act-record"
 import { requestedFilesItems } from "./requested-files"
 import { draftedDefaultItems } from "./drafted-defaults"
+import { READER_CHECK_CONTRACT } from "./reader-check"
 import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
 import { currentResearchGaps, intakeDiscrepancy, researchOutputValid } from "./research"
@@ -79,7 +80,7 @@ export const LEAN_PROMPT_VERSION = "lean-32-change-contracts"
 const OUTLINE_CONTRACT = "outline-one-pass-reverse-24"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
-const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-plain-refs-4"
+const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-focused-sections-5"
 /** Keys finalize only when the notes are a requested memo (the plan has a
  * memo name), so runs without one keep their finalize key. */
 const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
@@ -375,7 +376,7 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
       finished, acting, scope, ...composed, ...dated]
   }
   const marking = unverifiedMarkingBasis(directory, document)
-  return [at("body.docx"), at("changes.json"), at("change-review.json"), { name: "operative-plan", bytes: JSON.stringify(operativePlan(readLeanPlan(directory))) }, sources, { name: "comparison-original", bytes: comparisonBasis(directory, document) },
+  return [{ name: "reader-check-contract", bytes: READER_CHECK_CONTRACT }, at("body.docx"), at("changes.json"), at("change-review.json"), { name: "operative-plan", bytes: JSON.stringify(operativePlan(readLeanPlan(directory))) }, sources, { name: "comparison-original", bytes: comparisonBasis(directory, document) },
     ...(marking ? [{ name: "unverified-marking", bytes: marking }] : [])]
 }
 

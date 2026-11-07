@@ -18,7 +18,7 @@ import { readRepairRound } from "./repairs"
 import { runLean, stageInputSha } from "./runner"
 import { paragraphRows, stageInputs } from "./stages"
 import { leanFile, readLeanJson, readLeanState, readLeanText, replaceStageOpenItems, writeLeanBytes, writeLeanText, writeQuestions } from "./state"
-import { AGENT, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, pidOf, scriptedModel, type Reply } from "./test-support"
+import { AGENT, cleanupMatters, drafter, draftingNotes, happyPath, listedFindingIDs, matter, pidOf, scriptedModel, type Reply } from "./test-support"
 
 afterEach(cleanupMatters)
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -67,10 +67,8 @@ function replies() {
     [AGENT["change-prepare"]]: changes,
     [AGENT.changes]: changes,
     [AGENT.finalize]: (prompt: string) => {
-      const blocks = [...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].map(match => match[1]!)
-      const ids = blocks.flatMap(block => [...block.matchAll(/^- \[ref: (\S+)\]/gm)].map(match => match[1]))
-      return ["# Drafting notes", "", DELETE_REASON, SPLIT_REASON, REPLACE_REASON,
-        ...ids.map(id => `- The lawyer must review the disclosed limitation before use. [ref: ${id}]`)].join("\n\n")
+      const change = /<change>\n([\s\S]*?)\n<\/change>/.exec(prompt)?.[1]
+      return change ? JSON.parse(change).reason : draftingNotes(prompt, 0)
     },
   }
 }
@@ -133,12 +131,16 @@ test("source-grounded structural changes survive preparation, projected review, 
   expect(evidence[0]?.deleted_text).toBe(DELETE)
   expect(evidence[0]?.result_paragraphs).toEqual([])
   expect(evidence[1]?.result_paragraphs).toEqual(applied.filter(row => SPLIT.includes(row.text)).map(row => ({ pid: row.pid, text: row.text })))
-  for (const prompt of [model.prompts.find(row => row.agent === AGENT.finalize)!.text, packageReviewPrompt(directory)]) {
-    expect(prompt).toContain(DELETE_REASON)
-    expect(prompt).toContain(SPLIT_REASON)
-    expect(prompt).toContain(SUPPORT.delete[0].quote)
-    expect(prompt).toContain(SUPPORT.split[0].quote)
-  }
+  const explanations = model.prompts.filter(row => row.agent === AGENT.finalize).flatMap(row => {
+    const change = /<change>\n([\s\S]*?)\n<\/change>/.exec(row.text)?.[1]
+    return change ? [JSON.parse(change)] : []
+  })
+  expect(explanations).toEqual(evidence)
+  const reviewed = packageReviewPrompt(directory)
+  expect(reviewed).toContain(DELETE_REASON)
+  expect(reviewed).toContain(SPLIT_REASON)
+  expect(reviewed).toContain(SUPPORT.delete[0].quote)
+  expect(reviewed).toContain(SUPPORT.split[0].quote)
   expect(readLeanText(directory, "drafting-notes.md")).toContain(DELETE_REASON)
   expect(finalGate(directory).status).toBe("pass")
   const stableKeys = ["intake", "research", "research-review", "discrepancy", "spine", "d1.draft", "d1.review", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "package-review"] as const

@@ -295,10 +295,13 @@ export const changes: Reply = prompt => JSON.stringify({
 
 export const noChanges: Reply = () => JSON.stringify({ amendments: [], questions: [] })
 
-// Discloses every open item the coordinator lists, in every document's block,
-// and every delegated question, as the drafting-notes contract asks: in words,
-// each ending with its id in a trailing "[ref: <id>]".
+// Generic fixtures answer the focused prose contract; code owns references.
+// Retain the old full-note reply for direct legacy prompt/checker fixtures.
 export const draftingNotes: Reply = prompt => {
+  if (prompt.includes("This is a separate repair-link job"))
+    return JSON.stringify({ sections: [0], reason: "The synthetic package explanation owns this generic memo correction." })
+  if (prompt.includes("<section_kind>"))
+    return "The document records the supplied terms. Review any stated unresolved point before using the draft."
   const blocks = [...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].map(match => match[1]!)
   const delegated = /<delegated_decisions>\n([\s\S]*?)\n<\/delegated_decisions>/.exec(prompt)?.[1] ?? ""
   const ids = [...blocks.flatMap(block => [...block.matchAll(/^- \[ref: (\S+)\]/gm)].map(match => match[1])), ...[...delegated.matchAll(/^- \[(\S+)\] Q:/gm)].map(match => match[1])]

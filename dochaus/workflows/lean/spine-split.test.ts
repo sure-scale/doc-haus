@@ -188,7 +188,7 @@ test("a resumed spine splits only the entries it has not split before", async ()
   expect(readLeanEvents(directory).findLast(event => event.event === "spine_split")?.counts).toMatchObject({ reused: 2, atomic: 1, split: 0, atoms: 4 })
 })
 
-test("the outline, review, change plan, part, notes and package review prompts read the entries as spine.json holds them; level and placement jobs read the atoms", async () => {
+test("content stages read spine entries, focused notes retain their open points, and level and placement jobs read the atoms", async () => {
   const directory = matter()
   const model = scriptedModel({ ...happyPath, [AGENT.spine]: spineReply(ONLY, COMPOUND, SILENT), [AGENT.split]: splitting })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
@@ -196,7 +196,10 @@ test("the outline, review, change plan, part, notes and package review prompts r
   const spine = readLeanText(directory, "spine.json")!
   expect(JSON.parse(spine).entries).toEqual([ONLY, COMPOUND, SILENT])
   const first = (agent: string) => model.prompts.find(prompt => prompt.agent === agent)!.text
-  for (const agent of [AGENT.draft, AGENT.review, AGENT["change-plan"], AGENT.finalize, AGENT["package-review"]]) expect({ agent, spine: first(agent).includes(spine.trim()) }).toEqual({ agent, spine: true })
+  for (const agent of [AGENT.draft, AGENT.review, AGENT["change-plan"], AGENT["package-review"]]) expect({ agent, spine: first(agent).includes(spine.trim()) }).toEqual({ agent, spine: true })
+  const notes = model.prompts.filter(prompt => prompt.agent === AGENT.finalize)
+  expect(notes.some(prompt => prompt.text.includes(SILENT.detail))).toBe(true)
+  expect(notes.every(prompt => !prompt.text.includes(spine.trim()))).toBe(true)
   // Each part prompt points the drafter at the same record.
   // Retry feedback (the placement revision) is not a part prompt.
   const parts = model.prompts.filter(prompt => prompt.agent === AGENT.draft && !prompt.text.startsWith("Your reply did not pass")).slice(1)
