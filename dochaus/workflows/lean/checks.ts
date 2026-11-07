@@ -7,8 +7,9 @@ import { openItemMarkers } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 import { retypedListLabel } from "../../lib/list-label"
 import { normalize } from "../../lib/quote-verify"
-import { changeListIDs, memoMode, mintedQuestionID, runItemIDs, withoutRefMarkers } from "./delivered-memo"
+import { changeListIDs, memoMode, mintedQuestionID, runItemIDs, withoutInternalIDs, withoutRefMarkers } from "./delivered-memo"
 import { notesForReader } from "./gate"
+import { currentInstructions } from "./instructions"
 import { excerpt, openItem, proseQuoteIssues, quoteMissItems } from "./quotes"
 import type { SourceQuoteScanOptions } from "./source-quote-scan"
 import { readLeanPlan, type DocID } from "./plan"
@@ -262,6 +263,53 @@ const REF_MARKER = /\[[ \t]*refs?[ \t]*:([^\]\n]*)\]/gi
 export function readerIDs(directory: string, items: OpenItem[]) {
   return [...new Set([...runItemIDs(directory, items).filter(readerVisibleID), ...(readLeanPlan(directory)?.documents ?? []).map(row => row.id), ...runChangeIDs(directory, items),
     ...raisedFindings(directory).map(row => row.id), ...researchFindingIDs(directory)])]
+}
+
+/** The ids lawyer-facing text a model writes (a question, its context, advice)
+ * may not name: the ids readerIDs keeps from the notes and each instruction id,
+ * matched as the notes check matches them (a short id only in prose). */
+function lawyerTextIDs(directory: string) {
+  const ids = [...new Set([...readerIDs(directory, []), ...currentInstructions(directory).map(item => item.id)])]
+  return (text: string) => {
+    const prose = NOT_PROSE.reduce((masked, mask) => masked.replace(mask, " "), text)
+    return ids.filter(id => standingID(id).test(readerVisibleID(id) ? text : prose))
+  }
+}
+
+/** Retry feedback for each run id a lawyer-facing field names, as
+ * [where, text] pairs: the id found and how to say it in words. */
+export function lawyerTextIDIssues(directory: string, fields: [where: string, text: string][]) {
+  const named = lawyerTextIDs(directory)
+  return fields.flatMap(([where, text]) => named(text).map(id => `${where} names the internal id "${id}". The lawyer sees only words: ${
+    /^p[0-9a-f]{12}$/.test(id) ? "name the paragraph by its heading or quote its words"
+      : /^d\d+$/.test(id) ? "name the document by its title"
+      : mintedQuestionID(id) ? "name the question or answer by what it asked"
+      : "say what it refers to in plain words"}.`))
+}
+
+/** `text` as the lawyer may see it, for a field saved on a last attempt: each
+ * id lawyerTextIDIssues reports goes as the notes' ids go for the reader
+ * (notesForReader), an instruction id by its kind (withoutInternalIDs). Text
+ * naming none is returned as written. */
+export function inLawyerWords(directory: string, text: string) {
+  if (!lawyerTextIDs(directory)(text).length) return text
+  return withoutInternalIDs(notesForReader(directory, text, []), currentInstructions(directory).map(item => item.id))
+}
+
+/** A question's two lawyer-facing fields. */
+type LawyerQuestion = { question: string; context: string }
+
+/** Retry feedback for each internal id a question's asking or context names
+ * (lawyerTextIDIssues), at the question's index. */
+export function questionWordIssues(directory: string, questions: (LawyerQuestion | undefined)[]) {
+  return lawyerTextIDIssues(directory, questions.flatMap((question, index) => question
+    ? [[`questions[${index}].question`, question.question], [`questions[${index}].context`, question.context]] as [string, string][] : []))
+}
+
+/** A question saved on a last attempt with ids still in it: its asking and
+ * context in the lawyer's words (inLawyerWords). */
+export function inQuestionWords<T extends LawyerQuestion>(directory: string, question: T): T {
+  return { ...question, question: inLawyerWords(directory, question.question), context: inLawyerWords(directory, question.context) }
 }
 
 /** The change ids the run records for its planned documents (each change

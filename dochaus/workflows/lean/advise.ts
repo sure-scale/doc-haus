@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from "node:util"
 import { normalize } from "../../lib/quote-verify"
 import { readChangePlan } from "./change-pipeline"
 import { parallel } from "./checklist-flow"
-import { parseJsonObject, readParagraphs, record, shownText } from "./checks"
+import { inLawyerWords, lawyerTextIDIssues, parseJsonObject, readParagraphs, record, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { intakeActingFor, matterDatesBlock } from "./intake"
 import { FIRST_DOCUMENT, FIXED_PLAN, planActingFor, readLeanPlan, stepDocument, stepStage, type StepID } from "./plan"
@@ -93,7 +93,7 @@ export async function adviseQuestion(directory: string, state: LeanState, step: 
       const asked = performance.now()
       const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: index ? retryPrompt("advise", issues) : advisePrompt(directory, question, siblings) })
       const answered = performance.now()
-      const checked = checkAdvice(directory, question, reply, { requireRelevance: true })
+      const checked = checkAdvice(directory, question, reply, { requireRelevance: true, final: index === LEAN_MAX_RETRIES })
       issues = checked.issues
       appendLeanEvent(directory, { ...at, event: "checker", attempt: index, issues, wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
       if (checked.advice) return { advice: await confirmedDecision(directory, state, step, deps, question, checked.advice), ...(checked.group ? { group: checked.group } : {}) }
@@ -267,8 +267,10 @@ function siblingAdvice(question: Question) {
   return [`Question: ${question.question}`, ...(option ? [`Recommended: ${option.text}`] : []), `Why: ${advice.recommendation.rationale}`].join("\n")
 }
 
-/** The advice a reply gives `question`, or the issues for a retry. */
-export function checkAdvice(directory: string, question: Question, reply: string, options: { requireRelevance?: boolean; request?: string } = {}): { issues: string[]; advice?: QuestionAdvice; group?: string } {
+/** The advice a reply gives `question`, or the issues for a retry. Option
+ * texts or a rationale naming an internal id are retried, or on the last
+ * attempt (`final`) kept in the lawyer's words (inLawyerWords). */
+export function checkAdvice(directory: string, question: Question, reply: string, options: { requireRelevance?: boolean; request?: string; final?: boolean } = {}): { issues: string[]; advice?: QuestionAdvice; group?: string } {
   const parsed = parseJsonObject(reply)
   if (!parsed.ok) return { issues: [`Reply with one JSON object. ${parsed.error}`] }
   const { options: offered, recommendation, unavailable } = parsed.value
@@ -277,8 +279,12 @@ export function checkAdvice(directory: string, question: Question, reply: string
   const own = question.options ? { issues: offered === undefined ? [] : ['The question has its own options: leave out "options" and recommend one of them by its index.'] } : adviceOptions(directory, question, offered, recommendation !== undefined)
   const choices = question.options ?? own.options
   // The advisor's options are kept beside its advice; a question's own stay on the question.
-  const kept = own.options?.length ? { options: own.options } : {}
-  const issues = [...own.issues]
+  const words = (text: string) => options.final ? inLawyerWords(directory, text) : text
+  const kept = own.options?.length ? { options: own.options.map(option => ({ ...option, text: words(option.text) })) } : {}
+  const issues = [...own.issues, ...options.final ? [] : lawyerTextIDIssues(directory, [
+    ...(own.options ?? []).map((option, index): [string, string] => [`options[${index}].text`, option.text]),
+    ...record(recommendation) && typeof recommendation.rationale === "string" ? [["recommendation.rationale", recommendation.rationale] as [string, string]] : [],
+  ])]
   if (recommendation !== undefined) {
     const row: Record<string, unknown> = record(recommendation) ? recommendation : {}
     // A question's own options are recommended by index; the advisor's own by
@@ -296,7 +302,7 @@ export function checkAdvice(directory: string, question: Question, reply: string
     if (decided !== undefined && !currentInstructions(directory).some(item => item.id === decided))
       issues.push(`"recommendation.decided_by" must be the id of one item listed in <instructions>, or left out.`)
     if (issues.length || !chosen) return { issues }
-    return { issues: [], ...(group ? { group } : {}), advice: { ...kept, recommendation: { option: chosen.id, rationale: (row.rationale as string).trim(), basis: basis.rows, ...(typeof decided === "string" ? { decided_by: decided } : {}) } } }
+    return { issues: [], ...(group ? { group } : {}), advice: { ...kept, recommendation: { option: chosen.id, rationale: words((row.rationale as string).trim()), basis: basis.rows, ...(typeof decided === "string" ? { decided_by: decided } : {}) } } }
   }
   const reason = record(unavailable) && typeof unavailable.reason === "string" ? unavailable.reason.trim() : ""
   if (!reason) issues.push('"unavailable.reason" must say why no option can be recommended.')

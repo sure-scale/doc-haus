@@ -298,7 +298,7 @@ describe("the plan step's package-scope question", () => {
 
   // The plan step asks again only about acts no answered scope question showed.
   const shows = (text: string, status: "answered" | "open" = "answered", stage: "draft" | "gate" = "draft") =>
-    ({ id: SCOPE_ID, stage, question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${text}" [source: request]; to be taken by "the Orchard Committee"; planned in d1 "Release letter", executed by "Kestrel Works".`, context: "", status, ...(status === "answered" ? { answer: ANSWER } : {}) })
+    ({ id: SCOPE_ID, stage, question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${text}" [source: request]; to be taken by "the Orchard Committee"; planned in "Release letter", executed by "Kestrel Works".`, context: "", status, ...(status === "answered" ? { answer: ANSWER } : {}) })
   const DEPOSIT = "Kestrel Works then releases the deposit"
   const release: CoverageAct = { act: "release the deposit", source: "request", quote: DEPOSIT, parties: ["the Orchard Committee"], document: "d1" }
   const SENTENCE = "Prepare the papers so that the Orchard Committee approves the revised schedule."
@@ -372,7 +372,7 @@ describe("the plan step's package-scope question", () => {
     writeLeanText(directory, "coverage.json", JSON.stringify({ schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(directory, plan.documents, plan.acting_for), status: "uncovered",
       acts: [act, release], issues: planCoverageIssues([act, release], plan.documents, directory) }))
     // The plan step asked about the approval alone and the lawyer answered.
-    writeQuestions(directory, [{ id: SCOPE_ID, stage: "draft", question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in d1 "Release letter", executed by "Kestrel Works".`,
+    writeQuestions(directory, [{ id: SCOPE_ID, stage: "draft", question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in "Release letter", executed by "Kestrel Works".`,
       context: "", status: "answered", answer: ANSWER }])
     // The approval is settled by the answer; the deposit's release was not in
     // that question: plain uncovered wording, with no mention of the question.

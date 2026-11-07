@@ -1,5 +1,5 @@
 import { adviseQuestions } from "./advise"
-import { parseJsonObject, record } from "./checks"
+import { inLawyerWords, lawyerTextIDIssues, parseJsonObject, record } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { OutputLimitError } from "./native-stage-result"
 import { keyedQuestionID } from "./package-scope"
@@ -76,9 +76,13 @@ async function findConflicts(directory: string, state: LeanState, deps: LeanDeps
       const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: index ? retryPrompt("reconcile", issues) : reconcilePrompt(answered, request, updates, titles) })
       const checkedAt = performance.now()
       const checked = checkConflicts(reply, known)
-      issues = checked.issues
+      // The lawyer reads each conflict in its question: one naming an id is
+      // retried, or on the last attempt put in the lawyer's words.
+      const worded = checked.conflicts && index < LEAN_MAX_RETRIES
+        ? lawyerTextIDIssues(directory, checked.conflicts.map((row): [string, string] => [`The "conflict" for ${row.questions.join(" and ")}`, row.conflict])) : []
+      issues = [...checked.issues, ...worded]
       appendLeanEvent(directory, { ...at, event: "checker", attempt: index, issues, wait_ms: leanElapsedMs(asked, checkedAt), check_ms: leanElapsedMs(checkedAt) })
-      if (checked.conflicts) return checked.conflicts
+      if (checked.conflicts && !worded.length) return checked.conflicts.map(row => ({ ...row, conflict: inLawyerWords(directory, row.conflict) }))
     }
     return []
   } catch (error) {
@@ -98,7 +102,7 @@ export function reconcilePrompt(answered: Question[], request: string, updates: 
     tagged("request", request),
     ...(updates ? [tagged("user_updates", updates)] : []),
     tagged("answers", answered.map(question => answerText(question, titles)).join("\n\n")),
-    'Reply with one JSON object only: {"conflicts":[{"questions":["question id","question id"],"conflict":"what cannot be followed together, in one or two sentences"}]}, one entry for each point, naming at least two question ids exactly as given above; or {"conflicts":[]} when the answers can all be followed together.',
+    'Reply with one JSON object only: {"conflicts":[{"questions":["question id","question id"],"conflict":"what cannot be followed together, in one or two sentences the lawyer reads, naming each answer by what it asked and never by its id"}]}, one entry for each point, naming at least two question ids exactly as given above; or {"conflicts":[]} when the answers can all be followed together.',
   ].join("\n\n")
 }
 

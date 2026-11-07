@@ -59,7 +59,7 @@ function recordCoverage(directory: string, plan: LeanPlan, status: LeanCoverage[
   writeLeanText(directory, "coverage.json", `${JSON.stringify(coverage, null, 2)}\n`)
 }
 
-const answerScope = (directory: string) => writeQuestions(directory, [{ id: SCOPE_ID, stage: "draft", question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in d1 "Release letter", executed by "Kestrel Works".`, context: "", status: "answered", answer: ANSWER }])
+const answerScope = (directory: string) => writeQuestions(directory, [{ id: SCOPE_ID, stage: "draft", question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in "Release letter", executed by "Kestrel Works".`, context: "", status: "answered", answer: ANSWER }])
 
 /** An uncovered plan: the act sits in a document its party does not execute,
  * and a companion document declares a party the record names nowhere. */

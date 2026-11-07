@@ -144,12 +144,12 @@ describe("plan coverage issues", () => {
 })
 
 describe("package-scope question", () => {
-  test("acts left uncovered are asked about in one question, in the plural, each with where the plan has it", () => {
+  test("acts left uncovered are asked about in one question, in the plural, each with where the plan has it by document title only", () => {
     const release = act({ act: "release the deposit", source: SOURCE, quote: RELEASE, parties: ["Kestrel Works"], document: "d2" })
     expect(coverageScopeQuestion([act(), release], [planned("d1", "Advice note", []), planned("d2", "Release letter")])?.question).toBe(
       "The document plan leaves these instructed acts without a document executed by the parties who must take them: " +
-      `"approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in d1 "Advice note", executed by no party. ` +
-      `"release the deposit", directed by "${RELEASE}" [source: ${SOURCE}]; to be taken by "Kestrel Works"; planned in d2 "Release letter", executed by parties the plan does not name. ` +
+      `"approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in "Advice note", executed by no party. ` +
+      `"release the deposit", directed by "${RELEASE}" [source: ${SOURCE}]; to be taken by "Kestrel Works"; planned in "Release letter", executed by parties the plan does not name. ` +
       "For each, should the package add a document, or change a planned one, so that those parties take it, or is it outside this request? " +
       "If the package should carry it, say in which document and who executes it.")
     const one = coverageScopeQuestion([act()], [planned("d1", "Advice note", [])])!.question
@@ -163,8 +163,8 @@ describe("package-scope question", () => {
     const several = coverageScopeQuestion([act(), release], documents, [], { saved: true })!
     expect(several.question).toBe(
       "The document plan leaves these instructed acts without a document executed by the parties who must take them: " +
-      `"approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in d1 "Advice note", executed by no party. ` +
-      `"release the deposit", directed by "${RELEASE}" [source: ${SOURCE}]; to be taken by "Kestrel Works"; planned in d1 "Advice note", executed by no party. ` +
+      `"approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in "Advice note", executed by no party. ` +
+      `"release the deposit", directed by "${RELEASE}" [source: ${SOURCE}]; to be taken by "Kestrel Works"; planned in "Advice note", executed by no party. ` +
       "For each, which planned document, executed by those parties, should carry it, or is it outside this request?")
     expect(several.context).toBe("Drafting waits for your answer. The saved document plan, including any edits to it, is kept as it stands: " +
       'to add a document, stop this draft with "Stop draft", then start a new one, which plans the package from the start.')
@@ -180,7 +180,7 @@ describe("package-scope question", () => {
     const documents = [planned("d1", "Advice note", []), planned("d2", "Release letter")]
     expect(coverageScopeQuestion([release], documents, [], { saved: true })).toBeUndefined()
     // Still asked: before the plan is saved, and on a saved plan when no planned document carries the act.
-    expect(coverageScopeQuestion([release], documents)!.question).toContain('planned in d2 "Release letter", executed by parties the plan does not name.')
+    expect(coverageScopeQuestion([release], documents)!.question).toContain('planned in "Release letter", executed by parties the plan does not name.')
     expect(coverageScopeQuestion([{ ...release, document: null }], documents, [], { saved: true })).toBeDefined()
     const mixed = coverageScopeQuestion([act(), release], documents, [], { saved: true })!.question
     expect(mixed).toContain('"approve the revised schedule"')
@@ -875,7 +875,7 @@ describe("final attempt: fix wave 2", () => {
     expect(planCoverageIssues(parsed.value!, documents, directory)).toEqual([])
     expect(coverageScopeQuestion(parsed.value!, documents)).toBeUndefined()
     // The lawyer's words reach the lawyer with the document the plan has the act in, not as an act no planned document carries.
-    expect(recorded(directory, parsed.value!)).toEqual([disclosed('planned in d1 "Committee resolution", executed by "the Orchard Committee"')])
+    expect(recorded(directory, parsed.value!)).toEqual([disclosed('planned in "Committee resolution", executed by "the Orchard Committee"')])
   })
 
   test("beside entries both in a planned document and in none, every reading is kept: the uncovered one still goes to the outline and the lawyer", () => {
@@ -886,7 +886,7 @@ describe("final attempt: fix wave 2", () => {
     expect(issues).toEqual([UNCOVERED, `${DIRECTED} must be taken by "the Orchard Committee", but d2 "Release letter" is executed by "Kestrel Works". ${move("Move")}`])
     expect(coverageScopeQuestion(parsed.value!, documents)?.id).toBe(scopeID(act()))
     const items = recorded(directory, parsed.value!)
-    expect(items[0]).toBe(disclosed('planned in d1 "Committee resolution", executed by "the Orchard Committee", and planned in d2 "Release letter", executed by "Kestrel Works"'))
+    expect(items[0]).toBe(disclosed('planned in "Committee resolution", executed by "the Orchard Committee", and planned in "Release letter", executed by "Kestrel Works"'))
     expect(items).toHaveLength(3)
   })
 

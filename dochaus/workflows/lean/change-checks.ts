@@ -4,7 +4,7 @@ import { OPEN_ITEM_PATTERN } from "../../lib/marker-patterns"
 import { normalize } from "../../lib/quote-verify"
 import { markerIssues } from "./change-markers"
 import { draftStatusAmendmentIssues } from "./draft-status"
-import { parseJsonObject, record, retypedLabelIssues, withoutListLabel, type ChangeList, type ParagraphRow, type StageCheck } from "./checks"
+import { inQuestionWords, parseJsonObject, record, questionWordIssues, retypedLabelIssues, withoutListLabel, type ChangeList, type ParagraphRow, type StageCheck } from "./checks"
 import { paragraphShowsOpenItem } from "./gate"
 import { approvedResearch } from "./research"
 import { REQUEST_SOURCE, adoptedSources, excerpt, matterSourceIDs, openItem, proseQuoteIssues, quoteFound, quoteMissIssue, sourceNameIssues } from "./quotes"
@@ -78,11 +78,12 @@ export function checkChanges(directory: string, content: string, paragraphs: Par
   })).filter(row => row.issues.length)
   const proposed = askedQuestions(questions.filter(record), asked, options.document)
   const unmarked = proposed.flatMap((question, index) => question ? questionMarkerIssues(question, index, filled, rows) : [])
-  if ((unverified.length || unmarked.length) && !options.withholdUnverified)
-    return { issues: [...unverified.flatMap(row => row.issues), ...unmarked], openItems: [] }
+  const worded = questionWordIssues(directory, proposed)
+  if ((unverified.length || unmarked.length || worded.length) && !options.withholdUnverified)
+    return { issues: [...unverified.flatMap(row => row.issues), ...unmarked, ...worded], openItems: [] }
   const withheld = new Set(unverified.map(row => row.amendment.id))
   const kept = filled.filter(amendment => !withheld.has(amendment.id))
-  const questionList = proposed.filter((question): question is Question => Boolean(question))
+  const questionList = proposed.filter((question): question is Question => Boolean(question)).map(question => worded.length ? inQuestionWords(directory, question) : question)
   // A question whose paragraph only a withheld amendment would have marked: the
   // paragraph keeps its drafted text, so, like the withheld change, the
   // question is disclosed through the drafting notes.

@@ -34,6 +34,22 @@ describe("advice checker", () => {
     } })
   })
 
+  test("option texts or a rationale naming an internal id are retried with how to say it, and kept in words on the last attempt", () => {
+    const directory = matter()
+    writeQuestions(directory, [{ id: "q-0a1b2c3d4e", stage: "intake", question: "Which delivery period applies?", context: "The period decides lateness.", status: "answered", kind: "judgment", answer: "Thirty days." }])
+    const reply = JSON.stringify({ options: [{ text: "Keep the answer to q-0a1b2c3d4e" }, OPTIONS[1]],
+      recommendation: { option: "Keep the answer to q-0a1b2c3d4e", rationale: "The answer to q-0a1b2c3d4e sets thirty days.", basis: BASIS } })
+    expect(checkAdvice(directory, QUESTION, reply)).toEqual({ issues: [
+      'options[0].text names the internal id "q-0a1b2c3d4e". The lawyer sees only words: name the question or answer by what it asked.',
+      'recommendation.rationale names the internal id "q-0a1b2c3d4e". The lawyer sees only words: name the question or answer by what it asked.',
+    ] })
+    const final = checkAdvice(directory, QUESTION, reply, { final: true })
+    expect(final.issues).toEqual([])
+    expect(JSON.stringify(final.advice)).not.toContain("q-0a1b2c3d4e")
+    expect(final.advice).toMatchObject({ recommendation: { option: "o1" } })
+    expect(final.advice && "recommendation" in final.advice ? final.advice.recommendation.rationale : "").toContain("Which delivery period applies")
+  })
+
   test("no supported option is kept as unavailable, with no options or with two to four", () => {
     expect(check(UNAVAILABLE)).toEqual({ issues: [], advice: UNAVAILABLE })
     expect(check({ options: OPTIONS, ...UNAVAILABLE }).advice).toEqual({ options: [{ id: "o1", text: OPTIONS[0]!.text }, { id: "o2", text: OPTIONS[1]!.text }], ...UNAVAILABLE })
@@ -84,7 +100,7 @@ describe("advice checker", () => {
   })
 
   test("a scope option naming a planned document whose title resembles a source passes", () => {
-    const labelled = { ...SCOPE, question: SCOPE.question.replace("no planned document carries it", 'planned in d1 "Variation of supply-terms", executed by "Supplier"') }
+    const labelled = { ...SCOPE, question: SCOPE.question.replace("no planned document carries it", 'planned in "Variation of supply-terms", executed by "Supplier"') }
     expect(check(scopeReply("Variation of supply-terms, executed by the supplier and the buyer"), labelled).advice).toMatchObject({ recommendation: { option: "o3" } })
     const directory = matter()
     writeLeanPlan(directory, [{ title: "Supply-terms side letter", purpose: "Record the delivery period", parts: [{ heading: "Delivery", scope: "Delivery period" }] }])
@@ -104,7 +120,7 @@ describe("advice checker", () => {
     expect(checkAdvice(directory, gate, reply("Carry it in the supply note: payment is due on delivery", "Treat it as outside the scope of this request")).advice).toMatchObject({ recommendation: { option: "o1" } })
     expect(checkAdvice(directory, gate, reply("Put it in supply-note.docx", "Outside this request")).issues).toEqual([])
     // The plan step's recheck of a saved plan offers no new document either; the documents it labels count as planned.
-    const saved = { ...SCOPE, question: SCOPE.question.replace(/no planned document carries it\. Should .*$/, 'planned in d2 "Side letter", executed by "Supplier". Which planned document, executed by those parties, should carry it, or is it outside this request?') }
+    const saved = { ...SCOPE, question: SCOPE.question.replace(/no planned document carries it\. Should .*$/, 'planned in "Side letter", executed by "Supplier". Which planned document, executed by those parties, should carry it, or is it outside this request?') }
     expect(checkAdvice(directory, saved, reply("The side letter, executed by the supplier and the buyer", "Outside this request")).issues).toEqual([])
     expect(checkAdvice(directory, saved, reply("A new letter executed by the supplier and the buyer", "Outside this request")).issues).toHaveLength(1)
     // Before its plan is saved, the plan step's question offers a new document, which no list names.

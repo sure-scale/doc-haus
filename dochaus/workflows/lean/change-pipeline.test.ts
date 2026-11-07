@@ -211,6 +211,42 @@ test("one wrapped JSON stage result is admitted without a formatting retry, with
   expect(acceptChangePlan(directory, "d1", reply.slice(0, -1)).issues.length).toBeGreaterThan(0)
 }, 120_000)
 
+test("a question naming an internal id is retried with how to say it in words, and asked in words on the last attempt", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
+  const pid = readParagraphs(directory, "d1").find(row => row.text === "Payment timing remains to be agreed.")!.pid
+  const naming = { pid, question: `Should paragraph ${pid} keep its payment timing?`, kind: "instruction", context: "The answer changes d1." }
+  const plain = { pid, question: 'Should "Payment timing remains to be agreed." keep its payment timing?', kind: "instruction", context: "The answer changes the supply note." }
+  const value = readLeanJson(directory, "d1/change-plan.json") as Record<string, unknown>
+  const planned = (question: Record<string, unknown>) => JSON.stringify({ ...value, questions: [question] })
+  expect(acceptChangePlan(directory, "d1", planned(naming)).issues).toEqual([
+    `questions[0].question names the internal id "${pid}". The lawyer sees only words: name the paragraph by its heading or quote its words.`,
+    'questions[0].context names the internal id "d1". The lawyer sees only words: name the document by its title.',
+  ])
+  expect(acceptChangePlan(directory, "d1", planned(plain)).issues).toEqual([])
+  const last = acceptChangePlan(directory, "d1", planned(naming), { final: true })
+  expect(last.issues).toEqual([])
+  const saved = (readLeanJson(directory, "d1/change-plan.json") as { questions: { question: string; context: string }[] }).questions[0]!
+  for (const question of [last.questions![0]!, saved]) {
+    expect(`${question.question} ${question.context}`).not.toMatch(new RegExp(`${pid}|\\bd1\\b`))
+    expect(question.question).toContain("payment timing")
+  }
+
+  // The change list's questions are checked the same way, and on the last attempt (withholdUnverified) asked in words.
+  const paragraphs = readParagraphs(directory, "d1")
+  const changed = (question: Record<string, unknown>) => JSON.stringify({ amendments: [{ pid, updated: "Payment timing remains to be agreed. [open item: confirm the payment timing]", reason: "Payment timing needs the lawyer.", sources: [] }], questions: [question] })
+  expect(checkChanges(directory, changed(naming), paragraphs, { document: "d1" }).issues).toEqual([
+    `questions[0].question names the internal id "${pid}". The lawyer sees only words: name the paragraph by its heading or quote its words.`,
+    'questions[0].context names the internal id "d1". The lawyer sees only words: name the document by its title.',
+  ])
+  expect(checkChanges(directory, changed(plain), paragraphs, { document: "d1" }).issues).toEqual([])
+  const withheld = checkChanges(directory, changed(naming), paragraphs, { document: "d1", withholdUnverified: true })
+  expect(withheld.issues).toEqual([])
+  const asked = withheld.changes!.questions[0]!
+  expect(`${asked.question} ${asked.context}`).not.toMatch(new RegExp(`${pid}|\\bd1\\b`))
+  expect(asked.id).toBe(checkChanges(directory, changed(naming), paragraphs, { document: "d1", withholdUnverified: true }).changes!.questions[0]!.id)
+}, 120_000)
+
 test("a JSON syntax error is retried with where it is, so the model can find a stray bracket", () => {
   const directory = matter()
   const issue = (reply: string) => checkChanges(directory, reply, []).issues.join(" ")
