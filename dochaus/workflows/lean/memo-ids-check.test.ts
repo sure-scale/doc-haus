@@ -546,6 +546,29 @@ describe("without a requested memo", () => {
     expect(checkDraftingNotes(directory, notes(`- ${GAP.id} and ${CONDITION.id} are open.`), [GAP, CONDITION], { final: true }).issues).toEqual([])
   })
 
+  test("the workflow's own record terms in prose are retried, and pass on the last attempt; quoted words, file names and addresses are not terms", () => {
+    const directory = memoMatter("none")
+    const prose = notes("- The redline compares this run's initial generated draft with the final body.",
+      `- Four review amendments applied, none unapplied, no withheld proposals; delivery_registration is pending. ${disclosed}`)
+    expect(checkDraftingNotes(directory, prose, [GAP, CONDITION]).issues).toEqual([
+      'The drafting notes describe the drafting workflow rather than the documents: "this run\'s", "initial generated draft", "review amendments", "withheld proposals", "delivery_registration". ' +
+      "The notes are for the lawyer: say what the delivered documents and their redlines contain, which changes were not made and what remains to do, in plain words, without the workflow's record names, counts or steps.",
+    ])
+    expect(checkDraftingNotes(directory, prose, [GAP, CONDITION], { final: true }).issues).toEqual([])
+    const plain = notes('- The supplier\'s email calls it "the review amendments" and attaches supply_terms.docx; write to ops_team@example.com.',
+      `- The redline shows the changes made in review to the first draft; unapplied payments stay with the supplier. ${disclosed}`)
+    expect(checkDraftingNotes(directory, plain, [GAP, CONDITION]).issues).toEqual([])
+  })
+
+  test("defined-term identifiers, a run-rate, code spans and source-marker names are not workflow terms", () => {
+    const directory = memoMatter("none")
+    const prose = notes("- The Net_Revenue and SUPPLY_TERMS definitions follow this run-rate; the template field `delivery_registration` stays blank.",
+      `- The board minutes [source: board_minutes] were not supplied. ${disclosed}`)
+    expect(checkDraftingNotes(directory, prose, [GAP, CONDITION]).issues.filter(issue => issue.includes("drafting workflow"))).toEqual([])
+    expect(checkDraftingNotes(directory, notes(`- This run fixed the fee. ${disclosed}`), [GAP, CONDITION]).issues)
+      .toEqual([expect.stringContaining('the drafting workflow rather than the documents: "this run".')])
+  })
+
   test("on the last attempt an item's bare id discloses it only whole, not inside a longer id", () => {
     const directory = memoMatter("none")
     expect(checkDraftingNotes(directory, notes(`- ${GAP.id}1 and ${CONDITION.id}-2 are open.`), [GAP, CONDITION], { final: true }).issues).toEqual([MISSING([GAP.id, CONDITION.id])])

@@ -10,7 +10,7 @@ import type { RepairRound } from "./repairs"
 import { runLean } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS } from "./stages"
 import { leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText } from "./state"
-import { AGENT, DRAFT, NO_FINDINGS, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, matter, noChanges, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
+import { AGENT, DRAFT, NO_FINDINGS, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, matter, noChanges, pidOf, registering, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // Real coordinator, checkers, renderer, pointer applier and comparison. Only the
 // model is scripted: each agent's reply is a function of the prompt it received.
@@ -116,6 +116,20 @@ describe("lean drafting runner", () => {
     expect(rerun.stages["d1.draft"]?.finished_at).toBe(first.stages["d1.draft"]?.finished_at)
     expect(rerun.stages["d1.apply"]?.finished_at).not.toBe(first.stages["d1.apply"]?.finished_at)
     expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ applied: [{ id: "a1", mode: "code" }], unapplied: [] })
+  }, 120_000)
+
+  test("resume after delivery re-runs nothing, though delivery gave the delivered files' source markers reader form", async () => {
+    const directory = matter()
+    const cited = DRAFT.replace("Payment is due on delivery.", `Payment is due "on delivery" [source: ${SOURCE}].`)
+    const replies = { ...happyPath, [AGENT.draft]: drafter(cited), [AGENT["change-plan"]]: recommending }
+    const first = await runLean(directory, { sessions: scriptedModel(replies).port, registerDeliverable: registering().registerDeliverable })
+    expect(first.status).toBe("completed")
+    const delivered = registering()
+    const idle = scriptedModel({})
+    const resumed = await runLean(directory, { sessions: idle.port, registerDeliverable: delivered.registerDeliverable })
+    expect(idle.prompts.length + idle.sessions.length).toBe(0)
+    expect(resumed.status).toBe("completed")
+    for (const step of Object.keys(first.stages) as (keyof typeof first.stages)[]) expect([step, resumed.stages[step]?.finished_at]).toEqual([step, first.stages[step]?.finished_at])
   }, 120_000)
 
   test("a review edit with unchanged adjudicated dispositions does not re-run final notes", async () => {

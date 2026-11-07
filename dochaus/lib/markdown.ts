@@ -8,12 +8,33 @@ import { visibleLines, type VisibleLine } from "./markdown-visible-text"
 // Agent-authored bodies use a newline to mean a new paragraph, so make every
 // line its own block. Markdown lists are unaffected: docxodus splits list items
 // into their own paragraphs whether or not blank lines separate them.
+// A CommonMark hard break (a line ending in one unescaped backslash) already
+// means "new line" — once every line is its own block the backslash has nothing
+// left to break and would print literally, so it is dropped. Code fences keep
+// their text as written.
 export function splitBlocks(markdown: string) {
+  let fenced = false
   return markdown
     .split("\n")
     .filter((line) => !isAlignmentWrapper(line))
+    .map((line) => {
+      if (FENCE.test(line)) {
+        fenced = !fenced
+        return line
+      }
+      return fenced ? line : withoutHardBreak(line)
+    })
     .filter((line) => line.trim())
     .join("\n\n")
+}
+
+const FENCE = /^ {0,3}(?:```|~~~)/
+
+/** `line` without a final hard-break backslash: one that is the last
+ * character and not itself escaped. */
+function withoutHardBreak(line: string) {
+  const trailing = line.match(/\\+$/)?.[0].length ?? 0
+  return trailing % 2 === 1 ? line.slice(0, -1) : line
 }
 
 function isAlignmentWrapper(line: string) {

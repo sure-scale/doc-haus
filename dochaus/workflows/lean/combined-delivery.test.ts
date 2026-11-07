@@ -18,7 +18,7 @@ import { openItem } from "./quotes"
 import { LEAN_REQUESTED_FILES_SCHEMA, requestedFilesItems, requestedFilesPlanned, writeRequestedFiles } from "./requested-files"
 import { disclosableItems, type LeanDeps } from "./stages"
 import { leanFile, writeLeanBytes, writeLeanText } from "./state"
-import { cleanupMatters, matter, registering, scriptedModel } from "./test-support"
+import { cleanupMatters, matter, registering, scriptedModel, SOURCE } from "./test-support"
 
 // A document delivered with the requested memo in one file ("Deliverable:
 // combined"). The body is registered as "<stem> - clean" and the notes under
@@ -67,6 +67,22 @@ async function deliver(directory: string) {
   const summary = await recordLeanDocuments(directory, { sessions: scriptedModel({}).port, registerDeliverable: registration.registerDeliverable }, true)
   return { calls: registration.calls, rows: summary.documents.map(row => [row.kind, row.document, row.deliverable]) }
 }
+
+test("a delivered body and its redline cite their sources in reader form; the run's copies keep the markers, and the summary records the delivered bytes", async () => {
+  const directory = matter()
+  writeLeanPlan(directory, [SUPPLY])
+  const cited = `Delivery is due "within thirty days" [source: ${SOURCE}].`
+  await writeCopies(directory, { "d1/body-applied.docx": `# Supply note\n\n${cited}`, "d1/redline.docx": `# Supply note\n\n${cited}`, "drafting-notes.docx": "# Notes\n\nNone." })
+  writeLeanText(directory, "drafting-notes.md", "# Notes\n\nNone.\n")
+  const { rows } = await deliver(directory)
+  const visible = (bytes: Uint8Array) => [...strFromU8(unzipSync(bytes)["word/document.xml"]!).matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map(match => match[1]).join("")
+  for (const [file, kind] of [["d1/body-applied.docx", "body"], ["d1/redline.docx", "redline"]] as const) {
+    const name = rows.find(row => row[0] === kind)![2] as string
+    expect(visible(matterFile(directory, name))).toContain(`Delivery is due "within thirty days" (${SOURCE}).`)
+    expect(visible(new Uint8Array(readFileSync(leanFile(directory, file))))).toContain(cited)
+    expect(readLeanDocuments(directory)!.documents.find(row => row.kind === kind)!.sha256).toBe(sha256(matterFile(directory, name)))
+  }
+})
 
 /** Runs `write` in a registry write transaction, as ingest's writes do. */
 function registry(directory: string, write: (db: Database) => void) {

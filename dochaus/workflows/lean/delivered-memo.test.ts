@@ -12,7 +12,7 @@ import { openItem } from "./quotes"
 import { runLean } from "./runner"
 import { acceptStageReply } from "./stages"
 import { leanFile, readLeanState, readLeanText, readOpenItems, updateLeanStage, writeLeanText, writeOpenItems, writeQuestions, type OpenItem, type Question } from "./state"
-import { AGENT, DRAFT, cleanupMatters, drafter, happyPath, matter, pidOf, registering, sameSession, scriptedModel, type Reply } from "./test-support"
+import { AGENT, DRAFT, SOURCE, cleanupMatters, drafter, happyPath, matter, pidOf, registering, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // The drafting notes, a requested memo or not, are delivered at the gate
 // without their "[ref: …]" markers, and the finding lines the gate composes
@@ -241,6 +241,17 @@ test("a requested memo delivered without findings keeps each quotation whole on 
   expect(deliveredNotes(directory, finalGate(directory))).toBe(["# Cover memo", "",
     `The request says "Deliver within thirty days of the order." and no authority confirms it.`,
     `The schedule defines “Goods , Services” as "the goods  listed".`, ""].join("\n"))
+})
+
+test("delivered notes cite each verified quotation in reader form; the working notes keep the marker the checks read", () => {
+  const directory = matter()
+  writeLeanPlan(directory, [DOCUMENT])
+  const working = ["# Drafting notes", "",
+    `The terms fix "thirty days" [source: ${SOURCE}] (Source: company records), and the request asks to "keep it short" [source: request].`, ""].join("\n")
+  writeLeanText(directory, "drafting-notes.md", working)
+  expect(deliveredNotes(directory, finalGate(directory))).toBe(["# Drafting notes", "",
+    `The terms fix "thirty days" (${SOURCE}) (Source: company records), and the request asks to "keep it short".`, ""].join("\n"))
+  expect(readLeanText(directory, "drafting-notes.md")).toBe(working)
 })
 
 const REQUEST_LOCATOR = ".dochaus/lean/questions.json answer (delivery-start)"

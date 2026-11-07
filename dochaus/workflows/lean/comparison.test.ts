@@ -19,7 +19,7 @@ test("template reuse does not select a source comparison baseline", () => {
   writeLeanBytes(directory, "d1/body.docx", new Uint8Array([1, 2, 3]))
   writeFileSync(path.join(directory, SOURCE), new Uint8Array([4, 5, 6]))
   expect(comparisonBaseline(directory, "d1").bytes).toEqual(Buffer.from([1, 2, 3]))
-  expect(comparisonDescription(directory, "d1")).toContain("initial generated draft")
+  expect(comparisonDescription(directory, "d1")).toBe("Redline shows the changes made in review to the first draft.")
 })
 
 test("explicit comparison uses supplied original bytes and rejects an escaping source", () => {

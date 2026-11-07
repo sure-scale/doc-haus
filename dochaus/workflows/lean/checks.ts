@@ -172,6 +172,9 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   const unsupported = [...new Set(citationRowsForLeanText(directory, "drafting-notes.md", content)
     .filter(row => row.status === "unsupported").map(row => row.citation_text))]
   const reader = memo ? "The memo is" : "The notes are"
+  // The run's own record vocabulary in the notes' prose is workflow text the
+  // lawyer cannot act on; on the last attempt the notes are saved as written.
+  const workflow = options.final ? [] : workflowTerms(delivered.replace(QUOTED, " "))
   return {
     issues: [
       ...(undisclosed.length
@@ -195,11 +198,28 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
       ...(gaps.length
         ? [`The drafting notes leave these placeholders in their own text: ${gaps.join(", ")}. State the point in words, or quote the body's placeholder exactly as its open item records it.`]
         : []),
+      ...(workflow.length
+        ? [`The drafting notes describe the drafting workflow rather than the documents: ${workflow.map(term => `"${term}"`).join(", ")}. ${reader} for the lawyer: say what the delivered documents and their redlines contain, which changes were not made and what remains to do, in plain words, without the workflow's record names, counts or steps.`]
+        : []),
       ...misquoted,
       ...unsupported.map(citation => `The drafting notes cite "${citation}", which no matter source, research row or verified authority supports. Remove the citation or describe the point as needing research.`),
     ],
     openItems: [],
   }
+}
+
+/** The run's own vocabulary: phrases its records and stage prompts use for
+ * its own steps, and a record field name (lower-case snake_case, not part of
+ * a file name). None is how a lawyer describes a document or a change to it.
+ * Code spans and source-marker names are not read: they name, not describe. */
+const WORKFLOW_PHRASES = /\bthis run(?:['’]s)?(?![\w-])|\b(?:initial )?generated draft\b|\breview amendments?\b|\bunapplied (?:review )?(?:amendments?|changes?)\b|\bwithheld[- ]proposals?\b|\bpackage review\b/giu
+const RECORD_NAME = /(?<![\w./\\@:-])[a-z]+(?:_[a-z]+)+(?![\w./\\@:-])/gu
+const NAMED = /`[^`\n]*`|[[(][ \t]*source[ \t]*:[^\])\n]*[\])]/giu
+
+function workflowTerms(text: string) {
+  const read = text.replace(NAMED, " ")
+  const terms = [...read.matchAll(WORKFLOW_PHRASES), ...read.matchAll(RECORD_NAME)].toSorted((a, b) => a.index - b.index)
+  return [...new Set(terms.map(match => match[0].toLowerCase()))].slice(0, 6)
 }
 
 /** Text in straight or curly double quotes. */

@@ -40,6 +40,28 @@ describe("splitBlocks", () => {
     expect(splitBlocks("# Title\n\n\nBody.")).toBe("# Title\n\nBody.")
   })
 
+  test("a hard-break backslash at line end does not print", () => {
+    expect(splitBlocks("Northwind LLC\\\n12 Main Street\\\nBy:\\\nName:")).toBe(
+      "Northwind LLC\n\n12 Main Street\n\nBy:\n\nName:",
+    )
+  })
+
+  test("only a backslash that is the last character is a hard break", () => {
+    expect(splitBlocks("Total \\ \nNext")).toBe("Total \\ \n\nNext")
+  })
+
+  test("three backslashes at line end keep the escaped pair", () => {
+    expect(splitBlocks("Path C:\\\\\\\nNext")).toBe("Path C:\\\\\n\nNext")
+  })
+
+  test("lines inside a code fence keep their backslashes", () => {
+    expect(splitBlocks("```\nline one\\\n```\nAfter\\")).toBe("```\n\nline one\\\n\n```\n\nAfter")
+  })
+
+  test("an escaped trailing backslash and inline escapes are kept", () => {
+    expect(splitBlocks("Path C:\\\\\nPrice \\$5.")).toBe("Path C:\\\\\n\nPrice \\$5.")
+  })
+
   test("html centering wrappers do not render as literal document text", () => {
     expect(splitBlocks("## Instrument Title\n<center>\n\n**CONSENT TO ADOPTION**\n\n</center>\n## 1. Identification")).toBe(
       "## Instrument Title\n\n**CONSENT TO ADOPTION**\n\n## 1. Identification",
