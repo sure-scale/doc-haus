@@ -10,7 +10,7 @@ import { enqueueLeanRequest, drainLeanRequests } from "./requests"
 import { leanSteps } from "./plan"
 import { runLean, stageInputSha } from "./runner"
 import { answerQuestion, readLeanJson, readOpenItems, writeQuestions, writeLeanText } from "./state"
-import { writeInstructionsFile } from "./instructions"
+import { acceptInstructionsReply, confirmationQuestions, writeInstructionsFile } from "./instructions"
 import { AGENT, cleanupMatters, happyPath, matter, scriptedModel, SOURCE, SOURCE_TEXT } from "./test-support"
 
 afterEach(cleanupMatters)
@@ -357,6 +357,41 @@ test("a child source's provenance is a separate labelled line; plain matters' pr
   expect(evidence).toContain(`Evidence source_id values: ${JSON.stringify(["request", SOURCE])}`)
   expect(evidence).toContain(`Source provenance (where each attachment or archive entry came from; display only, not part of the source names or citations): ${JSON.stringify({ [SOURCE]: "attachment of Thread.eml" })}`)
   expect(researchPrompt(directory, "intake", researchBasis(directory))).toContain(`- ${SOURCE} (provenance: attachment of Thread.eml)`)
+})
+
+test("the spine cites the recommendation adopted for a delegated question under its adopted name, verified against its words", () => {
+  const directory = matter()
+  writeQuestions(directory, [
+    { id: "q-venue", stage: "intake", question: "Which courts?", context: "", status: "answered", answer: "The Singapore courts.", answer_kind: "adopted", option_id: "o1" },
+    { id: "q-law", stage: "intake", question: "Which law?", context: "", status: "answered", answer: "Singapore law governs.", answer_kind: "option", option_id: "o1" },
+  ])
+  const reply = (source_id: string, quote: string) => ({ entries: [{ kind: "decision", detail: "Singapore courts and law", evidence: [{ source_id, quote }], limitations: [] }], limitations: [] })
+  const prompt = evidencePrompt(directory, "spine")
+  expect(prompt).toContain(`Evidence source_id values: ${JSON.stringify(["request", SOURCE, "adopted:q-venue"])}`)
+  expect(prompt).toContain('An "adopted:" source_id, as listed, holds the recommendation adopted for a question the lawyer delegated')
+  expect(checkEvidence(directory, "spine", reply("adopted:q-venue", "The Singapore courts."))).toEqual([])
+  expect(checkEvidence(directory, "discrepancy", { ...reply("adopted:q-venue", "The Singapore courts."), entries: [{ ...reply("adopted:q-venue", "The Singapore courts.").entries[0], material: false, status: "benign", resolution: "Noted." }], gaps: [] })).toEqual([])
+  expect(checkEvidence(directory, "spine", reply("request", "Singapore law governs."))).toEqual([])
+  expect(checkEvidence(directory, "spine", reply("adopted:q-venue", "The English courts."))[0]).toContain('as from "adopted:q-venue", but those words are not in the recommendation adopted for that question.')
+  // The adopted words under "request" are pointed to their own name; a question id to the name its words are quoted under.
+  expect(checkEvidence(directory, "spine", reply("request", "The Singapore courts."))[0]).toContain('Quote them under the source name "adopted:q-venue".')
+  expect(checkEvidence(directory, "spine", reply("q-venue", "The Singapore courts."))[0]).toEndWith('"q-venue" names question q-venue, which the lawyer delegated: cite the recommendation adopted for it as "adopted:q-venue".')
+  expect(checkEvidence(directory, "spine", reply("adopted:q-law", "Singapore law governs."))[0]).toEndWith('"adopted:q-law" names question q-law; its answer is the lawyer\'s own: quote the lawyer\'s own answer under "request".')
+})
+
+test("a confirmation question's answer is a label the spine neither reads nor cites", () => {
+  const directory = matter()
+  const quote = "within thirty days of the order date"
+  expect(acceptInstructionsReply(directory, JSON.stringify({ items: [{ text: "State delivery within thirty days.", source_id: SOURCE, quote }], documents: [{ source_id: SOURCE, from: "the client", quote }] })).issues).toEqual([])
+  const [confirmation] = confirmationQuestions(directory)
+  writeQuestions(directory, [{ ...confirmation!, status: "answered", answer: "Follow it as my instructions", answer_kind: "adopted", option_id: "o1" }])
+  writeInstructionsFile(directory)
+  const prompt = evidencePrompt(directory, "spine")
+  expect(prompt).toContain(`Evidence source_id values: ${JSON.stringify(["request", SOURCE])}`)
+  expect(prompt).not.toContain("Follow it as my instructions")
+  expect(prompt).toContain(`- [i1] State delivery within thirty days. (${SOURCE}: "${quote}")`)
+  const reply = { entries: [{ kind: "decision", detail: "The terms are followed", evidence: [{ source_id: confirmation!.id, quote: "Follow it as my instructions" }], limitations: [] }], limitations: [] }
+  expect(checkEvidence(directory, "spine", reply)[0]).toEndWith(`"${confirmation!.id}" names question ${confirmation!.id}, which asks whether to follow "${SOURCE}": its answer is not a source. Quote the words of "${SOURCE}" itself under its name.`)
 })
 
 test("each missed quotation is named by its entry and gets the reason it missed", () => {

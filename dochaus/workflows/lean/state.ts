@@ -511,16 +511,17 @@ export function instructionSettledQuestions(directory: string) {
 
 /** Which answered questions a reader reads: every one by default; with
  * `documents: false`, only run-level ones, which no step asked as its own
- * (stepQuestion); with a predicate, also the steps' questions it accepts. */
-export type AnswerReader = { documents?: false | ((question: Question) => boolean) }
+ * (stepQuestion); with a predicate, also the steps' questions it accepts.
+ * `except` leaves out the questions it accepts, whichever they are. */
+export type AnswerReader = { documents?: false | ((question: Question) => boolean); except?: (question: Question) => boolean }
 
 /** A question a step asked as its own, not a run-level one: a document's, or
  * a package-scope question (kind "scope"), which the plan step or the gate
  * asks and reads itself and which carries no document. */
 const stepQuestion = (question: Question) => Boolean(question.document) || question.kind === "scope"
 
-export const readsQuestion = ({ documents }: AnswerReader) => (question: Question) =>
-  documents === undefined || !stepQuestion(question) || documents !== false && documents(question)
+export const readsQuestion = ({ documents, except }: AnswerReader) => (question: Question) =>
+  !except?.(question) && (documents === undefined || !stepQuestion(question) || documents !== false && documents(question))
 
 /** Canonical text of every lawyer's answer, however given, then each
  * question settled by an instruction, marked as such; the "answers" input of

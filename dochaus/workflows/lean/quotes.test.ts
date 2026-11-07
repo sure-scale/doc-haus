@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
+import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -7,8 +8,12 @@ import { checkDraftingNotes, finalBodyItems } from "./checks"
 import { checkChanges } from "./change-checks"
 import { paragraphSha256 } from "../../lib/drafting-amendment"
 import { finalGate } from "./gate"
-import { writeLeanText, writeOpenItems } from "./state"
-import { proseQuoteIssues, quoteFound, quoteMissIssue, quoteMissItems, sourceQuotes } from "./quotes"
+import { writeLeanText, writeOpenItems, writeQuestions, type Question } from "./state"
+import { acceptInstructionsReply, confirmationQuestions } from "./instructions"
+import { stagePrompt } from "./prompts"
+import { acceptResearchReply } from "./research"
+import { preserveResearchSourceSnapshot } from "../../lib/research-source-snapshot"
+import { proseQuoteIssues, questionSourceNote, quoteFound, quoteMissIssue, quoteMissItems, sourceNameIssue, sourceNameIssues, sourceQuotes } from "./quotes"
 import { SOURCE, cleanupMatters, matter } from "./test-support"
 
 // Quotation matching against indexed source text: exact words, tolerant only of
@@ -699,5 +704,83 @@ describe("lean elided quotation refusals", () => {
     // Of two near placements, the one leaving out least, whichever passage repeats.
     expect(issues(matter(`The Distributor shall purchase the goods each month. ${PURCHASE("in bulk")}`), PURCHASE_QUOTE)).toEqual([near(PURCHASE_QUOTE, "in bulk")])
     expect(issues(matter(`${PURCHASE("each month")} ${PURCHASE("in bulk")}`), PURCHASE_QUOTE)).toEqual([near(PURCHASE_QUOTE, "in bulk")])
+  })
+})
+
+// Retry feedback for a source name: the names accepted, then where a question
+// id's words are quoted and which URL an approved research finding's citation
+// or title stands for.
+describe("lean source names", () => {
+  const ACCEPTED = new Set(["request", SOURCE, "adopted:q-venue"])
+  const generic = (at: string, name: string, adopted = true) =>
+    `${at}.source_id ${JSON.stringify(name)} is not a known source name. Use the exact name of a matter document, "request" for the request and the lawyer's answers, ${adopted ? '"adopted:q-venue" for an adopted answer, ' : ""}or an approved research URL.`
+  const answered = (id: string, answer_kind: Question["answer_kind"], answer: string): Question =>
+    ({ id, stage: "intake", question: `Question ${id}?`, context: "", status: "answered", answer, answer_kind, option_id: "o1" })
+
+  test("an accepted name, a bad shape and an empty quote", () => {
+    expect(sourceNameIssue("e[0]", SOURCE, ACCEPTED)).toBeUndefined()
+    expect(sourceNameIssues("e[0]", "text", ACCEPTED)).toEqual(["e[0] must be {source_id, quote}."])
+    expect(sourceNameIssues("e[0]", { source_id: "memory", quote: " " }, ACCEPTED, matter())).toEqual([generic("e[0]", "memory"), "e[0].quote must be non-empty."])
+    expect(sourceNameIssue("e[0]", undefined, new Set(["request"]))).toBe(generic("e[0]", null as never, false).replace('"null"', "null"))
+  })
+
+  test("without the matter, the accepted names alone say whether a question id has an adopted name", () => {
+    expect(questionSourceNote("q-venue", ACCEPTED)).toBe('"q-venue" names question q-venue, which the lawyer delegated: cite the recommendation adopted for it as "adopted:q-venue".')
+    expect(questionSourceNote("answer:q-law", ACCEPTED)).toBe('"answer:q-law" names question q-law, which was not delegated, so no adopted name holds its answer: quote the lawyer\'s own answer under "request".')
+    expect(questionSourceNote("memory", ACCEPTED)).toBe("")
+    expect(sourceNameIssue("e[0]", "adopted:q-law", ACCEPTED)).toBe(`${generic("e[0]", "adopted:q-law")} ${questionSourceNote("adopted:q-law", ACCEPTED)}`)
+  })
+
+  test("with the matter, the question's own record says where its words are quoted", () => {
+    const directory = matter()
+    writeQuestions(directory, [answered("q-law", "option", "Singapore law governs."), answered("q-venue", "adopted", "The Singapore courts."), answered("q-term", "adopted", "Two years.")])
+    for (const name of ["q-law", "answer:q-law", "adopted:q-law"])
+      expect(questionSourceNote(name, ACCEPTED, directory)).toBe(`${JSON.stringify(name)} names question q-law; its answer is the lawyer's own: quote the lawyer's own answer under "request".`)
+    expect(questionSourceNote("q-venue", ACCEPTED, directory)).toBe('"q-venue" names question q-venue, which the lawyer delegated: cite the recommendation adopted for it as "adopted:q-venue".')
+    expect(questionSourceNote("q-term", ACCEPTED, directory)).toBe('"q-term" names question q-term, which the lawyer delegated; the recommendation adopted for it is the drafter\'s judgment, not a source here. Quote the lawyer\'s request or the matter sources that support the point instead.')
+    // An unanswered or unknown id gets the generic feedback only.
+    expect(questionSourceNote("q-none", ACCEPTED, directory)).toBe("")
+    expect(sourceNameIssue("e[0]", "q-none", ACCEPTED, directory)).toBe(generic("e[0]", "q-none"))
+  })
+
+  test("a confirmation question's id points to the document it asks about", () => {
+    const directory = matter()
+    const quote = "within thirty days of the order date"
+    expect(acceptInstructionsReply(directory, JSON.stringify({ items: [{ text: "Deliver within thirty days.", source_id: SOURCE, quote }], documents: [{ source_id: SOURCE, from: "the client", quote }] })).issues).toEqual([])
+    const [confirmation] = confirmationQuestions(directory)
+    writeQuestions(directory, [{ ...confirmation!, status: "answered", answer: "Follow it as my instructions", answer_kind: "adopted", option_id: "o1" }])
+    expect(questionSourceNote(confirmation!.id, new Set(["request", SOURCE]), directory)).toBe(`"${confirmation!.id}" names question ${confirmation!.id}, which asks whether to follow "${SOURCE}": its answer is not a source. Quote the words of "${SOURCE}" itself under its name.`)
+  })
+
+  test("an approved research finding's citation or title is answered with its URL", () => {
+    const directory = matter()
+    const text = "A party must give written notice before termination."
+    const url = "https://example.gov/legal-notice"
+    const hash = (value: string) => createHash("sha256").update(value).digest("hex")
+    const snapshot = preserveResearchSourceSnapshot(directory, { status: "ok", text, extraction: "text", sourceBytes: Buffer.from(text),
+      descriptor: { originalUrl: url, finalUrl: url, host: "example.gov", fetchedAt: "2026-10-12T00:00:00Z", contentType: "text/plain", byteLength: Buffer.byteLength(text), bodyHash: hash(text), textHash: hash(text), textChars: text.length } }, [{ start: 0, end: text.length, text, term: "notice" }])
+    const finding = { id: "r1", claim: "The provision requires notice", title: "Notice provision", citation: "Notice Rules, r 4", url, snapshot: snapshot.sha256, quote: text,
+      jurisdiction: "Jurisdiction supplied in intake", currentness: "Retrieved version; later changes not independently checked", limitations: "Currency remains to be confirmed" }
+    expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "limited", findings: [finding], limitations: ["Currency remains to be confirmed"] })).issues).toEqual([])
+    expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: ["Currency unconfirmed"], gaps: [] })).issues).toEqual([])
+    const accepted = new Set(["request", SOURCE, url])
+    const hint = `is the citation or title of the approved research finding at "${url}": cite that URL.`
+    expect(sourceNameIssue("b[0]", "notice rules, R 4", accepted, directory)).toBe(`${generic("b[0]", "notice rules, R 4", false)} "notice rules, R 4" ${hint}`)
+    expect(sourceNameIssue("b[0]", "Notice provision", accepted, directory)).toBe(`${generic("b[0]", "Notice provision", false)} "Notice provision" ${hint}`)
+    expect(sourceNameIssue("b[0]", url, accepted, directory)).toBeUndefined()
+    expect(sourceNameIssue("b[0]", "Other rules", accepted, directory)).toBe(generic("b[0]", "Other rules", false))
+  })
+
+  test("the drafting prompt's sources block names each source once and keeps tag names out", () => {
+    const directory = matter()
+    const plain = stagePrompt(directory, "d1.draft", { outline: true })
+    expect(plain).toContain(`To quote the request or the lawyer's answers, including an option the lawyer chose, use the source name "request".`)
+    expect(plain).toContain("Tag names only label the sections of this prompt and are never source names. Cite a source by its exact name with no section suffix, research by its URL, and a quote taken from a group's evidence under the source_id given beside it.")
+    expect(plain).not.toContain('"adopted:')
+    writeQuestions(directory, [answered("q-venue", "adopted", "The Singapore courts."), answered("q-law", "option", "Singapore law governs.")])
+    const delegated = stagePrompt(directory, "d1.draft", { outline: true })
+    expect(delegated).toContain(`To quote the recommendation adopted for question q-venue, which the lawyer delegated, use the source name "adopted:q-venue"; its words are the drafter's judgment, not the lawyer's.`)
+    expect(delegated).toContain(`Only those question ids take an "adopted:" name; every other answer is quoted under "request".`)
+    expect(delegated).not.toContain("adopted:q-law")
   })
 })

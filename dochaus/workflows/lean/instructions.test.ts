@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { writeLegalCompactionPrompt } from "../../plugin/legal/compaction"
-import { checkInstructions, confirmationQuestionID, INSTRUCTIONS_FILE, instructionsPrompt } from "./instructions"
+import { acceptInstructionsReply, checkInstructions, confirmationQuestionID, confirmationQuestions, followsDocument, INSTRUCTIONS_FILE, instructionsPrompt } from "./instructions"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { answeredQuestionsText, readLeanText, readQuestions, writeLeanText, writeQuestions } from "./state"
@@ -118,8 +118,50 @@ test("the list keeps only instructions resting on verified words from the lawyer
   // Words the lawyer did not write, a document not listed as giving directions,
   // and a designation the lawyer never made are each refused.
   expect(checkInstructions(directory, { items: [{ text: "Use English law.", source_id: "request", quote: "under English law" }], documents: [] }).issues).toHaveLength(1)
-  expect(checkInstructions(directory, { items: [{ text: "Deliver in thirty days.", source_id: SOURCE, quote: "within thirty days" }], documents: [] }).issues[0]).toContain("a document listed in documents")
+  expect(checkInstructions(directory, { items: [{ text: "Deliver in thirty days.", source_id: SOURCE, quote: "within thirty days" }], documents: [] }).issues)
+    .toEqual([`items[0].source_id "${SOURCE}" is a matter document not listed in documents. List it there first, with who gives its directions and the words showing it does; an item then uses its name.`])
   expect(checkInstructions(directory, { items: [], documents: [{ source_id: SOURCE, from: "the client", quote: "within thirty days", designated_by: "follow the supply terms" }] }).issues).toHaveLength(1)
+  // A name that is no source is refused with the names accepted; a question id with where its answer is quoted.
+  const listed = [{ source_id: SOURCE, from: "the client", quote: "within thirty days" }]
+  expect(checkInstructions(directory, { items: [{ text: "Deliver in thirty days.", source_id: "answers", quote: "within thirty days" }], documents: listed }).issues)
+    .toEqual([`items[0].source_id "answers" is not a source name here. Use "request" for the lawyer's words, or "${SOURCE}" for a listed document.`])
+  writeQuestions(directory, [{ id: "q-delivery", stage: "intake", question: DELIVERY.question, context: DELIVERY.context, kind: "judgment", status: "answered", answer: "Deliver within thirty days of the order.", answer_kind: "option", option_id: "o1" }])
+  expect(checkInstructions(directory, { items: [{ text: "Deliver in thirty days.", source_id: "q-delivery", quote: "within thirty days" }], documents: [] }).issues)
+    .toEqual(['items[0].source_id "q-delivery" is not a source name here. Use "request" for the lawyer\'s words. "q-delivery" names question q-delivery; its answer is the lawyer\'s own: quote the lawyer\'s own answer under "request".'])
+})
+
+test("the job reads no confirmation question, and the standing an adopted confirmation gives needs no designated_by", () => {
+  const directory = matter()
+  writeLeanText(directory, "request.md", REQUEST)
+  const delivery = { source_id: SOURCE, quote: "within thirty days of the order date" }
+  expect(acceptInstructionsReply(directory, JSON.stringify({ items: [{ text: "State delivery within thirty days.", ...delivery }], documents: [{ source_id: SOURCE, from: "the client", quote: delivery.quote }] })).issues).toEqual([])
+  const [confirmation] = confirmationQuestions(directory)
+  writeQuestions(directory, [
+    { ...confirmation!, status: "answered", answer: "Follow it as my instructions", answer_kind: "adopted", option_id: "o1" },
+    { id: "q-law", stage: "intake", question: LAW.question, context: LAW.context, kind: "instruction", status: "answered", answer: "Singapore law governs." },
+  ])
+  expect(followsDocument(directory, SOURCE)).toBe(true)
+  const prompt = instructionsPrompt(directory)
+  expect(prompt).toContain("- [q-law] Q:")
+  expect(prompt).not.toContain(confirmation!.question)
+  expect(prompt).not.toContain("Follow it as my instructions")
+  // Its label is not a designation, and no longer offered as one.
+  expect(checkInstructions(directory, { items: [], documents: [{ source_id: SOURCE, from: "the client", quote: delivery.quote, designated_by: "Follow it as my instructions" }] }).issues).toHaveLength(1)
+})
+
+test("a document is designated by the lawyer's words, those of an option the lawyer chose, or the recommendation adopted for a delegated question", () => {
+  const directory = matter()
+  writeLeanText(directory, "request.md", REQUEST)
+  writeQuestions(directory, [
+    { id: "q-follow", stage: "intake", question: "Which document governs the drafting?", context: "", kind: "instruction", status: "answered", answer: "Follow the supply terms as the instructions.", answer_kind: "adopted", option_id: "o1" },
+    { id: "q-chosen", stage: "intake", question: "Which terms apply?", context: "", kind: "instruction", status: "answered", answer: "Apply the supply terms throughout.", answer_kind: "option", option_id: "o2" },
+  ])
+  const designated = (designated_by: string) => checkInstructions(directory, { items: [], documents: [{ source_id: SOURCE, from: "the client", quote: "within thirty days of the order date", designated_by }] })
+  expect(designated("from the supply terms").issues).toEqual([])
+  expect(designated("Apply the supply terms throughout.").issues).toEqual([])
+  expect(designated("Follow the supply terms as the instructions.").issues).toEqual([])
+  expect(designated("Follow the supply terms as the instructions.").list?.documents[0]?.designated_by).toBe("Follow the supply terms as the instructions.")
+  expect(designated("Follow the other terms.").issues).toEqual([expect.stringContaining('documents[0].designated_by quotes "Follow the other terms." as from "request", but those words are not in the request')])
 })
 
 test("an instruction from the lawyer's answer is cited as that answer, verified against its words", () => {
@@ -131,6 +173,11 @@ test("an instruction from the lawyer's answer is cited as that answer, verified 
   // Words in the request stay cited as the request; words in no answer are refused.
   expect(checkInstructions(directory, item("under Singapore law")).list?.items[0]?.source_id).toBe("request")
   expect(checkInstructions(directory, item("within forty days")).issues).toHaveLength(1)
+  // The list every stage reads shows the answer under "request", the one name those stages cite the lawyer's words by.
+  expect(acceptInstructionsReply(directory, JSON.stringify(item("within thirty days"))).issues).toEqual([])
+  const text = readLeanText(directory, INSTRUCTIONS_FILE)!
+  expect(text).toContain('- [i1] Deliver within thirty days. (request: "within thirty days")')
+  expect(text).not.toContain("answer:")
 })
 
 test("the compaction handoff carries the confirmed instruction list as written", () => {

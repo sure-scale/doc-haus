@@ -47,7 +47,7 @@ export function spineSplitPrompt(entry: SpineEntry) {
       '- When the entry states one point, reply {"atomic":true}.',
       `- Otherwise reply {"atoms":[{"kind":"${SPINE_KINDS.join("|")}","detail":"...","evidence":[0],"limitations":[]}]} with one atom per point, in the order the entry states them.`,
       "- Each atom's detail uses the entry's own words and adds nothing to them; together the atoms keep everything the entry says.",
-      "- evidence and limitations list the indexes above. Each atom cites the evidence that supports it, at least one when the entry has any, and every evidence and limitation goes to at least one atom. An atom without evidence carries at least one limitation.",
+      "- evidence and limitations list the indexes above. Each atom cites the evidence that supports it, at least one when the entry has any, and every evidence and limitation goes to at least one atom. When the entry has no evidence, each atom carries at least one limitation.",
       "- Answer from the entry above; no lookup is needed. Reply with the JSON object only.",
     ].join("\n")),
   ].join("\n\n")
@@ -79,7 +79,7 @@ export function parseSpineSplit(reply: string, parent: SpineEntry): { issues: st
     if (!(SPINE_KINDS as readonly string[]).includes(row.kind)) own.push(`${at} kind must be ${SPINE_KINDS.join(", ")}.`)
     const evidence = indexes(row.evidence, parent.evidence.length, `${at}.evidence`, "evidence", own)
     const limitations = indexes(row.limitations, parent.limitations.length, `${at}.limitations`, "limitation", own)
-    if (parent.evidence.length && !evidence.length) own.push(`${at} cites no evidence; cite the index of the evidence that supports it.`)
+    if (parent.evidence.length && !evidence.length) own.push(`${at} cites no evidence; a limitation does not replace evidence. Cite the index of the evidence that supports it, 0 to ${parent.evidence.length - 1}.`)
     if (!parent.evidence.length && !limitations.length) own.push(`${at} has no evidence, so it must carry at least one limitation index.`)
     own.push(...added(row.detail, known).map(term => `${at} says ${JSON.stringify(term)}, which the entry does not; use only the entry's own words.`))
     // A figure the entry's quotes state is stated by a quote the atom cites, as the spine check asks of the entry.

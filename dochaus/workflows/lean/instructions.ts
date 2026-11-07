@@ -1,9 +1,9 @@
 import { boundPlaybookContext } from "../../lib/playbook-source"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
 import { parseJsonObject } from "./checks"
-import { excerpt, isAnswerSource, lawyerQuoteSource, matterSourceIDs, quoteFound, quoteMissIssue, REQUEST_SOURCE } from "./quotes"
+import { adoptedSources, excerpt, isAnswerSource, lawyerQuoteSource, matterSourceIDs, questionSourceNote, quoteFound, quoteMissIssue, REQUEST_SOURCE } from "./quotes"
 import type { StageAcceptance } from "./stages"
-import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, shortHash, writeLeanText, type Question } from "./state"
+import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, shortHash, writeLeanText, type AnswerReader, type Question } from "./state"
 
 // The lawyer's instructions for this work as a concise list, made before any
 // question is asked (the instructions step). One focused job lists them, each
@@ -42,7 +42,7 @@ export function instructionsPrompt(directory: string) {
     "An explicit later instruction supersedes an earlier one on that point: list only the current instruction. Do not list questions, suggestions or open points as instructions.",
     "Original request:", readLeanText(directory, "request.md") ?? "",
     "Later instructions in arrival order:", readLeanText(directory, "updated-notes.md") || "None.",
-    "Lawyer's answers:", answeredQuestionsText(directory, { settled: false, documents: false }) || "None.",
+    "Lawyer's answers:", answeredQuestionsText(directory, { settled: false, ...withoutConfirmations(directory) }) || "None.",
     "Matter source names (use these exact names with search-document and read-document):", ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`),
     `Reply with one JSON object only: ${contract}. documents is empty when no matter document gives directions for this work.`,
   ].filter(Boolean).join("\n\n")
@@ -65,7 +65,9 @@ export function checkInstructions(directory: string, value: unknown): { issues: 
     if (!quoteFound(directory, { source_id: row.source_id, quote: row.quote })) issues.push(quoteMissIssue(directory, `${at}.quote`, { source_id: row.source_id, quote: row.quote }, "json"))
     const designated = typeof row.designated_by === "string" && row.designated_by.trim() ? row.designated_by : undefined
     if (row.designated_by !== undefined && !designated) issues.push(`${at}.designated_by must be the exact words saying to follow the document, or omitted.`)
-    if (designated && !quoteFound(directory, { source_id: REQUEST_SOURCE, quote: designated }))
+    // The lawyer's words, or those of a recommendation adopted for a question
+    // the lawyer delegated: an answer the job reads (withoutConfirmations).
+    if (designated && ![REQUEST_SOURCE, ...adoptedSources(directory, withoutConfirmations(directory))].some(source_id => quoteFound(directory, { source_id, quote: designated })))
       issues.push(quoteMissIssue(directory, `${at}.designated_by`, { source_id: REQUEST_SOURCE, quote: designated }, "json"))
     documents.push({ source_id: row.source_id, from: row.from.trim(), quote: row.quote, ...(designated ? { designated_by: designated } : {}) })
   }
@@ -80,7 +82,10 @@ export function checkInstructions(directory: string, value: unknown): { issues: 
     if (row.text.trim().length > MAX_TEXT) issues.push(`${at}.text must be one concise instruction of at most ${MAX_TEXT} characters.`)
     const document = documents.some(document => document.source_id === row.source_id)
     if (row.source_id !== REQUEST_SOURCE && !isAnswerSource(row.source_id) && !document) {
-      issues.push(`${at}.source_id must be "request" or a document listed in documents.`)
+      const listed = documents.map(document => `"${document.source_id}"`)
+      issues.push(names.has(row.source_id)
+        ? `${at}.source_id "${row.source_id}" is a matter document not listed in documents. List it there first, with who gives its directions and the words showing it does; an item then uses its name.`
+        : `${at}.source_id ${JSON.stringify(row.source_id)} is not a source name here. Use "${REQUEST_SOURCE}" for the lawyer's words${listed.length ? `, or ${listed.join(", ")} for a listed document` : ""}. ${questionSourceNote(row.source_id, new Set([REQUEST_SOURCE]), directory)}`.trimEnd())
       continue
     }
     // The lawyer's words are cited where they are: the request (or an
@@ -123,6 +128,14 @@ export function confirmationDocument(directory: string, questionID: string): Ins
   return readInstructionList(directory)?.documents.find(document => confirmationQuestionID(document.source_id) === questionID)
 }
 
+/** The run-level answers less the confirmation questions, whose answer is a
+ * label the document's standing reads (documentStanding), not words to list,
+ * quote or designate a document by: what the instructions job and the spine
+ * read as the lawyer's answers. */
+export function withoutConfirmations(directory: string): AnswerReader {
+  return { documents: false, except: question => confirmationDocument(directory, question.id) !== undefined }
+}
+
 /** Each listed document's standing: followed when the lawyer's words
  * designate it or the lawyer chose (or adopted) to follow it; evidence only
  * once the confirmation question has any other answer; otherwise awaiting
@@ -161,13 +174,14 @@ export function instructionsText(directory: string) {
   const list = readInstructionList(directory)
   if (!list) return ""
   const items = currentInstructions(directory)
-  const line = (item: Instruction) => `- [${item.id}] ${item.text} (${item.source_id}: "${excerpt(item.quote, 160)}")`
+  // The lawyer's answers are quoted under "request", as every stage cites them; the saved list keeps the answer's own name.
+  const line = (item: Instruction) => `- [${item.id}] ${item.text} (${isAnswerSource(item.source_id) ? REQUEST_SOURCE : item.source_id}: "${excerpt(item.quote, 160)}")`
   const followed = items.filter(item => item.standing !== "confirm")
   const awaiting = list.documents.filter(document => documentStanding(directory, document) === "confirm")
   return [
     "# The lawyer's instructions",
     "",
-    "Each item is from the lawyer's words (request: the request or a later instruction; answer:<question id>: the lawyer's answer to that question), or a document the lawyer said to follow, quoted after it. An explicit later instruction supersedes an earlier one on that point.",
+    "Each item is from the lawyer's words (request: the request, a later instruction or the lawyer's answer to a question), or a document the lawyer said to follow, quoted after it. An explicit later instruction supersedes an earlier one on that point.",
     "",
     ...(followed.length ? followed.map(line) : ["- None beyond the request."]),
     ...awaiting.flatMap(document => [
