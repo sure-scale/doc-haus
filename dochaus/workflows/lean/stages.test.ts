@@ -172,8 +172,8 @@ describe("lean engine session port", () => {
 describe("lean stage keys", () => {
   afterEach(cleanupMatters)
 
-  test("an answer to a document's question re-keys no preparation step but the act record for a package-scope answer, only that document's steps; a run-level answer re-keys them", () => {
-    const steps = ["instructions", "acts", "spine", "d1.review"] as const
+  test("an answer to a document's question re-keys no preparation step, a package-scope answer only the act record and only the plan step's; a run-level answer re-keys them", () => {
+    const steps = ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.review"] as const
     const keys = (questions: Question[]) => {
       const directory = matter()
       writeLeanPlan(directory, [{ title: "Supply note", purpose: "Supply note", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
@@ -188,8 +188,15 @@ describe("lean stage keys", () => {
     expect(review).not.toBe(noneReview)
     const intake = keys([answered])
     for (const step of steps) expect([step, intake[step] === none[step]]).toEqual([step, false])
-    // A document's package-scope answer can direct acts, so it re-keys the act record too.
-    const scope = keys([{ ...answered, id: `${PACKAGE_SCOPE_QUESTION}late`, stage: "draft", document: "d1" }])
+    // The plan step's package-scope answer can direct acts, so it re-keys the
+    // act record too. Its question carries the step's document, as the runner
+    // records every document step's questions.
+    const scope = keys([{ ...answered, id: `${PACKAGE_SCOPE_QUESTION}late`, stage: "draft", document: "d1", kind: "scope" }])
     for (const step of steps) expect([step, scope[step] === none[step]]).toEqual([step, step !== "acts" && step !== "d1.review"])
+    // The gate's package-scope question carries no document and is asked once
+    // the plan is saved: its answer re-keys no preparation step, the act record
+    // included; the gate reads it itself and the document through its review.
+    const gate = keys([{ ...answered, id: `${PACKAGE_SCOPE_QUESTION}gate`, stage: "gate", kind: "scope", mixed: true }])
+    for (const step of steps) expect([step, gate[step] === none[step]]).toEqual([step, step !== "d1.review"])
   })
 })

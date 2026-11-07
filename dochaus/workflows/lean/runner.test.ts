@@ -5,11 +5,12 @@ import { stagePrompt } from "./prompts"
 import { checkChanges } from "./change-checks"
 import { readParagraphs } from "./checks"
 import type { GateResult } from "./gate"
+import { packageScopeQuestionID } from "./package-scope"
 import { enqueueLeanRequest } from "./requests"
 import type { RepairRound } from "./repairs"
 import { runLean } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS } from "./stages"
-import { leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText } from "./state"
+import { leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
 import { AGENT, DRAFT, NO_FINDINGS, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, matter, noChanges, pidOf, registering, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // Real coordinator, checkers, renderer, pointer applier and comparison. Only the
@@ -285,5 +286,33 @@ describe("lean drafting runner", () => {
       expect([step, resumed.stages[step]?.status, resumed.stages[step]?.input_sha === blocked.stages[step]!.input_sha]).toEqual([step, "done", false])
     expect(answered.count(AGENT.review)).toBe(1)
     expect(answered.prompts.find(prompt => prompt.agent === AGENT.changes)!.text).toContain("No remedy; leave the terms silent.")
+  }, 120_000)
+
+  test("an answer to the gate's package-scope question after delivery keeps instructions through spine done and re-runs only the document's review and change path and the gate", async () => {
+    const preparation = ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine"] as const
+    const directory = matter()
+    const delivered = await runLean(directory, { sessions: scriptedModel(happyPath).port })
+    expect(delivered.status).toBe("completed")
+    // The gate's question as it asks it: the package's scope, with no document, and delivery not held.
+    const question: Question = { id: packageScopeQuestionID(["Payment is due on delivery."]), stage: "gate", status: "open", kind: "scope", mixed: true,
+      question: "The checklist check left this instruction open, so the package may not carry it:\nState when payment is due. No open decision recorded; state what is missing.\nAnswer the open decisions above (supply any missing fact or approval they name). If the package should carry it, say which planned document carries it; otherwise say it is outside this request.",
+      context: "Until a later check settles this instruction, it is disclosed with the review draft as left open; delivery is not held for it." }
+    writeQuestions(directory, [...readQuestions(directory), question])
+    enqueueLeanRequest(directory, { kind: "answer", question_id: question.id, answer: "Outside this request." })
+    const answered = scriptedModel(happyPath)
+    const resumed = await runLean(directory, { sessions: answered.port })
+
+    expect(resumed.status).toBe("completed")
+    for (const step of preparation) {
+      expect([step, resumed.stages[step]?.status, resumed.stages[step]?.input_sha]).toEqual([step, "done", delivered.stages[step]!.input_sha!])
+      expect([step, answered.count(AGENT[step])]).toEqual([step, 0])
+    }
+    expect(answered.count(AGENT.draft)).toBe(0)
+    expect(resumed.stages["d1.draft"]?.input_sha).toBe(delivered.stages["d1.draft"]!.input_sha!)
+    // The answer reaches the document through its own review onward, and the gate, which reads its own questions.
+    for (const step of ["d1.review", "d1.change-plan", "gate"] as const)
+      expect([step, resumed.stages[step]?.status, resumed.stages[step]?.input_sha === delivered.stages[step]!.input_sha]).toEqual([step, "done", false])
+    expect(answered.count(AGENT.review)).toBe(1)
+    expect(readQuestions(directory)).toContainEqual(expect.objectContaining({ id: question.id, status: "answered", answer: "Outside this request." }))
   }, 120_000)
 })

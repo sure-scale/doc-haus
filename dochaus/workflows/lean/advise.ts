@@ -7,7 +7,7 @@ import { intakeActingFor, matterDatesBlock } from "./intake"
 import { FIRST_DOCUMENT, planActingFor, readLeanPlan, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, tagged } from "./prompts"
 import { REQUEST_SOURCE, isAnswerSource, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
-import { scopeQuestionTitles } from "./package-coverage"
+import { scopeQuestionOffersNewDocument, scopeQuestionTitles } from "./package-coverage"
 import { matterClient } from "../../lib/matter-client"
 import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../lib/source-provenance"
 import { confirmationDocument, currentInstructions, INSTRUCTIONS_FILE, type Instruction, type InstructionDocument } from "./instructions"
@@ -269,9 +269,16 @@ function adviceOptions(directory: string, question: Question, value: unknown, re
   const issues = [
     ...(recommended ? texts.length < 2 || texts.length > 4 ? ["Give 2 to 4 options with a recommendation."] : [] : texts.length === 1 || texts.length > 4 ? ['Give no options, or 2 to 4, with "unavailable".'] : []),
     ...(new Set(texts.map(optionKey)).size < texts.length ? ["Each option must differ from the others."] : []),
-    ...(question.kind === "scope" ? sourceCarrierIssues(directory, question, texts) : []),
+    ...(question.kind === "scope" ? [...sourceCarrierIssues(directory, question, texts), ...plannedCarrierIssues(directory, question, texts)] : []),
   ]
   return issues.length ? { issues } : { issues: [], options: texts.map((text, index) => ({ id: `o${index + 1}`, text })) }
+}
+
+/** The names an option may put an act or instruction in: the planned
+ * documents' titles and files and, as the plan the question asks about may not
+ * be saved yet, the titles the question shows. */
+function plannedCarrierNames(directory: string, question: Question) {
+  return [...(readLeanPlan(directory)?.documents ?? []).flatMap(document => [document.title, ...(document.file ? [document.file] : [])]), ...scopeQuestionTitles(question)]
 }
 
 /** A package-scope option may put an act in a planned document, a new one or
@@ -279,10 +286,9 @@ function adviceOptions(directory: string, question: Question, value: unknown, re
  * only planned documents. An option naming a source by its file name is refused
  * unless it also names a planned document, whose title may hold a source's.
  * A source's title alone is ordinary prose ("an amendment to the Supply
- * Agreement") and passes. The plan the question asks about may not be saved
- * yet, so the planned documents the question shows count too. */
+ * Agreement") and passes. */
 function sourceCarrierIssues(directory: string, question: Question, texts: string[]) {
-  const planned = [...(readLeanPlan(directory)?.documents ?? []).flatMap(document => [document.title, ...(document.file ? [document.file] : [])]), ...scopeQuestionTitles(question)]
+  const planned = plannedCarrierNames(directory, question)
   const sources = matterSourceIDs(directory)
   return texts.flatMap(text => {
     const source = sources.find(name => holdsName(text, name))
@@ -290,6 +296,25 @@ function sourceCarrierIssues(directory: string, question: Question, texts: strin
       ? [`Option ${JSON.stringify(text)} puts the act in ${JSON.stringify(source)}, an uploaded matter source the package does not write: offer a planned document, a new document, or "outside this request".`] : []
   })
 }
+
+/** A package-scope question asked about a saved plan (the gate's, or the plan
+ * step's recheck) asks only which planned document carries the item, or
+ * whether it is outside this request; the run cannot act on anything else. An
+ * option that neither names a planned document (by title or file, in any case)
+ * nor says the item is outside this request is refused. One that offers a new
+ * document (scopeQuestionOffersNewDocument) is checked by sourceCarrierIssues
+ * alone: a new document is named in words no list holds. */
+function plannedCarrierIssues(directory: string, question: Question, texts: string[]) {
+  if (scopeQuestionOffersNewDocument(question)) return []
+  const planned = plannedCarrierNames(directory, question)
+  const named = planned.length ? ` (${planned.map(name => JSON.stringify(name)).join(", ")})` : ""
+  return texts.flatMap(text => planned.some(name => holdsName(text, name, "iu")) || OUTSIDE_REQUEST.test(normalize(text)) ? []
+    : [`Option ${JSON.stringify(text)} neither names a planned document nor says the item is outside this request: the run can only carry it in a planned document or leave it out. Name the planned document that carries it, by its title or file${named}, or say it is outside this request.`])
+}
+
+/** Words that put an item outside this request: "outside" and, in the same
+ * clause, "request" ("outside this request", "outside the scope of the request"). */
+const OUTSIDE_REQUEST = /\boutside\b[^.;:]*\brequest\b/iu
 
 /** Whether `text` holds `name` as whole words; a source's name as written, a planned document's in any case. */
 function holdsName(text: string, name: string, flags = "u") {

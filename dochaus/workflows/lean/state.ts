@@ -506,20 +506,26 @@ export function instructionSettledQuestions(directory: string) {
 }
 
 /** Which answered questions a reader reads: every one by default; with
- * `documents: false`, only run-level ones, which no document's step asked; with
- * a predicate, also the document's questions it accepts. */
+ * `documents: false`, only run-level ones, which no step asked as its own
+ * (stepQuestion); with a predicate, also the steps' questions it accepts. */
 export type AnswerReader = { documents?: false | ((question: Question) => boolean) }
 
+/** A question a step asked as its own, not a run-level one: a document's, or
+ * a package-scope question (kind "scope"), which the plan step or the gate
+ * asks and reads itself and which carries no document. */
+const stepQuestion = (question: Question) => Boolean(question.document) || question.kind === "scope"
+
 export const readsQuestion = ({ documents }: AnswerReader) => (question: Question) =>
-  documents === undefined || !question.document || documents !== false && documents(question)
+  documents === undefined || !stepQuestion(question) || documents !== false && documents(question)
 
 /** Canonical text of every lawyer's answer, however given, then each
  * question settled by an instruction, marked as such; the "answers" input of
  * every drafting stage and its key. The instructions step reads the lawyer's
  * answers alone (`settled: false`): what an instruction settled is not a new
- * instruction. The preparation steps ask no document's questions and read only
- * run-level answers (`documents: false`; the act record also package-scope
- * ones), so answering a document's question keeps them done; that answer
+ * instruction. The preparation steps ask no document's or package-scope
+ * questions and read only run-level answers (`documents: false`; the act
+ * record also the plan step's package-scope ones), so answering a document's
+ * question, or the gate's package-scope one, keeps them done; that answer
  * reaches the document through its own steps. */
 export function answeredQuestionsText(directory: string, options: AnswerReader & { settled?: false } = {}) {
   return [...answeredQuestions(directory), ...options.settled === false ? [] : instructionSettledQuestions(directory)]

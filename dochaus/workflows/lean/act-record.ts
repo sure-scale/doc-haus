@@ -174,9 +174,13 @@ const HOW_JOB = [
 ].join("\n")
 
 /** The answers the act record reads, in its prompts and its key: the run-level
- * ones, as every preparation step, and a document's package-scope answers,
- * which can direct acts the plan's coverage then takes from the record. */
-export const ACT_RECORD_ANSWERS: AnswerReader = { documents: answeredScopeQuestion }
+ * ones, as every preparation step, and the plan step's package-scope answers,
+ * which can direct acts the plan's coverage then takes from the record. The
+ * gate's package-scope answer is given once the plan is saved: it adds no
+ * document, the gate settles it from questions.json, and it reaches a drafted
+ * document through that document's own review and change path, so it re-keys
+ * neither the record nor, through acts.json, the spine. */
+export const ACT_RECORD_ANSWERS: AnswerReader = { documents: question => question.stage === "draft" && answeredScopeQuestion(question) }
 
 /** The material every act-record prompt starts with, byte for byte: built only
  * from the run's saved instructions, approved research and source names, in a

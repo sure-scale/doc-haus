@@ -692,7 +692,7 @@ export function coverageScopeQuestion(acts: CoverageAct[], documents: PlannedDoc
       ...open.map(act => actLine(act, documents, excerpt(act.quote))),
       options.saved
         ? `${several ? "For each, which" : "Which"} planned document, executed by those parties, should carry it, or is it outside this request?`
-        : `${several ? "For each, should" : "Should"} the package add a document, or change a planned one, so that those parties take it, or is it outside this request? If the package should carry it, say in which document and who executes it.`].join(" "),
+        : `${several ? "For each, should" : "Should"} ${NEW_DOCUMENT_OFFER}, so that those parties take it, or is it outside this request? If the package should carry it, say in which document and who executes it.`].join(" "),
     context: options.saved
       ? 'Drafting waits for your answer. The saved document plan, including any edits to it, is kept as it stands: to add a document, stop this draft with "Stop draft", then start a new one, which plans the package from the start.'
       : "Drafting waits for your answer. The document plan is drawn up with your answer before any part is drafted.",
@@ -1034,6 +1034,18 @@ const label = (document: PlannedDocument) => `${document.id} "${document.title}"
 /** The titles of the planned documents a package-scope question shows by label. */
 export function scopeQuestionTitles(question: Pick<Question, "question">) {
   return [...question.question.matchAll(/\bd[1-9]\d* "([^"]*)"/g)].map(match => match[1]!)
+}
+
+/** The words with which the plan step's package-scope question, asked before
+ * its plan is saved, offers a new document (coverageScopeQuestion). */
+const NEW_DOCUMENT_OFFER = "the package add a document, or change a planned one"
+
+/** Whether a package-scope question offers a new document: only the plan
+ * step's, asked before its plan is saved. Asked about a saved plan, by the plan
+ * step or the gate, it offers only a planned document or outside this request:
+ * a document is added only by a new drafting request. */
+export function scopeQuestionOffersNewDocument(question: Pick<Question, "question">) {
+  return question.question.includes(NEW_DOCUMENT_OFFER)
 }
 
 /** The one act an entry describes: what is to be done, ignoring spacing and

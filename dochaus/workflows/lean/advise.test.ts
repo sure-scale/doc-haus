@@ -91,6 +91,26 @@ describe("advice checker", () => {
     expect(checkAdvice(directory, SCOPE, JSON.stringify(scopeReply("Put it in the supply-terms side letter, signed by both"))).issues).toEqual([])
   })
 
+  test("a scope option on a saved plan names a planned document or puts the item outside this request; the plan step's unsaved question still offers a new document", () => {
+    const directory = matter()
+    writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record the delivery terms", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
+    // The gate's question, asked once the plan is saved, as the gate asks it.
+    const gate: Question = { id: "package-scope-gate", stage: "gate", status: "open", kind: "scope", mixed: true, context: "Delivery is not held for it.",
+      question: "The checklist check left this instruction open, so the package may not carry it:\nState when payment is due. Open decisions: whether payment is due on delivery.\nAnswer the open decisions above (supply any missing fact or approval they name). If the package should carry it, say which planned document carries it; otherwise say it is outside this request." }
+    const reply = (...texts: string[]) => JSON.stringify({ options: texts.map(text => ({ text })), recommendation: { option: texts[0], rationale: "The supply terms set payment on delivery.", basis: BASIS } })
+    const held = checkAdvice(directory, gate, reply("Hold the note in draft until the payment terms are confirmed", "Outside this request"))
+    expect(held.advice).toBeUndefined()
+    expect(held.issues).toEqual(['Option "Hold the note in draft until the payment terms are confirmed" neither names a planned document nor says the item is outside this request: the run can only carry it in a planned document or leave it out. Name the planned document that carries it, by its title or file ("Supply note", "supply-note.docx"), or say it is outside this request.'])
+    expect(checkAdvice(directory, gate, reply("Carry it in the supply note: payment is due on delivery", "Treat it as outside the scope of this request")).advice).toMatchObject({ recommendation: { option: "o1" } })
+    expect(checkAdvice(directory, gate, reply("Put it in supply-note.docx", "Outside this request")).issues).toEqual([])
+    // The plan step's recheck of a saved plan offers no new document either; the documents it labels count as planned.
+    const saved = { ...SCOPE, question: SCOPE.question.replace(/no planned document carries it\. Should .*$/, 'planned in d2 "Side letter", executed by "Supplier". Which planned document, executed by those parties, should carry it, or is it outside this request?') }
+    expect(checkAdvice(directory, saved, reply("The side letter, executed by the supplier and the buyer", "Outside this request")).issues).toEqual([])
+    expect(checkAdvice(directory, saved, reply("A new letter executed by the supplier and the buyer", "Outside this request")).issues).toHaveLength(1)
+    // Before its plan is saved, the plan step's question offers a new document, which no list names.
+    expect(checkAdvice(matter(), SCOPE, reply("A new letter executed by the supplier and the buyer", "Outside this request")).issues).toEqual([])
+  })
+
   const rejected: [string, unknown, string, Question?][] = [
     ["a reply that is not JSON", "Thirty days, I think.", "JSON"],
     ["both a recommendation and unavailable", { ...VALID, ...UNAVAILABLE }, "exactly one"],

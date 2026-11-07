@@ -249,9 +249,10 @@ const DISCLOSED_STAGES: StageID[] = ["spine", "research", "research-review", "ch
  * research, an earlier document's final text and accepted explanations, and
  * whom the lawyer acts for reach a drafted document as amendments through its
  * review and change-plan keys. Answers are inputs of every other step; the
- * preparation steps (instructions to spine) read only run-level answers, and
- * the act record also a document's package-scope answers (ACT_RECORD_ANSWERS),
- * as the document's own steps read its questions' answers. The
+ * preparation steps (instructions to spine) read only run-level answers (no
+ * document's and no package-scope question's), and the act record also the
+ * plan step's package-scope answers (ACT_RECORD_ANSWERS), as the document's
+ * own steps read its questions' answers and the gate its own. The
  * changes step's own previous output
  * and open questions are shown to it but are not inputs, so its output never
  * changes its own key. The planned documents' ids, titles and purposes are
