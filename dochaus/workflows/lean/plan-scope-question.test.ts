@@ -14,7 +14,7 @@ import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES, outlineBasis } from "./stages"
 import { leanFile, readLeanJson, readLeanState, readQuestions, shortHash, updateLeanStage, writeLeanText, writeQuestions, type LeanState, type Question } from "./state"
-import { AGENT, NO_FINDINGS, actRecordOf, cleanupMatters, draftingNotes, matter, noChanges, placementJob, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, actRecordOf, cleanupMatters, draftingNotes, labelledPart, matter, noChanges, placementJob, scriptedModel, type Reply } from "./test-support"
 
 // The plan step's package-scope question: when the outline's coverage check
 // still leaves an instructed act without a document executed by the parties
@@ -77,7 +77,7 @@ const openChecklist: Record<string, Reply> = {
 /** The outline agent: `first` answers the outline prompt, `revised` any
  * revision request, and each part gets one plain paragraph. */
 const outliner = (first: string, revised = first): Reply => text =>
-  /^Draft part \d+ of \d+ of "/m.test(text) ? "The terms are recorded." : text.startsWith(REVISE) ? revised : first
+  /^Draft part \d+ of \d+ of "/m.test(text) ? labelledPart(text, "The terms are recorded.") : text.startsWith(REVISE) ? revised : first
 
 /** A whole run: the act record lists the act, the outline keeps one document
  * whatever the coverage job reports, and the later steps find nothing to change. */

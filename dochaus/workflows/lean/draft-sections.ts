@@ -671,19 +671,23 @@ function sectionHandoff(directory: string, document: DocID) {
   ].join("\n\n")
 }
 
-/** Checks one part reply. The outlined heading is the authority for the part's
- * first line: a reply that starts straight into its text gets that heading.
- * The document title, where publication prints it (not in a letter), is
- * printed once, above the first part, and a part's display heading, or its
- * label where that is printed, from its first line: a part whose text opens
- * with a line repeating what is printed above it (openingRepeats) is retried,
- * and on the last attempt (`final`) kept without that line. */
+/** Checks one part reply. The part begins at its label, the line "## " plus
+ * its outlined heading: plain lines before it (a sentence announcing the
+ * part) are left out, and a reply without it is retried, so narration is
+ * never taken for the part's text. The document title, where publication
+ * prints it (not in a letter), is printed once, above the first part, and a
+ * part's display heading, or its label where that is printed, from its first
+ * line: a part whose text opens with a line repeating what is printed above
+ * it (openingRepeats) is retried, and on the last attempt (`final`) kept
+ * without that line. */
 export function checkSection(reply: string, outline: DraftOutline, index: number, final = false): Checked<string> {
   const { heading, display_heading: display } = outline.parts[index]!
   if (!reply.trim()) return { issues: [`The reply was empty. Reply with the text of the part "${heading}".`] }
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  const body = reply.trim().replace(/\r\n/g, "\n")
-  const drafted = /^#{1,2}\s/.test(body) ? body : `## ${heading}\n\n${body}`
+  const lines = reply.trim().replace(/\r\n/g, "\n").split("\n")
+  const label = lines.findIndex(line => /^##\s/.test(line) && normalizedHeading(line.replace(/^##\s+/, "")) === normalizedHeading(heading))
+  // A heading before the label is not narration; the checks below report it.
+  const drafted = (label > 0 && lines.slice(0, label).every(line => !/^#{1,6}\s/.test(line.trim())) ? lines.slice(label) : lines).join("\n")
   const opening = openingRepeats(drafted, {
     title: titleAbove(outline, index),
     heading: display === undefined ? heading : display || undefined,
@@ -692,10 +696,9 @@ export function checkSection(reply: string, outline: DraftOutline, index: number
   const [first = "", ...rest] = text.split("\n")
   const others = new Set(outline.parts.filter((_, at) => at !== index).map(part => normalizedHeading(part.heading)))
   const strays = rest.map(line => /^##\s+(.+)$/.exec(line.trim())?.[1]).filter((name): name is string => Boolean(name) && others.has(normalizedHeading(name!)))
+  const labelled = /^##\s/.test(first) && normalizedHeading(first.replace(/^##\s+/, "")) === normalizedHeading(heading)
   const issues = [
-    ...(normalizedHeading(first.replace(/^##\s+/, "")) !== normalizedHeading(heading) || !/^##\s/.test(first)
-      ? [`Begin the part with the line "## ${heading}".`]
-      : []),
+    ...(labelled ? [] : [`Begin the part with the line "## ${heading}".`]),
     ...(rest.some(line => /^#\s+\S/.test(line.trim()))
       ? ["The part contains a \"# \" title line. Only the document title uses \"# \"; use \"### \" or lower headings inside a part."]
       : []),
@@ -705,7 +708,8 @@ export function checkSection(reply: string, outline: DraftOutline, index: number
     ...(!strays.length && rest.some(line => /^##\s+\S/.test(line.trim()))
       ? ['The part contains a "## " heading in its body. Only its first line identifies the part; use "### " or lower headings inside it.']
       : []),
-    ...(!rest.some(line => line.trim() && !/^#{1,6}\s/.test(line.trim())) ? [`The part "${heading}" has no text under its heading.`] : []),
+    // A reply without its label is retried for the label; its text is not under a heading yet.
+    ...(labelled && !rest.some(line => line.trim() && !/^#{1,6}\s/.test(line.trim())) ? [`The part "${heading}" has no text under its heading.`] : []),
   ]
   const repeated = opening.issues
   if (issues.length) return { issues: [...repeated, ...issues] }

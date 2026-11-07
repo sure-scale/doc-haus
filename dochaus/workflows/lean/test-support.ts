@@ -237,6 +237,13 @@ export function drafter(...documents: string[]): Reply {
   }
 }
 
+/** A scripted part reply: `text` under the label the part prompt asks for,
+ * which the section check requires as the part's first line. */
+export function labelledPart(prompt: string, text: string) {
+  const heading = /^Draft part \d+ of \d+ of "[^"]*": (.+)$/m.exec(prompt)?.[1]
+  return heading ? `## ${heading}\n\n${text}` : text
+}
+
 export function pidOf(prompt: string, text: string) {
   const pid = new RegExp(`\\[(p[0-9a-f]{12})\\] ${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).exec(prompt)?.[1]
   if (!pid) throw new Error(`The prompt does not list a paragraph starting "${text}".`)

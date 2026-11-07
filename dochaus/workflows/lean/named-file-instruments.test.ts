@@ -8,7 +8,7 @@ import { readLeanPlan, type PlannedDocument } from "./plan"
 import { foldRequestedFiles, type RequestedFile } from "./requested-files"
 import { runLean } from "./runner"
 import { leanFile, readQuestions, writeLeanText, type Question } from "./state"
-import { AGENT, NO_FINDINGS, actRecordOf, cleanupMatters, draftingNotes, matter, noChanges, placementJob, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, actRecordOf, cleanupMatters, draftingNotes, labelledPart, matter, noChanges, placementJob, scriptedModel, type Reply } from "./test-support"
 
 // A request that names one file, and a plan that needs a second instrument
 // executed by other parties: the second instrument is drafted as a separate
@@ -97,7 +97,7 @@ test("a later title starts a new page; a document with one title gains no page b
 test("through the run, the named file is one body holding both instruments, and the coverage check holds on it", async () => {
   const directory = matter(SOURCE_TEXT)
   writeLeanText(directory, "request.md", REQUEST)
-  const outliner: Reply = text => /^Draft part \d+ of \d+ of "/m.test(text) ? "The terms are recorded." : TWO
+  const outliner: Reply = text => /^Draft part \d+ of \d+ of "/m.test(text) ? labelledPart(text, "The terms are recorded.") : TWO
   const model = scriptedModel({
     [AGENT.draft]: outliner,
     [AGENT.files]: () => JSON.stringify({ stated: true, files: [PACKED] }),
