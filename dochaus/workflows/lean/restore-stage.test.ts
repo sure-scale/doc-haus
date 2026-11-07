@@ -44,7 +44,7 @@ test("restoring to just after a step re-runs only the later steps, from that sta
   const resume = scriptedLeanModel({ [LEAN_STAGE_AGENTS.finalize]: happyLeanReplies()[LEAN_STAGE_AGENTS.finalize] })
   const resumed = await runLean(directory, { sessions: resume.port })
   expect(resumed.status).toBe("completed")
-  expect(resume.agents()).toEqual(["lean-checklist-extract", LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS["package-review"]])
+  expect(resume.agents()).toEqual([LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS["package-review"]])
   expect(resumed.stages.finalize?.status).toBe("done")
   expect(readLeanText(directory, "drafting-notes.md")).toBe(notes)
   expect(resumed.stages["d1.draft"]?.finished_at).toBe(first.stages["d1.draft"]?.finished_at)
@@ -55,6 +55,31 @@ test("restoring to just after a step re-runs only the later steps, from that sta
   expect(sinceRestore.filter(event => ["skipped", "started"].includes(event.event)).map(event => `${event.event}:${event.document ?? ""}${event.stage}`)).toEqual([
     "skipped:instructions", "skipped:discrepancy", "skipped:intake", "skipped:research", "skipped:research-review", "skipped:acts", "skipped:spine", "skipped:d1draft", "skipped:d1review", "skipped:d1review-independent", "skipped:d1review-wording", "skipped:d1review-client-disadvantage", "skipped:d1change-plan", "skipped:d1change-prepare", "skipped:d1changes", "started:d1change-review", "started:d1apply", "started:finalize", "started:checklist-check", "started:package-review", "started:gate",
   ])
+}, 120_000)
+
+test("restoring from the first draft on keeps the checklist extraction, whose own key decides a re-extraction", async () => {
+  const directory = leanFixtureMatter("lean-restore-")
+  directories.push(directory)
+  expect((await runLean(directory, { sessions: scriptedLeanModel().port })).status).toBe("completed")
+  const extraction = readFileSync(leanFile(directory, "checklist/extraction.json"), "utf8")
+
+  restoreLeanStage(directory, "d1.draft")
+  expect(readFileSync(leanFile(directory, "checklist/extraction.json"), "utf8")).toBe(extraction)
+  const reused = scriptedLeanModel({ ...happyLeanReplies() })
+  expect((await runLean(directory, { sessions: reused.port })).status).toBe("completed")
+  expect(reused.agents()).not.toContain("lean-checklist-extract")
+
+  // A source record keyed by other inputs is stale and extracted again.
+  const saved = JSON.parse(readFileSync(leanFile(directory, "checklist/extraction.json"), "utf8"))
+  saved.sources[0].input_sha = "0".repeat(40)
+  writeFileSync(leanFile(directory, "checklist/extraction.json"), JSON.stringify(saved))
+  restoreLeanStage(directory, "d1.changes")
+  const stale = scriptedLeanModel({ [LEAN_STAGE_AGENTS.finalize]: happyLeanReplies()[LEAN_STAGE_AGENTS.finalize] })
+  expect((await runLean(directory, { sessions: stale.port })).status).toBe("completed")
+  expect(stale.agents()[0]).toBe("lean-checklist-extract")
+
+  restoreLeanStage(directory, "spine")
+  expect(existsSync(leanFile(directory, "checklist/extraction.json"))).toBe(false)
 }, 120_000)
 
 test("restoring a step that never ran is refused without touching the run", async () => {
@@ -104,7 +129,7 @@ test("restoring derives instructions from a preserved evidence-only answer befor
   const resume = scriptedLeanModel()
   const resumed = await runLean(directory, { sessions: resume.port })
   expect(resumed.status).toBe("completed")
-  expect(resume.agents()).toEqual(["lean-checklist-extract", LEAN_STAGE_AGENTS["package-review"]])
+  expect(resume.agents()).toEqual([LEAN_STAGE_AGENTS["package-review"]])
   for (const step of ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.draft", "d1.apply"] as const) {
     expect(resumed.stages[step]?.input_sha).toBe(restored.stages[step]?.input_sha)
     expect(resumed.stages[step]?.finished_at).toBe(completed.stages[step]?.finished_at)
@@ -163,7 +188,7 @@ test("restoring puts back the plan's coverage record with the plan, and restorin
   expect(readFileSync(leanFile(directory, "coverage.json"), "utf8")).toBe(record)
   const resume = scriptedLeanModel({ [LEAN_STAGE_AGENTS.finalize]: happyLeanReplies()[LEAN_STAGE_AGENTS.finalize] })
   expect((await runLean(directory, { sessions: resume.port })).status).toBe("completed")
-  expect(resume.agents()).toEqual(["lean-checklist-extract", LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS["package-review"]])
+  expect(resume.agents()).toEqual([LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS["package-review"]])
   expect(readLeanState(directory)?.stages.finalize?.status).toBe("done")
 
   restoreLeanStage(directory, "spine")

@@ -41,7 +41,7 @@ test("a lean matter copied to another folder restores and resumes there and reco
   const resume = scriptedLeanModel({ [LEAN_STAGE_AGENTS.finalize]: happyLeanReplies()[LEAN_STAGE_AGENTS.finalize] })
   const resumed = await runLean(copy, { sessions: resume.port })
   expect(resumed.status).toBe("completed")
-  expect(resume.agents()).toEqual(["lean-checklist-extract", LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS["package-review"]])
+  expect(resume.agents()).toEqual([LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS["package-review"]])
   // Copied content-keyed prose is portable too: restoring earlier stages
   // rebuilds the same notes without asking their unchanged sections again.
   expect(readLeanText(copy, "drafting-notes.md")).toBe(notes)
