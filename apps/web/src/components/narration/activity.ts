@@ -57,6 +57,7 @@ const RUN_FILES: Record<string, string> = {
 
 // Each stage in words: what it is doing while it runs, and its finished line.
 const STAGES: Record<string, { during: string; done: string }> = {
+  instructions: { during: "listing your instructions for this work", done: "Your instructions listed" },
   discrepancy: { during: "assessing discrepancies in the source materials", done: "Source discrepancies assessed" },
   intake: { during: "checking material decisions before research", done: "Material decisions checked" },
   research: { during: "researching legal authority", done: "Research findings and limitations recorded" },
