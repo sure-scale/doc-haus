@@ -68,10 +68,10 @@ function model(directory: string, status: "satisfied" | "open" | "unsatisfied" |
     } } : {}),
     // A notes repair adds a paragraph addressing the supplied assessment.
     ...(options.notes ? { [AGENT.finalize]: (text: string, index: number) => `${draftingNotes(text, index)}${text.includes("drafting notes against actual sources") ? "\n\nThe notes now address the assessed requirement." : ""}` } : {}),
-    ...(options.review ? { [AGENT["change-review"]]: () => {
+    ...(options.review ? { [AGENT["change-review"]]: (text: string) => {
       const correction = !reviewed && Boolean(readRepairRound(directory)?.items.some(item => item.stage === "checklist-check"))
       reviewed ||= correction
-      return JSON.stringify(correction ? { status: "changes-required", findings: [{ detail: "One material body correction." }], limitations: [] } : { status: "pass", findings: [], limitations: [] })
+      return JSON.stringify(correction ? { status: "changes-required", findings: [{ pid: pidOf(text, "The supplier shall deliver the goods"), detail: "One material body correction." }], limitations: [] } : { status: "pass", findings: [], limitations: [] })
     } } : {}),
     [CHECKLIST_JOB_AGENTS.extract]: text => {
       const input = JSON.parse(text.split("SOURCE_INPUT:\n\n")[1]!) as ChecklistProducerInput

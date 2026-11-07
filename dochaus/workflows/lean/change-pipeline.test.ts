@@ -97,6 +97,24 @@ test("a preparation job returns amendments only for paragraphs that change, and 
   expect(applied).toContain("Payment timing remains to be agreed.")
 }, 120_000)
 
+test("a body review finding names a paragraph of its owning draft; a null pid counts as none and a change id is refused", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
+  const pid = readParagraphs(directory, "d1")[0]!.pid
+  const review = (finding: Record<string, unknown>) => ({ status: "changes-required", findings: [{ detail: "A material correction remains.", ...finding }], limitations: [] })
+  const missing = "Each body finding needs the pid of a paragraph in its owning document's initial draft: name the paragraph the correction amends or where the missing wording belongs."
+  expect(checkChangeReview(directory, "d1", review({ pid }))).toEqual([])
+  expect(checkChangeReview(directory, "d1", review({}))).toEqual([missing])
+  expect(checkChangeReview(directory, "d1", review({ pid: null, target: "body" }))).toEqual([missing])
+  expect(checkChangeReview(directory, "d1", review({ pid: "a4" }))).toEqual(['Finding pid "a4" is not a paragraph of its owning document\'s initial draft; a change id such as a4 is not a paragraph id.'])
+  expect(checkChangeReview(directory, "d1", review({ pid: "" }))[0]).toStartWith('Finding pid ""')
+  // Research needs no paragraph; its null pid is left out of the saved review.
+  expect(checkChangeReview(directory, "d1", review({ target: "research" }))).toEqual([])
+  expect(acceptChangeReview(directory, "d1", JSON.stringify(review({ pid: null, target: "research" }))).issues).toEqual([])
+  expect(readLeanJson(directory, "d1/change-review.json")).toEqual(review({ target: "research" }))
+  expect(acceptChangeReview(directory, "d1", JSON.stringify(review({ pid: null }))).issues).toEqual([missing])
+}, 120_000)
+
 test("canonical support and dependency admission reject only the mutated input", async () => {
   const directory = matter()
   expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
@@ -305,12 +323,13 @@ test("projected repair retains prior amendment A while correcting missing effect
 
 test("material projected defects consume the shared bound, then are disclosed with a review draft rather than passing through limitations", async () => {
   const directory = matter()
-  const model = scriptedModel({ ...replies(), [AGENT["change-review"]]: () => JSON.stringify({ status: "changes-required", findings: [{ detail: "Material operative defect remains." }], limitations: ["Recorded in notes"] }) })
+  // The finding names the heading, a paragraph no amendment touches.
+  const model = scriptedModel({ ...replies(), [AGENT["change-review"]]: () => JSON.stringify({ status: "changes-required", findings: [{ pid: readParagraphs(directory, "d1")[0]!.pid, detail: "Material operative defect remains." }], limitations: ["Recorded in notes"] }) })
   const state = await runLean(directory, { sessions: model.port })
   expect(state.status).toBe("completed")
   expect(model.count(AGENT["change-review"])).toBe(LEAN_MAX_SUBSTANTIVE_REPAIRS + 1)
   expect(readRepairRound(directory)?.substantive_attempts).toBe(LEAN_MAX_SUBSTANTIVE_REPAIRS)
-  // The finding names no paragraph: nothing is withheld, and it stays open for the lawyer.
+  // No pending amendment is withheld for it, and it stays open for the lawyer.
   expect(readChangeList(directory, "d1")?.withheld ?? []).toEqual([])
   expect(readChangeList(directory, "d1")?.amendments).toHaveLength(2)
   const item = readOpenItems(directory).find(row => row.stage === "change-review")!
@@ -511,7 +530,7 @@ test("essential new authority issue from projected review revisits research befo
 test("pre-apply and package semantic failures consume one shared repair allowance", async () => {
   const directory = matter()
   const model = scriptedModel({ ...replies(),
-    [AGENT["change-review"]]: (_, index) => JSON.stringify(index ? { status: "pass", findings: [], limitations: [] } : { status: "changes-required", findings: [{ detail: "One material body correction." }], limitations: [] }),
+    [AGENT["change-review"]]: (_, index) => JSON.stringify(index ? { status: "pass", findings: [], limitations: [] } : { status: "changes-required", findings: [{ pid: readParagraphs(directory, "d1")[0]!.pid, detail: "One material body correction." }], limitations: [] }),
     [AGENT["package-review"]]: () => JSON.stringify({ status: "changes-required", delivery: [], findings: [{ target: "memo", detail: "Explanation still disagrees with final wording." }], limitations: [] }),
   })
   // The allowance used up, the package review's finding goes with a review draft.
@@ -548,7 +567,7 @@ test("a prior final gate pass cannot conceal a material projected-review rejecti
   expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
   expect(finalGate(directory).status).toBe("pass")
   const key = stageInputSha(directory, "gate")
-  writeLeanText(directory, "d1/change-review.json", JSON.stringify({ status: "changes-required", findings: [{ detail: "Material resulting wording conflicts with an agreed condition." }], limitations: ["Disclosed in old notes"] }))
+  writeLeanText(directory, "d1/change-review.json", JSON.stringify({ status: "changes-required", findings: [{ pid: readParagraphs(directory, "d1")[0]!.pid, detail: "Material resulting wording conflicts with an agreed condition." }], limitations: ["Disclosed in old notes"] }))
   expect(stageInputSha(directory, "gate")).not.toBe(key)
   expect(finalGate(directory).status).toBe("blocked")
   expect(finalGate(directory).delivery).toBeNull()

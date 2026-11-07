@@ -95,6 +95,21 @@ test("invalid pass-with-findings is corrected through the native contract withou
   expect(port.prompts.some(row => row.text.includes("A pass cannot contain material correction findings"))).toBe(true)
 })
 
+test("a focused body finding without a paragraph is returned for one, and the corrected finding keeps its pid", async () => {
+  const { directory, delivery } = await fixture()
+  const calls = new Map<string, number>()
+  const port = scriptedModel({ "lean-change-review": (text, _, sessionID = "one") => {
+    const call = text.includes('"id":"group:delivery"') ? 0 : calls.get(sessionID)
+    calls.set(sessionID, call === undefined ? -1 : call + 1)
+    if (call === undefined) return JSON.stringify({ status: "pass", findings: [], limitations: [] })
+    return JSON.stringify({ status: "changes-required", findings: [{ pid: call ? delivery.pid : null, detail: "A supported delivery condition is missing." }], limitations: [] })
+  } })
+  const result = await runFocusedChangeReview(directory, readLeanState(directory)!, { sessions: port.port }, "d1", () => {})
+  expect(result.status).toBe("done")
+  expect(port.prompts.some(row => row.text.includes("name the paragraph the correction amends or where the missing wording belongs"))).toBe(true)
+  expect((readLeanJson(directory, "d1/change-review.json") as { findings: unknown[] }).findings).toEqual([{ pid: delivery.pid, detail: "A supported delivery condition is missing." }])
+})
+
 test("oversized assignments and conflicting same-PID operations fail before a model admission", async () => {
   const { directory, plan } = await fixture()
   writeLeanText(directory, "request.md", "indispensable instruction ".repeat(2000))

@@ -532,7 +532,7 @@ export function changeReviewPrompt(directory: string, document: DocID) {
     "Preparation limits describe unverified proposals, not final application outcomes. Assess whether their accepted goals are correctly fulfilled by the final projected wording; do not repeat a proposal limit as an outstanding defect after it is corrected.",
     ...changesRepairSections(directory, document).filter(section => !section.startsWith("<previous_changes>")),
     "Independently review the actual projected full resulting text BEFORE application. An amendment being suggested, accepted by another agent or quote-matched is not evidence of its correct effect. Inspect canonical supporting context on demand. Check that the operative wording and its explanation perform the accepted goals, preserve unaffected rights/obligations and settled decisions, and remain consistent across definitions, conditions, exceptions, cross-references and earlier finished documents. Identify lost supported corrections, unsupported additions or changed effects, contradictory paragraphs and inaccurate reasons/source explanations. Check explicit questions and withheld amendments: a material unresolved or silently dropped correction is not a pass merely because it is recorded as withheld or disclosed in limitations. Appropriately marked/disclosed review-draft placeholders can remain; optional expansion is not mandatory. Do not reopen answered decisions without contrary evidence or supply law from memory. " + FIXED_PLAN,
-    'Reply exactly {"status":"pass"|"changes-required","findings":[{"document":"owning document id, omit for the current body","pid":"affected paragraph id of that document when identifiable, otherwise omit","detail":"specific material defect, actual wording/evidence and required correction","target":"body|research, omit for body"}],"limitations":["remaining disclosed limits"]}. Pass requires no findings. Changes-required requires at least one material finding. A correction to an earlier_body must name that earlier document and its own paragraph rather than a paragraph in the current body; the coordinator returns it through that document’s existing cumulative amendment flow and rechecks dependent work. Only the current body or an earlier run-owned body may be targeted; never a future document or external file. Use target research only for a genuinely new material authority proposition beyond approved research that needs actual retrieval; explain why present research cannot answer it. Do not invent law or route ordinary wording defects to research. Do not rewrite paragraphs or write files; corrections return through the same bounded amendment pipeline.',
+    'Reply exactly {"status":"pass"|"changes-required","findings":[{"document":"owning document id, omit for the current body","pid":"initial draft paragraph id of that document the correction amends or where the missing wording belongs; omit only for target research","detail":"specific material defect, actual wording/evidence and required correction","target":"body|research, omit for body"}],"limitations":["remaining disclosed limits"]}. Pass requires no findings. Changes-required requires at least one material finding. A correction to an earlier_body must name that earlier document and its own paragraph rather than a paragraph in the current body; the coordinator returns it through that document’s existing cumulative amendment flow and rechecks dependent work. Only the current body or an earlier run-owned body may be targeted; never a future document or external file. Use target research only for a genuinely new material authority proposition beyond approved research that needs actual retrieval; explain why present research cannot answer it. Do not invent law or route ordinary wording defects to research. Do not rewrite paragraphs or write files; corrections return through the same bounded amendment pipeline.',
   ].join("\n\n")
 }
 
@@ -557,8 +557,10 @@ export function checkChangeReview(directory: string, document: DocID, value: unk
       if (!record(finding) || !nonempty(finding.detail)) return ["Each finding needs a specific material detail."]
       const owner = finding.document ?? document
       if (typeof owner !== "string" || !allowed.has(owner as DocID)) return ["Finding document must be the current or an earlier run-owned body."]
+      // A body finding no paragraph can carry would start a repair round nothing can amend.
+      if (finding.pid == null) return finding.target === "research" ? [] : ["Each body finding needs the pid of a paragraph in its owning document's initial draft: name the paragraph the correction amends or where the missing wording belongs."]
       const pids = new Set(readParagraphs(directory, owner as DocID).map(row => row.pid))
-      return finding.pid !== undefined && (!nonempty(finding.pid) || !pids.has(finding.pid)) ? ["Finding pid must belong to its owning document's initial draft."] : []
+      return nonempty(finding.pid) && pids.has(finding.pid) ? [] : [`Finding pid ${JSON.stringify(finding.pid)} is not a paragraph of its owning document's initial draft; a change id such as a4 is not a paragraph id.`]
     }),
     ...(value.status === "pass" && value.findings.length ? ["A pass cannot contain material correction findings."] : []),
     ...(value.status === "changes-required" && !value.findings.length ? ["Changes-required needs at least one material finding."] : []),
@@ -567,11 +569,17 @@ export function checkChangeReview(directory: string, document: DocID, value: unk
 
 export function acceptChangeReview(directory: string, document: DocID, reply: string) {
   const parsed = parseJsonObject(reply)
-  const value = parsed.ok ? parsed.value : undefined
+  const value = parsed.ok ? withoutNullPids(parsed.value) : undefined
   const issues = [...checkChangeReview(directory, document, value), ...parsed.ok ? [] : [parsed.error]]
   if (issues.length) return { issues, outputs: [], openItems: [] }
   writeLeanText(directory, `${document}/change-review.json`, `${JSON.stringify(value, null, 2)}\n`)
   return { issues: [], outputs: [`${document}/change-review.json`], openItems: [] }
+}
+
+// A reply's "pid": null names no paragraph; the saved review leaves it out.
+function withoutNullPids(value: Record<string, unknown>) {
+  if (!Array.isArray(value.findings)) return value
+  return { ...value, findings: value.findings.map(row => record(row) && row.pid === null ? Object.fromEntries(Object.entries(row).filter(([key]) => key !== "pid")) : row) }
 }
 
 export function readChangeReview(directory: string, document: DocID): ChangeReview | undefined {
