@@ -550,8 +550,10 @@ export default function ChatPanel({
   const updateAdmission = run ? draftingUpdateAdmission(run) : "closed"
   const updateTooLate = updateAdmission === "closed"
   const clarifyingRun = updateAdmission === "clarification"
-  // Before the run has written a draft there is no current draft to update.
-  const heading = updatingRun && run && draftingRunDrafted(run) ? "Update current draft" : title
+  // Before the run has written a draft there is no current draft to update;
+  // the heading and the composer's button both say so.
+  const drafted = Boolean(run && draftingRunDrafted(run))
+  const heading = updatingRun && drafted ? "Update current draft" : title
   async function sendRunUpdate() {
     const draft = input
     if (checkingReferencesRef.current) return
@@ -723,6 +725,7 @@ export default function ChatPanel({
       hasAttachments={attachments.length > 0 || scopedChronologyReferences.length > 0}
       draftingUpdate={updatingRun}
       draftingClarification={clarifyingRun}
+      drafted={drafted}
       pinned={pinned}
       available={available}
       agent={agent}
