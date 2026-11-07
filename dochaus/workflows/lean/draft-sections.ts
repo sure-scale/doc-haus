@@ -42,7 +42,7 @@ import { parallel } from "./checklist-flow"
 import {
   PLAN_PLACEMENT_REVISIONS, documentGrounds, groundsBlock, parseEntryLevel, parseEntryPlacement, parsePartEntries, partEntriesKey, partEntriesPrompt, planPlacementCurrent, planPlacementIssues, readPartEntries,
   readSpineLevels, savePartEntries, saveSpineLevel, spineEntries, spineLevelKey, spineLevelPrompt, spinePlacementPrompt, withPartEntries, writePlacement,
-  type EntryLevel, type EntryPlacement, type PartPlacement, type Placement, type SpineEntry,
+  type EntryLevel, type EntryPlacement, type Ground, type PartPlacement, type Placement, type SpineEntry,
 } from "./spine-placement"
 
 // Sectioned draft step. A long document can need more tokens than one model
@@ -566,8 +566,11 @@ export async function runDraftStage(
       : undefined, grounds[index])
     const brief = sectionHandoff(directory, document)
     const own = scopes.flatMap((parts, table) => parts.includes(index) ? [table] : [])
-    // The outline's session saw the run context before the plan named a memo.
-    const text = [...(index > 0 ? [] : outlined ? [actingForBlock(directory), packageCompositionBlock(directory, document)] : [stagePrompt(directory, step)]), originalTablesBlock(original, own), brief, section].filter(Boolean).join("\n\n")
+    // The outline's session saw the run context before the plan named a memo
+    // or took a side. Every later part is told the side again, so a long
+    // session does not drift from it.
+    const opening = index > 0 ? [actingForBlock(directory)] : outlined ? [actingForBlock(directory), packageCompositionBlock(directory, document)] : [stagePrompt(directory, step)]
+    const text = [...opening, originalTablesBlock(original, own), brief, section].filter(Boolean).join("\n\n")
     // The first reply the section check passes is checked once for an
     // original table it leaves out (partTableIssues); asked for it, the part
     // keeps that reply when no later one passes, so the table check never
@@ -604,7 +607,7 @@ export async function runDraftStage(
   return { status: "done", outputs: accepted.outputs, openItems: [...accepted.openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document)), ...draftStatusItems(directory, document, readParagraphs(directory, document), "draft")], questions: accepted.questions }
 }
 
-export function sectionPrompt(outline: DraftOutline, index: number, template?: { source: string; parts: string[]; left?: string[] }, grounds: SpineEntry[] = []) {
+export function sectionPrompt(outline: DraftOutline, index: number, template?: { source: string; parts: string[]; left?: string[] }, grounds: Ground[] = []) {
   const part = outline.parts[index]!
   const names = (labels: string[]) => labels.map(name => `"${name}"`).join("; ")
   const original = outline.mode === "revise" ? "the original" : template ? `the template "${template.source}"` : undefined

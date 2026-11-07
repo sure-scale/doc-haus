@@ -6,6 +6,7 @@ import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { referenceFields } from "../../lib/docx-crossrefs"
 import { compareDocxWithPointers, paragraphSha256 } from "../../lib/drafting-amendment"
+import { OPEN_ITEM_PATTERN } from "../../lib/marker-patterns"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { readParagraphs, shownText } from "./checks"
 import { LEAN_ACTS_SCHEMA } from "./act-record"
@@ -455,6 +456,24 @@ describe("sectioned draft stage", () => {
         expect(parsed.value?.documents[0]?.title).toBe(planned)
       }
     })
+
+    test("a part scope that carries an open-item marker is named, and on the last attempt stands as the marker's words", () => {
+      const marked = parsePlan("Acting for: not stated\n# Supply note\nForm: other\n## Delivery\nWhen the goods arrive [Open item: confirm the delivery window].\n## Price\nThe price (open item: confirm the currency) and ____ payment terms.")
+      expect(marked.issues).toEqual([
+        'In "Supply note", the scope of "Delivery" carries an open-item marker. Scope describes the part; write the open point as scope words, the drafter sets the marker.',
+        'In "Supply note", the scope of "Price" carries an open-item marker. Scope describes the part; write the open point as scope words, the drafter sets the marker.',
+      ])
+      const parts = marked.value!.documents[0]!.parts
+      expect(parts.map(part => part.scope)).toEqual(["When the goods arrive confirm the delivery window.", "The price confirm the currency and payment terms."])
+      // The drafter is handed the words, never the marker, in its scope line and the outline list.
+      const prompt = sectionPrompt({ title: "Supply note", parts }, 0)
+      expect(prompt).toContain("This part covers: When the goods arrive confirm the delivery window.")
+      expect(prompt.match(new RegExp(OPEN_ITEM_PATTERN.source, "gi"))).toBeNull()
+      // A scope without a marker reads as written.
+      const plain = parsePlan("Acting for: not stated\n# Supply note\nForm: other\n## Delivery\nWhen the goods arrive, and the open items on timing.")
+      expect(plain.issues).toEqual([])
+      expect(plain.value?.documents[0]?.parts[0]?.scope).toBe("When the goods arrive, and the open items on timing.")
+    })
   })
 
   test("the outline records whom the lawyer acts for from one line before the first title", () => {
@@ -471,7 +490,7 @@ describe("sectioned draft stage", () => {
     expect(parsePlan("Acting for: the buyer\n## One").value).toBeUndefined()
   })
 
-  test("a missing acting-for line is retried, the outline is saved with it, and the first part is told whom the lawyer acts for", async () => {
+  test("a missing acting-for line is retried, the outline is saved with it, and every part is told whom the lawyer acts for", async () => {
     const { directory, state } = matter()
     writeLeanText(directory, "request.md", "Draft a notice of the terms. We act for the sender.")
     const model = scripted((text, index) => {
@@ -483,8 +502,10 @@ describe("sectioned draft stage", () => {
     expect(result.status).toBe("done")
     expect(model.prompts[1]!.text).toContain('The outline has no "Acting for:" line.')
     expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the sender", basis: "stated" })
-    expect(model.prompts[2]!.text).toContain("<acting_for>\nThe lawyer acts for: the sender.\n</acting_for>")
-    expect(model.prompts[3]!.text).not.toContain("<acting_for>")
+    const side = "<acting_for>\nThe lawyer acts for: the sender. Draft for that party.\n</acting_for>"
+    expect(model.prompts[2]!.text).toContain(side)
+    // Each later part opens with the side again, before its handoff and section.
+    for (const part of [3, 4]) expect(model.prompts[part]!.text).toStartWith(side)
   }, 60_000)
 
   test("an outline that never states the line is accepted on the last attempt as not stated", async () => {
@@ -494,7 +515,7 @@ describe("sectioned draft stage", () => {
     const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
     expect(result.status).toBe("done")
     expect(readLeanPlan(directory)?.acting_for).toEqual(NOT_STATED)
-    expect(model.prompts[4]!.text).toContain("The request does not say whom the lawyer acts for, and no side was taken.")
+    for (const part of [4, 5, 6]) expect(model.prompts[part]!.text).toContain("The request does not say whom the lawyer acts for, and no side was taken.")
   }, 60_000)
 
   test("a part reply is checked against its outlined heading", () => {

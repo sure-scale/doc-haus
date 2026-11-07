@@ -35,9 +35,11 @@ import { hashStageInputs, leanFile, readLeanJson, readLeanText, shortHash, write
 // placed nowhere raises neither and rides the drafting spine as before. The
 // record, placement.json, is keyed on what the placement jobs read: the
 // documents as placementView shows them and the atoms' bytes. Each part prompt
-// is told the entries placed in it (groundsBlock), as are the checklist's
-// planned roles and the reviews' outline. Nothing here judges the legal
-// substance.
+// is told the entries placed in it, by level (groundsBlock): a text entry it
+// states in its own words, a package entry it applies as a direction, whose
+// words are document text only where the part is the place it names. The
+// checklist's planned roles and the reviews' outline (withGrounds) read the
+// same entries. Nothing here judges the legal substance.
 
 export const LEAN_PLACEMENT_SCHEMA = "dochaus.lean.placement/5"
 export const LEAN_SPINE_LEVELS_SCHEMA = "dochaus.lean.spine-levels/1"
@@ -58,6 +60,8 @@ export type EntryLevel = "text" | "package"
  * never did. `parts` also holds the parts whose reverse job named the entry;
  * `added` lists those its own placement job did not name. */
 export type EntryPlacement = { entry: number; level: EntryLevel; parts: string[]; added?: string[]; unchecked?: true; level_unchecked?: true }
+/** One entry a part rests on, with the level its placement recorded. */
+export type Ground = SpineEntry & { level: EntryLevel }
 /** One planned part's reverse job: the entries, by index, it names; `unchecked`
  * (no entries) when its reply never passed its check. */
 export type PartPlacement = { part: string; entries: number[]; unchecked?: true }
@@ -292,14 +296,15 @@ function currentPlacement(directory: string) {
   return saved && saved.plan === placementPlanHash(directory, plan.documents) ? saved : undefined
 }
 
-/** For each part of `document`, the entries the current record places in it, at either level. */
-export function documentGrounds(directory: string, document: DocID): SpineEntry[][] {
+/** For each part of `document`, the entries the current record places in it, at either level, each with its level. */
+export function documentGrounds(directory: string, document: DocID): Ground[][] {
   const plan = readLeanPlan(directory)
   const parts = plan?.documents.find(row => row.id === document)?.parts ?? []
   const placement = currentPlacement(directory)
   if (!placement) return parts.map(() => [])
   const entries = spineEntries(directory)
-  return parts.map((_, index) => placement.entries.flatMap(row => row.parts.includes(partRef(document, index)) ? entries.filter(entry => entry.index === row.entry) : []))
+  return parts.map((_, index) => placement.entries.flatMap(row =>
+    row.parts.includes(partRef(document, index)) ? entries.filter(entry => entry.index === row.entry).map(entry => ({ ...entry, level: row.level })) : []))
 }
 
 /** One entry as a part, a planned role or an outline names it, with its limitations. */
@@ -308,20 +313,40 @@ export function groundLine(entry: SpineEntry) {
   return `${entry.kind}: ${entry.detail}${sources.length ? ` [source: ${sources.join("; ")}]` : ""}${entry.limitations.length ? ` [limitations: ${entry.limitations.join("; ")}]` : ""}`
 }
 
-/** The part prompt's block for the entries it rests on; "" for none. */
-export function groundsBlock(grounds: SpineEntry[]) {
+/** The part prompt's block for the entries it rests on, by level; "" for none.
+ * Its text entries the part states in its own words; its package entries
+ * direct how the part is drafted or where a point is disclosed, so their words
+ * are document text only where this part is the place they name. */
+export function groundsBlock(grounds: Ground[]) {
   if (!grounds.length) return ""
+  const line = (entry: Ground) => `- ${groundLine(entry)}${entry.evidence[0] ? ` (evidence: "${excerpt(entry.evidence[0].quote)}"; retrieve the full words before quoting them)` : ""}`
+  const stated = grounds.filter(entry => entry.level === "text")
+  const applied = grounds.filter(entry => entry.level === "package")
   return tagged("rests_on", [
-    "This part rests on:",
-    ...grounds.map(entry => `- ${groundLine(entry)}${entry.evidence[0] ? ` (evidence: "${excerpt(entry.evidence[0].quote)}"; retrieve the full words before quoting them)` : ""}`),
-    "State each here, in this part's own words, and reason from it. A cross-reference to another part adds to that; it never substitutes for it.",
+    ...(stated.length ? [
+      "This part rests on:",
+      ...stated.map(line),
+      "State each here, in this part's own words, and reason from it. A cross-reference to another part adds to that; it never substitutes for it. An entry about method, calculation or handling binds what this part says, not words it repeats.",
+    ] : []),
+    ...(applied.length ? [
+      "This part is drafted under:",
+      ...applied.map(line),
+      "Apply each as it directs how this part is drafted or where a point is disclosed: state it only where this part is the place it names; otherwise its words are not document text.",
+    ] : []),
   ].join("\n"))
 }
 
-/** A planned document with each part's grounds as `rests_on`, for an outline block. */
+/** A planned document with each part's grounds by level, as its part prompt
+ * was told them: `rests_on` its text entries, `drafted_under` its package
+ * entries, for an outline block. */
 export function withGrounds<T extends { parts: object[] }>(directory: string, document: DocID, outline: T): T {
   const grounds = documentGrounds(directory, document)
-  return { ...outline, parts: outline.parts.map((part, index) => grounds[index]?.length ? { ...part, rests_on: grounds[index]!.map(groundLine) } : part) }
+  const lines = (index: number, level: EntryLevel) => grounds[index]?.filter(entry => entry.level === level).map(groundLine) ?? []
+  return { ...outline, parts: outline.parts.map((part, index) => {
+    const rests = lines(index, "text")
+    const drafted = lines(index, "package")
+    return { ...part, ...(rests.length ? { rests_on: rests } : {}), ...(drafted.length ? { drafted_under: drafted } : {}) }
+  }) }
 }
 
 /** One disclosed item per text entry the current record leaves without a

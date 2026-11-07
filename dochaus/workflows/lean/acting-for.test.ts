@@ -13,8 +13,8 @@ import { hashStageInputs, readLeanJson, writeLeanText, type OpenItem } from "./s
 import { AGENT, DRAFT, SOURCE, cleanupMatters, drafter, happyPath, matter, scriptedModel, type Reply } from "./test-support"
 
 // Whom the lawyer acts for: read once by the outline, kept in the plan, shown to
-// every model stage and keyed into their inputs. Real coordinator; only the
-// model is scripted.
+// every model stage and every drafted part, and keyed into the stages' inputs.
+// Real coordinator; only the model is scripted.
 
 afterEach(cleanupMatters)
 
@@ -37,9 +37,10 @@ describe("whom the lawyer acts for", () => {
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
     expect(readLeanPlan(directory)?.acting_for).toEqual(NOT_STATED)
-    const [outline, firstPart] = promptsOf(model, AGENT.draft)
+    const [outline, ...parts] = promptsOf(model, AGENT.draft)
     expect(outline).toContain('"Acting for: not stated"')
-    expect(firstPart).toContain(NEUTRAL)
+    expect(parts).toHaveLength(2)
+    for (const part of parts) expect(part).toContain(NEUTRAL)
     const review = promptsOf(model, AGENT.review)[0]!
     expect(review).toContain(NEUTRAL)
     expect(review).toContain(NEUTRAL_REVIEW)
@@ -55,8 +56,10 @@ describe("whom the lawyer acts for", () => {
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
     expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the supplier", basis: "stated" })
-    const block = "<acting_for>\nThe lawyer acts for: the supplier.\n</acting_for>"
-    expect(promptsOf(model, AGENT.draft)[1]).toContain(block)
+    const block = "<acting_for>\nThe lawyer acts for: the supplier. Draft for that party.\n</acting_for>"
+    const [, ...parts] = promptsOf(model, AGENT.draft)
+    expect(parts).toHaveLength(2)
+    for (const part of parts) expect(part).toContain(block)
     const review = promptsOf(model, AGENT.review)[0]!
     expect(review).toContain(block)
     expect(review).toContain(SIDED_REVIEW)
@@ -89,10 +92,11 @@ describe("whom the lawyer acts for", () => {
     expect(readLeanCoverage(directory)?.plan).toBe(coveragePlanHash(directory, plan.documents, client))
     expect(readLeanCoverage(directory)?.plan).not.toBe(coveragePlanHash(directory, plan.documents, NOT_STATED))
     expect(planCoverageCurrent(directory)).toBe(true)
-    const [outline, firstPart] = promptsOf(model, AGENT.draft)
+    const [outline, ...parts] = promptsOf(model, AGENT.draft)
     expect(outline).toContain('"Acting for: not stated"')
-    const block = "<acting_for>\nThe lawyer acts for: Northwind Traders Ltd.\n</acting_for>"
-    expect(firstPart).toContain(block)
+    const block = "<acting_for>\nThe lawyer acts for: Northwind Traders Ltd. Draft for that party.\n</acting_for>"
+    expect(parts).toHaveLength(2)
+    for (const part of parts) expect(part).toContain(block)
     const review = promptsOf(model, AGENT.review)[0]!
     expect(review).toContain(block)
     expect(review).toContain(SIDED_REVIEW)
@@ -107,7 +111,7 @@ describe("whom the lawyer acts for", () => {
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
     expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the supplier", basis: "stated" })
-    expect(promptsOf(model, AGENT.draft)[1]).toContain("<acting_for>\nThe lawyer acts for: the supplier.\n</acting_for>")
+    expect(promptsOf(model, AGENT.draft)[1]).toContain("<acting_for>\nThe lawyer acts for: the supplier. Draft for that party.\n</acting_for>")
     expect(promptsOf(model, AGENT.review)[0]).not.toContain("Northwind Traders Ltd")
   }, 120_000)
 

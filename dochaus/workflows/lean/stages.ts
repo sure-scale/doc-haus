@@ -77,7 +77,7 @@ import {
 // one planned document keep their files under that document's id (d1/, d2/...).
 
 export const LEAN_PROMPT_VERSION = "lean-32-change-contracts"
-const OUTLINE_CONTRACT = "outline-one-pass-reverse-22"
+const OUTLINE_CONTRACT = "outline-one-pass-reverse-23"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
 const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-plain-refs-4"
