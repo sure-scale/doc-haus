@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test"
-import { connectionMessage, createProviderHealthMonitor, providerConnection, providerName, testModelConnection } from "../src/api/opencode/provider-health"
+import { Window } from "happy-dom"
+import { act, createElement } from "react"
+import { connectionMessage, createProviderHealthMonitor, providerConnection, providerHealth, providerName, testModelConnection, type ModelConnection } from "../src/api/opencode/provider-health"
+import ProviderConnectionBanner, { recoveryConnection } from "../src/components/ProviderConnectionBanner"
 
 const model = { providerID: "fixture", id: "primary" }
 const config = async () => ({ model: "fixture/primary", small_model: "fixture/primary" })
@@ -271,4 +274,70 @@ test("a direct removed-provider test is rejected locally before network access",
     expect(await testModelConnection("opencode", "retired", true)).toEqual({ ok: false, kind: "model" })
     expect(requests).toBe(0)
   } finally { globalThis.fetch = previous }
+})
+
+test("only rejected credentials or an unusable model force the recovery Settings", () => {
+  const item = (status: ModelConnection["status"], providerID = "fixture"): ModelConnection => ({ providerID, modelID: "primary", status })
+  expect(recoveryConnection([item("unavailable"), item("model", "other-fixture"), item("auth")])).toEqual(item("auth"))
+  expect(recoveryConnection([item("unavailable"), item("model", "other-fixture")])).toEqual(item("model", "other-fixture"))
+  expect(recoveryConnection([item("unavailable"), item("checking"), item("ready")])).toBeUndefined()
+})
+
+test("an unreachable account shows a calm banner after one recheck and never opens recovery Settings", async () => {
+  const browser = new Window({ url: "http://localhost:5275" })
+  const names = ["window", "document", "HTMLElement", "Node", "Event", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"] as const
+  const saved = names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const)
+  Object.defineProperties(globalThis, Object.fromEntries(names.map(name => [name, { configurable: true, writable: true,
+    value: name === "IS_REACT_ACT_ENVIRONMENT" ? true : browser[name as keyof Window] }])))
+  const originalFetch = globalThis.fetch
+  let outcome: object = { ok: false, kind: "unavailable" }
+  let probes = 0
+  globalThis.fetch = (async (input: unknown) => {
+    if (String(input).endsWith("/engine/config")) return Response.json({ model: "fixture/primary", small_model: "fixture/primary" })
+    probes++
+    return Response.json(outcome, { status: "kind" in outcome ? 503 : 200 })
+  }) as unknown as typeof fetch
+  const opened: string[] = []
+  const { createRoot } = await import("react-dom/client")
+  const container = document.createElement("div")
+  document.body.append(container)
+  const root = createRoot(container)
+  const banner = () => container.querySelector(".provider-connection-banner")
+  const until = async (done: () => boolean) => {
+    for (let waited = 0; !done(); waited += 50) {
+      if (waited > 3000) throw new Error("timed out")
+      await act(() => new Promise(resolve => setTimeout(resolve, 50)))
+    }
+  }
+  try {
+    await act(async () => { root.render(createElement(ProviderConnectionBanner, { enabled: true, onOpenSettings: (id: string) => { opened.push(id) } })) })
+    await until(() => banner() !== null)
+    expect(probes).toBe(2)
+    expect(banner()?.getAttribute("role")).toBe("status")
+    expect(banner()?.textContent).toContain("credit")
+    // A confirmed outage waits for the lawyer instead of rechecking in a loop.
+    await act(() => new Promise(resolve => setTimeout(resolve, 1300)))
+    expect(probes).toBe(2)
+    expect(opened).toEqual([])
+    outcome = { ok: true }
+    await act(async () => { container.querySelector("button")!.click() })
+    await until(() => banner() === null)
+    expect(probes).toBe(3)
+    // Rejected credentials still open the recovery Settings after one recheck.
+    outcome = { ok: false, kind: "auth" }
+    await act(() => providerHealth.check(true))
+    await until(() => opened.length > 0)
+    expect(opened).toEqual(["fixture"])
+    expect(probes).toBe(5)
+    expect(banner()).toBeNull()
+  } finally {
+    await act(async () => root.unmount())
+    container.remove()
+    globalThis.fetch = originalFetch
+    await browser.happyDOM.close()
+    for (const [name, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor)
+      else delete (globalThis as Record<string, unknown>)[name]
+    }
+  }
 })
