@@ -1,5 +1,5 @@
 import { checklistProducerInputs } from "./checklist-source-context"
-import { acceptChangeReview, checkChangeReview, projectedChangeParagraphs, readChangePlan, type ChangeGroup, type ChangeReview } from "./change-pipeline"
+import { acceptChangeReview, checkChangeReview, projectedBodyText, projectedChangeParagraphs, readChangePlan, type ChangeGroup, type ChangeReview } from "./change-pipeline"
 import { parseJsonObject, readChangeList, readParagraphs, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { FIXED_PLAN, readLeanPlan, type DocID } from "./plan"
@@ -64,7 +64,7 @@ export function focusedChangeReviewInputs(directory: string, document: DocID): F
       `<actual_questions_and_answers>\n${JSON.stringify(answers)}\n</actual_questions_and_answers>`,
       `<shared_decisions>\n${JSON.stringify(plan.shared_decisions)}\n</shared_decisions>`,
       `<initial_target_and_neighbors>\n${initial.filter(row => context.has(row.pid)).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</initial_target_and_neighbors>`,
-      `<projected_target_and_neighbors>\n${projected.filter(row => context.has(row.pid)).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</projected_target_and_neighbors>`,
+      `<projected_target_and_neighbors>\n${projectedBodyText(projected.filter(row => context.has(row.pid)))}\n</projected_target_and_neighbors>`,
       ...(neighbors ? [] : ["Neighboring paragraphs are left out of this packet for size: retrieve them with read-document view=proposed_body and view=source before judging any dependency on them."]),
       `<cumulative_operations>\n${JSON.stringify({ amendments: changes.amendments.filter(row => own.has(row.pid)), explanations: (changes.explanations ?? []).filter(row => own.has(row.pid)), retained_initial: (changes.retained_initial ?? []).filter(row => own.has(row.pid)), withheld: (changes.withheld ?? []).filter(row => own.has(row.amendment.pid)), questions: changes.questions })}\n</cumulative_operations>`,
       "Your explicit dependency task: inspect the conditions, exceptions, definitions and cross-references on which this assigned wording depends, including related clauses outside these neighbors. For advice about another run-owned document, retrieve its actual relevant final clause and compare each material factual assertion, proposed resolution and remaining decision against that clause; agreement with another agent's summary is insufficient. Inspect relevant original source qualifications and actual instructions/answers. Report a cross-clause or earlier-document defect with its owning initial PID. Do not review unrelated history or silently assume dependencies are consistent.",

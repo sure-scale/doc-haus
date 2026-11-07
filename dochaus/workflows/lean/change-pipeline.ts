@@ -465,6 +465,18 @@ export function projectedChangeParagraphs(directory: string, document: DocID) {
   return numbered ? projected.map((row, at) => numbered[at]!.label ? { ...row, label: numbered[at]!.label, text: withoutListLabel(row.text, numbered[at]!.label) } : { ...row, label: undefined }) : projected
 }
 
+/** Projected paragraphs as a reviewer reads them: a split's later parts carry
+ * the coordinate read-document gives them (proposed_part_index), so no two
+ * paragraphs show the same id. */
+export function projectedBodyText(rows: { pid: string; text: string; label?: string }[]) {
+  const parts = new Map<string, number>()
+  return rows.map(row => {
+    const part = parts.get(row.pid) ?? 0
+    parts.set(row.pid, part + 1)
+    return `[${row.pid}${part ? ` proposed_part_index=${part}` : ""}] ${shownText(row)}`
+  }).join("\n\n")
+}
+
 function amendedParagraphs(directory: string, document: DocID) {
   const changes = readChangeList(directory, document)
   if (!changes || uniqueReplacementIssues(changes).length) throw new Error("A reconciled change list with one replacement per paragraph is required before semantic review.")
@@ -513,7 +525,7 @@ export function repairBodyText(directory: string, document: DocID, projected: bo
         : "No affected current paragraph was located uniquely. Retrieve the relevant current text before deciding; do not guess a paragraph or treat missing inspection as a body defect.",
     ].join("\n\n")
   }
-  return (projected ? projectedChangeParagraphs(directory, document) : finalBodyParagraphs(directory, document)).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")
+  return projected ? projectedBodyText(projectedChangeParagraphs(directory, document)) : finalBodyParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")
 }
 
 export function changeReviewPrompt(directory: string, document: DocID) {
@@ -525,7 +537,7 @@ export function changeReviewPrompt(directory: string, document: DocID) {
     `<initial_draft>\n${readParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</initial_draft>`,
     projectedNumbers(directory, document, amendedParagraphs(directory, document)) ? "List numbers in projected_full_body are those the list shows once the changes are applied."
       : "List numbers in projected_full_body are those before apply: when the changes are applied, the list renumbers the paragraphs after a deleted or split one, and a split's later paragraphs show the numbers the list then gives them.",
-    `<projected_full_body>\n${projectedChangeParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</projected_full_body>`,
+    `<projected_full_body>\n${projectedBodyText(projectedChangeParagraphs(directory, document))}\n</projected_full_body>`,
     ...earlierDocuments(directory, document).map(row => `<earlier_body document="${row.id}">\n${finalBodyParagraphs(directory, row.id).map(paragraph => `[${paragraph.pid}] ${shownText(paragraph)}`).join("\n\n")}\n</earlier_body>`),
     "In reconciled_changes, `updated` excludes the paragraph's own Word list number (a split's later paragraph may open with the number it takes); `list_label` is the number the list prints before it, as in projected_full_body.",
     `<reconciled_changes>\n${changesWithListLabels(directory, document)}\n</reconciled_changes>`,
