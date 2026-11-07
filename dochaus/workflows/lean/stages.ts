@@ -76,7 +76,7 @@ import {
 // goes to the pointer applier as data, addressed by paragraph pointer. Steps of
 // one planned document keep their files under that document's id (d1/, d2/...).
 
-export const LEAN_PROMPT_VERSION = "lean-31-attempt3-fixes"
+export const LEAN_PROMPT_VERSION = "lean-32-change-contracts"
 const OUTLINE_CONTRACT = "outline-one-pass-reverse-22"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
