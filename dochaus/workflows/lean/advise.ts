@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util"
 import { normalize } from "../../lib/quote-verify"
+import { readChangePlan } from "./change-pipeline"
 import { parallel } from "./checklist-flow"
 import { parseJsonObject, readParagraphs, record, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
@@ -23,7 +24,7 @@ import { answeredQuestionsText, readLeanText, readQuestions, type LeanState, typ
 // its retries run out the question is recorded all the same, its advice
 // unavailable with reason_code advisor_failed.
 
-const ADVISOR_FAILED = "No checked recommendation is available for this question."
+export const ADVISOR_FAILED = "No checked recommendation is available for this question."
 
 /** `questions`, each one not already answered carrying its advice. An open
  * question asked again with the same words and code-given options keeps the
@@ -44,15 +45,44 @@ export async function adviseQuestions(directory: string, state: LeanState, step:
     // A stale recommendation cannot be adopted as though still checked.
     return { ...(advice.options ? { options: advice.options } : {}), unavailable: { reason: "The question or its supporting inputs changed. Check the current sources before choosing an earlier option, or answer in your own words." } }
   })
+  // A review whose advisor ran out of retries is no advice: the question is advised again.
   const cached = questions.map(question => reviewed?.get(JSON.stringify([question.question, question.context, question.kind, question.document, question.pid])))
+    .map(review => advisorFailed(review?.advice) ? undefined : review)
   const advised = questions.map((question, index) => kept[index] ? { ...question, ...(open.get(question.id)?.group ? { group: open.get(question.id)!.group } : {}), advice: kept[index] } : cached[index]?.advice ? { ...question, ...cached[index] } : question)
-  await parallel(questions.flatMap((question, index) => answered.has(question.id) || kept[index] || cached[index]?.advice ? [] : [index]), async index => {
-    advised[index] = { ...questions[index]!, ...await adviseQuestion(directory, state, step, deps, questions[index]!) }
+  // Questions on paragraphs of one change-plan group are one change decided
+  // paragraph by paragraph: they are advised one after another, each seeing
+  // its siblings' advice, and share one topic. Other questions run in parallel.
+  await parallel(changeGroupChains(directory, questions), async chain => {
+    const asked = chain.filter(index => !answered.has(questions[index]!.id))
+    for (const index of asked) {
+      if (kept[index] || cached[index]?.advice) continue
+      const siblings = asked.filter(other => other !== index && advised[other]!.advice && !advisorFailed(advised[other]!.advice)).map(other => advised[other]!)
+      advised[index] = { ...questions[index]!, ...await adviseQuestion(directory, state, step, deps, questions[index]!, siblings) }
+    }
+    const group = asked.map(index => advised[index]!.group).find(Boolean)
+    if (asked.length > 1 && group) for (const index of asked) advised[index] = { ...advised[index]!, group }
   })
   return advised
 }
 
-export async function adviseQuestion(directory: string, state: LeanState, step: StepID, deps: LeanDeps, question: Question): Promise<{ advice: QuestionAdvice; group?: string }> {
+const advisorFailed = (advice?: QuestionAdvice) => !!advice && "unavailable" in advice && advice.unavailable.reason_code === "advisor_failed"
+
+/** `questions` by index in advice chains: those on paragraphs of one
+ * change-plan group together, in order, and every other question alone. */
+function changeGroupChains(directory: string, questions: Question[]) {
+  const plans = new Map<string, ReturnType<typeof readChangePlan>>()
+  const chains = new Map<string, number[]>()
+  questions.forEach((question, index) => {
+    const document = question.document ?? FIRST_DOCUMENT
+    if (question.pid && !plans.has(document)) plans.set(document, readChangePlan(directory, document))
+    const group = question.pid ? plans.get(document)?.groups.find(row => row.pids.includes(question.pid!)) : undefined
+    const key = group ? JSON.stringify([document, group.id]) : `${index}`
+    chains.set(key, [...chains.get(key) ?? [], index])
+  })
+  return [...chains.values()]
+}
+
+export async function adviseQuestion(directory: string, state: LeanState, step: StepID, deps: LeanDeps, question: Question, siblings: Question[] = []): Promise<{ advice: QuestionAdvice; group?: string }> {
   const agent = LEAN_STAGE_AGENTS.advise
   const at = { stage: stepStage(step), document: stepDocument(step) ?? undefined, step: `advise ${question.id}` }
   try {
@@ -61,7 +91,7 @@ export async function adviseQuestion(directory: string, state: LeanState, step: 
     for (let index = 0; index <= LEAN_MAX_RETRIES; index += 1) {
       appendLeanEvent(directory, { ...at, event: index ? "retry" : "model_call", attempt: index, session_id: sessionID })
       const asked = performance.now()
-      const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: index ? retryPrompt("advise", issues) : advisePrompt(directory, question) })
+      const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: index ? retryPrompt("advise", issues) : advisePrompt(directory, question, siblings) })
       const answered = performance.now()
       const checked = checkAdvice(directory, question, reply, { requireRelevance: true })
       issues = checked.issues
@@ -192,7 +222,8 @@ function actingForAdvice(directory: string) {
     : "Whom the lawyer acts for is not recorded yet; take it from the request, instructions or answers above where they say, otherwise recommend what is even-handed between the parties."
 }
 
-export function advisePrompt(directory: string, question: Question) {
+/** `siblings` are advised questions on other paragraphs of the same change-plan group. */
+export function advisePrompt(directory: string, question: Question, siblings: Question[] = []) {
   const confirming = question.options ? confirmationDocument(directory, question.id) : undefined
   if (confirming) return confirmationPrompt(directory, question, confirming)
   const row = question.pid ? readParagraphs(directory, question.document ?? FIRST_DOCUMENT).find(row => row.pid === question.pid) : undefined
@@ -210,6 +241,8 @@ export function advisePrompt(directory: string, question: Question) {
     ...(question.context ? [tagged("context", question.context)] : []),
     ...(paragraph ? [tagged("affected_paragraph", paragraph)] : []),
     ...(question.options ? [tagged("options", question.options.map((option, index) => `${index}: ${option.text}`).join("\n"))] : []),
+    ...(siblings.length ? ["<sibling_questions> holds questions on other paragraphs of the same planned change, with the advice given on each. Advise alike unless a source treats those paragraphs differently.",
+      tagged("sibling_questions", siblings.map(siblingAdvice).join("\n\n"))] : []),
     tagged("request", readLeanText(directory, "request.md") ?? ""),
     ...(updates ? [tagged("user_updates", updates)] : []),
     tagged("answers", answeredQuestionsText(directory) || "None."),
@@ -223,6 +256,15 @@ export function advisePrompt(directory: string, question: Question) {
       ? `Reply with one JSON object only, including "group":"short topic": {"recommendation":{"option":0,"rationale":"why this option",${basis}}}, where "option" is the index of one of the options above; or, when no option is supported, {"unavailable":{"reason":"why no option can be recommended"}}. Do not return options of your own.`
       : `Reply with one JSON object only, including "group":"short topic": {"options":[{"text":"one option the lawyer could choose"}],"recommendation":{"option":"the recommended option's text","rationale":"why this option",${basis},"decided_by":"i1"}}, with 2 to 4 distinct options and "option" the text of the one recommended, copied exactly from your options; or, when no option is supported, {"options":[],"unavailable":{"reason":"why no option can be recommended"}}, with no options or 2 to 4. Give "decided_by" only when one item of <instructions> expressly decides this question, as that item's id, and recommend the option that follows it, quoting the item's own words in basis; otherwise leave it out. An item that is only related, that would need inference to apply, or whose validity as given the question asks about, does not decide the question.`,
   ].join("\n\n")
+}
+
+/** An advised question as a sibling's advisor reads it: the recommended
+ * option by its words, never an id. */
+function siblingAdvice(question: Question) {
+  const advice = question.advice!
+  if ("unavailable" in advice) return `Question: ${question.question}\nNo option recommended: ${advice.unavailable.reason}`
+  const option = [...question.options ?? [], ...advice.options ?? []].find(row => row.id === advice.recommendation.option)
+  return [`Question: ${question.question}`, ...(option ? [`Recommended: ${option.text}`] : []), `Why: ${advice.recommendation.rationale}`].join("\n")
 }
 
 /** The advice a reply gives `question`, or the issues for a retry. */
@@ -330,13 +372,14 @@ function holdsName(text: string, name: string, flags = "u") {
 const optionKey = (text: string) => normalize(text).toLowerCase().replace(/[\s.,;:!?]+$/, "")
 
 /** At least one supporting passage, each from the request, a matter source
- * or approved research, with non-blank words that source holds. */
-export function basisIssues(directory: string, value: unknown, requireRelevance = false, request?: string): { issues: string[]; rows: { source_id: string; quote: string; relevance?: string }[] } {
-  if (!Array.isArray(value) || !value.length) return { issues: ['"recommendation.basis" must list at least one {"source_id","quote"} passage supporting the recommendation.'], rows: [] }
+ * or approved research, with non-blank words that source holds. `field` names
+ * the reply's list in each issue. */
+export function basisIssues(directory: string, value: unknown, requireRelevance = false, request?: string, field = "recommendation.basis"): { issues: string[]; rows: { source_id: string; quote: string; relevance?: string }[] } {
+  if (!Array.isArray(value) || !value.length) return { issues: [`"${field}" must list at least one {"source_id","quote"} passage that supports it.`], rows: [] }
   const sources = new Set([REQUEST_SOURCE, ...matterSourceIDs(directory), ...approvedResearch(directory).map(row => row.url)])
   const rows = value.map(row => record(row) && typeof row.source_id === "string" && typeof row.quote === "string" ? { source_id: row.source_id.trim(), quote: row.quote, ...(typeof row.relevance === "string" && row.relevance.trim() ? { relevance: row.relevance.trim() } : {}) } : undefined)
   const issues = rows.flatMap((row, index) => {
-    const at = `recommendation.basis[${index}]`
+    const at = `${field}[${index}]`
     // An instruction from one of the lawyer's answers is cited as that answer (instructions.ts).
     if (!row || !(sources.has(row.source_id) || isAnswerSource(row.source_id))) return [`${at}.source_id must be "request", an exact matter source name or an approved research URL.`]
     if (!row.quote.trim()) return [`${at}.quote must be non-empty words copied exactly from that source.`]
