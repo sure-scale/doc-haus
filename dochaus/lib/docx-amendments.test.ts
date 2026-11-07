@@ -840,6 +840,7 @@ describe("layered edits on a counterparty markup", () => {
   })
 
   test("a later tracked insertion stands beside doc.haus's own inserted sentence, never inside it", async () => {
+    const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     const author = "Jordan Example"
     const own = { ...layer, ownAuthors: [author], revisionAuthor: author }
     const write = async (bytes: Uint8Array, before_quote: string, replacement: string) => {
@@ -849,13 +850,20 @@ describe("layered edits on a counterparty markup", () => {
     }
     const first = (await write(source, "This Agreement", "Each party submits to the courts. This Agreement")).bytes
     await expect(write(first, "submits to the courts", "submits irrevocably to the courts")).rejects.toThrow("docx_own_revision:law")
-    // Written as its own w:ins just after the first, which Docxodus lists with
-    // it, whether or not the quote reaches back into the first.
+    // Written as its own w:ins just after the first, whether or not the quote
+    // reaches back into the first. Logical revision listings may group the
+    // adjacent insertions together or expose them separately.
     for (const [before_quote, replacement] of [["This Agreement", "Both parties agree. This Agreement"],
       ["the courts. This Agreement", "the courts. Both parties agree. This Agreement"]] as const) {
       const beside = await write(first, before_quote, replacement)
-      expect((await revisions(beside.bytes)).filter(row => row.author === author).map(row => [row.type, row.text]))
-        .toEqual([["insert", "Each party submits to the courts. Both parties agree. "]])
+      const listed = (await revisions(beside.bytes)).filter(row => row.author === author)
+      expect(listed.every(row => row.type === "insert")).toBe(true)
+      expect(listed.map(row => row.text).join("")).toBe("Each party submits to the courts. Both parties agree. ")
+      const inserted = Array.from(new DOMParser().parseFromString(strFromU8(unzipSync(beside.bytes)["word/document.xml"]!), "application/xml")
+        .getElementsByTagNameNS(W, "ins")).filter(node => node.getAttributeNS(W, "author") === author)
+      expect(inserted).toHaveLength(2)
+      expect(inserted.every(node => node.getElementsByTagNameNS(W, "ins").length === 0)).toBe(true)
+      expect(inserted[0]!.parentNode).toBe(inserted[1]!.parentNode)
       expect((await createDocxRevision(beside.bytes, layer)).paragraphs[9]!.text)
         .toBe("9. Governing law. Each party submits to the courts. Both parties agree. This Agreement is governed by the law of the Province.")
     }
