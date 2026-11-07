@@ -7,7 +7,7 @@ import { comparisonDescription } from "./comparison"
 import { combinedDelivery, deliveryArtifactEvidence, requestedMemo } from "./deliverables"
 import { researchHandoff } from "./research"
 import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult, shownText } from "./checks"
-import { guidanceTemplate, reviewGuidance, reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type StepID } from "./plan"
+import { askedAtOrBefore, guidanceTemplate, reviewGuidance, reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type StepID } from "./plan"
 import { REQUEST_SOURCE, adoptedSources, matterSourceIDs } from "./quotes"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
 import { escapeTagOpeners } from "../../lib/untrusted"
@@ -107,7 +107,8 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   ].join("\n"))
   const request = [scope, boundPlaybookContext(directory), tagged("legal_research", "Only the approved retrieved propositions below may support external legal assertions. Preserve jurisdiction, currency and source limitations. Missing research is an open item, never an invitation to use model memory. A limitation describes the state of the evidence; it never directs omission. A figure, deadline, threshold or legal characterisation the document ordinarily carries is stated from the best retrieved lead, with its effective date and a visible [open item: verify ...] marker when its official text was not retrieved; it is left out only when nothing was found. A legal characterisation the research does not settle stays as the drafter's view, or the party's attributed understanding, with its marker. Cite supporting exact words as \"quote\" [source: source URL].\n" + researchHandoff(directory)), tagged("request", readLeanText(directory, "request.md") ?? ""), matterDatesBlock(directory), updates ? tagged("user_updates",
     "Ongoing instructions from the lawyer, in arrival order. Consider these alongside the original request throughout this run. An explicit later change supersedes the earlier instruction on that point; ask about unresolved contradictions. Do not treat a question or a tentative suggestion as an agreed instruction. Do not ask again for information these updates already supply. Quote the lawyer’s words under source name \"request\".\n\n" + updates) : ""].filter(Boolean).join("\n\n")
-  const answers = answeredQuestionsText(directory)
+  // The answers the step's key reads (stageInputs): not a later step's.
+  const answers = answeredQuestionsText(directory, { documents: askedAtOrBefore(directory, step) })
   const working = workingDraftBlock(directory)
   const spine = readLeanText(directory, "spine.json")
   const spineBlock = spine ? tagged("drafting_spine", "Source-linked drafting decisions and unresolved points. Retrieve the underlying evidence as needed; this handoff does not replace it.\n" + spine) : ""

@@ -527,10 +527,10 @@ export const readsQuestion = ({ documents }: AnswerReader) => (question: Questio
  * every drafting stage and its key. The instructions step reads the lawyer's
  * answers alone (`settled: false`): what an instruction settled is not a new
  * instruction. The preparation steps ask no document's or package-scope
- * questions and read only run-level answers (`documents: false`; the act
- * record also the plan step's package-scope ones), so answering a document's
- * question, or the gate's package-scope one, keeps them done; that answer
- * reaches the document through its own steps. */
+ * questions and read only run-level answers (`documents: false`), so
+ * answering a document's question, or the gate's package-scope one, keeps
+ * them done; that answer reaches the document through its own steps, those
+ * asked at or before each (askedAtOrBefore). */
 export function answeredQuestionsText(directory: string, options: AnswerReader & { settled?: false } = {}) {
   return [...answeredQuestions(directory), ...options.settled === false ? [] : instructionSettledQuestions(directory)]
     .filter(readsQuestion(options))

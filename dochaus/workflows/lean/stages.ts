@@ -41,7 +41,7 @@ import {
   type ParagraphRow,
   type StageCheck,
 } from "./checks"
-import { reviewGuidance, reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, runDateFormat, runPosture, stepDocument, stepStage, type DocID, type PlannedDocument, type StepID } from "./plan"
+import { askedAtOrBefore, reviewGuidance, reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, runDateFormat, runPosture, stepDocument, stepStage, type DocID, type PlannedDocument, type StepID } from "./plan"
 import { acceptReviewReply, forwardedFindings, readReviewRecord } from "./review-findings"
 import { templateSource } from "./template-contract"
 import { INSTRUCTIONS_FILE, instructionsOutputValid } from "./instructions"
@@ -249,9 +249,10 @@ const DISCLOSED_STAGES: StageID[] = ["spine", "research", "research-review", "ch
  * whom the lawyer acts for reach a drafted document as amendments through its
  * review and change-plan keys. Answers are inputs of every other step; the
  * preparation steps (instructions to spine) read only run-level answers (no
- * document's and no package-scope question's), and the act record also the
- * plan step's package-scope answers (ACT_RECORD_ANSWERS), as the document's
- * own steps read its questions' answers and the gate its own. The
+ * document's and no package-scope question's), and a document's own steps
+ * read, of the questions its steps asked, those asked at or before each of
+ * them (askedAtOrBefore), so an answer to a later step's question re-runs
+ * that step onward and not the reviews before it; the gate reads its own. The
  * changes step's own previous output
  * and open questions are shown to it but are not inputs, so its output never
  * changes its own key. The planned documents' ids, titles and purposes are
@@ -282,7 +283,7 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     ...(!["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine"].includes(step) ? ["discrepancy.json", "spine.json", SPINE_ATOMS].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
     ...(clarifications.length && ["checklist-check", "package-review", "gate"].includes(step) ? [{ name: "inspection-clarifications", bytes: JSON.stringify(clarifications) }] : []),
     { name: "source-content", bytes: matterSourceBasis(directory) },
-    ...(!inputs.some(part => part.name === "answers") ? [{ name: "answers", bytes: answeredQuestionsText(directory) }] : []),
+    ...(!inputs.some(part => part.name === "answers") ? [{ name: "answers", bytes: answeredQuestionsText(directory, { documents: askedAtOrBefore(directory, step) }) }] : []),
     ...(updates && !inputs.some(part => part.name === "updated-notes.md") ? [{ name: "updated-notes.md", bytes: updates }] : [])]
 }
 
@@ -305,7 +306,7 @@ function keyedQuestions(directory: string, gate = false) {
 
 function baseStageInputs(directory: string, step: StepID, options: { repairContext?: false; researchGaps?: false }): { name: string; bytes: string | Uint8Array }[] {
   const file = (name: string) => ({ name, bytes: existsSync(leanFile(directory, name)) ? readFileSync(leanFile(directory, name)) : "" })
-  const answers = { name: "answers", bytes: answeredQuestionsText(directory) }
+  const answers = { name: "answers", bytes: answeredQuestionsText(directory, { documents: askedAtOrBefore(directory, step) }) }
   const sources = { name: "sources", bytes: matterSourceIDs(directory).join("\n") }
   const planned = readLeanPlan(directory)?.documents.map(row => row.id) ?? []
   if (step === "checklist-check") return [{ name: "checklist-refinement-contract", bytes: "source-unit-refinement-1" }, { name: "checklist-refinement-selection", bytes: JSON.stringify(checklistRefinementSelections(directory)) }, file("checklist/refinements.json"), file("request.md"), file("plan.json"), file("checklist/extraction.json"), file("drafting-notes.docx"), file("research-context.txt"), ...planned.flatMap(id => [file(`${id}/body.docx`), file(`${id}/body-applied.docx`), file(`${id}/redline.docx`), file(`${id}/review-independent.json`), file(`${id}/changes.json`), file(`${id}/apply.json`)])]
