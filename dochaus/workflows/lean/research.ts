@@ -160,12 +160,15 @@ function priorResearch(directory: string): ResearchFinding[] {
   return resolved.issues.length ? [] : resolved.findings
 }
 
+/** The research as the lawyer sees it, with `checked_sources`: how many
+ * distinct sources back the findings the review approved, so a limited status
+ * can say what was found as well as that limits remain. */
 export function researchStatus(directory: string) {
   const value = readLeanJson(directory, "research.json") as Research | undefined
   if (!value) return null
   const review = readLeanJson(directory, "research-review.json") as ResearchReview | undefined
   const limited = value.status === "limited" || Boolean(review?.rejected?.length || review?.limitations?.length || review?.gaps?.length)
-  return { ...value, status: limited ? "limited" : value.status }
+  return { ...value, status: limited ? "limited" : value.status, checked_sources: new Set(approvedResearch(directory).map(row => row.url)).size }
 }
 
 /** The approved findings and the research limitations for later stages. A
@@ -354,7 +357,7 @@ function keptFindings(value: Record<string, unknown>, prior: ResearchFinding[]) 
  * set again. The status describes the combined set: it holds authority, so it
  * is limited when the reply or a kept finding discloses a limit, else completed.
  * A not-needed reply's limitations give its reason, not a research gap, so the
- * set keeps none of them: "limited" tells the lawyer research is incomplete. */
+ * set keeps none of them: "limited" tells the lawyer research has limits to disclose. */
 function withPriorFindings(value: Research, kept: ResearchFinding[]): Research {
   if (!kept.length) return value
   const used = new Set(value.findings.map(row => row.id))

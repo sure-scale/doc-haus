@@ -132,7 +132,8 @@ export type LeanDraftingStatus = {
   model: { providerID: string; modelID: string } | null
   created_at: string
   updated_at: string
-  research?: { status: "completed" | "limited" | "not-needed"; findings: unknown[]; limitations: string[] } | null
+  // checked_sources: distinct sources behind the findings the review approved.
+  research?: { status: "completed" | "limited" | "not-needed"; findings: unknown[]; limitations: string[]; checked_sources: number } | null
   stages: Record<LeanStep, LeanStageStatus>
   /** True while ingest runs this matter's coordinator. */
   in_flight: boolean

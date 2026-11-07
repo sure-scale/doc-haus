@@ -584,13 +584,19 @@ test("a requested memo is named wherever the run would say drafting notes", () =
   expect([runPosition(running(plain))!.text, runPosition(running(memo))!.text]).toEqual(["Finishing · Drafting notes", "Finishing · Cover memo"])
   // The header's step rows, its research note and the result card follow the memo too.
   const notNeeded = (status: LeanDraftingStatus) =>
-    lean({ ...status, stages: { research: { ...status.stages["d1.draft"]!, status: "done" }, ...status.stages }, research: { status: "not-needed", findings: [], limitations: [] } })
+    lean({ ...status, stages: { research: { ...status.stages["d1.draft"]!, status: "done" }, ...status.stages }, research: { status: "not-needed", findings: [], limitations: [], checked_sources: 0 } })
   const header = (status: LeanDraftingStatus) =>
     renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status: notNeeded(status), actions, own: true, onOpen: () => {}, onShowDrafts: () => {} })))
   expect(header(plain)).toContain("the reason is recorded with the drafting notes.")
   expect(header(memo)).toContain("the reason is recorded with the cover memo.")
   expect(header(memo)).toContain("Step 6 of 7: Cover memo, done")
   expect(header(memo)).not.toMatch(/drafting notes/i)
+  // Limited research with checked sources says what was found; with none it stays incomplete.
+  const limited = (status: LeanDraftingStatus, checked_sources: number) =>
+    renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status: { ...notNeeded(status), research: { status: "limited", findings: [], limitations: ["A synthetic limit"], checked_sources } }, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} })))
+  expect(limited(memo, 3)).toContain("Research found 3 checked sources; its limits are listed in the cover memo.")
+  expect(limited(plain, 1)).toContain("Research found 1 checked source; its limits are listed in the drafting notes.")
+  expect(limited(plain, 0)).toContain("Legal research is incomplete.")
   const result = renderToStaticMarkup(createElement(ResultCard, { status: memo, matterId: "m1", onViewDocument: () => {} }))
   expect(result).toContain("2 other items in the cover memo")
 })
