@@ -64,6 +64,7 @@ function heldModel() {
   const created: Parameters<StageSessionPort["createSession"]>[0][] = []
   const prompts: string[] = []
   const gate = Promise.withResolvers<void>()
+  const waiting = Promise.withResolvers<void>()
   const sessions: StageSessionPort = {
     createSession: async (input) => {
       created.push(input)
@@ -71,11 +72,12 @@ function heldModel() {
     },
     prompt: async (input) => {
       prompts.push(input.agent)
+      waiting.resolve()
       await gate.promise
       throw new Error("scripted engine outage")
     },
   }
-  return { deps: { sessions } satisfies LeanDeps, created, prompts, release: () => gate.resolve() }
+  return { deps: { sessions } satisfies LeanDeps, created, prompts, waiting: waiting.promise, release: () => gate.resolve() }
 }
 
 const MODEL = { providerID: "test", modelID: "scripted" }
@@ -580,6 +582,8 @@ test("amendment status rows preserve stage order, worker-only sessions and the u
   const initial = readLeanState(directory)!
   expect(Object.keys(initial.stages).filter(step => order.includes(step as typeof order[number]))).toEqual([...order])
   try {
+    // Wait until the sole writer is held before installing status-only fixtures.
+    await model.waiting
     for (const step of order.slice(0, -1)) {
       const state = readLeanState(directory)!
       writeLeanState(directory, { ...state, stages: { ...state.stages, [step]: { ...state.stages[step]!, status: "running", session_id: null, session_ids: ["ses_worker_a", "ses_worker_b"], calls: 2, outputs: ["d1/change-preparation.json"] } } })

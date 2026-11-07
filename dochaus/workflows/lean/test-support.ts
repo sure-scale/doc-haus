@@ -101,7 +101,7 @@ export function scriptedModel(replies: Record<string, Reply>) {
         // Every asked question is advised; the fixture's advisor recommends nothing.
         [AGENT.advise]: () => JSON.stringify({ unavailable: { reason: "The scripted advisor recommends nothing." } }),
         // Every answer in the lawyer's words is read as their own answer.
-        [AGENT.answer]: () => JSON.stringify({ class: "answered" }),
+        [AGENT.answer]: prompt => JSON.stringify({ class: "answered", fact_status: "supplied", fact_quote: /<reply>\n([\s\S]*?)\n<\/reply>/.exec(prompt)?.[1] ?? "" }),
         // Every set of answers can be followed together.
         [AGENT.reconcile]: () => JSON.stringify({ conflicts: [] }),
       }

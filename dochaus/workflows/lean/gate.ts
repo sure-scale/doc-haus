@@ -22,6 +22,7 @@ import { draftedDefaultItems } from "./drafted-defaults"
 import { combinedFileItems } from "./deliverables"
 import { withheldChecklistRepair } from "./requests"
 import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, undecidedQuestion, type LeanState, type OpenItem, type Question } from "./state"
+import { currentFactDisposition } from "./fact-answers"
 
 // Final legal gate: the only place an open item blocks delivery. It covers every
 // planned document; each item is settled against the final body of the
@@ -829,6 +830,19 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
     // A question asked again by a later document points into that document; the
     // item's own paragraph is in the document it was found in.
     const pid = item.ref.pid ?? ((question?.document ?? FIRST_DOCUMENT) === document ? question?.pid : undefined)
+    const fact = question?.kind === "fact" && question.stage === "intake"
+      ? currentFactDisposition(context.directory, question) ?? (question.status === "answered" ? "unknown" : undefined)
+      : undefined
+    if (question && fact && fact !== "supplied") {
+      if (fact !== "provisional") return open("the fact remains unknown and the lawyer has not authorised drafting while it is missing")
+      if (!named && !context.notes.includes(question.id)) return open("the fact remains unknown; the drafting notes do not disclose it")
+      const unscoped = !item.ref.document && !question.document && !pid
+      const visible = pid ? marked(final, pid) : unscoped
+        ? [...context.documents.values()].some(body => inBody(body, item.ref.placeholder, undefined))
+        : inBody(final, item.ref.placeholder, undefined)
+      return visible ? disclosed("the fact remains unknown; marked in the body and named in the drafting notes")
+        : open("the fact remains unknown; its body placeholder is missing")
+    }
     if (question && undecidedQuestion(question)) {
       const why = question.answer_class === "declined" ? "not answered; this needs your answer" : "you asked us to decide, but this needs your answer"
       if (!named && !context.notes.includes(question.id)) return open(`${why}; the drafting notes do not name it`)

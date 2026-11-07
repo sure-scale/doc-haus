@@ -128,7 +128,12 @@ export function questionKindIssues(item: Record<string, unknown>, at: string) {
 }
 
 /** One answer the lawyer may pick; code assigns the ids o1..oN. */
-export type QuestionOption = { id: string; text: string }
+export type QuestionOption = { id: string; text: string; fact_action?: "provisional" | "wait" }
+
+/** A supplied fact is the lawyer's assertion, not independent verification.
+ * Unknown records a reply whose treatment could not be established. */
+export const FACT_STATUSES = ["supplied", "provisional", "wait", "unknown"] as const
+export type FactStatus = (typeof FACT_STATUSES)[number]
 
 /** The advisor's view of an open question (advise.ts): a recommended option
  * with its reason and code-verified supporting passages, or why no option is
@@ -157,6 +162,14 @@ export type Question = {
   replaces?: string[]
   status: "open" | "answered"
   answer?: string
+  /** What the lawyer's reply supplies or permits for a factual uncertainty. */
+  fact_status?: FactStatus
+  /** Inputs on which the current factual treatment was accepted or checked. */
+  fact_context?: string
+  /** A later instruction or supplied source changed the original treatment. */
+  fact_resolution?: { reason: string; basis: { source_id: string; quote: string }[] }
+  /** The accepted answer request's existing queue id, preserving receipt order. */
+  answer_request_id?: string
   /** How the lawyer gave the answer, when not in their own words: by picking
    * an offered option, or by adopting the recommended one (Decide for me).
    * Either way `answer` holds that option's words, and stage keys and prompts
@@ -424,14 +437,14 @@ export function delegable(question: Question) {
  * not_delegable (an adoption the question cannot take). Writes nothing. */
 export function answerWith(target: Question | undefined, form: AnswerForm): Question {
   if (!target) throw new LeanQuestionError("No such question in this matter's lean drafting run.", "not_found")
-  const { answer_kind: _kind, option_id: _option, answer_class: _class, lawyer_words: _words, decided_by: _decided, ...asked } = target
+  const { answer_kind: _kind, option_id: _option, answer_class: _class, lawyer_words: _words, decided_by: _decided, fact_status: _factStatus, fact_context: _factContext, fact_resolution: _factResolution, answer_request_id: _answerRequestID, ...asked } = target
   const answered = (answer: string, how?: { answer_kind: "option" | "adopted"; option_id: string }): Question =>
     ({ ...asked, status: "answered", answer, ...how, answered_at: new Date().toISOString() })
   if ("text" in form) return answered(validateAnswerText(form.text))
   if ("option_id" in form) {
     const option = questionOptions(target).find(row => row.id === form.option_id)
     if (!option) throw new LeanQuestionError("That option is not one this question offers.", "invalid_answer")
-    return answered(option.text, { answer_kind: "option", option_id: option.id })
+    return { ...answered(option.text, { answer_kind: "option", option_id: option.id }), ...(target.kind === "fact" && option.fact_action ? { fact_status: option.fact_action } : {}) }
   }
   if (target.status === "answered") throw new LeanQuestionError("This question is already answered.", "already_answered")
   const option = delegable(target) ? delegatedOption(target) : undefined
@@ -441,11 +454,15 @@ export function answerWith(target: Question | undefined, form: AnswerForm): Ques
 
 /** Records the lawyer's answer (answerWith). An adoption replayed after a
  * restart stopped the drain is already recorded and changes nothing. */
-export function answerQuestion(directory: string, questionID: string, form: AnswerForm) {
+export function answerQuestion(directory: string, questionID: string, form: AnswerForm, context?: string, received?: { id: string; at: string }) {
   const questions = readQuestions(directory)
   const target = questions.find(question => question.id === questionID)
   if ("adopt" in form && target?.status === "answered" && target.answer_kind === "adopted") return target
-  const answered = answerWith(target, form)
+  const reply = answerWith(target, form)
+  const answered = { ...reply,
+    ...(reply.kind === "fact" && reply.stage === "intake" && context ? { fact_context: context } : {}),
+    ...(received ? { answer_request_id: received.id, answered_at: received.at } : {}),
+  }
   writeQuestions(directory, questions.map(question => question.id === questionID ? answered : question))
   return answered
 }
@@ -458,7 +475,15 @@ export type AnswerClass = (typeof ANSWER_CLASSES)[number]
 
 /** An answer in the lawyer's own words whose class is not yet read. */
 export function unclassifiedAnswer(question: Question) {
-  return question.status === "answered" && typeof question.answer === "string" && !question.answer_kind && !question.answer_class
+  return question.status === "answered" && typeof question.answer === "string" &&
+    ((!question.answer_kind && !question.answer_class) || (question.kind === "fact" && question.stage === "intake" && factDisposition(question) === undefined))
+}
+
+/** The selected fact option has a code-owned effect; free text is read by the
+ * focused answer job. Absence means it has not been read yet. */
+export function factDisposition(question: Question): FactStatus | undefined {
+  if (question.kind !== "fact" || question.status !== "answered") return
+  return question.fact_status ?? questionOptions(question).find(option => option.id === question.option_id)?.fact_action
 }
 
 /** `question`, answered in the lawyer's own words, with their class. A
@@ -475,11 +500,12 @@ export function classifiedAnswer(question: Question, answerClass: AnswerClass): 
 
 /** Records each class read (by question id, with the words read) on its
  * question while it still holds those words unclassified. */
-export function recordAnswerClasses(directory: string, read: Map<string, { words: string; answer_class: AnswerClass }>) {
+export function recordAnswerClasses(directory: string, read: Map<string, { words: string; answer_class: AnswerClass; fact_status?: FactStatus; fact_context?: string }>) {
   if (!read.size) return
   writeQuestions(directory, readQuestions(directory).map(question => {
     const row = read.get(question.id)
-    return row && unclassifiedAnswer(question) && question.answer === row.words ? classifiedAnswer(question, row.answer_class) : question
+    if (!row || !unclassifiedAnswer(question) || question.answer !== row.words) return question
+    return { ...classifiedAnswer(question, row.answer_class), ...(question.kind === "fact" && row.fact_status ? { fact_status: row.fact_status, ...(row.fact_context ? { fact_context: row.fact_context } : {}) } : {}) }
   }))
 }
 
@@ -527,7 +553,7 @@ export const readsQuestion = ({ asked, except }: AnswerReader) => (question: Que
 export function answeredQuestionsText(directory: string, options: AnswerReader & { settled?: false } = {}) {
   return [...answeredQuestions(directory), ...options.settled === false ? [] : instructionSettledQuestions(directory)]
     .filter(readsQuestion(options))
-    .map(question => `- [${question.id}] Q: ${question.question}\n  ${answerLabel(question)}: ${question.answer}`)
+    .map(question => `- [${question.id}] Q: ${question.question}\n  ${answerLabel(question)}: ${question.answer}${question.fact_resolution ? `\n  Current factual treatment (${question.fact_status}): ${question.fact_resolution.reason}${question.fact_resolution.basis.map(row => `\n  Supporting words in ${row.source_id}: ${row.quote}`).join("")}` : ""}`)
     .join("\n")
 }
 
@@ -542,6 +568,10 @@ export const SHORT_HASH_LENGTH = 10
  * delegation as leave to pick a value from the sources and drop the marker
  * would leave the body silent on a point only the lawyer can settle. */
 function answerLabel(question: Question) {
+  const fact = factDisposition(question)
+  if (fact === "provisional") return `A (the fact remains unknown; the lawyer permits a review draft with a visible open-item marker in every dependent paragraph and disclosure in the notes; this supplies no fact or permission to release the document; do not ask it again)`
+  if (fact === "wait") return "A (the fact remains unknown; the lawyer asked the run to wait for evidence; do not draft or ask a status question; only the lawyer's later answer or instruction, or supplied evidence satisfying the stated condition, changes this)"
+  if (fact === "unknown") return "A (the fact remains unknown; this reply supplies no established fact or clear permission to draft provisionally; keep it open and wait for clarification without repeating the question)"
   if (question.answer_kind === "instruction") return `A (settled by the lawyer's instruction "${question.decided_by?.text}"${question.decided_by ? `, from their words "${question.decided_by.quote}" in ${question.decided_by.source_id}` : ""}; not asked; the lawyer may change it)`
   if (question.answer_kind === "adopted") return `A (${ADOPTED_ANSWER})`
   if (question.answer_class === "delegated") return `A (delegated by the lawyer, but it needs the lawyer's own answer, so ${STILL_OPEN})`

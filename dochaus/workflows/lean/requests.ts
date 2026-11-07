@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { factContext } from "./fact-answers"
 import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, unlinkSync, writeSync } from "node:fs"
 import path from "node:path"
 import { readDurableJson } from "../../lib/durable-json"
@@ -115,7 +116,9 @@ function processRequest(directory: string, request: unknown, stopped: LeanState 
   }
   if (isAnswer(request)) {
     try {
-      answerQuestion(directory, request.question_id, "answer" in request ? { text: request.answer } : "option_id" in request ? { option_id: request.option_id } : { adopt: true })
+      const received = "id" in request && typeof request.id === "string" && "received_at" in request && typeof request.received_at === "string"
+        ? { id: request.id, at: request.received_at } : undefined
+      answerQuestion(directory, request.question_id, "answer" in request ? { text: request.answer } : "option_id" in request ? { option_id: request.option_id } : { adopt: true }, factContext(directory), received)
       return { status: "answered" }
     } catch (error) {
       if (error instanceof LeanQuestionError) return { status: "rejected", detail: `${error.code}: ${error.message}` }

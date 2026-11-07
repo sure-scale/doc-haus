@@ -1,8 +1,9 @@
 import { adviseQuestions } from "./advise"
 import { acceptInstructionsReply, confirmationQuestions, instructionsPrompt, settleByInstructions, writeInstructionsFile } from "./instructions"
-import { proposedFactQuestions, questionReviewKey, reviewProposedQuestion, sourceFactsFeedback, type QuestionReview } from "./question-review"
+import { proposedFactQuestions, questionReviewKey, reviewProposedQuestion, sourceFactsFeedback, repeatedQuestionsFeedback, type QuestionReview } from "./question-review"
 import { parallel } from "./checklist-flow"
-import { classifyAnswers } from "./answer-class"
+import { classifyAnswers, refreshFactAnswers } from "./answer-class"
+import { factOpenItems, waitingFactQuestions } from "./fact-answers"
 import { answersToReconcile, reconcileAnswers } from "./answer-reconcile"
 import { runFocusedChangeReview } from "./focused-change-review"
 import { DRAFTING_STOPPED_REASON } from "../../lib/drafting-update-admission"
@@ -199,18 +200,29 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       const reply = await untilPaused(sourceDeps.sessions.prompt(pause ? { ...input, signal: pause } : input), pause)
       const stage = input.agent === LEAN_STAGE_AGENTS.advise ? undefined : Object.entries(LEAN_STAGE_AGENTS).find(([, agent]) => agent === input.agent)?.[0] as StageID | undefined
       const askingStep = Object.entries(state.stages).find(([, row]) => row?.session_id === input.sessionID || row?.session_ids?.includes(input.sessionID))?.[0] as StepID | undefined
-      const candidates = stage && !reviewedSessions.has(input.sessionID) ? proposedFactQuestions(directory, reply, stage, askingStep ? stepDocument(askingStep) ?? undefined : undefined) : []
-      if (!candidates.length) return reply
-      reviewedSessions.add(input.sessionID)
-      const findings: { question: string; source: NonNullable<QuestionReview["source"]> }[] = []
-      await parallel(candidates, async question => {
-        const review = await reviewProposedQuestion(directory, question, { sessions: deps.sessions, parentID: state.owner_session_id, model: state.model })
-        questionReviews.set(questionReviewKey(question), review)
-        if (review.source) findings.push({ question: question.question, source: review.source })
-      })
-      if (!findings.length || paused() || preferencesChanged()) return reply
-      appendLeanEvent(directory, { stage: stage!, event: "retry", step: "source evidence before question", session_id: input.sessionID, attempt: 1 })
-      return await untilPaused(sourceDeps.sessions.prompt({ ...input, text: sourceFactsFeedback(findings), ...(pause ? { signal: pause } : {}) }), pause)
+      const inspect = async (text: string, reconsider: boolean): Promise<string> => {
+        // Intake checks every revised proposal. A reworded retry must not bypass
+        // the evidence review already applied to its earlier wording.
+        const candidates = stage && (stage === "intake" || !reviewedSessions.has(input.sessionID))
+          ? proposedFactQuestions(directory, text, stage, askingStep ? stepDocument(askingStep) ?? undefined : undefined) : []
+        if (!candidates.length) return text
+        const findings: { question: string; source: NonNullable<QuestionReview["source"]> }[] = []
+        const repeats: { question: string; repeat: NonNullable<QuestionReview["repeat"]> }[] = []
+        await parallel(candidates, async question => {
+          const key = questionReviewKey(question)
+          const review = questionReviews.get(key) ?? await reviewProposedQuestion(directory, question, { sessions: deps.sessions, parentID: state.owner_session_id, model: state.model })
+          questionReviews.set(key, review)
+          if (review.source) findings.push({ question: question.question, source: review.source })
+          if (review.repeat) repeats.push({ question: question.question, repeat: review.repeat })
+        })
+        if (!reconsider || reviewedSessions.has(input.sessionID) || (!findings.length && !repeats.length) || paused() || preferencesChanged()) return text
+        reviewedSessions.add(input.sessionID)
+        appendLeanEvent(directory, { stage: stage!, event: "retry", step: "source evidence before question", session_id: input.sessionID, attempt: 1 })
+        const feedback = [findings.length ? sourceFactsFeedback(findings) : "", repeats.length ? repeatedQuestionsFeedback(repeats) : ""].filter(Boolean).join("\n\n")
+        const revised = await untilPaused(sourceDeps.sessions.prompt({ ...input, text: feedback, ...(pause ? { signal: pause } : {}) }), pause)
+        return inspect(revised, false)
+      }
+      return await inspect(reply, true)
     } catch (error) {
       const kind = providerStopKind(error)
       if (!kind) throw error
@@ -236,6 +248,10 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     const stage = stepStage(step)
     const document = stepDocument(step) ?? undefined
     const changes = drainLeanRequests(directory)
+    if (changes.answered || changes.updated) {
+      questionReviews.clear()
+      reviewedSessions.clear()
+    }
     // A confirmation's answer changes which listed documents the list follows:
     // the list every later step reads and keys is made current before any
     // step is keyed, as the instructions step itself stays done.
@@ -252,6 +268,27 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       if (preferencesChanged()) return { state, restart: true }
       if (provider.stop) return { state: settleProviderStop(directory, state, provider.stop) }
     }
+    const beforeFactRefresh = readLeanText(directory, "questions.json")
+    await refreshFactAnswers(directory, state, deps)
+    if (paused()) return { state: settlePause(directory, state), paused: true }
+    if (preferencesChanged()) return { state, restart: true }
+    // A sibling's prefetched failure is attributed when its own step consumes it.
+    if (provider.stop && ![...prepared.values()].some(row => row.sessionID === provider.sessionID))
+      return { state: settleProviderStop(directory, state, provider.stop) }
+    const factsChanged = beforeFactRefresh !== readLeanText(directory, "questions.json")
+    if (factsChanged) {
+      questionReviews.clear()
+      reviewedSessions.clear()
+      if (settled.length) return { state, restart: true }
+    }
+    if (index === 0 || changes.answered || changes.updated || factsChanged) {
+      const facts = factOpenItems(directory)
+      const ids = new Set(facts.map(item => item.id))
+      const kept = readOpenItems(directory).filter(item => !ids.has(item.id) && !(item.kind === "question" && item.ref.question_id && readQuestions(directory).some(question => question.id === item.ref.question_id && question.kind === "fact" && question.stage === "intake")))
+      writeOpenItems(directory, [...kept, ...facts])
+    }
+    const waitingFacts = waitingFactQuestions(directory)
+    if (waitingFacts.length) return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: "Waiting for you to supply evidence or change your answer to allow a marked provisional draft." }) }
     // Answers given one question at a time are then read together: answers
     // that cannot all be followed become one question each for the lawyer,
     // asked before any step reads them.
@@ -326,6 +363,10 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       if (step === "research-review" && startResearchGapRound(directory, researchBasis(directory))) return { state, restart: true }
       continue
     }
+    if (stage === "intake" && recorded?.status === "failed" && recorded.input_sha === inputSha &&
+      recorded.attempts >= LEAN_MAX_RETRIES + 1) {
+      return { state: writeLeanState(directory, { ...state, status: "failed", stop_reason: "Intake already exhausted its checker retries for these inputs. Supply new evidence or change the relevant answer before retrying." }) }
+    }
     const prefetched = prepared.get(step)
     const currentPrefetch = prefetched?.inputSha === inputSha
     if (!currentPrefetch) appendLeanEvent(directory, { stage, document, event: "started", check_ms })
@@ -381,7 +422,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     }
     if (prefetched && prefetched.inputSha !== inputSha) await prefetched.reply.catch(() => undefined)
     prepared.delete(step)
-    const result = await runStep(directory, state, step, deps, progress, planned, prefetched?.inputSha === inputSha ? prefetched : undefined, reinspectChecklist, recorded)
+    const result = await runStep(directory, state, step, deps, progress, planned, prefetched?.inputSha === inputSha ? prefetched : undefined, reinspectChecklist, recorded, questionReviews)
       .catch((error: unknown): StageRun => error instanceof ChecklistRefreshRestart ? { status: "restart" } : ({ status: "failed", reason: `${step}: stopped by a runtime error: ${message(directory, error)}` }))
     // Whatever the step returned once paused (helpers turn a refused prompt into
     // their own failure) is not accepted; the step is run again on Continue.
@@ -402,7 +443,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       ? { stage, document, event: "failed", reason: result.reason }
       : { stage, document, event: result.status, outputs: result.outputs, reason: result.reason })
     if (result.status === "failed") {
-      state = updateLeanStage(directory, state, step, { status: "failed", finished_at: now() })
+      state = updateLeanStage(directory, state, step, { status: "failed", ...(stage === "intake" ? { input_sha: inputSha } : {}), finished_at: now() })
       return { state: writeLeanState(directory, { ...state, status: "failed", stop_reason: result.reason }) }
     }
     const asked = result.questions || confirmations.length ? [...confirmations, ...result.questions ?? []] : undefined
@@ -420,7 +461,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     // (withholdReviewedChanges, recordPackageFindings).
     const exhaustedReview = (stage === "change-review" && document !== undefined || stage === "package-review") && (readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
     const exhaustedChangeReview = exhaustedReview && stage === "change-review"
-    if (!exhaustedReview) replaceStageOpenItems(directory, stage, document ?? null, document ? result.openItems.map(item => inDocument(item, document)) : result.openItems)
+    if (!exhaustedReview) replaceStageOpenItems(directory, stage, document ?? null, document ? result.openItems.map(item => inDocument(item, document)) : stage === "intake" ? [...result.openItems, ...factOpenItems(directory)] : result.openItems)
     if (questions) replaceStageQuestions(directory, stage, document ?? null, questions)
     // A step blocked only by questions its instructions settled runs again,
     // reading the settled answers.
@@ -727,7 +768,7 @@ export function stageInputSha(directory: string, step: StepID) {
 }
 
 /** `recorded` is the step's state before this run of it. */
-function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, planned: () => void | Promise<void>, prepared?: PreparedReview, reinspectChecklist = false, recorded?: LeanStageState): Promise<StageRun> {
+function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, planned: () => void | Promise<void>, prepared?: PreparedReview, reinspectChecklist = false, recorded?: LeanStageState, questionReviews?: ReadonlyMap<string, QuestionReview>): Promise<StageRun> {
   const stage = stepStage(step)
   const document = stepDocument(step)
   if (stage === "apply" && document) return runApply(directory, state, document, deps)
@@ -744,8 +785,8 @@ function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDe
   if (stage === "changes" && document && focusedChecklistRepairs(directory, document)) return runChangeReconciliation(directory, state, deps, document, progress)
   if (stage === "change-prepare" && document) return runChangePreparation(directory, state, deps, document, progress)
   if (stage === "draft" && document) return runDraftStage(directory, state, deps, progress, document, planned)
-  if (stage === "spine") return checkAdoptedAgainstResearch(directory, state, deps).then(() => runModelStage(directory, state, step, deps, progress, prepared))
-  return runModelStage(directory, state, step, deps, progress, prepared)
+  if (stage === "spine") return checkAdoptedAgainstResearch(directory, state, deps).then(() => runModelStage(directory, state, step, deps, progress, prepared, questionReviews))
+  return runModelStage(directory, state, step, deps, progress, prepared, questionReviews)
 }
 
 /** The files the lawyer asks to receive, read again before the notes are
@@ -804,7 +845,7 @@ function roundPlanned(directory: string, state: LeanState, recorded: LeanStageSt
  * none of its quotes states (an open item the notes disclose) or an absence
  * claim a source contradicts (both recorded in the checker event);
  * any other fourth failed check stops the run with those issues. */
-async function runModelStage(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, prepared?: PreparedReview): Promise<StageRun> {
+async function runModelStage(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, prepared?: PreparedReview, questionReviews?: ReadonlyMap<string, QuestionReview>): Promise<StageRun> {
   const stage = stepStage(step) as ModelStageID
   const document = stepDocument(step) ?? undefined
   const agent = LEAN_STAGE_AGENTS[stage]
@@ -823,6 +864,10 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
     const asked = performance.now()
     const reply = await (index === 0 && prepared ? prepared.reply : deps.sessions.prompt({ directory, sessionID, agent, text }))
     const answered = performance.now()
+    const repeats = stage === "intake" ? proposedFactQuestions(directory, reply, stage).flatMap(question => {
+      const repeat = questionReviews?.get(questionReviewKey(question))?.repeat
+      return repeat ? [`That fact already has an answer: ${repeat.answer}. Do not ask it again. Preserve any unknown and the lawyer's choice to draft provisionally or wait; return readiness only where permitted, or ask a genuinely different unresolved decision.`] : []
+    }) : []
     // A spine reply with the spine's shape has its parent entries' absence
     // claims verified against the sources (spine-absence.ts) on every attempt,
     // so a contradicted claim goes back in the same retry as the reply's
@@ -832,7 +877,7 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
     // and each entry kept with unquoted figures is an open item.
     const spine = stage === "spine" ? checkEvidenceReply(directory, stage, reply, { final: index >= LEAN_MAX_RETRIES }) : undefined
     const absence = spine?.shaped ? await checkAbsenceClaims(directory, state, deps, spine.shaped, { final: index >= LEAN_MAX_RETRIES }, jobProgress) : undefined
-    const accepted = spine
+    const accepted = repeats.length ? { issues: repeats, outputs: [], openItems: [] } : spine
       ? { issues: [...spine.issues, ...absence?.issues ?? []], outputs: [], openItems: spine.value ? unquotedFigureItems(spine.value, spine.recorded) : [] }
       : stage === "instructions"
       ? acceptInstructionsReply(directory, reply)

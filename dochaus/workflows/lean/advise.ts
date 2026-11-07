@@ -237,6 +237,7 @@ export function advisePrompt(directory: string, question: Question, siblings: Qu
     // new document only before the plan is saved (plannedCarrierIssues).
     ...(question.kind !== "scope" && readLeanPlan(directory) ? [FIXED_PLAN] : []),
     tagged("existing_topics", [...new Set(readQuestions(directory).flatMap(row => row.group ? [row.group] : []))].join("\n") || "None. Reuse the same short topic for questions about the same point."),
+    ...(question.stage === "intake" && question.kind === "fact" ? ["These choices govern how to handle missing evidence, not what the missing fact is. Neither choice supplies or verifies it. Recommend waiting when an existing instruction requires it; provisional drafting does not override a hold or authorise release. Obtaining evidence from another person remains the lawyer's task, not an action this run can carry out."] : []),
     tagged("question", `Kind: ${question.kind ?? "not stated"}\n${question.question}`),
     ...(question.context ? [tagged("context", question.context)] : []),
     ...(paragraph ? [tagged("affected_paragraph", paragraph)] : []),

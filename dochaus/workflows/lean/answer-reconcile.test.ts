@@ -46,11 +46,24 @@ function twoQuestions(reconcile: (ids: [string, string]) => Reply) {
     [AGENT.advise]: prompt => prompt.includes("cannot all be followed together")
       ? recommend(NO_REMEDY, REDUCTION)
       : prompt.includes(`<question>\nKind: judgment\n${LATE}`) ? recommend(NO_REMEDY, REDUCTION) : recommend(REDUCTION, NO_REMEDY),
-    [AGENT.reconcile]: (prompt, index, sessionID) => reconcile(ids())(prompt, index, sessionID),
+    [AGENT.reconcile]: (prompt, index, sessionID) => {
+      if (prompt.includes("Verify ONE proposed answer conflict")) {
+        const rows = JSON.parse(/<directions>\n(.*?)\n<\/directions>/s.exec(prompt)![1]!) as { question_id: string; answer: string }[]
+        return JSON.stringify({ status: "conflict", reason: (JSON.parse(/<candidate>\n(.*?)\n<\/candidate>/s.exec(prompt)![1]!) as { explanation: string }).explanation, applicability: "The same late-delivery remedy cannot both be included and excluded.",
+          directions: rows.map(row => ({ question_id: row.question_id, quote: row.answer })), basis: [] })
+      }
+      return reconcile(ids())(prompt, index, sessionID)
+    },
   })
   const run = () => runLean(directory, { sessions: model.port })
   const adoptBoth = () => ids().forEach(question_id => enqueueLeanRequest(directory, { kind: "answer", question_id, adopt: true }))
   return { directory, model, run, ids, adoptBoth }
+}
+
+// Discovery and each independent candidate review have separate native sessions.
+function reconciliationCalls(model: ReturnType<typeof scriptedModel>) {
+  const reviews = new Set(model.prompts.filter(row => row.text.includes("Verify ONE proposed answer conflict")).map(row => row.sessionID))
+  return model.prompts.filter(row => row.agent === AGENT.reconcile && !reviews.has(row.sessionID))
 }
 
 const flags = (ids: string[]) => JSON.stringify({ conflicts: [{ questions: ids, conflict: CONFLICT }] })
@@ -63,9 +76,9 @@ test("two adopted recommendations that cannot both be followed become one open, 
   const [late, price] = ids()
   expect(readQuestions(directory).filter(question => question.id === late || question.id === price).map(question => [question.answer, question.answer_kind])).toEqual([[NO_REMEDY, "adopted"], [REDUCTION, "adopted"]])
 
-  // The job read every answer, each marked as adopted and as asked about the whole work.
-  expect(model.count(AGENT.reconcile)).toBe(1)
-  const read = model.prompts.find(prompt => prompt.agent === AGENT.reconcile)!.text
+  // The job read every answer, each marked as adopted.
+  expect(reconciliationCalls(model).length).toBe(1)
+  const read = reconciliationCalls(model)[0]!.text
   for (const text of [LATE, PRICE, NO_REMEDY, REDUCTION]) expect(read).toContain(text)
   expect(read.match(/the recommended option was adopted/g)).toHaveLength(2)
   expect(read.match(/\n {2}Asked about: the whole work\n/g)).toHaveLength(2)
@@ -91,7 +104,7 @@ test("two adopted recommendations that cannot both be followed become one open, 
   enqueueLeanRequest(directory, { kind: "continue" })
   expect((await run()).status).toBe("blocked")
   expect(combined(directory)).toEqual([asked!])
-  expect(model.count(AGENT.reconcile)).toBe(1)
+  expect(reconciliationCalls(model).length).toBe(1)
 })
 
 test("answers that can all be followed record nothing and the run goes on", async () => {
@@ -99,7 +112,7 @@ test("answers that can all be followed record nothing and the run goes on", asyn
   await run()
   adoptBoth()
   expect((await run()).status).toBe("completed")
-  expect(model.count(AGENT.reconcile)).toBe(1)
+  expect(reconciliationCalls(model).length).toBe(1)
   expect(combined(directory)).toEqual([])
   expect(readLeanJson(directory, "answer-reconcile.json")).toMatchObject({ conflicts: [] })
   expect(model.count(AGENT.draft)).toBeGreaterThan(0)
@@ -110,7 +123,7 @@ test("a reading cut off at its output limit finds no conflict, as one never pass
   await run()
   adoptBoth()
   expect((await run()).status).toBe("completed")
-  expect(model.count(AGENT.reconcile)).toBe(1)
+  expect(reconciliationCalls(model).length).toBe(1)
   expect(combined(directory)).toEqual([])
   expect(readLeanJson(directory, "answer-reconcile.json")).toMatchObject({ conflicts: [] })
 })
@@ -130,7 +143,7 @@ test("a conflict naming an unknown question or a single one is sent back for a r
   await run()
   adoptBoth()
   expect((await run()).status).toBe("completed")
-  const calls = model.prompts.filter(prompt => prompt.agent === AGENT.reconcile)
+  const calls = reconciliationCalls(model)
   expect(calls).toHaveLength(2)
   expect(calls[1]!.sessionID).toBe(calls[0]!.sessionID)
   expect(calls[1]!.text).toContain('"q-missing"')
@@ -145,7 +158,7 @@ test("a conflict naming an answer by its id is sent back with how to say it, and
   adoptBoth()
   await run()
   const [late, price] = ids()
-  const calls = model.prompts.filter(prompt => prompt.agent === AGENT.reconcile)
+  const calls = reconciliationCalls(model)
   expect(calls).toHaveLength(2)
   for (const id of [late, price]) expect(calls[1]!.text).toContain(`names the internal id "${id}". The lawyer sees only words: name the question or answer by what it asked.`)
   expect(combined(directory)[0]!.question).toContain(CONFLICT)
@@ -155,7 +168,7 @@ test("a conflict naming an answer by its id is sent back with how to say it, and
   await always.run()
   always.adoptBoth()
   await always.run()
-  expect(always.model.count(AGENT.reconcile)).toBe(LEAN_MAX_RETRIES + 1)
+  expect(reconciliationCalls(always.model).length).toBe(LEAN_MAX_RETRIES + 1)
   const [asked] = combined(always.directory)
   for (const id of always.ids()) expect(`${asked!.question}\n${asked!.context}`).not.toContain(id)
   expect(asked!.question).toContain("adds no remedy while")
@@ -167,14 +180,14 @@ test("an unchanged set of answers is not read again; a changed answer is", async
   await run()
   adoptBoth()
   expect((await run()).status).toBe("completed")
-  expect(model.count(AGENT.reconcile)).toBe(1)
+  expect(reconciliationCalls(model).length).toBe(1)
   enqueueLeanRequest(directory, { kind: "continue" })
   await run()
-  expect(model.count(AGENT.reconcile)).toBe(1)
+  expect(reconciliationCalls(model).length).toBe(1)
 
   enqueueLeanRequest(directory, { kind: "answer", question_id: ids()[1], answer: "Leave the price unchanged by any delay." })
   await run()
-  expect(model.count(AGENT.reconcile)).toBe(2)
+  expect(reconciliationCalls(model).length).toBe(2)
 })
 
 test("once the lawyer settles a conflict, the same answers flagged again ask nothing more", async () => {
@@ -190,8 +203,8 @@ test("once the lawyer settles a conflict, the same answers flagged again ask not
 
   expect((await run()).status).toBe("completed")
   // The settled set was read again, and nothing it flagged was asked.
-  expect(model.count(AGENT.reconcile)).toBe(2)
-  expect(model.prompts.filter(prompt => prompt.agent === AGENT.reconcile)[1]!.text).toContain(asked!.id)
+  expect(reconciliationCalls(model).length).toBe(2)
+  expect(reconciliationCalls(model)[1]!.text).toContain(asked!.id)
   expect(combined(directory)).toEqual([expect.objectContaining({ id: asked!.id, status: "answered", answer: NO_REMEDY, answer_kind: "adopted" })])
   // Every step reads the lawyer's answer as settling the point in place of the earlier ones.
   expect(answeredQuestionsText(directory)).toContain(`[${asked!.id}] Q: Some of your answers cannot all be followed together: ${CONFLICT}`)
@@ -232,7 +245,14 @@ test("a conflict between one document's answers is that document's question: ans
   const directory = matter()
   writeLeanPlan(directory, PLAN)
   writeQuestions(directory, [decided("q-a", LATE, NO_REMEDY, { stage: "changes", document: "d1", pid: PID }), decided("q-b", PRICE, REDUCTION, { stage: "changes", document: "d1", pid: PID })])
-  const model = scriptedModel({ ...happyPath, [AGENT.reconcile]: () => flags(["q-a", "q-b"]), [AGENT.advise]: () => recommend(NO_REMEDY, REDUCTION) })
+  const model = scriptedModel({ ...happyPath, [AGENT.reconcile]: prompt => {
+    if (prompt.includes("Verify ONE proposed answer conflict")) {
+      const rows = JSON.parse(/<directions>\n(.*?)\n<\/directions>/s.exec(prompt)![1]!) as { question_id: string; answer: string }[]
+      return JSON.stringify({ status: "conflict", reason: (JSON.parse(/<candidate>\n(.*?)\n<\/candidate>/s.exec(prompt)![1]!) as { explanation: string }).explanation, applicability: "The same late-delivery remedy cannot both be included and excluded.",
+        directions: rows.map(row => ({ question_id: row.question_id, quote: row.answer })), basis: [] })
+    }
+    return flags(["q-a", "q-b"])
+  }, [AGENT.advise]: () => recommend(NO_REMEDY, REDUCTION) })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
   const [asked, ...more] = combined(directory)
   expect(more).toEqual([])

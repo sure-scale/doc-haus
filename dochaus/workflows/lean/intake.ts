@@ -1,3 +1,4 @@
+import { withFactOptions } from "./fact-answers"
 import { matterClient } from "../../lib/matter-client"
 import { normalize } from "../../lib/quote-verify"
 import { NOT_STATED, nameKey, readLeanPlan, type ActingFor, type ActingForBasis, type DocumentDateBasis, type MatterDate, type MatterDates } from "./plan"
@@ -31,7 +32,7 @@ export function intakeQuestions(directory: string, reply: string, stage: Questio
       return { issues: ["That question already has an answer, from the lawyer or settled by the lawyer's instruction. Use the supplied answers and instructions and return readiness, or ask only a genuinely unresolved decision."] }
     const id = `q-${shortHash(normalize(row.question))}`
     if (!questions.some(question => question.id === id))
-      questions.push({ id, stage, question: row.question.trim(), context: row.context.trim(), status: "open", kind: row.kind })
+      questions.push(withFactOptions({ id, stage, question: row.question.trim(), context: row.context.trim(), status: "open", kind: row.kind }))
   }
   const worded = questionWordIssues(directory, questions)
   if (worded.length && !options.final) return { issues: worded }

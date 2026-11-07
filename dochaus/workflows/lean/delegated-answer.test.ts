@@ -6,6 +6,7 @@ import { checkAnswerClass, classifyAnswers } from "./answer-class"
 import { checkDraftingNotes } from "./checks"
 import { OutputLimitError } from "./native-stage-result"
 import { finalGate, type GateResult } from "./gate"
+import { factOpenItems } from "./fact-answers"
 import { writeLeanPlan } from "./plan"
 import { delegatedDecisionsText, stagePrompt } from "./prompts"
 import { derivedRecordNote, openItem, quoteFound, quoteMissIssue } from "./quotes"
@@ -308,7 +309,7 @@ test("a question delegated in the lawyer's own words runs through the queue as a
   expect(model.prompts.length).toBe(settled)
 }, 180_000)
 
-test("a delegated question no decision could take stays open for the lawyer at the gate, never answered by them", () => {
+test("an explicit factual delegation permits a marked review draft while a declined judgment keeps its existing disclosure", () => {
   const directory = matter()
   const fact = { ...ASKED, id: "q-sign", kind: "fact" as const, question: "Who signs for the buyer?" }
   const unsure = { ...ASKED, id: "q-title", question: "Should title pass on delivery?" }
@@ -316,64 +317,58 @@ test("a delegated question no decision could take stays open for the lawyer at t
   writeQuestions(directory, [answered(ASKED), answered(fact), answered(unsure, "I do not know."), answered(asked)])
   recordAnswerClasses(directory, new Map([
     ["q-late", { words: DELEGATION, answer_class: "delegated" as const }],
-    ["q-sign", { words: DELEGATION, answer_class: "delegated" as const }],
+    ["q-sign", { words: DELEGATION, answer_class: "delegated" as const, fact_status: "provisional" as const }],
     ["q-title", { words: "I do not know.", answer_class: "declined" as const }],
-    ["q-risk", { words: DELEGATION, answer_class: "delegated" as const }],
+    ["q-risk", { words: DELEGATION, answer_class: "delegated" as const, fact_status: "provisional" as const }],
   ]))
-  // A later stage's item for one of them is settled, not repeated.
-  const changesItem = openItem("changes", "question", "Question for the lawyer: When does risk pass?", { question_id: "q-risk" })
-  writeOpenItems(directory, [changesItem])
+  // The fixture's permission says to proceed and disclose unresolved points.
+  // It supplies neither the signatory nor the risk-transfer fact.
+  const facts = factOpenItems(directory)
+  const risk = facts.find(item => item.ref.question_id === "q-risk")!
+  const changesItem = openItem("changes", "question", "Question for the lawyer: When does risk pass?", { question_id: "q-risk", placeholder: risk.ref.placeholder })
+  writeOpenItems(directory, [changesItem, ...facts.filter(item => item.ref.question_id !== "q-risk")])
   const items = () => finalGate(directory).items.filter(item => item.kind === "question")
-  // Stages read the undecided ones as open, in the lawyer's words, and as
-  // already asked: intake re-asked a reworded delegated fact question otherwise.
-  expect(answeredQuestionsText(directory)).toContain(`- [q-sign] Q: Who signs for the buyer?\n  A (delegated by the lawyer, but it needs the lawyer's own answer, so it stays open: every paragraph that depends on it keeps a visible [open item: what the lawyer must supply or confirm] marker, also where its wording is drafted from the sources; never remove that marker or treat the point as settled, and do not ask it again): ${DELEGATION}`)
+  expect(answeredQuestionsText(directory)).toContain("the fact remains unknown; the lawyer permits a review draft")
+  expect(answeredQuestionsText(directory)).toContain(`- [q-sign] Q: Who signs for the buyer?`)
   expect(answeredQuestionsText(directory)).toContain(`- [q-title] Q: Should title pass on delivery?\n  A (not answered by the lawyer, so it stays open: every paragraph that depends on it keeps a visible [open item: what the lawyer must supply or confirm] marker, also where its wording is drafted from the sources; never remove that marker or treat the point as settled, and do not ask it again): I do not know.`)
 
   writeLeanText(directory, "drafting-notes.md", "# Notes\n\nNothing listed.\n")
-  expect(items().map(item => [item.ref.question_id, item.status, item.detail])).toEqual([
-    ["q-risk", "open", changesItem.detail],
-    ["q-sign", "open", "You asked us to decide, but this needs your answer: Who signs for the buyer?"],
-    ["q-title", "open", "You did not answer this question, and it needs your answer: Should title pass on delivery?"],
+  expect(items().map(item => [item.ref.question_id, item.status])).toEqual([
+    ["q-risk", "open"], ["q-sign", "open"], ["q-title", "open"],
   ])
-  for (const item of items()) expect(item.resolution).not.toContain("answered by the lawyer")
   expect(finalGate(directory).status).toBe("blocked")
-
   writeLeanText(directory, "drafting-notes.md", "# Notes\n\nStill needs the signatory [ref: q-sign]. Title [ref: q-title]. Risk [ref: q-risk].\n")
-  expect(items().map(item => [item.ref.question_id, item.status, item.resolution])).toEqual([
-    ["q-risk", "disclosed", "you asked us to decide, but this needs your answer; named in the drafting notes"],
-    ["q-sign", "disclosed", "you asked us to decide, but this needs your answer; named in the drafting notes"],
-    ["q-title", "disclosed", "not answered; this needs your answer; named in the drafting notes"],
+  // Notes alone do not make an unknown fact honest in the document body.
+  expect(items().map(item => [item.ref.question_id, item.status])).toEqual([
+    ["q-risk", "open"], ["q-sign", "open"], ["q-title", "disclosed"],
+  ])
+  writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([{ pid: "p-open", sha256: "0", text: facts.map(item => item.ref.placeholder).join("\n") }]))
+  expect(items().map(item => [item.ref.question_id, item.status])).toEqual([
+    ["q-risk", "disclosed"], ["q-sign", "disclosed"], ["q-title", "disclosed"],
   ])
   expect(finalGate(directory)).toMatchObject({ status: "pass", delivery: "review_draft" })
 })
 
-test("a delegated point only the lawyer can settle is checked for its paragraph's marker as an unanswered question is, and never blocks once the notes name it", () => {
+test("a provisional factual reply requires its affected paragraph marker and notes until the lawyer supplies the fact", () => {
   const directory = matter()
   const fact = { ...ASKED, id: "q-sign", kind: "fact" as const, question: "Who signs for the buyer?", pid: "p-sign" }
   writeQuestions(directory, [answered(fact)])
-  recordAnswerClasses(directory, new Map([["q-sign", { words: DELEGATION, answer_class: "delegated" as const }]]))
-  // Every stage is told the point stays open with a marker in its paragraph,
-  // including where a source supplies a value, and that the delegation settles nothing.
-  expect(answeredQuestionsText(directory)).toContain("keeps a visible [open item: what the lawyer must supply or confirm] marker")
-  expect(answeredQuestionsText(directory)).toContain("never remove that marker or treat the point as settled")
+  recordAnswerClasses(directory, new Map([["q-sign", { words: DELEGATION, answer_class: "delegated" as const, fact_status: "provisional" as const }]]))
+  expect(answeredQuestionsText(directory)).toContain("a visible open-item marker in every dependent paragraph and disclosure in the notes")
   expect(stagePrompt(directory, "d1.change-plan", { contextOnly: true })).toContain("An answer whose label says the point stays open settles nothing: keep its visible open-item marker.")
   writeOpenItems(directory, [openItem("changes", "question", "Question for the lawyer: Who signs for the buyer?", { question_id: "q-sign", pid: "p-sign" })])
   writeLeanText(directory, "drafting-notes.md", "# Notes\n\nStill needs the signatory [ref: q-sign].\n")
   const body = (text: string) => writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([{ pid: "p-sign", sha256: "0", text }]))
   const item = () => finalGate(directory).items.find(row => row.kind === "question" && row.ref.question_id === "q-sign")
-
   body("Signed for the buyer by the director [open item: confirm who signs for the buyer].")
-  expect(item()).toMatchObject({ status: "disclosed", resolution: "you asked us to decide, but this needs your answer; marked in the body and named in the drafting notes" })
-  expect(finalGate(directory)).toMatchObject({ status: "pass" })
-
-  // A value picked from the sources with the marker dropped is recorded, not blocked.
+  expect(item()).toMatchObject({ status: "disclosed", resolution: "the fact remains unknown; marked in the body and named in the drafting notes" })
+  expect(finalGate(directory)).toMatchObject({ status: "pass", delivery: "review_draft" })
   body("Signed for the buyer by the director.")
-  expect(item()).toMatchObject({ status: "disclosed", resolution: "you asked us to decide, but this needs your answer; named in the drafting notes, but its paragraph shows no open-item marker" })
-  expect(finalGate(directory)).toMatchObject({ status: "pass" })
-
-  // The lawyer's own answer settles it: no marker is asked for.
+  expect(item()).toMatchObject({ status: "open", resolution: "the fact remains unknown; its body placeholder is missing" })
+  expect(finalGate(directory)).toMatchObject({ status: "blocked" })
+  // The lawyer's actual factual answer settles it; the earlier permission did not.
   answerQuestion(directory, "q-sign", { text: "The director signs." })
-  recordAnswerClasses(directory, new Map([["q-sign", { words: "The director signs.", answer_class: "answered" as const }]]))
+  recordAnswerClasses(directory, new Map([["q-sign", { words: "The director signs.", answer_class: "answered" as const, fact_status: "supplied" as const }]]))
   expect(item()).toMatchObject({ status: "resolved", resolution: "answered by the lawyer" })
   expect(answeredQuestionsText(directory)).not.toContain("open item")
 })
