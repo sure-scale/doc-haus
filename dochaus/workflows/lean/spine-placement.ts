@@ -11,10 +11,11 @@ import { hashStageInputs, leanFile, readLeanJson, readLeanText, shortHash, write
 // keeps the entries as the spine wrote them, for the jobs that read the whole
 // spine). Each entry gets two focused jobs, side by side, each in a fresh
 // session of its own. The level job reads that entry alone, with no document
-// in context, and says whether it binds some part's text or the package as a
-// whole (spineLevelPrompt, parseEntryLevel). A settled level is saved under the
-// content key of what its job read (spine-levels.json), so a re-run or resume
-// does not ask it again. The placement job reads the planned documents and
+// in context, and says by audience whether it is what the document says to its
+// reader (text) or what the drafter does or works under (package), a direction
+// to the drafter being package (spineLevelPrompt, parseEntryLevel). A settled
+// level is saved under the content key of what its job read
+// (spine-levels.json), so a re-run or resume does not ask it again. The placement job reads the planned documents and
 // parts (coverageView, shared first so the prefix caches across the jobs) and
 // that entry, and names the parts that must set it out or reason from it;
 // parseEntryPlacement holds the reply to planned part refs. The placement job
@@ -52,7 +53,7 @@ export const SPINE_ATOMS = "spine-atoms.json"
 
 /** One spine entry, by its index in spine-atoms.json. */
 export type SpineEntry = { index: number; kind: string; detail: string; evidence: { source_id: string; quote: string }[]; limitations: string[] }
-/** "text": some part's text must carry it or reason from it; "package": it binds what is produced, where, from what, how or where it is disclosed. */
+/** By audience: "text" is what the document says to its reader; "package" is what the drafter does or works under, a direction to the drafter included. */
 export type EntryLevel = "text" | "package"
 /** One entry's level and the parts its placement job named, by ref ("d1/3"),
  * which bind it at either level. `level_unchecked` when its level reply never
@@ -116,9 +117,8 @@ export function spineLevelPrompt(entry: SpineEntry) {
     entryBlock(entry),
     tagged("question", [
       "At which level does this entry bind the drafting?",
-      '- "text": a term, fact, authority or content decision that some part\'s text must carry or reason from.',
-      '- "package": what to produce, in which file, from which sources, how to proceed, or where to disclose.',
-      '- An entry that is both is "text".',
+      '- "text": it is what the document says to its reader.',
+      '- "package": it is what the drafter does or works under in producing the documents. A direction to the drafter is "package", even where it shapes what the text says.',
       `- ${LEVEL_SHAPE}`,
     ].join("\n")),
   ].join("\n\n")
