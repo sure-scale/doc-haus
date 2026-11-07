@@ -102,12 +102,21 @@ function reconciliationPrompts(directory: string, document: DocID) {
       `<component_goals>\n${JSON.stringify(component.groups)}\n</component_goals>`,
       `<shared_dependencies>\n${JSON.stringify(plan?.shared_decisions ?? [])}\n</shared_dependencies>`,
       `<initial_targets>\n${JSON.stringify(paragraphs.filter(row => pids.has(row.pid)))}\n</initial_targets>`,
-      `<competing_operations_and_explanations>\n${JSON.stringify(component.changes)}\n</competing_operations_and_explanations>`,
+      `<competing_operations_and_explanations>\n${JSON.stringify(withoutListIDs(component.changes))}\n</competing_operations_and_explanations>`,
+      "Candidates are shown without ids because ids are reassigned when the combined list is checked: refer to a candidate by its paragraph and wording, and never cite an amendment id in a reason or explanation.",
       ...(sliced ? [`This job covers only the listed initial targets; separate bounded jobs reconcile the other paragraphs these goals name, and separate jobs never establish consistency. Their prepared operations are in read-record .dochaus/lean/${document}/change-preparation.json, in the groups entry for each goal id: follow them where a listed target must agree with another paragraph, such as a defined term, a cross-reference or moved text. If a listed target's proposed change cannot be reconciled without the result for such a paragraph, return {"pid":"listed initial pid","depends_on":["that paragraph's pid"],"issue":"specific reason"} in dependencies instead of an operation for it: its proposed change is withheld for the lawyer and the rest of this job continues.`] : []),
       `Original source inventory: ${sources}.${sourceProvenanceLine ? ` ${sourceProvenanceLine}.` : ""} Use search-document/read-document view=source with exact filename. Current documents use view=current_body, comments/deleted_text separately. Read-record .dochaus/lean/${document}/paragraphs.json supplies initial targets. Retrieve only necessary conditions or related document passages. Other components are not amendment targets.`,
       'Return {"amendments":[{"pid":"listed initial pid","operation":"replace|delete|split (omit for replace)","updated":"complete replacement text, or array for split","reason":"combined supported effect","sources":[{"source_id":"canonical source or request","quote":"exact words"}]}],"explanations":[{"pid":"listed initial pid","reason":"actual source-to-initial revision, corrected for resulting effect","sources":[]}],"questions":[{"pid":"listed initial pid","question":"indispensable unresolved human decision","kind":"fact|instruction|judgment","context":"why needed"}],"dependencies":[]}. ' + SPLIT_NUMBERING + ' ' + QUESTION_KIND_CONTRACT + '  Also return "retained_initial":[{"pid":"listed initial pid","reason":"source-grounded reason an earlier operation is rejected and initial wording retained","sources":[{"source_id":"canonical source or request","quote":"exact words"}]}] when withdrawing an earlier operation; this is a recorded disposition, never a no-op edit. Every listed candidate PID needs a resulting operation, explicit retained_initial disposition, or an explicit dependencies entry explaining why it cannot safely be reconciled. ' + (sliced ? "Apart from such a same-goal entry, dependencies holds a newly discovered dependency outside these goals" : "dependencies holds a newly discovered cross-component dependency") + ' or unsupported candidate needing renewed source adjudication; name affected PIDs/components and specific issue. Such work stops publication, never silently drops an operation. Source questions retain visible [open item: ...] carriers. Unsupported drafting judgment retains a new visible confirmation marker. Do not emit no-op edits to create comments. Never turn missing approval into adoption. No file writes.',
     ].join("\n\n")
   }
+}
+
+/** List ids are positional: the job's reply and then the combined list are
+ * renumbered when checked, so a candidate is shown without its id. A reason
+ * that cited one would name a different amendment in the final list. */
+function withoutListIDs(changes: ChangeList) {
+  const bare = <T extends { id: string }>({ id, ...row }: T) => row
+  return { ...changes, amendments: changes.amendments.map(bare), explanations: changes.explanations?.map(bare), withheld: changes.withheld?.map(row => ({ ...row, amendment: bare(row.amendment) })) }
 }
 
 /** A component whose prompt exceeds the bounded context is decomposed into

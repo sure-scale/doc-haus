@@ -348,8 +348,8 @@ describe("a marked judgment amendment through the run", () => {
 })
 
 describe("prompt version", () => {
-  test("the contract change is lean-31-adopted-sources, and a run keyed under lean-30-research-leads re-runs every model step", async () => {
-    expect(LEAN_PROMPT_VERSION).toBe("lean-31-adopted-sources")
+  test("the contract change is lean-31-attempt3-fixes, and a run keyed under lean-30-research-leads re-runs every model step", async () => {
+    expect(LEAN_PROMPT_VERSION).toBe("lean-31-attempt3-fixes")
     const directory = matter()
     expect((await runLean(directory, { sessions: scriptedModel(happyPath).port })).status).toBe("completed")
     const idle = scriptedModel({})
