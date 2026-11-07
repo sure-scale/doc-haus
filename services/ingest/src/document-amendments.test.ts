@@ -2969,7 +2969,7 @@ const notesIntro = "These changes were accepted in Word after the final check. T
 const acceptedChangeNotes = [
   {kind:"package",heading:"Documents and audience",prose:"These drafting notes accompany the supply note."},
   {kind:"document",heading:"Supply note",prose:"The supply note records the supplied delivery and payment terms."},
-  {kind:"passage",heading:"Supply note",prose:"The supply note states delivery and payment obligations."},
+  {kind:"passage",heading:"Supply note — Passage 1",prose:"The supply note states delivery and payment obligations."},
   {kind:"change",heading:"Changes made",prose:"The draft states the delivery period from the supply terms."},
   {kind:"disposition",heading:"Review decisions and recommendations",prose:"The review suggestion was not pursued as a separate change."},
 ]

@@ -54,8 +54,10 @@ function noteMatter(items: OpenItem[] = []) {
 }
 
 function scriptedSections(answer: (input: { text: string; sessionID: string; initial: string; attempt: number }) => string | Promise<string>,
-  coverage: (text: string, initial: string) => string = () => JSON.stringify({ status: "pass", reason: "The synthetic section substantively explains its assigned point." })) {
+  coverage: (text: string, initial: string) => string = () => JSON.stringify({ status: "pass", reason: "The synthetic section substantively explains its assigned point." }),
+  lookup: (text: string) => string = () => JSON.stringify({ targets: [], limitation: "This fixture supplies no inspected current target for the point." })) {
   const prompts: { text: string; sessionID: string; initial: string; attempt: number }[] = []
+  const lookups: string[] = []
   const sessions: Parameters<StageSessionPort["createSession"]>[0][] = []
   const verifications: string[] = []
   const first = new Map<string, string>()
@@ -64,12 +66,13 @@ function scriptedSections(answer: (input: { text: string; sessionID: string; ini
     async prompt(input) {
       if (!first.has(input.sessionID)) first.set(input.sessionID, input.text)
       if (input.agent === NOTES_COVERAGE_AGENT) { verifications.push(input.text); return coverage(input.text, first.get(input.sessionID)!) }
+      if (first.get(input.sessionID)!.includes("<current_target_lookup>")) { lookups.push(input.text); return lookup(input.text) }
       const call = { text: input.text, sessionID: input.sessionID, initial: first.get(input.sessionID)!, attempt: prompts.filter(row => row.sessionID === input.sessionID).length }
       prompts.push(call)
       return answer(call)
     },
   }
-  return { deps: { sessions: port } as LeanDeps, prompts, sessions, verifications }
+  return { deps: { sessions: port } as LeanDeps, prompts, lookups, sessions, verifications }
 }
 
 test("code attaches each full input reference once while prose jobs receive no reference-copying task", () => {
@@ -245,6 +248,7 @@ test("an interrupted native reply followed by continuation metatext must explain
     async prompt(input) {
       if (!initial.has(input.sessionID)) initial.set(input.sessionID, input.text)
       const first = initial.get(input.sessionID)!
+      if (first.includes("<current_target_lookup>")) return JSON.stringify({ targets: [], limitation: "The fixture does not establish a current target for this unknown design." })
       const attempt = prompts.filter(row => row.sessionID === input.sessionID).length
       prompts.push({ agent: input.agent, sessionID: input.sessionID, text: input.text, initial: first })
       if (input.agent === "lean-notes-check") return JSON.stringify(input.text.includes(meta)
@@ -313,4 +317,191 @@ test("a substantive negative verdict remains mandatory on the final bounded writ
   expect(target.at(-1)!.text).toContain("Return the complete substantive section")
   expect(readLeanText(directory, "drafting-notes.md")).toBeUndefined()
   expect(savedSections(directory).some(prose => prose.includes(irrelevant))).toBe(false)
+})
+
+test("withheld-change explanations receive current sibling qualifications and separate proposed and applied baselines", () => {
+  const directory = noteMatter()
+  const target = row("p111111111111", "The custodian accepts the container.")
+  const qualification = row("p222222222222", "Acceptance takes effect only after the seal inspection; otherwise no acceptance occurs.")
+  writeLeanText(directory, "d1/paragraphs.json", JSON.stringify([target, row(qualification.pid, "Acceptance is effective now.")]))
+  writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([target, qualification]))
+  writeLeanText(directory, "d1/changes.json", JSON.stringify({ amendments: [], explanations: [], questions: [], withheld: [{ amendment: {
+    id: "a1", pid: target.pid, existing_sha256: target.sha256, updated: "The custodian accepts only after inspection.", reason: "Add an inspection condition.", sources: [],
+  }, issues: ["The proposed explanation needs review."] }] }))
+  const input = focusedNotesInputs(directory).find(input => input.id === "unapplied:d1:0")!
+  expect(input.text).toContain(qualification.text)
+  expect(input.text).toContain("<generated_initial_evidence>")
+  expect(input.text).toContain("<current_accepted_evidence>")
+  expect(input.text).toContain("proposed or withheld wording is not the current body")
+})
+
+test("passage headings expose their bounded scope rather than implying a whole-document omission", () => {
+  const directory = noteMatter()
+  const input = focusedNotesInputs(directory).find(input => input.kind === "passage")!
+  expect(input.heading).toContain("Passage 1")
+  expect(input.text).toContain("<current_inspection_scope>")
+  expect(input.text).toContain("A passage ending at a heading does not establish that the following content is absent")
+})
+
+function deferredCondition(directory: string, resolves: string[] = []) {
+  writeLeanText(directory, "d1/change-plan.json", JSON.stringify({ shared_decisions: [], groups: [], questions: [], findings: [{
+    disposition: "deferred", kind: "information", detail: "The inspection condition was missing from an earlier proposal.",
+    reason: "Inspect its current treatment before describing the remaining action.", documents: ["d1"], sources: [], limitations: ["The earlier inspection record is unverified."], resolves,
+  }] }))
+}
+
+test("structured finding references locate the current body without a model locator", () => {
+  const directory = noteMatter()
+  writeLeanText(directory, "d1/review.json", JSON.stringify({ findings: [{ id: "f-inspection", document: "d1", pids: ["p111111111111"], origin: "drafting", finding: "Inspect acceptance.", sources: [] }] }))
+  deferredCondition(directory, ["f-inspection"])
+  const input = focusedNotesInputs(directory).find(input => input.id === "disposition:d1:0")!
+  expect(input.pids).toEqual(["p111111111111"])
+  expect(input.needsCurrentLookup).toBeUndefined()
+  expect(input.text).toContain("<current_accepted_evidence>")
+})
+
+test("unlocated stale findings share located accepted evidence with their verifier and reuse their cache on resume", async () => {
+  const directory = noteMatter()
+  const conditional = "Acceptance takes effect only after inspection."
+  writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([row("p111111111111", conditional)]))
+  deferredCondition(directory)
+  const stale = "Acceptance is unconditional."
+  const model = scriptedSections(input => {
+    if (input.initial.includes("<review_disposition>") || input.initial.includes("<open_point>")) return input.attempt ? "The earlier proposal lacked the condition; the accepted body now requires inspection." : stale
+    return "The handover preserves the inspection condition."
+  }, text => JSON.stringify(text.includes(`<proposed_prose>\n${stale}`) && text.includes(conditional)
+    ? { status: "rewrite", reason: "The accepted body requires inspection, so the present-tense claim is wrong." }
+    : { status: "pass", reason: "The explanation preserves the current effect and correctly labelled history." }),
+    () => JSON.stringify({ targets: [{ document: "d1", pids: ["p111111111111"] }], limitation: "" }))
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  expect(model.lookups).toHaveLength(2)
+  const writers = model.prompts.filter(input => !input.initial.includes("<current_target_lookup>") && (input.initial.includes("<review_disposition>") || input.initial.includes("<open_point>")))
+  expect(writers).toHaveLength(4)
+  for (const input of writers) expect(input.initial).toContain(conditional)
+  expect(model.verifications.filter(text => text.includes(`<proposed_prose>\n${stale}`)).every(text => text.includes(conditional))).toBe(true)
+  expect(readLeanText(directory, "drafting-notes.md")).not.toContain(stale)
+  expect(readLeanText(directory, "drafting-notes.md")).toContain("earlier proposal lacked the condition")
+  const calls = model.prompts.length, checks = model.verifications.length, lookups = model.lookups.length
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  expect(model.prompts).toHaveLength(calls)
+  expect(model.verifications).toHaveLength(checks)
+  expect(model.lookups).toHaveLength(lookups)
+  for (const session of model.sessions) expect(session.model).toEqual(readLeanState(directory)!.model)
+})
+
+test("unavailable current lookup preserves an inspection limit instead of fabricating a missing clause", async () => {
+  const directory = noteMatter()
+  deferredCondition(directory)
+  const limitation = "The relevant current passage could not be inspected."
+  const model = scriptedSections(input => input.initial.includes("<current_lookup_limit>") ? "The relevant current passage could not be inspected; verify it before describing the condition as missing." : "The handover preserves the container label.",
+    undefined, () => JSON.stringify({ targets: [], limitation }))
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  expect(model.verifications.filter(text => text.includes("current_lookup_limit")).every(text => text.includes(limitation))).toBe(true)
+  expect(readLeanText(directory, "drafting-notes.md")).toContain(limitation.slice(0, -1))
+})
+
+test("one repair replaces every linked duplicate while preserving accepted unrelated and historical sections", async () => {
+  const directory = noteMatter(OPEN_POINTS)
+  const wrong = "The archive custodian is unidentified."
+  const historical = "The earlier proposal omitted the label; the current handover keeps it."
+  const first = scriptedSections(input => input.initial.includes("<section_kind>\nopen-item\n") ? wrong : historical)
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, first.deps, () => {})).status).toBe("done")
+  const owners = focusedNotesInputs(directory).flatMap((input, index) => input.kind === "open-item" ? [index] : [])
+  writeLeanText(directory, "repairs.json", JSON.stringify({ round: 1, requested_at: "synthetic", items: [{
+    id: "package-review:omission:duplicate", stage: "package-review", kind: "omission", status: "open", ref: { repair_target: "memo" },
+    detail: "Replace every duplicated statement that the archive custodian is unidentified; preserve correct history and unrelated explanations.",
+  }] }))
+  const repaired = scriptedSections(input => input.initial.includes("separate repair-link job")
+    ? JSON.stringify({ sections: owners, reason: "Both open-point sections contain the duplicate." })
+    : "The archive custodian must supply the outstanding container details.")
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, repaired.deps, () => {})).status).toBe("done")
+  expect(repaired.prompts).toHaveLength(3)
+  expect(repaired.verifications).toHaveLength(2)
+  expect(readLeanText(directory, "drafting-notes.md")).not.toContain(wrong)
+  expect(readLeanText(directory, "drafting-notes.md")).toContain(historical)
+})
+
+test("the shipped notes role explicitly permits only the target-link JSON exception beside prose work", () => {
+  const system = readFileSync(new URL("../../agent/lean-drafting-notes.md", import.meta.url), "utf8")
+  expect(system).toContain("explicitly labelled current_target_lookup")
+  expect(system).toContain("targets/limitation JSON")
+  expect(system).toContain("Do not draft prose in this linking job")
+  expect(system).toContain("The prose output rules below apply to section-writing jobs")
+})
+
+test("a far-end condition changes the verifier verdict for every early comparison unit, with one reference and reusable parent prose", async () => {
+  const item: OpenItem = { id: "apply:omission:seal-condition", stage: "apply", kind: "omission", status: "open",
+    detail: "Explain the outstanding seal inspection before acceptance.", ref: { document: "d1", pid: "p111111111111" } }
+  const directory = noteMatter([item])
+  const before = row("p111111111111", "The earlier proposal accepted the container immediately.")
+  const condition = "Acceptance takes effect only after the custodian inspects the seal."
+  const current = row(before.pid, "The custodian handles the container carefully. ".repeat(400) + condition)
+  writeLeanText(directory, "d1/paragraphs.json", JSON.stringify([before]))
+  writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([current]))
+  const stale = "Acceptance is unconditional."
+  const model = scriptedSections(input => (input.initial.includes("<evidence_unit_scope>") || input.initial.includes("<final_passage>")) && input.attempt === 0
+    ? stale : "Acceptance remains conditional; the custodian must inspect the seal. The earlier immediate proposal is history, not the current effect.",
+    text => JSON.stringify(text.includes(`<proposed_prose>\n${stale}`) && text.includes(condition)
+      ? { status: "rewrite", reason: "The complete owning paragraph retains an inspection condition beyond the early focus range." }
+      : { status: "pass", reason: "Current effect and the earlier baseline remain distinct and qualified." }))
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  const units = model.prompts.filter(input => input.initial.includes("<evidence_unit_scope>") || input.initial.includes("<final_passage>"))
+  expect(units.length).toBeGreaterThan(2)
+  for (const unit of units) {
+    expect(unit.initial).toContain(condition)
+    expect(unit.initial).toContain(before.text)
+  }
+  const negative = model.verifications.filter(text => text.includes(`<proposed_prose>\n${stale}`))
+  expect(negative.length).toBeGreaterThan(1)
+  expect(negative.every(text => text.includes(condition) && text.includes(before.text))).toBe(true)
+  const notes = readLeanText(directory, "drafting-notes.md")!
+  expect(notes).not.toContain(stale)
+  expect(notes.split(`[ref: ${item.id}]`)).toHaveLength(2)
+  const calls = model.prompts.length, checks = model.verifications.length
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  expect(model.prompts).toHaveLength(calls)
+  expect(model.verifications).toHaveLength(checks)
+})
+
+
+test("unscoped open points and delegated choices still require current target inspection", async () => {
+  const directory = noteMatter(OPEN_POINTS)
+  writeQuestions(directory, [CHOICE])
+  const inputs = focusedNotesInputs(directory).filter(input => input.kind === "open-item" || input.kind === "delegated")
+  expect(inputs).toHaveLength(3)
+  for (const input of inputs) {
+    expect(input.document).toBeUndefined()
+    expect(input.needsCurrentLookup).toBe(true)
+  }
+  const conditional = "Acceptance takes effect only after inspection."
+  writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([row("p111111111111", conditional)]))
+  const model = scriptedSections(() => "The current handover requires inspection before acceptance; outstanding decisions remain with the custodian.",
+    undefined, text => {
+      expect(text).toContain("<current_navigation>")
+      expect(text).toContain("p111111111111")
+      return JSON.stringify({ targets: [{ document: "d1", pids: ["p111111111111"] }], limitation: "" })
+    })
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  expect(model.lookups).toHaveLength(3)
+  const owners = model.prompts.filter(input => /<section_kind>\n(open-item|delegated)\n/.test(input.initial))
+  expect(owners).toHaveLength(3)
+  for (const owner of owners) expect(owner.initial).toContain(conditional)
+  const checks = model.verifications.filter(text => /<section_kind>\n(open-item|delegated)\n/.test(text))
+  expect(checks).toHaveLength(3)
+  for (const check of checks) expect(check).toContain(conditional)
+})
+
+test("an early ordinary passage carries its complete owning condition to the same verifier packet", () => {
+  const directory = noteMatter()
+  const condition = "Acceptance takes effect only after the custodian inspects the seal."
+  const before = row("p111111111111", "The earlier proposal accepted the container immediately.")
+  const current = row(before.pid, "The custodian handles the container carefully. ".repeat(400) + condition)
+  writeLeanText(directory, "d1/paragraphs.json", JSON.stringify([before]))
+  writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([current]))
+  const input = focusedNotesInputs(directory).find(input => input.kind === "passage")!
+  const focus = /<final_passage>\n([\s\S]*?)\n<\/final_passage>/.exec(input.text)![1]!
+  expect(focus).not.toContain(condition)
+  expect(input.text).toContain(condition)
+  expect(input.text).toContain(before.text)
+  expect(input.text).toContain("dependency context for this assigned range")
 })

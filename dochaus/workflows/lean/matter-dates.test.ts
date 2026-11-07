@@ -41,8 +41,16 @@ describe("the matter's dates", () => {
     // operative dates whose periods must not be computed from the system clock.
     const notes = promptsOf(model, AGENT.finalize)
     expect(notes.length).toBeGreaterThan(1)
+    const linking = notes.filter(prompt => prompt.includes("<current_target_lookup>"))
+    const prose = notes.filter(prompt => prompt.includes("<section_kind>"))
+    expect(linking.length).toBeGreaterThan(0)
+    expect(prose.length).toBeGreaterThan(1)
+    expect(linking.length + prose.length).toBe(notes.length)
+    for (const prompt of linking) {
+      expect(prompt).toContain("<assigned_point>")
+      expect(prompt).toContain('"targets":[')
+    }
     for (const prompt of notes) {
-      expect(prompt).toContain("<section_kind>")
       expect(prompt).toContain(dated)
       expect(prompt).toContain('- Goods ordered: 2026-02-10 ("ordered on 10 February 2026"')
       expect(prompt).toContain(RULE)
@@ -53,7 +61,7 @@ describe("the matter's dates", () => {
     const items = gateItems(directory).filter(item => item.kind === "drafted_default")
     expect(items).toHaveLength(1)
     expect(items[0]).toMatchObject({ status: "disclosed", detail: expect.stringContaining("dated 2026-03-01, the date the sources fix for them") })
-    const defaults = notes.flatMap(prompt => {
+    const defaults = prose.flatMap(prompt => {
       const block = /<open_point>\n([\s\S]*?)\n<\/open_point>/.exec(prompt)?.[1]
       return block ? [JSON.parse(block)] : []
     }).filter(point => point.kind === "drafted_default")

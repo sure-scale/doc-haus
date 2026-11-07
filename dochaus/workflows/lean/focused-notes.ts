@@ -1,10 +1,12 @@
 import { parallel } from "./checklist-flow"
 import { checkDraftingNotes, finalBodyParagraphs, parseJsonObject, readChangeList, readParagraphs, shownText, type ApplyResult, type ParagraphRow } from "./checks"
-import { reviewDispositionText } from "./change-pipeline"
+import { readChangePlan, reviewDispositionText } from "./change-pipeline"
 import { comparisonDescription } from "./comparison"
 import { deliveryArtifactEvidence, requestedMemo } from "./deliverables"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { checkFocusedNotesCoverage } from "./focused-notes-coverage"
+import { checkNotesTargets, currentNotesPids, notesCurrentEvidence, notesEvidenceUnits, NOTES_CURRENT_EVIDENCE_VERSION, type NotesBody } from "./focused-notes-evidence"
+import { raisedFindings } from "./review-findings"
 import { matterDatesBlock } from "./intake"
 import { readLeanPlan, type DocID } from "./plan"
 import { actingForBlock, delegatedLines, focusedNotesPrompt, tagged } from "./prompts"
@@ -31,6 +33,7 @@ export type FocusedNotesInput = {
   items: OpenItem[]
   delegatedIDs: string[]
   text: string
+  needsCurrentLookup?: boolean
 }
 type Assignment = Omit<FocusedNotesInput, "text"> & {
   question: string
@@ -41,7 +44,7 @@ type BodyPassage = { pids: string[]; text: string; part: number | null }
 
 /** Every final paragraph is assigned exactly once, respecting its planned
  * part. A long paragraph becomes adjacent passages with the same source PID;
- * a passage's writer retrieves the full paragraph when its effect depends on it. */
+ * its full owning paragraph remains dependency context for writer and checker. */
 function bodyPassages(rows: ParagraphRow[]): BodyPassage[] {
   const result: BodyPassage[] = []
   for (const row of rows) {
@@ -114,13 +117,13 @@ function repairOwner(inputs: Pick<FocusedNotesInput, "id" | "kind" | "items" | "
 
 /** Select exact final target passages; unlocated records retrieve their own
  * targets rather than receiving another copy of the whole document. */
+function notesBody(directory: string, document: DocID): NotesBody {
+  return { document, initial: readParagraphs(directory, document), current: finalBodyParagraphs(directory, document),
+    applied: (readLeanJson(directory, `${document}/apply.json`) as ApplyResult | undefined)?.applied }
+}
+
 function relevantBody(directory: string, document: DocID | undefined, pids: string[]) {
-  if (!document) return []
-  const passages = bodyPassages(finalBodyParagraphs(directory, document).filter(row => pids.includes(row.pid)))
-  return [
-    ...passages.slice(0, 1).map(row => context("final_target", row.text)),
-    ...(passages.length > 1 ? [context("additional_targets", { document, pids, instruction: "Other target passages are not inlined for size. Retrieve their exact final wording through read-document view=current_body before judging the combined effect." })] : []),
-  ]
+  return document ? notesCurrentEvidence(notesBody(directory, document), pids) : []
 }
 
 /** Builds independent concrete questions. Coverage comes from iterating the
@@ -130,6 +133,16 @@ export function focusedNotesInputs(directory: string, linkedRepairs: ReadonlyMap
   const documents = plan?.documents ?? []
   const items = [...new Map(disclosableItems(directory).map(item => [item.id, item])).values()]
   const questions = delegatedQuestions(directory)
+  const raised = raisedFindings(directory)
+  const recordPids = (document: DocID, value: unknown) => {
+    const text = json(value)
+    const known = new Set(readParagraphs(directory, document).map(row => row.pid))
+    return [...new Set([
+      ...[...text.matchAll(/\bp[0-9a-f]{12}\b/g)].map(match => match[0]),
+      ...raised.filter(row => row.document === document && text.includes(row.id)).flatMap(row => row.pids ?? []),
+      ...items.filter(item => item.ref.document === document && text.includes(item.id)).flatMap(item => item.ref.pid ? [item.ref.pid] : []),
+    ].filter(pid => known.has(pid) || finalBodyParagraphs(directory, document).some(row => row.pid === pid)))]
+  }
   const assignments: Assignment[] = []
   const add = (input: Pick<Assignment, "id" | "kind" | "heading" | "question" | "context"> & Partial<Assignment>) => {
     const row: Assignment = { pids: [], refs: [], items: [], delegatedIDs: [], repairs: [], ...input }
@@ -154,9 +167,12 @@ export function focusedNotesInputs(directory: string, linkedRepairs: ReadonlyMap
         ...(passages[0] ? [context("opening_final_passage", passages[0].text)] : [])],
     })
     passages.forEach((passage, index) => add({ id: `passage:${document.id}:${index}`, kind: "passage", document: document.id, pids: passage.pids,
-      heading: document.parts[passage.part ?? -1]?.heading ?? document.title,
+      heading: `${document.parts[passage.part ?? -1]?.heading ?? document.title} — Passage ${index + 1}`,
       question: "Explain the material effect of this final passage in this document. This section owns only this passage; retrieve its material definitions, exceptions and dependencies before describing them. Preserve proposal status and disclosed limitations. Do not describe earlier proposals as applied, repeat file delivery explanations or reopen settled choices. Other passages have their own explanation jobs.",
-      context: [metadata, context("planned_part", passage.part === null ? "Unattributed final passage." : document.parts[passage.part]), context("final_passage", passage.text)],
+      context: [metadata, context("planned_part", passage.part === null ? "Unattributed final passage." : document.parts[passage.part]), context("final_passage", passage.text),
+        ...(rows.some(row => passage.pids.includes(row.pid) && shownText(row).length > PASSAGE_CHARS)
+          ? [context("passage_dependency_scope", "The complete owning paragraph, its earlier baseline and nearby qualifications below are dependency context for this assigned range, because a condition may appear beyond its boundary. Explain only final_passage; do not reassign or repeat the whole paragraph's explanation."), ...relevantBody(directory, document.id, passage.pids)] : []),
+        context("current_inspection_scope", { version: NOTES_CURRENT_EVIDENCE_VERSION, passage: index + 1, pids: passage.pids, scope: "Only this passage is assigned; other passages continue separately. A passage ending at a heading does not establish that the following content is absent. Do not turn a local boundary into a whole-document omission." })],
     }))
     for (const [index, change] of appliedChangeEvidence(directory, document.id).entries()) {
       const pids = [change.pid, ...change.result_paragraphs.map(row => row.pid)]
@@ -187,7 +203,9 @@ export function focusedNotesInputs(directory: string, linkedRepairs: ReadonlyMap
       }),
     ]
     records.forEach((record, index) => {
-      const pids = [...json(record).matchAll(/\bp[0-9a-f]{12}\b/g)].map(match => match[0])
+      const detail = record.value && typeof record.value === "object" && "detail" in record.value ? record.value.detail : undefined
+      const original = readChangePlan(directory, document.id)?.findings?.find(row => row.detail === detail)
+      const pids = recordPids(document.id, { record, resolves: original?.resolves })
       add({ id: `disposition:${document.id}:${index}`, kind: "disposition", document: document.id, pids, heading: "Review decisions and recommendations",
         question: "Explain this one material review disposition, its practical consequence and remaining action in the appropriate advice. A deferred finding remains unresolved, a recommendation is optional, and a rejected suggestion is not an outstanding mandatory change. A legacy decision or unadjudicated review is navigation, not proof of resolution or rejection: inspect its current final passage and underlying sources. Omit only an immaterial rejected suggestion, saying briefly that it was not pursued; preserve material advice and qualifications. Do not assert that proposed wording was applied without inspecting the final text.",
         context: [metadata, context("review_disposition", record), ...relevantBody(directory, document.id, pids)],
@@ -197,11 +215,12 @@ export function focusedNotesInputs(directory: string, linkedRepairs: ReadonlyMap
   for (const item of items) {
     const document = documents.find(row => row.id === item.ref.document)
     const question = item.ref.question_id ? questions.find(row => row.id === item.ref.question_id) : undefined
-    add({ id: `item:${item.id}`, kind: "open-item", document: item.ref.document, pids: item.ref.pid ? [item.ref.pid] : [], heading: document ? `Open point — ${document.title}` : "Open point",
+    const pids = item.ref.document ? recordPids(item.ref.document, item) : []
+    add({ id: `item:${item.id}`, kind: "open-item", document: item.ref.document, pids, heading: document ? `Open point — ${document.title}` : "Open point",
       refs: [item.id], items: [item],
       question: "Explain this one open point, its consequence and exactly what the lawyer needs to do. Keep it unresolved where the record does. For a marked drafted default, state what was chosen and the required confirmation; do not convert an already settled answer into a new confirmation request. This is disclosure, not an answer or release approval. Do not copy its marker or identifiers; code attaches its exact reference.",
       context: [context("open_point", { kind: item.kind, detail: item.detail, location: item.ref }), ...(document ? [context("document", { id: document.id, title: document.title, purpose: document.purpose })] : []),
-        ...(question ? [context("related_decision", delegatedLines(question).join("\n"))] : []), ...relevantBody(directory, item.ref.document, item.ref.pid ? [item.ref.pid] : [])],
+        ...(question ? [context("related_decision", delegatedLines(question).join("\n"))] : []), ...relevantBody(directory, item.ref.document, pids)],
     })
   }
   for (const question of questions) add({ id: `delegated:${question.id}`, kind: "delegated", document: question.document, pids: question.pid ? [question.pid] : [],
@@ -219,8 +238,13 @@ export function focusedNotesInputs(directory: string, linkedRepairs: ReadonlyMap
     const targets = owner ? [owner.id] : linkedRepairs.get(repair.id) ?? []
     for (const id of targets) assignments.find(row => row.id === id)?.repairs.push(repair.detail)
   }
-  return assignments.map(({ question, context, repairs, ...input }) => ({ ...input, text: focusedNotesPrompt({ kind: input.kind, question,
-    context: [...currentHumanContext(directory, input.document), ...context], repairs }) }))
+  return assignments.map(({ question, context, repairs, ...input }) => {
+    const mapped = input.document ? currentNotesPids(notesBody(directory, input.document), input.pids) : undefined
+    const needsCurrentLookup = Boolean(["change", "disposition", "open-item", "delegated"].includes(input.kind) &&
+      (!input.pids.length || mapped?.missing.length))
+    return { ...input, ...(needsCurrentLookup ? { needsCurrentLookup: true } : {}), text: focusedNotesPrompt({ kind: input.kind, question,
+      context: [...currentHumanContext(directory, input.document), ...context], repairs }) }
+  })
 }
 
 function sectionText(input: FocusedNotesInput, prose: string) {
@@ -271,6 +295,54 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
   const stopped: { error?: { cause: unknown } } = {}
   const throwIfStopped = () => { if (stopped.error) throw stopped.error.cause }
   const sectionFile = (input: FocusedNotesInput) => `notes-sections/${hashStageInputs("finalize", NOTES_SECTIONS_CONTRACT, [...common, { name: "assignment", bytes: json(input) }])}.md`
+  // Locate only an unowned current target. The accepted prose remains keyed
+  // on its unchanged assignment and the existing complete dependency basis,
+  // so recovery can reuse it without repeating this transient lookup.
+  const locateCurrentInput = async (input: FocusedNotesInput): Promise<FocusedNotesInput | undefined> => {
+    if (!input.needsCurrentLookup) return input
+    const bodies = (readLeanPlan(directory)?.documents ?? []).map(document => notesBody(directory, document.id))
+    const navigation = bodies.map(body => ({ document: body.document, record: `.dochaus/lean/${body.document}/paragraphs-applied.json`,
+      paragraphs: body.current.map(({ pid, label, draft_part, draft_heading, text }) => ({ pid, label, part: draft_part, ...(draft_heading ? { heading: text } : {}) })) }))
+    const index = json(navigation)
+    const agent = LEAN_STAGE_AGENTS.finalize
+    const step = `${input.id}:current-targets`
+    const sessionID = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent,
+      title: stepSessionTitle(directory, "finalize", step), model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
+    sessions.push(sessionID)
+    progress({ session_id: sessions[0], session_ids: [...sessions] })
+    const prompt = [
+      tagged("current_target_lookup", "Locate the actual current accepted paragraphs needed to assess this one notes point, including material qualifications, definitions and dependencies. This is evidence selection only: do not draft prose, decide legal correctness, mark a finding resolved or infer approval. Old proposals and deferred findings are navigation, not current-body evidence. Inspect the relevant current paragraphs through read-record or read-document view=current_body. Select their existing current PIDs. Inspect only material dependencies, not the whole matter."),
+      tagged("assigned_point", escapeTagOpeners(input.text)),
+      tagged("current_navigation", escapeTagOpeners(index.length <= 6_000 ? index : json(navigation.map(({ paragraphs: _paragraphs, ...row }) => row)))),
+      tagged("output_contract", 'Reply only {"targets":[{"document":"planned id","pids":["current paragraph pid"]}],"limitation":"remaining inspection limit, or empty"}. If current passages cannot be located or inspected, return no targets with the actual limitation; this never establishes that body content is missing. Do not invent PIDs or write files.'),
+    ].join("\n\n")
+    let issues: string[] = []
+    for (let attempt = 0; attempt <= LEAN_MAX_RETRIES; attempt++) {
+      appendLeanEvent(directory, { stage: "finalize", step, event: attempt ? "retry" : "model_call", attempt, session_id: sessionID })
+      const asked = performance.now()
+      const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: attempt
+        ? `Correct only this target-selection reply: ${issues.join(" ")}. Return targets/limitation JSON, retaining this one assignment.` : prompt })
+      const answered = performance.now()
+      const parsed = parseJsonObject(reply)
+      const checked = parsed.ok ? checkNotesTargets(parsed.value, bodies) : { issues: [parsed.error] }
+      issues = checked.issues
+      calls.count++
+      calls.attempts = Math.max(calls.attempts, attempt + 1)
+      progress({ calls: calls.count, attempts: calls.attempts, feedback: issues })
+      appendLeanEvent(directory, { stage: "finalize", step, event: "checker", attempt, issues,
+        wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
+      if (checked.targets) {
+        const evidence = checked.targets.flatMap(target => notesCurrentEvidence(bodies.find(body => body.document === target.document)!, target.pids))
+        const strip = ["current_inspection_scope", "generated_initial_evidence", "current_accepted_evidence", "baseline_meaning"]
+        const text = strip.reduce((text, name) => text.replace(new RegExp(`<${name}>[\\s\\S]*?</${name}>\\s*`, "g"), ""), input.text)
+        return { ...input, needsCurrentLookup: false, text: [text,
+          ...evidence.map(row => tagged(row.name, escapeTagOpeners(row.text))),
+          tagged("current_lookup_limit", escapeTagOpeners(checked.limitation || (checked.targets.length ? "Only the selected current passages and their inlined neighbors have been inspected; do not claim document-wide absence." : "No current passage was established. Do not turn missing inspection into missing content or completed approval."))),
+        ].join("\n\n") }
+      }
+    }
+    failures.push(`${step}: current target lookup did not pass its check: ${issues.join(" ")}`)
+  }
   const linked = new Map<string, string[]>()
   const unscoped = requiredNotesRepairs(directory).filter(repair => !repairOwner(inputs, repair))
   await parallel(unscoped, async repair => {
@@ -327,47 +399,71 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
         files.push(file)
         return
       }
-      const agent = LEAN_STAGE_AGENTS.finalize
-      const sessionID = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, "finalize", input.id), model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
-      sessions.push(sessionID)
-      progress({ session_id: sessions[0], session_ids: [...sessions] })
-      let feedback: string[] = []
-      for (let attempt = 0; attempt <= LEAN_MAX_RETRIES; attempt++) {
-        appendLeanEvent(directory, { stage: "finalize", step: input.id, event: attempt ? "retry" : "model_call", attempt, session_id: sessionID })
-        const asked = performance.now()
-        const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: attempt ? `Correct only this section's errors, retaining its original assignment and supported explanation. Return this section only.\n${feedback.map(issue => `- ${issue}`).join("\n")}` : input.text })
-        const answered = performance.now()
-        feedback = checkFocusedNotesSection(directory, input, reply, attempt >= LEAN_MAX_RETRIES)
-        calls.count++
-        calls.attempts = Math.max(calls.attempts, attempt + 1)
-        progress({ attempts: calls.attempts, calls: calls.count, feedback })
-        appendLeanEvent(directory, { stage: "finalize", step: input.id, event: "checker", attempt, issues: feedback, wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
-        if (!feedback.length) {
-          let verifierCalls = 0
-          const coverage = await checkFocusedNotesCoverage(directory, state, deps, input, reply, patch => {
-            for (const id of patch.session_ids ?? []) if (!sessions.includes(id)) sessions.push(id)
-            if (patch.calls !== undefined) { calls.count += patch.calls - verifierCalls; verifierCalls = patch.calls }
-            calls.attempts = Math.max(calls.attempts, patch.attempts ?? 0)
-            progress({ ...patch, calls: calls.count, attempts: calls.attempts, session_id: sessions[0], session_ids: [...sessions] })
-          })
-          if (coverage.status === "failed") { failures.push(coverage.reason); return }
-          if (coverage.status === "rewrite") {
-            feedback = [`This prose does not substantively explain its assigned point: ${coverage.reason} Return the complete substantive section; earlier or interrupted text cannot supply missing content.`]
-            progress({ feedback })
+      const located = await locateCurrentInput(input)
+      if (!located) return
+      const writeUnit = async (writing: FocusedNotesInput, unitFile: string): Promise<string | undefined> => {
+        const input = writing
+        const kept = readLeanText(directory, unitFile)
+        if (kept && !checkFocusedNotesSection(directory, writing, kept, true).length) return kept.trim()
+        const agent = LEAN_STAGE_AGENTS.finalize
+        const sessionID = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, "finalize", input.id), model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
+        sessions.push(sessionID)
+        progress({ session_id: sessions[0], session_ids: [...sessions] })
+        let feedback: string[] = []
+        for (let attempt = 0; attempt <= LEAN_MAX_RETRIES; attempt++) {
+          appendLeanEvent(directory, { stage: "finalize", step: input.id, event: attempt ? "retry" : "model_call", attempt, session_id: sessionID })
+          const asked = performance.now()
+          const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: attempt ? `Correct only this section's errors, retaining its original assignment and supported explanation. Return this section only.\n${feedback.map(issue => `- ${issue}`).join("\n")}` : writing.text })
+          const answered = performance.now()
+          feedback = checkFocusedNotesSection(directory, writing, reply, attempt >= LEAN_MAX_RETRIES)
+          calls.count++
+          calls.attempts = Math.max(calls.attempts, attempt + 1)
+          progress({ attempts: calls.attempts, calls: calls.count, feedback })
+          appendLeanEvent(directory, { stage: "finalize", step: input.id, event: "checker", attempt, issues: feedback, wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
+          if (!feedback.length) {
+            let verifierCalls = 0
+            const coverage = await checkFocusedNotesCoverage(directory, state, deps, writing, reply, patch => {
+              for (const id of patch.session_ids ?? []) if (!sessions.includes(id)) sessions.push(id)
+              if (patch.calls !== undefined) { calls.count += patch.calls - verifierCalls; verifierCalls = patch.calls }
+              calls.attempts = Math.max(calls.attempts, patch.attempts ?? 0)
+              progress({ ...patch, calls: calls.count, attempts: calls.attempts, session_id: sessions[0], session_ids: [...sessions] })
+            })
+            if (coverage.status === "failed") { failures.push(coverage.reason); return }
+            if (coverage.status === "rewrite") {
+              feedback = [`This prose does not substantively explain its assigned point: ${coverage.reason} Return the complete substantive section; earlier or interrupted text cannot supply missing content.`]
+              progress({ feedback })
+            }
+          }
+          if (!feedback.length) {
+            // Preserve only an answer to unchanged inputs. The walk re-keys if
+            // instructions or evidence changed while any section was in flight.
+            if (stageKey() === initial) {
+              writeLeanText(directory, unitFile, `${reply.trim()}\n`)
+              if (!files.includes(unitFile)) files.push(unitFile)
+            }
+            return reply.trim()
           }
         }
-        if (!feedback.length) {
-          // Preserve only an answer to unchanged inputs. The walk re-keys if
-          // instructions or evidence changed while any section was in flight.
-          if (stageKey() === initial) {
-            writeLeanText(directory, file, `${reply.trim()}\n`)
-            sections.set(input.id, reply.trim())
-            files.push(file)
-          }
-          return
-        }
+        failures.push(`${input.id}: ${feedback.join(" ")}`)
       }
-      failures.push(`${input.id}: ${feedback.join(" ")}`)
+      // Passage questions already own one bounded range. Full owning-paragraph
+      // evidence interprets that range; splitting it again would reassign it.
+      const units = located.kind === "passage" ? [{ text: located.text, label: "" }] : notesEvidenceUnits(located.text)
+      const accepted: string[] = []
+      for (const [index, unit] of units.entries()) {
+        const writing = units.length === 1 ? located : { ...located, id: `${input.id}:evidence:${index}`, refs: [], items: [], delegatedIDs: [], text: unit.text }
+        const prose = await writeUnit(writing, units.length === 1 ? file : sectionFile(writing))
+        if (prose === undefined) return
+        accepted.push(unit.label ? `### ${unit.label}\n\n${prose}` : prose)
+      }
+      const prose = accepted.join("\n\n")
+      const issues = checkFocusedNotesSection(directory, input, prose, true)
+      if (issues.length) { failures.push(`${input.id}: ${issues.join(" ")}`); return }
+      if (stageKey() === initial) {
+        writeLeanText(directory, file, `${prose}\n`)
+        sections.set(input.id, prose)
+        if (!files.includes(file)) files.push(file)
+      }
     } catch (error) { stopped.error ??= { cause: error } }
   })
   throwIfStopped()

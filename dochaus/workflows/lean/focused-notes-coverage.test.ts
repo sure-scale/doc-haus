@@ -94,3 +94,13 @@ test("checker telemetry records only the bounded verdict and timings, keeping ex
   const log = JSON.stringify(events)
   for (const text of [assignment.text, proposed, ...verdicts.map(verdict => verdict.reason)]) expect(log).not.toContain(text)
 })
+
+test("verification separates current accepted effects from legitimate initial history and uninspected absence", () => {
+  const input = { kind: "change" as const, text: "<generated_initial_evidence>Acceptance is immediate.</generated_initial_evidence>\n<current_accepted_evidence>Acceptance is conditional on inspection.</current_accepted_evidence>" }
+  const prompt = notesCoveragePrompt(input, "The initial draft was immediate; the accepted revision requires inspection.")
+  expect(prompt).toContain(input.text.replaceAll("<", "\\u003c"))
+  expect(prompt).toContain("correctly labelled historical explanation is not a current contradiction")
+  expect(prompt).toContain("stale deferred record alone cannot establish")
+  expect(prompt).toContain("unavailable current inspection cannot establish document-wide absence")
+  expect(prompt).toContain("Citation presence does not establish legal correctness or human approval")
+})

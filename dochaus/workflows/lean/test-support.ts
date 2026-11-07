@@ -299,6 +299,8 @@ export const noChanges: Reply = () => JSON.stringify({ amendments: [], questions
 // Generic fixtures answer the focused prose contract; code owns references.
 // Retain the old full-note reply for direct legacy prompt/checker fixtures.
 export const draftingNotes: Reply = prompt => {
+  if (prompt.includes("<current_target_lookup>"))
+    return JSON.stringify({ targets: [], limitation: "The scripted fixture does not inspect current passages for this point; it establishes neither missing content nor resolution." })
   if (prompt.includes("This is a separate repair-link job"))
     return JSON.stringify({ sections: [0], reason: "The synthetic package explanation owns this generic memo correction." })
   if (prompt.includes("<section_kind>"))

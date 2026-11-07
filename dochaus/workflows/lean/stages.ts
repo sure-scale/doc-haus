@@ -11,6 +11,7 @@ import { coverageItems, planCoverageCurrent } from "./package-coverage"
 import { placementItems, planPlacementCurrent, SPINE_ATOMS } from "./spine-placement"
 import { readActRecord } from "./act-record"
 import { requestedFilesItems } from "./requested-files"
+import { PROVISIONAL_FACT_MARKER_CONTRACT, provisionalFactMarkerItems } from "./provisional-fact-markers"
 import { draftedDefaultItems } from "./drafted-defaults"
 import { READER_CHECK_CONTRACT } from "./reader-check"
 import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
@@ -80,7 +81,7 @@ export const LEAN_PROMPT_VERSION = "lean-32-change-contracts"
 const OUTLINE_CONTRACT = "outline-one-pass-reverse-24"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
-const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-checked-sections-6"
+const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-checked-sections-7-current-evidence"
 /** Keys finalize only when the notes are a requested memo (the plan has a
  * memo name), so runs without one keep their finalize key. */
 const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
@@ -277,6 +278,8 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     ...(["finalize", "package-review", "gate"].includes(step) ? [{ name: "review-dispositions", bytes: JSON.stringify((readLeanPlan(directory)?.documents ?? []).map(row => reviewDispositionText(directory, row.id))) }] : []),
     ...(["finalize", "package-review"].includes(step) ? [{ name: "delivery-review-contract", bytes: DELIVERY_REVIEW_CONTRACT }] : []),
     ...(step === "gate" ? [{ name: "gate-contract", bytes: GATE_CONTRACT }] : []),
+    ...(["checklist-check", "gate"].includes(step) && provisionalFactMarkerItems(directory).length
+      ? [{ name: "provisional-fact-marker-contract", bytes: PROVISIONAL_FACT_MARKER_CONTRACT }] : []),
     // A review asking for changes that ran with the repair allowance used up
     // started no round: its findings stand, so a resume on unchanged inputs
     // does not run it again. One that last started a round runs once more.

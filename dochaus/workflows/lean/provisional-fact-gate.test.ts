@@ -7,10 +7,10 @@ import { writeLeanPlan } from "./plan"
 import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
 import { hashStageInputs, readLeanState, readQuestions, updateLeanStage, writeLeanBytes, writeLeanText, writeOpenItems, writeQuestions, type Question } from "./state"
 import { cleanupMatters, matter } from "./test-support"
+import { provisionalFactMarkerItems } from "./provisional-fact-markers"
 
 afterEach(cleanupMatters)
 
-const markerDuty = "show a placeholder wherever it is needed"
 const rows = [
   { pid: "p-seal", text: "The seal design remains unknown [open item: obtain the seal design from the custodian]." },
   { pid: "p-handover", text: "The handover awaits the same unknown design [open item: verify the seal design before relying on the handover]." },
@@ -30,9 +30,9 @@ function setup(checklist = true) {
   writeLeanText(directory, "drafting-notes.md", `# Notes\n\nThe seal design remains unknown; obtain it from the custodian. Draft preparation is permitted, but sending or signature is not approved. [ref: ${factOpenItems(directory)[0]!.id}]\n`)
   body(directory, rows)
   writeLeanBytes(directory, "d1/body-applied.docx", Buffer.from("synthetic checked Word bytes"))
-  const ref = { document: "request", locator: `.dochaus/lean/questions.json answer (${question.id})`, quote: markerDuty }
-  const item: ChecklistItem = { check: "Use a visible placeholder in every passage that depends on the unknown seal design.", basis: "directive", source_refs: [ref], qualifications: [], target: { document: "d1", role: "Archive handover", treatment: "open_issue" } }
-  const finding: ChecklistFinding = { item_id: "marker-duty", status: "satisfied", reason: "Each dependent passage preserves the unknown design with an explicit marker.", evidence: rows.map(row => ({ document: "d1", locator: row.pid, text: row.text, kind: "body" as const })), source_refs: [{ ...ref, quote: question.answer! }], inspection_scope: "Every current handover passage dependent on the seal design.", limitation: "The design remains unknown.", open_decisions: [] }
+  const expected = provisionalFactMarkerItems(directory)[0]!
+  const item: ChecklistItem = structuredClone(expected.item)
+  const finding: ChecklistFinding = { item_id: expected.id, status: "satisfied", action_status: "fulfilled", reason: "Each dependent passage preserves the unknown design with an explicit marker.", evidence: rows.map(row => ({ document: "d1", locator: row.pid, text: row.text, kind: "body" as const })), source_refs: item.source_refs, inspection_scope: "Every current handover passage dependent on the seal design.", limitation: "The design remains unknown.", open_decisions: [] }
   const data = { directory, question, item, finding }
   if (checklist) save(data)
   return data
@@ -44,7 +44,11 @@ function fresh(directory: string) {
 
 function save({ directory, item, finding }: ReturnType<typeof setup>, extra: { item: ChecklistItem; finding: ChecklistFinding }[] = []) {
   const entries = [{ item, finding }, ...extra]
-  writeLeanText(directory, "checklist/extraction.json", JSON.stringify({ expected_sources: ["answer"], sources: [{ key: "answer", status: "succeeded", items: entries.map(row => ({ id: row.finding.item_id, item: row.item })) }] }))
+  // Product handling duties are derived at check time, not source quotations
+  // authored by extraction. A forged item under their reserved ID cannot replace one.
+  const expected = provisionalFactMarkerItems(directory)[0]!
+  const forged = JSON.stringify(item) === JSON.stringify(expected.item) ? [] : [{ id: finding.item_id, item }]
+  writeLeanText(directory, "checklist/extraction.json", JSON.stringify({ expected_sources: ["answer"], sources: [{ key: "answer", status: "succeeded", items: [...forged, ...extra.map(row => ({ id: row.finding.item_id, item: row.item }))] }] }))
   writeLeanText(directory, "checklist/checks.json", JSON.stringify({ extraction_complete: true, expected_items: entries.map(row => row.finding.item_id), checks: entries.map(row => ({ item_id: row.finding.item_id, input_sha: "focused-check", status: "succeeded", issues: [], finding: row.finding })) }))
   writeLeanText(directory, "checklist/report.md", "# Checked current marker duties\n")
   fresh(directory)
@@ -71,7 +75,7 @@ test("a satisfied duty for another fact, artifact or action cannot substitute fo
   const changes: Array<(data: ReturnType<typeof setup>) => void> = [
     data => { data.item.source_refs[0]!.locator = ".dochaus/lean/questions.json answer (q-other)" },
     data => { data.finding.source_refs[0]!.locator = ".dochaus/lean/questions.json answer (q-other)" },
-    data => { data.item.source_refs[0]!.quote = data.question.answer! },
+    data => { data.item.source_refs[0]!.quote = "show a placeholder wherever it is needed" },
     data => { data.finding.source_refs[0]!.quote = `${data.question.answer!} The seal is already verified.` },
     data => { data.item.target.document = "d2" },
     data => { data.finding.evidence.forEach(row => { row.document = "notes" }) },
@@ -116,11 +120,11 @@ test("every matching marker duty must succeed and its exact body evidence must r
     expect(fact(data.directory).status).toBe("open")
   }
   const data = setup()
-  save(data, [{ item: structuredClone(data.item), finding: { ...structuredClone(data.finding), item_id: "second-marker-duty", status: "open" } }])
+  save(data, [{ item: structuredClone(data.item), finding: { ...structuredClone(data.finding), status: "open" } }])
   expect(fact(data.directory).status).toBe("open")
   const other = setup()
   save(other, [{ item: { ...structuredClone(other.item), target: { ...other.item.target, treatment: "operative" } }, finding: { ...structuredClone(other.finding), item_id: "operative-marker-duty", status: "unsatisfied" } }])
-  expect(fact(other.directory).status).toBe("open")
+  expect(fact(other.directory).status).toBe("disclosed")
 })
 
 test("stale or incomplete checklist output cannot establish descriptive marker coverage", () => {
@@ -148,14 +152,14 @@ test("a question scoped to an unmarked paragraph cannot borrow another paragraph
   expect(fact(data.directory).status).toBe("open")
 })
 
-test("notes alone, an unrelated marker, or permission other than the canonical provisional choice cannot disclose the fact", () => {
+test("notes alone, an unrelated marker, absent permission or changed answer evidence cannot disclose the fact", () => {
   const changes: Array<(data: ReturnType<typeof setup>) => void> = [
     data => { writeLeanText(data.directory, "drafting-notes.md", "# Notes\n\nThe handover is prepared.\n") },
     data => { body(data.directory, [{ pid: "p-unrelated", text: "[open item: insert the custodian's address]" }]) },
     data => { writeQuestions(data.directory, [{ ...data.question, fact_status: "wait" }]) },
     data => { writeQuestions(data.directory, [{ ...data.question, fact_status: "unknown" }]) },
     data => { writeQuestions(data.directory, [{ ...data.question, answer: "Prepare the draft with appropriate qualifications." }]) },
-    data => { writeQuestions(data.directory, [{ ...data.question, answer_kind: undefined, option_id: undefined }]) },
+    data => { writeQuestions(data.directory, [{ ...data.question, answer_kind: "adopted" }]) },
   ]
   for (const change of changes) {
     const data = setup()
@@ -163,4 +167,11 @@ test("notes alone, an unrelated marker, or permission other than the canonical p
     fresh(data.directory)
     expect(fact(data.directory).status).toBe("open")
   }
+})
+
+test("the same express permission typed by the human is not restricted to an option click", () => {
+  const data = setup()
+  writeQuestions(data.directory, [{ ...data.question, answer_kind: undefined, option_id: undefined }])
+  fresh(data.directory)
+  expect(fact(data.directory).status).toBe("disclosed")
 })

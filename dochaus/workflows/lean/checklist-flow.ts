@@ -12,6 +12,7 @@ import { matterSourceBasis, snapshotRead, withSourceSnapshot } from "./quotes"
 import { readLeanJson, shortHash, writeLeanText } from "./state"
 import { providerStopKind } from "../../lib/provider-stop"
 import { workflowConcurrency } from "./model-concurrency"
+import { provisionalFactMarkerItems } from "./provisional-fact-markers"
 
 const itemRecordSchema = z.object({ id: z.string(), item: checklistItemSchema, assignment: checklistComparisonAssignmentSchema.optional() })
 const sourceResultSchema = z.object({
@@ -299,7 +300,9 @@ export function readEffectiveChecklistItems(directory: string, originals = origi
   return withSourceSnapshot(() => effectiveChecklistItems(directory, originals))
 }
 
-function effectiveChecklistItems(directory: string, originals: ChecklistItemRecord[]) {
+function effectiveChecklistItems(directory: string, originals: ChecklistItemRecord[]): {
+  items: ChecklistItemRecord[]; parents: z.infer<typeof checklistRefinementsSchema>["parents"]; complete: boolean; issues: string[]
+} {
   const saved = readLeanJson(directory, REFINEMENTS)
   const parents = saved === undefined ? [] : checklistRefinementsSchema.parse(saved).parents
   const basis = checklistRefinementSourceBasis(directory)
@@ -332,7 +335,10 @@ function effectiveChecklistItems(directory: string, originals: ChecklistItemReco
     if (!parent.units.some(unit => unit.children.length)) issues.push(`${original.id}: no child checks; parent scope remains unresolved.`)
   }
   for (const parent of parents) if (!originals.some(row => row.id === parent.parent_id)) issues.push(`${parent.parent_id}: original parent is unavailable.`)
-  return { items, parents, complete: !issues.length, issues }
+  // These product handling duties are already known from the current fact
+  // permission. They need semantic checking, not source extraction/refinement.
+  // Keeping them here leaves ordinary extraction and check-job keys unchanged.
+  return { items: [...items, ...provisionalFactMarkerItems(directory)], parents, complete: !issues.length, issues }
 }
 
 /** The wording each child-level coverage issue ends with, after the ids of the

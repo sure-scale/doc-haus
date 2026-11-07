@@ -22,7 +22,8 @@ import { draftedDefaultItems } from "./drafted-defaults"
 import { combinedFileItems } from "./deliverables"
 import { withheldChecklistRepair } from "./requests"
 import { isReviewStage, currentOpenItems, hashStageInputs, readLeanText, readLeanJson, readLeanState, readQuestions, undecidedQuestion, type LeanState, type OpenItem, type Question } from "./state"
-import { canonicalProvisionalFactChoice, currentFactDisposition, PROVISIONAL_FACT_MARKER_DUTY } from "./fact-answers"
+import { currentFactDisposition } from "./fact-answers"
+import { provisionalFactMarkerItems } from "./provisional-fact-markers"
 
 // Final legal gate: the only place an open item blocks delivery. It covers every
 // planned document; each item is settled against the final body of the
@@ -881,30 +882,33 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
     : "neither marked in its paragraph nor named in the drafting notes")
 }
 
-/** A descriptive marker need not copy the whole original question. Its
- * equivalence must already have been checked as this selected option's exact
- * marker duty, not merely another duty sharing the same answer or some marker
- * elsewhere. The fact and preparation-only permission remain unchanged. */
+/** Descriptive markers require this exact question's product handling checks,
+ * never a broader source duty sharing its answer. Current expected items are
+ * reconstructed from permission and scope, not trusted from saved output. */
 function checklistFactMarked(context: SettleContext, question: Question, document: DocID, unscoped: boolean) {
-  if (!canonicalProvisionalFactChoice(question) || !context.markerFindings) return false
-  const markerSource = (ref: { document: string; locator: string; quote: string }) => ref.document === "request" &&
-    ref.locator === `.dochaus/lean/questions.json answer (${question.id})` && normalize(ref.quote) === normalize(PROVISIONAL_FACT_MARKER_DUTY)
-  // The extraction isolates this one duty; the checker may quote the full
-  // human answer as its supporting context, but never an unrelated answer.
-  const answerSource = (ref: { document: string; locator: string; quote: string }) => ref.document === "request" &&
-    ref.locator === `.dochaus/lean/questions.json answer (${question.id})` && normalize(question.answer!).includes(normalize(ref.quote)) &&
-    normalize(ref.quote).includes(normalize(PROVISIONAL_FACT_MARKER_DUTY))
-  const duties = context.markerFindings.filter(({ item }) => item.source_refs.some(markerSource))
-  return duties.length > 0 && duties.every(({ item, finding }) => {
-    const target = checklistDocument(context.directory, item)
-    if (item.basis !== "directive" || item.target.treatment !== "open_issue" || !target || !unscoped && target !== document ||
-      finding.status !== "satisfied" || finding.open_decisions?.length || finding.action_status !== undefined && finding.action_status !== "fulfilled" ||
-      !finding.source_refs.some(answerSource)) return false
+  if (!context.markerFindings) return false
+  const duties = provisionalFactMarkerItems(context.directory, question.id)
+  let marked = false
+  const complete = duties.length > 0 && duties.every(expected => {
+    const rows = context.markerFindings!.filter(row => row.item_id === expected.id)
+    if (rows.length !== 1) return false
+    const { item, finding } = rows[0]!
+    const target = checklistDocument(context.directory, expected.item)
+    if (JSON.stringify(item) !== JSON.stringify(expected.item) || !target || !unscoped && target !== document ||
+      finding.open_decisions === undefined || finding.open_decisions.length ||
+      !expected.item.source_refs.every(ref => finding.source_refs.some(actual => actual.document === ref.document && actual.locator === ref.locator &&
+        normalize(actual.quote) === normalize(ref.quote)))) return false
     const final = context.documents.get(target)
     const body = finding.evidence.filter(row => row.kind === "body")
-    return !!final && body.length > 0 && body.every(row => plannedID(context.directory, row.document) === target &&
-      paragraphShowsOpenItem(row.text) && final.rows.some(paragraph => normalize(paragraph.text) === normalize(row.text)))
+    const current = !!final && body.length > 0 && body.every(row => plannedID(context.directory, row.document) === target &&
+      final.rows.some(paragraph => normalize(paragraph.text) === normalize(row.text)))
+    if (!current) return false
+    if (finding.status === "not_applicable" && finding.action_status === "not_applicable") return unscoped
+    if (finding.status !== "satisfied" || finding.action_status !== "fulfilled" || !body.every(row => paragraphShowsOpenItem(row.text))) return false
+    marked = true
+    return true
   })
+  return complete && marked
 }
 
 function inBody(final: FinalBody, text: string | undefined, pid: string | undefined) {
