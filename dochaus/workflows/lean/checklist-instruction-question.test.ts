@@ -765,7 +765,7 @@ describe("scope matching: fix wave 3", () => {
   test("package-scope questions as both askers wrote them before this rule are still read", () => {
     const shows = (question: string, quotes: string[]) => scopeQuestionShows({ id: `${PACKAGE_SCOPE_QUESTION}earlier`, stage: "draft", question, context: "", status: "answered", answer: "Outside." }, quotes)
     const PLAN = "The document plan leaves these instructed acts without a document executed by the parties who must take them: " +
-      '"approve the revised schedule", directed by "the Orchard Committee approves the revised schedule" [source: request]; to be taken by "the Orchard Committee"; planned in d1 "Release letter", executed by "Kestrel Works". ' +
+      '"approve the revised schedule", directed by "the Orchard Committee approves the revised schedule" [source: request]; to be taken by "the Orchard Committee"; planned in "Release letter", executed by "Kestrel Works". ' +
       '"sign the side letter", directed by "The Agent, the Buyer and the Seller each sign the side letter on completion." [source: request]; to be taken by "the Agent", "the Buyer" and "the Seller"; no planned document carries it. ' +
       "For each, should the package add a document, or change a planned one, so that those parties take it, or is it outside this request? If the package should carry it, say in which document and who executes it."
     const earlier: Question = { id: `${PACKAGE_SCOPE_QUESTION}earlier`, stage: "draft", question: PLAN, context: "", status: "answered", answer: "Outside." }

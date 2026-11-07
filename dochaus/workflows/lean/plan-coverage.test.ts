@@ -233,7 +233,7 @@ describe("plan coverage at the outline step", () => {
   // answered it saves the plan.
   test("once a package-scope question that showed the act is answered, its issue is never sent back for a revision: it is recorded as uncovered and the plan is saved", async () => {
     const { directory, state } = prepared()
-    writeQuestions(directory, [{ id: `${PACKAGE_SCOPE_QUESTION}earlier`, stage: "draft", question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in d1 "Release letter", executed by "Kestrel Works".`, context: "", status: "answered", answer: "The release letter only." }])
+    writeQuestions(directory, [{ id: `${PACKAGE_SCOPE_QUESTION}earlier`, stage: "draft", question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in "Release letter", executed by "Kestrel Works".`, context: "", status: "answered", answer: "The release letter only." }])
     const model = scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => ACTS) })
     expect((await run(directory, state, model)).status).toBe("done")
 

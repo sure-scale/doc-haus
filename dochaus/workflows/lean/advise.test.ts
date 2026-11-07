@@ -100,7 +100,7 @@ describe("advice checker", () => {
   })
 
   test("a scope option naming a planned document whose title resembles a source passes", () => {
-    const labelled = { ...SCOPE, question: SCOPE.question.replace("no planned document carries it", 'planned in d1 "Variation of supply-terms", executed by "Supplier"') }
+    const labelled = { ...SCOPE, question: SCOPE.question.replace("no planned document carries it", 'planned in "Variation of supply-terms", executed by "Supplier"') }
     expect(check(scopeReply("Variation of supply-terms, executed by the supplier and the buyer"), labelled).advice).toMatchObject({ recommendation: { option: "o3" } })
     const directory = matter()
     writeLeanPlan(directory, [{ title: "Supply-terms side letter", purpose: "Record the delivery period", parts: [{ heading: "Delivery", scope: "Delivery period" }] }])
@@ -120,7 +120,7 @@ describe("advice checker", () => {
     expect(checkAdvice(directory, gate, reply("Carry it in the supply note: payment is due on delivery", "Treat it as outside the scope of this request")).advice).toMatchObject({ recommendation: { option: "o1" } })
     expect(checkAdvice(directory, gate, reply("Put it in supply-note.docx", "Outside this request")).issues).toEqual([])
     // The plan step's recheck of a saved plan offers no new document either; the documents it labels count as planned.
-    const saved = { ...SCOPE, question: SCOPE.question.replace(/no planned document carries it\. Should .*$/, 'planned in d2 "Side letter", executed by "Supplier". Which planned document, executed by those parties, should carry it, or is it outside this request?') }
+    const saved = { ...SCOPE, question: SCOPE.question.replace(/no planned document carries it\. Should .*$/, 'planned in "Side letter", executed by "Supplier". Which planned document, executed by those parties, should carry it, or is it outside this request?') }
     expect(checkAdvice(directory, saved, reply("The side letter, executed by the supplier and the buyer", "Outside this request")).issues).toEqual([])
     expect(checkAdvice(directory, saved, reply("A new letter executed by the supplier and the buyer", "Outside this request")).issues).toHaveLength(1)
     // Before its plan is saved, the plan step's question offers a new document, which no list names.

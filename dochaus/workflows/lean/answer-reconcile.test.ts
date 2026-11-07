@@ -4,6 +4,7 @@ import { OutputLimitError } from "./native-stage-result"
 import { writeLeanPlan } from "./plan"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
+import { LEAN_MAX_RETRIES } from "./stages"
 import { answerQuestion, answeredQuestionsText, delegable, readLeanJson, readQuestions, writeQuestions, type Question } from "./state"
 import { AGENT, cleanupMatters, happyPath, matter, NO_FINDINGS, noChanges, scriptedModel, SUPPORT, type Reply } from "./test-support"
 
@@ -135,6 +136,30 @@ test("a conflict naming an unknown question or a single one is sent back for a r
   expect(calls[1]!.text).toContain('"q-missing"')
   expect(calls[1]!.text).toContain("at least two")
   expect(combined(directory)).toEqual([])
+})
+
+test("a conflict naming an answer by its id is sent back with how to say it, and on the last attempt is put in words", async () => {
+  const named = ([late, price]: [string, string]) => JSON.stringify({ conflicts: [{ questions: [late, price], conflict: `The answer to ${late} adds no remedy while ${price} reduces the price.` }] })
+  const { directory, model, run, ids, adoptBoth } = twoQuestions(ids => (_prompt, index) => index === 0 ? named(ids) : flags(ids))
+  await run()
+  adoptBoth()
+  await run()
+  const [late, price] = ids()
+  const calls = model.prompts.filter(prompt => prompt.agent === AGENT.reconcile)
+  expect(calls).toHaveLength(2)
+  for (const id of [late, price]) expect(calls[1]!.text).toContain(`names the internal id "${id}". The lawyer sees only words: name the question or answer by what it asked.`)
+  expect(combined(directory)[0]!.question).toContain(CONFLICT)
+
+  // Never corrected: the last reply's conflict is kept, each id put as its asking.
+  const always = twoQuestions(ids => () => named(ids))
+  await always.run()
+  always.adoptBoth()
+  await always.run()
+  expect(always.model.count(AGENT.reconcile)).toBe(LEAN_MAX_RETRIES + 1)
+  const [asked] = combined(always.directory)
+  for (const id of always.ids()) expect(`${asked!.question}\n${asked!.context}`).not.toContain(id)
+  expect(asked!.question).toContain("adds no remedy while")
+  expect(asked!.question.split("cannot all be followed together:")[1]!.split("in place of")[0]).toContain(LATE.slice(0, 20))
 })
 
 test("an unchanged set of answers is not read again; a changed answer is", async () => {

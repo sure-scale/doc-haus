@@ -983,12 +983,13 @@ function actLine(act: CoverageAct, documents: PlannedDocument[], quote: string, 
     ? scopeField(quotedList(act.parties)) : "parties the instructions and sources do not name"}; ${scopeField(where)}.`
 }
 
-/** Where the plan has an act: the document that carries it and who executes that document. */
+/** Where the plan has an act: the document that carries it, by its title (the
+ * lawyer reads this line), and who executes that document. */
 function plannedIn(act: CoverageAct, documents: PlannedDocument[]) {
   const carrier = documents.find(document => document.id === act.document)
   if (!carrier) return "no planned document carries it"
   const executing = carrier.executed_by
-  return `planned in ${label(carrier)}, executed by ${!executing ? "parties the plan does not name" : executing.length ? quotedList(executing) : "no party"}`
+  return `planned in "${carrier.title}", executed by ${!executing ? "parties the plan does not name" : executing.length ? quotedList(executing) : "no party"}`
 }
 
 /** What the placement jobs read of a planned document: no delivery or review fields. */
@@ -1038,9 +1039,9 @@ const savedAct = (row: unknown) => record(row) && ["act", "source", "quote"].eve
 
 const label = (document: PlannedDocument) => `${document.id} "${document.title}"`
 
-/** The titles of the planned documents a package-scope question shows by label. */
+/** The titles of the planned documents a package-scope question shows (plannedIn). */
 export function scopeQuestionTitles(question: Pick<Question, "question">) {
-  return [...question.question.matchAll(/\bd[1-9]\d* "([^"]*)"/g)].map(match => match[1]!)
+  return [...question.question.matchAll(/\bplanned in "([^"]*)"/g)].map(match => match[1]!)
 }
 
 /** The words with which the plan step's package-scope question, asked before
