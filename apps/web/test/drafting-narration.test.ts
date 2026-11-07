@@ -338,6 +338,16 @@ test("a technical stop reads as a calm pause, and Continue reads as a resume", (
   expect(runTransition(running, running)).toBeUndefined()
 })
 
+test("the instructions stage reads in words while running, done and paused", () => {
+  const row = { status: "running" as const, attempts: 1, started_at: "2026-10-12T10:00:00.000Z", finished_at: null }
+  const later = { finalize: { ...row, status: "pending" as const, started_at: null }, gate: { ...row, status: "pending" as const, started_at: null } }
+  const status = lean({ ...running, stages: { instructions: row, ...later } })
+  expect(stageMilestones(status).map(line => line.text)).toEqual(["Listing your instructions for this work"])
+  expect(stageMilestones(lean({ ...status, stages: { instructions: { ...row, status: "done", finished_at: "2026-10-12T10:01:00.000Z" }, ...later } })).map(line => line.text)).toEqual(["Your instructions listed"])
+  const fault = lean({ ...stopped, stop_reason: "instructions: stopped by a runtime error: provider unavailable", stages: { instructions: { ...row, status: "failed", finished_at: "2026-10-12T10:01:00.000Z" }, ...later } })
+  expect(stageMilestones(fault).map(line => line.text)).toEqual(["Paused while listing your instructions for this work after a technical problem"])
+})
+
 test("a provider or setup stop names the fix in Settings, and Continue resumes it", () => {
   const expired = lean({ ...stopped, stop_reason: `d1.draft: ${PROVIDER_STOP_MESSAGES.auth}`, provider_stop: "auth" })
   expect(runOutcome(expired)).toEqual({ tone: "attention", text: PROVIDER_STOP_MESSAGES.auth })
