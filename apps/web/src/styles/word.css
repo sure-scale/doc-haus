@@ -6,7 +6,6 @@
 .word-controls.is-compact { gap: 6px var(--space-2); font-size: 0.6875rem; }
 .word-controls.is-compact .linklike { font-size: inherit; font-weight: 500; }
 .word-controls.is-compact button { min-height: 28px; }
-.word-unavailable { color: var(--muted); font-size: 0.6875rem; }
 .word-revoke { color: var(--muted); }
 .word-badge { display: inline-flex; flex: none; align-items: center; padding: 1px 7px; border: 1px solid var(--accent-border); border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-size: 0.6875rem; line-height: 1.5; white-space: nowrap; }
 .word-badge.has-overlap { border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn); }

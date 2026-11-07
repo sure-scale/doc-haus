@@ -150,12 +150,6 @@ export function WordBadge({ name }: { name: string }) {
   </span>
 }
 
-export function wordSetupReason(config?: WordConfig, error?: string) {
-  if (error) return error
-  if (!config) return "Checking Word setup…"
-  if (!config.available) return "Word is not ready. Set it up in Settings → Word add-in."
-}
-
 export function WordOpenControl({ matterId, name, disabled = false, compact = false }: { matterId: string; name: string; disabled?: boolean; compact?: boolean }) {
   const { config, setupError, documents, refresh, documentCreated } = useContext(WordDocuments)
   const [busy, setBusy] = useState<"open" | "download" | "release" | "takeover" | "copy">()
@@ -184,6 +178,8 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
   const locked = status?.lease?.state === "other"
   const pending = status?.nativeOperation?.state === "pending"
   const available = config?.available && !setupError
+  // Word setup lives in Settings and the dashboard; rows say nothing until Word is ready.
+  if (!available && !pending && !locked) return null
   const waitForPane = () => {
     window.clearTimeout(paneTimer.current)
     setPaneHint(false)
@@ -264,9 +260,9 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
     finally { setBusy(undefined) }
   }
   return <span className={`word-controls${compact ? " is-compact" : ""}`}>
-    {available ? <button type="button" className={compact ? "linklike word-open" : "word-open"} onClick={open} disabled={disabled || pending || busy !== undefined} aria-label={`Open ${name} in Word`} title="Open an editable linked copy in desktop Word">
+    {available && <button type="button" className={compact ? "linklike word-open" : "word-open"} onClick={open} disabled={disabled || pending || busy !== undefined} aria-label={`Open ${name} in Word`} title="Open an editable linked copy in desktop Word">
       {busy === "open" ? "Opening Word…" : "Open in Word"}
-    </button> : <span className="word-unavailable" title={wordSetupReason(config, setupError)}>{config || setupError ? "Word setup needed" : "Checking Word…"}</span>}
+    </button>}
     {paneHint && !status?.open && <span className="word-pane-hint" role="status">If the doc.haus pane isn’t showing in Word, click doc.haus on the Home tab.</span>}
     {available && fallback && <button type="button" className="linklike" onClick={download} disabled={disabled || pending || busy !== undefined}>{busy === "download" ? "Downloading…" : "Download Word copy"}</button>}
     {pending && <>
