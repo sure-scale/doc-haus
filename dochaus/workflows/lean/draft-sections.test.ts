@@ -470,7 +470,7 @@ describe("sectioned draft stage", () => {
     expect(parsePlan("Acting for: the buyer\n## One").value).toBeUndefined()
   })
 
-  test("a missing acting-for line is retried, the outline is saved with it, and the first part is told whom the lawyer acts for", async () => {
+  test("a missing acting-for line is retried, the outline is saved with it, and every part is told whom the lawyer acts for", async () => {
     const { directory, state } = matter()
     writeLeanText(directory, "request.md", "Draft a notice of the terms. We act for the sender.")
     const model = scripted((text, index) => {
@@ -482,8 +482,10 @@ describe("sectioned draft stage", () => {
     expect(result.status).toBe("done")
     expect(model.prompts[1]!.text).toContain('The outline has no "Acting for:" line.')
     expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the sender", basis: "stated" })
-    expect(model.prompts[2]!.text).toContain("<acting_for>\nThe lawyer acts for: the sender.\n</acting_for>")
-    expect(model.prompts[3]!.text).not.toContain("<acting_for>")
+    const side = "<acting_for>\nThe lawyer acts for: the sender. Draft for that party.\n</acting_for>"
+    expect(model.prompts[2]!.text).toContain(side)
+    // Each later part opens with the side again, before its handoff and section.
+    for (const part of [3, 4]) expect(model.prompts[part]!.text).toStartWith(side)
   }, 60_000)
 
   test("an outline that never states the line is accepted on the last attempt as not stated", async () => {
@@ -493,7 +495,7 @@ describe("sectioned draft stage", () => {
     const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
     expect(result.status).toBe("done")
     expect(readLeanPlan(directory)?.acting_for).toEqual(NOT_STATED)
-    expect(model.prompts[4]!.text).toContain("The request does not say whom the lawyer acts for, and no side was taken.")
+    for (const part of [4, 5, 6]) expect(model.prompts[part]!.text).toContain("The request does not say whom the lawyer acts for, and no side was taken.")
   }, 60_000)
 
   test("a part reply is checked against its outlined heading", () => {

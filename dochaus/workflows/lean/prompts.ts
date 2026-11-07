@@ -290,7 +290,7 @@ export function actingForBlock(directory: string) {
   return tagged("acting_for", actingFor.basis === "inferred"
     ? `The lawyer acts for: ${actingFor.party}. This side is taken from what the requested document does and whom the sources show instructing it${actingFor.reason ? ` (${actingFor.reason})` : ""}, as the request names none. Draft for that party; the drafting notes disclose this once, for the lawyer to confirm.`
     : actingFor.basis !== "none"
-    ? `The lawyer acts for: ${actingFor.party}.`
+    ? `The lawyer acts for: ${actingFor.party}. Draft for that party.`
     : "The request does not say whom the lawyer acts for, and no side was taken. Work even-handedly: where the parties' interests diverge, draft wording balanced between them " +
       "marking only a new substantive choice not already settled by instructions or answers for confirmation, rather than favouring either party. " +
       "Ask the lawyer only for information the request and the sources do not give.")

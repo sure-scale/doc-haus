@@ -117,7 +117,7 @@ describe("spine entry level", () => {
     expect(JSON.parse(tag(spineLevelPrompt(payment!), "entry"))).toEqual({ kind: "fact", detail: PAYMENT, limitations: [FLAG], sources: ["supply-terms.docx"], quote: "Payment is due on delivery." })
     expect(tag(spinePlacementPrompt(documents, payment!), "entry")).toBe(tag(spineLevelPrompt(payment!), "entry"))
     expect(groundLine(payment!)).toBe(`fact: ${PAYMENT} [source: supply-terms.docx] [limitations: ${FLAG}]`)
-    expect(groundsBlock([payment!])).toContain(`- fact: ${PAYMENT} [source: supply-terms.docx] [limitations: ${FLAG}] (evidence: "Payment is due on delivery."; retrieve the full words before quoting them)`)
+    expect(groundsBlock([{ ...payment!, level: "text" }])).toContain(`- fact: ${PAYMENT} [source: supply-terms.docx] [limitations: ${FLAG}] (evidence: "Payment is due on delivery."; retrieve the full words before quoting them)`)
     // An entry without limitations reads as before.
     expect(spineLevelPrompt(delivery!)).not.toContain("limitations")
     expect(groundLine(delivery!)).toBe(`requirement: ${DELIVERY} [source: supply-terms.docx]`)
@@ -496,8 +496,10 @@ describe("spine placement in the part prompts", () => {
     await run(directory, model)
     const [delivery, payment] = partPrompts(model).map(prompt => prompt.text)
     const block = delivery!.split("<rests_on>\n")[1]!.split("\n</rests_on>")[0]!
-    expect(block).toContain(`- requirement: ${DELIVERY} [source: supply-terms.docx] (evidence: "within thirty days of the order date"; retrieve the full words before quoting them)`)
-    expect(block).toContain("A cross-reference to another part adds to that; it never substitutes for it.")
+    expect(block).toStartWith(`This part rests on:\n- requirement: ${DELIVERY} [source: supply-terms.docx] (evidence: "within thirty days of the order date"; retrieve the full words before quoting them)`)
+    expect(block).toContain("State each here, in this part's own words, and reason from it. A cross-reference to another part adds to that; it never substitutes for it. An entry about method, calculation or handling binds what this part says, not words it repeats.")
+    // A text entry is stated; nothing in the block reads as a direction to apply.
+    expect(block).not.toContain("This part is drafted under:")
     expect(block).not.toContain(PAYMENT)
     expect(payment).toContain(`- fact: ${PAYMENT}`)
     // Outside the tag, the entry appears nowhere: not in the heading line or the outline list.
@@ -513,11 +515,21 @@ describe("spine placement in the part prompts", () => {
     const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.level]: packageDelivery, [AGENT.placement]: placer })
     await run(directory, model)
     expect(readLeanPlacement(directory)!.entries).toEqual([{ entry: 0, level: "package", parts: ["d1/1"] }, { entry: 1, level: "text", parts: ["d1/2"] }])
-    expect(partPrompts(model).map(prompt => prompt.text.includes(`<rests_on>\nThis part rests on:\n- requirement: ${DELIVERY}`))).toEqual([true, false])
-    expect(documentGrounds(directory, "d1").map(grounds => grounds.map(entry => entry.index))).toEqual([[0], [1]])
+    // A package entry is a direction the part applies, not words it states.
+    const [delivery, payment] = partPrompts(model).map(prompt => prompt.text)
+    const block = delivery!.split("<rests_on>\n")[1]!.split("\n</rests_on>")[0]!
+    expect(block).toStartWith(`This part is drafted under:\n- requirement: ${DELIVERY}`)
+    expect(block).toContain("Apply each as it directs how this part is drafted or where a point is disclosed: state it only where this part is the place it names; otherwise its words are not document text.")
+    expect(block).not.toContain("State each here")
+    expect(payment).not.toContain(DELIVERY)
+    expect(documentGrounds(directory, "d1").map(grounds => grounds.map(entry => [entry.index, entry.level]))).toEqual([[[0, "package"]], [[1, "text"]]])
     const review = stagePrompt(directory, "d1.review")
     expect(review.split("<drafting_spine>")[1]).toContain(DELIVERY)
-    expect(review.split("<document_outline>\n")[1]!.split("\n</document_outline>")[0]).toContain(DELIVERY)
+    // The reviews' outline names it as the part prompt was told it.
+    const outline = JSON.parse(review.split("<document_outline>\n")[1]!.split("\n</document_outline>")[0]!)
+    expect(outline.parts.map((part: { rests_on?: string[]; drafted_under?: string[] }) => [part.rests_on, part.drafted_under])).toEqual([
+      [undefined, [`requirement: ${DELIVERY} [source: supply-terms.docx]`]], [[`fact: ${PAYMENT} [source: supply-terms.docx]`], undefined],
+    ])
     // Placed in no part, it still rides the drafting spine every stage reads, and grounds no part.
     writePlacement(directory, readLeanPlan(directory)!.documents, { entries: [{ entry: 0, level: "package", parts: [] }, { entry: 1, level: "text", parts: ["d1/2"] }], parts: [], issues: [] })
     expect(documentGrounds(directory, "d1").map(grounds => grounds.map(entry => entry.index))).toEqual([[], [1]])
@@ -534,5 +546,19 @@ describe("spine placement in the part prompts", () => {
     ])
     expect(groundsBlock([])).toBe("")
     expect(sectionPrompt(readLeanPlan(directory)!.documents[0]!, 0)).not.toContain("<rests_on>")
+  })
+
+  test("a part's block states its text entries and applies its package entries, each group under its own line", () => {
+    const { directory } = prepared()
+    const [delivery, payment] = spineEntries(directory)
+    const block = groundsBlock([{ ...delivery!, level: "package" }, { ...payment!, level: "text" }])
+    expect(block).toStartWith("<rests_on>\nThis part rests on:\n")
+    const [stated, applied] = block.split("This part is drafted under:\n")
+    expect(stated).toContain(`- fact: ${PAYMENT} [source: supply-terms.docx]`)
+    expect(stated).toContain("State each here, in this part's own words, and reason from it.")
+    expect(stated).not.toContain(DELIVERY)
+    expect(applied).toStartWith(`- requirement: ${DELIVERY} [source: supply-terms.docx]`)
+    expect(applied).toContain("Apply each as it directs how this part is drafted or where a point is disclosed: state it only where this part is the place it names; otherwise its words are not document text.")
+    expect(applied).not.toContain(PAYMENT)
   })
 })
