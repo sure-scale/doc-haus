@@ -3,9 +3,8 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import { renderMarkdownToDocx, uploadDeliverable } from "../lib/render"
 import { fillTemplate, TemplateContentError } from "../lib/template-fill"
-import { normalizePreferences } from "../lib/drafting-preferences"
+import { matterDraftingPreferences } from "../lib/matter-client"
 import { pageFurniture } from "../lib/page-furniture"
-import { readFirmPreferences } from "../lib/preferences"
 import { safeFileName } from "../lib/safe-file-name"
 
 // doc.haus draft-document tool. Creates a NEW Word (.docx) document in the
@@ -93,6 +92,11 @@ export default tool({
       metadata: { document: name, template: args.template, mode: args.template ? "template" : "scratch" },
     })
 
+    // The firm's drafting preferences with, until the firm sets them, the
+    // date style the matter's sources use: the header date and the read-back
+    // lint follow it.
+    const preferences = matterDraftingPreferences(ctx.directory)
+
     // From-scratch mode is the shared markdown -> seed -> docx -> ingest render
     // core; only template mode needs its own session for the
     // omit/fills/replaces machinery.
@@ -100,7 +104,7 @@ export default tool({
       // The tool knows no document form, so a from-scratch draft carries only
       // the firm's page numbers, and its clause references stay typed: it may
       // be advice citing the clauses of another document.
-      const rendered = await renderMarkdownToDocx(args.content, undefined, pageFurniture("other", normalizePreferences(readFirmPreferences())))
+      const rendered = await renderMarkdownToDocx(args.content, undefined, pageFurniture("other", preferences), { style: preferences })
         .catch((err: Error) => err)
       if (rendered instanceof Error) return `Draft failed: ${rendered.message}`
       const uploadError = await uploadDeliverable(
@@ -132,6 +136,7 @@ export default tool({
       omit: args.omit,
       replaces: args.replaces,
       content: args.content,
+      style: preferences,
     }).catch((err: unknown) => {
       if (err instanceof TemplateContentError) return err
       throw err

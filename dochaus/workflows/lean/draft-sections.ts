@@ -16,7 +16,7 @@ import {
   type RequestedFiles,
 } from "./requested-files"
 import {
-  FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, partInstrument, plannedDocument, readLeanPlan, runPosture, withDocumentIDs, writeLeanPlan,
+  FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, partInstrument, plannedDocument, readLeanPlan, runDateFormat, runPosture, withDocumentIDs, writeLeanPlan,
   type ActingFor, type DocID, type LeanOutline, type PlannedDocument, type StepID,
 } from "./plan"
 import { REVISION_PREFERENCE_SCOPE, actingForBlock, packageCompositionBlock, retryPrompt, stagePrompt } from "./prompts"
@@ -369,8 +369,10 @@ export async function runDraftStage(
     // the sources.
     const client = matterClient(directory)
     const inferred = intakeActingFor(directory)
-    // The Posture the stages so far drafted to; the plan freezes it for the rest of the run.
+    // The Posture the stages so far drafted to, and the date style the sources
+    // gave them; the plan freezes both for the rest of the run.
     const posture = runPosture(directory)
+    const dateFormat = runDateFormat(directory)
     const best: { value?: LeanOutline } = {}
     const checkOutline = (reply: string): Checked<LeanOutline> => {
       const parsed = parsePlan(reply, request, inferred)
@@ -518,7 +520,7 @@ export async function runDraftStage(
       appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: "unchecked",
         reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive could not be confirmed; the plan delivers its files as outlined and the drafting notes say so." })
     } else rmSync(leanFile(directory, "requested-files.json"), { force: true })
-    writeLeanPlan(directory, planned, basis, value.acting_for, value.memo ? { name: value.memo, document: `d${planned.length}` } : undefined, posture, frozenDates(directory))
+    writeLeanPlan(directory, planned, basis, value.acting_for, value.memo ? { name: value.memo, document: `d${planned.length}` } : undefined, posture, frozenDates(directory), dateFormat)
   } else if (document === FIRST_DOCUMENT && !planCoverageCurrent(directory)) {
     const saved = readLeanPlan(directory)!
     const coverage = await covering(saved.documents)

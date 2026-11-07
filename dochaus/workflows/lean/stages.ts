@@ -15,11 +15,10 @@ import { draftedDefaultItems } from "./drafted-defaults"
 import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
 import { currentResearchGaps, intakeDiscrepancy, researchOutputValid } from "./research"
-import { normalizeLegend, normalizePreferences, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
+import { normalizeLegend, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { firmPracticeAreaContext } from "../../lib/practice-areas"
 import { pageFurniture, type FurnitureKind, type RequestedFurniture } from "../../lib/page-furniture"
-import { matterClient } from "../../lib/matter-client"
-import { readFirmPreferences } from "../../lib/preferences"
+import { matterClient, matterDraftingPreferences } from "../../lib/matter-client"
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
 import path from "node:path"
 import { ensureParagraphRows, paragraphSha256 } from "../../lib/drafting-amendment"
@@ -42,7 +41,7 @@ import {
   type ParagraphRow,
   type StageCheck,
 } from "./checks"
-import { reviewGuidance, reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type PlannedDocument, type StepID } from "./plan"
+import { reviewGuidance, reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, runDateFormat, runPosture, stepDocument, stepStage, type DocID, type PlannedDocument, type StepID } from "./plan"
 import { acceptReviewReply, forwardedFindings, readReviewRecord } from "./review-findings"
 import { templateSource } from "./template-contract"
 import { INSTRUCTIONS_FILE, instructionsOutputValid } from "./instructions"
@@ -403,10 +402,12 @@ export function outlineBasis(directory: string) {
 }
 
 /** The drafting preferences every lean stage reads (the legal plugin renders
- * the same for lean agents): the firm's, with the run's Posture. With the firm's
- * own Posture the bytes, and so the keys, are the firm's rendering. */
+ * the same for lean agents): the firm's, with the run's Posture and, until the
+ * firm sets its preferences, the date style the run's sources use. With the
+ * firm's own Posture and preferences the bytes, and so the keys, are the
+ * firm's rendering. */
 export function stageDraftingPreferences(directory: string) {
-  const preferences = readFirmDraftingPreferences("full", runPosture(directory))
+  const preferences = readFirmDraftingPreferences("full", runPosture(directory), runDateFormat(directory))
   const areas = firmPracticeAreaContext()
   return areas ? `${preferences}\n${areas}` : preferences
 }
@@ -505,7 +506,7 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   // them.
   const check = checkDraftingNotes(directory, reply, disclosableItems(directory), { final: options.final })
   if (check.issues.length) return { ...check, outputs: [] }
-  const advisory = draftingStyleAdvisoryNotes([
+  const advisory = draftingStyleAdvisoryNotes(directory, [
     ...(readLeanPlan(directory)?.documents ?? []).map(row => ({ title: row.title, rows: styleScopedRows(directory, row.id, finalBodyParagraphs(directory, row.id)) })),
     { title: "Drafting notes", rows: [{ pid: "drafting-notes", text: reply }] },
   ])
@@ -524,7 +525,7 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
  * state rather than the render clock or a step's start (steps restart), so
  * every file and render in the run reads the same date. */
 export function renderedFurniture(directory: string, kind: FurnitureKind, requested?: RequestedFurniture) {
-  return pageFurniture(kind, normalizePreferences(readFirmPreferences()), readLeanState(directory)?.created_at, requested)
+  return pageFurniture(kind, matterDraftingPreferences(directory, runDateFormat(directory)), readLeanState(directory)?.created_at, requested)
 }
 
 /** The clause list of the original a planned document is compared against, and

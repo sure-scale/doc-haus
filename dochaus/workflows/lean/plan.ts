@@ -1,5 +1,5 @@
-import { isPosture, normalizeLegend, type Posture } from "../../lib/drafting-preferences"
-import { effectivePosture } from "../../lib/matter-client"
+import { isDateFormat, isPosture, normalizeLegend, type DateFormat, type Posture } from "../../lib/drafting-preferences"
+import { effectivePosture, matterDateFormat } from "../../lib/matter-client"
 import { DOCUMENT_FORMS, type DocumentForm } from "../../lib/page-furniture"
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
 import { attachmentHead } from "./consistency"
@@ -83,8 +83,10 @@ export type MatterDates = { document_date: { date: string; basis: DocumentDateBa
  * only; `memo_document` is the planned document that is that memo.
  * `record_file` is the lawyer's file name for the drafting record, set only by
  * a delivery selection's notes row (selectedDeliveryPlan); it never asks for a
- * memo. */
-export type LeanPlan = { schema: "dochaus.lean.plan/2"; documents: PlannedDocument[]; acting_for?: ActingFor; posture?: Posture; basis?: string; memo?: string; memo_document?: DocID; record_file?: string; dates?: MatterDates }
+ * memo. `date_format` is the date style the matter's sources used when the
+ * outline was built (runDateFormat), absent when they settled on none; the
+ * run writes it until the firm sets its own. */
+export type LeanPlan = { schema: "dochaus.lean.plan/2"; documents: PlannedDocument[]; acting_for?: ActingFor; posture?: Posture; basis?: string; memo?: string; memo_document?: DocID; record_file?: string; dates?: MatterDates; date_format?: DateFormat }
 /** `memo` is the request's own words for a memo that accompanies the documents,
  * from a "Memo:" line; with it, the last document is that memo (parsePlan). */
 export type LeanOutline = { documents: Omit<PlannedDocument, "id">[]; acting_for: ActingFor; memo?: string }
@@ -169,11 +171,12 @@ function planIssue(value: unknown): string | undefined {
 
 /** A requested memo is saved as its name and the planned document that is the
  * memo; a plan without one carries neither key, nor a plan without a Posture
- * the Posture key. */
-export function writeLeanPlan(directory: string, documents: Omit<PlannedDocument, "id">[], basis?: string, actingFor?: ActingFor, memo?: { name: string; document?: DocID }, posture?: Posture, dates?: MatterDates): LeanPlan {
+ * the Posture key, nor one whose sources settled on no date style the
+ * date_format key. */
+export function writeLeanPlan(directory: string, documents: Omit<PlannedDocument, "id">[], basis?: string, actingFor?: ActingFor, memo?: { name: string; document?: DocID }, posture?: Posture, dates?: MatterDates, dateFormat?: DateFormat): LeanPlan {
   const plan: LeanPlan = {
     schema: LEAN_PLAN_SCHEMA, documents: withDocumentIDs(documents), acting_for: actingFor, posture, basis,
-    ...(memo ? { memo: memo.name, ...(memo.document ? { memo_document: memo.document } : {}) } : {}), dates,
+    ...(memo ? { memo: memo.name, ...(memo.document ? { memo_document: memo.document } : {}) } : {}), dates, date_format: dateFormat,
   }
   writeLeanText(directory, "plan.json", `${JSON.stringify(plan, null, 2)}\n`)
   return plan
@@ -225,6 +228,18 @@ export function actingForValue(value: unknown): ActingFor {
 export function runPosture(directory: string): Posture {
   const posture: unknown = readLeanPlan(directory)?.posture
   return isPosture(posture) ? posture : effectivePosture(directory)
+}
+
+/** The date style the matter's sources use, which the run writes until the
+ * firm sets its own: the style the outline froze into the plan, none when
+ * the plan records none (the sources settled on none, or a plan saved before
+ * styles were frozen). Before the outline, the style the sources and the
+ * request use, read live. Every lean stage renders its drafting preferences
+ * with it; the firm's own style, once set, is rendered instead. */
+export function runDateFormat(directory: string): DateFormat | undefined {
+  const plan = readLeanPlan(directory)
+  if (plan) return isDateFormat(plan.date_format) ? plan.date_format : undefined
+  return matterDateFormat(directory, readLeanText(directory, "request.md") ?? "")
 }
 
 /** The documents planned before `id`, in drafting order. */

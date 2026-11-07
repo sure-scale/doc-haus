@@ -5,7 +5,7 @@ import { strFromU8, unzipSync } from "fflate"
 import { docxodus } from "./docxodus"
 import { withParagraphPointers } from "./drafting-amendment"
 import { polishMarkdownArtifactsInDocx } from "./docx-polish"
-import { lintDraftMarkdown, splitBlocks } from "./markdown"
+import { lintDraftMarkdown, splitBlocks, type DraftStyle } from "./markdown"
 import { highlightOpenItemsInDocx } from "./open-items"
 import { readFirmPreferences } from "./preferences"
 import { normalizePreferences } from "./drafting-preferences"
@@ -65,7 +65,7 @@ const ingestUrl = process.env.INGEST_URL ?? `http://127.0.0.1:${process.env.DOC_
 // cross-references (docx-crossrefs.ts) only when its `form` is known and is
 // not advice or a letter, which cite the clauses of the documents they discuss;
 // without a form they stay typed.
-export async function renderMarkdownToDocx(content: string, previous?: Uint8Array, furniture?: PageFurniture, options: { numbering?: false; form?: DocumentForm; styleTemplate?: Uint8Array | false; revising?: true } = {}) {
+export async function renderMarkdownToDocx(content: string, previous?: Uint8Array, furniture?: PageFurniture, options: { numbering?: false; form?: DocumentForm; styleTemplate?: Uint8Array | false; revising?: true; style?: DraftStyle } = {}) {
   const text = prepareMarkdownRenderText(splitBlocks(content))
   const dx = await docxodus()
   const house = await Bun.file(baseSeed).bytes()
@@ -108,6 +108,7 @@ export async function renderMarkdownToDocx(content: string, previous?: Uint8Arra
       .split("\n")
       .filter((line) => line !== "# Document")
       .join("\n"),
+    options.style,
   )
 
   // Furniture goes in only now: the restore expects each placeholder once, in
@@ -156,8 +157,11 @@ function warnOnce(detail: string) {
   console.warn(`[render] Rendering with ${detail}.`)
 }
 
-export function lintRenderedDraftMarkdown(markdown: string) {
-  return lintDraftMarkdown(markdown, normalizePreferences(readFirmPreferences()))
+/** `style` is the date and number style the draft is held to: the firm's
+ * saved preferences by default, or a matter's (lib/matter-client.ts
+ * matterDraftingPreferences) when the caller knows the matter. */
+export function lintRenderedDraftMarkdown(markdown: string, style: DraftStyle = normalizePreferences(readFirmPreferences())) {
+  return lintDraftMarkdown(markdown, style)
 }
 
 // Upload finished .docx bytes through ingest's non-source deliverable boundary.

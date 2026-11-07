@@ -200,7 +200,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
       `This is a lean drafting run. Independently review the draft${named} below against the lawyer's request and the matter's sources.`,
       tagged("review_focus", isReviewStage(stage) ? [REVIEW_FOCUS[stage], ...(stage === "review-playbook" && reviewTemplate ? [TEMPLATE_FOCUS] : [])].join(" ") : ""),
       request, spineBlock, acting, answerBlock, sources, ...(stage === "review-playbook" ? [guidanceBlock(directory, document)] : []), planned, composition, outline, preferenceScope, finished, paragraphs,
-      ...(stage === "review-wording" ? [draftingStyleWarningsBlock(styleScopedRows(directory, document, readParagraphs(directory, document)))] : []),
+      ...(stage === "review-wording" ? [draftingStyleWarningsBlock(directory, styleScopedRows(directory, document, readParagraphs(directory, document)))] : []),
       tagged("output_contract", [
         "- Check the draft against the request and the sources (search-document, read-document, verify-quote).",
         ...(planned ? ["- Where a problem concerns another planned document rather than this one, report it with that document's id as its document; the run carries it to that document. Content the request assigns to another planned document is not missing from this one."] : []),
@@ -439,7 +439,7 @@ function documentSections(directory: string, document: DocID, items: OpenItem[])
     tagged("comparison_baseline", comparisonDescription(directory, document)),
     tagged("native_export", JSON.stringify(nativeExportEvidence(directory, document), null, 2)),
     tagged("final_body", finalBodyParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")),
-    draftingStyleWarningsBlock(styleScopedRows(directory, document, finalBodyParagraphs(directory, document)), true),
+    draftingStyleWarningsBlock(directory, styleScopedRows(directory, document, finalBodyParagraphs(directory, document)), true),
     tagged("applied_changes", JSON.stringify(appliedChangeEvidence(directory, document), null, 2)),
     tagged("review_dispositions", reviewDispositionText(directory, document)),
     tagged("unapplied_changes", [

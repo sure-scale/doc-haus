@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test"
 import { lintRenderedDraftMarkdown, renderMarkdownToDocx } from "./render"
 import { strFromU8, unzipSync } from "fflate"
 import {
+  detectDateFormat,
   inspectDraftMarkdownNamespace,
   lintDraftMarkdown,
   lintTemplateBody,
@@ -156,6 +157,34 @@ A tax election may be filed under Section 83(b) of the Internal Revenue Code.`
   test("bare blank placeholder flagged", () => {
     const problems = lintDraftMarkdown(DRAFT.replace("Jane Roe", "[___]"), STYLE)
     expect(problems.some((p) => p.includes("[___]"))).toBe(true)
+  })
+})
+
+describe("detectDateFormat", () => {
+  test("the written form most of the dates take wins; numeric dates do not count", () => {
+    expect(detectDateFormat("Signed 30 August 2026. Delivered 2 September 2026. Paid September 5, 2026. Filed 09/06/2026 and 2026/09/07.")).toBe("day-month-year")
+    expect(detectDateFormat("Signed August 30, 2026. Delivered September 2, 2026. Paid 5 September 2026.")).toBe("month-day-year")
+  })
+
+  test("a tie, numeric dates only, or no date settles on none", () => {
+    expect(detectDateFormat("Signed 30 August 2026. Paid September 5, 2026.")).toBeUndefined()
+    expect(detectDateFormat("Payment within 30 days of 09/06/2026.")).toBeUndefined()
+    expect(detectDateFormat("")).toBeUndefined()
+  })
+
+  test("ordinals, 'day of' wording and abbreviated months count for their form", () => {
+    expect(detectDateFormat("Made this 11th day of June 2026. Effective 1st July 2026. Expires 3 Sept. 2027.")).toBe("day-month-year")
+    expect(detectDateFormat("Made Sept. 11, 2026. Effective Jun 1st, 2027.")).toBe("month-day-year")
+  })
+
+  test("ISO dates are a form of their own", () => {
+    expect(detectDateFormat("From 2026-06-11 to 2027-06-10, then 11 June 2027.")).toBe("iso")
+  })
+
+  test("the strict lint keeps its three exact forms", () => {
+    const style = { dateFormat: "day-month-year", numberStyle: "numerals" } as const
+    expect(lintDraftMarkdown("# Note\n\nSigned 11th June 2026 and 11 June 2026.", style)).toEqual([])
+    expect(lintDraftMarkdown("# Note\n\nSigned June 11, 2026.", style).join(" ")).toContain('dates must be written "11 June 2026"')
   })
 })
 

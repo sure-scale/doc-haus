@@ -5,7 +5,7 @@ import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadat
 import { readDocxMarkup, type DocxMarkup, type MarkupComment, type MarkupField, type MarkupFinding } from "../../../dochaus/lib/docx-markup"
 import { readDocxBodyView } from "../../../dochaus/lib/docx-revision-views"
 import { renderInstructions } from "../../../dochaus/lib/drafting-preferences"
-import { effectivePosture, matterClient } from "../../../dochaus/lib/matter-client"
+import { effectivePosture, matterClient, matterDateFormat } from "../../../dochaus/lib/matter-client"
 import { firmPracticeAreaContext } from "../../../dochaus/lib/practice-areas"
 import { detectInjection, normalizeUntrustedText } from "../../../dochaus/lib/untrusted-text"
 import { notSource, sourceTarget, wordName } from "./document-markup"
@@ -183,7 +183,7 @@ function replyPrompt(directory: string, input: Awaited<ReturnType<typeof replyIn
     "<task>",
     `Draft one short reply from the lawyer to the other side's comment thread on a Word document they marked up. The lawyer acts for ${client ? data(client) : "the party opposite the comment authors"}. Answer the thread's latest point. Be consistent with the lawyer's decision on each listed tracked change: accept = agreed, reject = declined, hold = undecided (do not commit to it). Follow the steer when given. Do not invent facts, figures, commitments or authority; where the reply needs a fact or a position the material does not give, write a short placeholder [[…]] in the reply and list it in open_items. Write plain text as a margin reply, with no Markdown, headings or lists. Return ONLY JSON {"reply":"…","open_items":["…"]}.`,
     "</task>",
-    renderInstructions({ ...readDraftingPreferences(), posture: effectivePosture(directory) }),
+    renderInstructions({ ...readDraftingPreferences(), posture: effectivePosture(directory) }, "full", matterDateFormat(directory)),
     ...(areas ? [areas] : []),
     ...steer ? [`<lawyer_steer encoding="json">${data(steer)}</lawyer_steer>`] : [],
     "<untrusted-document>",

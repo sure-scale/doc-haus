@@ -47,7 +47,7 @@ test("style advisories reach wording review, planning and final notes without bl
   const accepted = await acceptStageReply(directory, "d1.draft", body)
   expect(accepted.issues).toEqual([])
   const rows = await paragraphRows(leanFile(directory, "d1/body.docx"))
-  const warned = draftingStyleWarnings(rows)
+  const warned = draftingStyleWarnings(directory, rows)
   expect(warned).toHaveLength(1)
   expect(warned[0].text).toBe(sourceWording)
   for (const prompt of [stagePrompt(directory, "d1.review-wording"), changePlanPrompt(directory, "d1")]) {
@@ -95,7 +95,8 @@ test("style advisories reach wording review, planning and final notes without bl
 })
 
 test("in a revision, a date in the original's unchanged wording raises no style warning; the same date in changed wording still does", async () => {
-  save({ dateFormat: "month-day-year" })
+  // The firm set month-day-year (every save from Settings confirms the preferences); the original writes day-month-year.
+  save({ draftingConfigured: true, dateFormat: "month-day-year" })
   // The draft retypes the original's paragraph with plain quotes and single spacing.
   const directory = matter("Supply terms\n\nThe \u201cTerm\u201d starts  on 1 January 2027.\n\nPayment is due on 1 January 2027.")
   const plan = (mode: "new" | "revise") => writeLeanPlan(directory, [{ title: "Supply terms", purpose: "Revise the supply terms", parts: [{ heading: "Terms", scope: "Terms" }], mode, ...(mode === "revise" ? { comparison: SOURCE } : {}) }])
@@ -105,7 +106,7 @@ test("in a revision, a date in the original's unchanged wording raises no style 
   const rows = await paragraphRows(leanFile(directory, "d1/body.docx"))
   const kept = rows.find(row => row.text.includes("starts on"))!
   const changed = rows.find(row => row.text.startsWith("Payment"))!
-  const warned = () => draftingStyleWarnings(styleScopedRows(directory, "d1", rows)).map(row => row.pid)
+  const warned = () => draftingStyleWarnings(directory, styleScopedRows(directory, "d1", rows)).map(row => row.pid)
   const block = (prompt: string) => /<drafting_style_warnings>[\s\S]*<\/drafting_style_warnings>/.exec(prompt)?.[0] ?? ""
   const prompts = () => [stagePrompt(directory, "d1.review-wording"), changePlanPrompt(directory, "d1")]
   // The final body keeps the original's date and corrects the changed one.
@@ -129,4 +130,23 @@ test("in a revision, a date in the original's unchanged wording raises no style 
   for (const prompt of prompts()) expect(block(prompt)).toContain(kept.pid)
   for (const prompt of [...prompts(), stagePrompt(directory, "d1.changes")]) expect(prompt).not.toContain(REVISION_PREFERENCE_SCOPE)
   expect(await advisories()).toBe(true)
+})
+
+test("until the firm sets its preferences, the date style the sources use governs the warnings, live before the outline and frozen after it; the firm's own setting governs once set", () => {
+  // The firm has saved nothing; the sources write day-month-year dates.
+  const directory = matter("Supply terms\n\nThe term starts on 1 January 2027 and ends on 31 December 2027.")
+  const documents = [{ title: "Supply note", purpose: "Record supplied terms", parts: [{ heading: "Delivery", scope: "Delivery" }] }]
+  const rows = [{ pid: "p1", text: "Delivery is due by January 1, 2027." }, { pid: "p2", text: "Payment is due by 1 February 2027." }]
+  const warned = () => draftingStyleWarnings(directory, rows).map(row => [row.pid, row.warnings.join(" ")] as const)
+  const flagged = (pid: string, example: string) => expect.arrayContaining([[pid, expect.stringContaining(`dates must be written ${example}`)]])
+  expect(warned()).toHaveLength(1)
+  expect(warned()).toEqual(flagged("p1", '"11 June 2026"'))
+  // The outline froze the style; the plan governs the rest of the run.
+  writeLeanPlan(directory, documents, undefined, undefined, undefined, undefined, undefined, "day-month-year")
+  expect(warned()).toHaveLength(1)
+  expect(warned()).toEqual(flagged("p1", '"11 June 2026"'))
+  // The firm's own choice wins over the sources' style, as before.
+  save({ draftingConfigured: true, dateFormat: "month-day-year" })
+  expect(warned()).toHaveLength(1)
+  expect(warned()).toEqual(flagged("p2", '"June 11, 2026"'))
 })

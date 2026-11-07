@@ -39,7 +39,7 @@ export function matter(sourceText = SOURCE_TEXT, request = "Draft a short supply
 /** The current plan, now also naming a requested memo, as an outline does. */
 export function requestMemo(directory: string) {
   const plan = readLeanPlan(directory)!
-  writeLeanPlan(directory, plan.documents.map(({ id, ...document }) => document), plan.basis, plan.acting_for, { name: "cover memo" }, plan.posture, plan.dates)
+  writeLeanPlan(directory, plan.documents.map(({ id, ...document }) => document), plan.basis, plan.acting_for, { name: "cover memo" }, plan.posture, plan.dates, plan.date_format)
 }
 
 export function scriptedModel(replies: Record<string, Reply>) {

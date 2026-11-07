@@ -86,7 +86,7 @@ export function changePlanPrompt(directory: string, document: DocID) {
   return [
     stagePrompt(directory, `${document}.change-plan`, { contextOnly: true }),
     `<draft_paragraphs>\n${readParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</draft_paragraphs>`,
-    draftingStyleWarningsBlock(styleScopedRows(directory, document, readParagraphs(directory, document))),
+    draftingStyleWarningsBlock(directory, styleScopedRows(directory, document, readParagraphs(directory, document))),
     `<review_findings>\n${findingsText(findings, document)}\n</review_findings>`,
     "Each review finding above concerns this document; one with raised_by was found by the review of that earlier document. Adjudicate every one: name its id in the resolves of the group that amends for it, of the findings entry (disposition) that defers, recommends or rejects it, or of the question it needs. One entry may resolve several findings. A review finding that needs no change is a rejected entry with its reason; dismissed resolves nothing.",
     // Only with the other side's markup, so a run without one is prompted as before.

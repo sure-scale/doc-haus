@@ -9,8 +9,8 @@ import { adaptAzureChatCompletionGpt5Params, adaptOpenAIPlanParams, applyAgentTh
 import { readMatterConflicts } from "./conflicts"
 import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { firmPracticeAreaContext } from "../../lib/practice-areas"
-import { effectivePosture } from "../../lib/matter-client"
-import { runPosture } from "../../workflows/lean/plan"
+import { effectivePosture, matterDateFormat } from "../../lib/matter-client"
+import { runDateFormat, runPosture } from "../../workflows/lean/plan"
 import { verifyCitation } from "./citations"
 import { recordSessionAgent, sessionAgent } from "./session"
 import { draftingPreferencesMode, jurisdictionContextMode, loadStageJurisdictions } from "./stage-context"
@@ -63,10 +63,12 @@ export const LegalPlugin: LegalPolicy = async (input) => {
       if (agent === "dashboard" || agent === "dashboard-chart" || agent === "review-compare" || agent === "review-suggest") return
       const suppliedContext = input.suppliedContext || agent === "word-chat"
       const preferencesMode = suppliedContext ? "none" : draftingPreferencesMode(agent)
-      // A drafting run's stages take the Posture frozen in its plan (as their
-      // keys do); other work on the matter takes the matter's, else the firm's.
+      // A drafting run's stages take the Posture and the sources' date style
+      // frozen in its plan (as their keys do); other work on the matter takes
+      // the matter's Posture, else the firm's, and the sources' style read live.
+      const lean = agent?.startsWith("lean-") === true
       const draftingPreferences = preferencesMode === "none" ? undefined
-        : readFirmDraftingPreferences(preferencesMode, agent?.startsWith("lean-") ? runPosture(directory) : effectivePosture(directory))
+        : readFirmDraftingPreferences(preferencesMode, lean ? runPosture(directory) : effectivePosture(directory), lean ? runDateFormat(directory) : matterDateFormat(directory))
       if (draftingPreferences) output.system.push(draftingPreferences)
       // These jobs extract or check a specific item solely against supplied
       // source evidence; firm background is neither relevant nor in their cache keys.
