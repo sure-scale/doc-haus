@@ -4,7 +4,7 @@ import { INSTRUCTION_COMMENT_PATTERN, OPEN_ITEM_PATTERN, PLACEHOLDER_PATTERN } f
 import type { DocumentForm } from "../../lib/page-furniture"
 import { readFirmPreferences } from "../../lib/preferences"
 import { normalize } from "../../lib/quote-verify"
-import { TOOL_SYNTAX_ISSUE, parseJsonObject, printedToolCall, readParagraphs, record, type ParagraphRow } from "./checks"
+import { TOOL_SYNTAX_ISSUE, finalBodyParagraphs, parseJsonObject, printedToolCall, readParagraphs, record, type ParagraphRow } from "./checks"
 import { parallel } from "./checklist-flow"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { FIRST_DOCUMENT, planActingFor, plannedDocument, type DocID, type PlannedDocument } from "./plan"
@@ -251,6 +251,27 @@ export async function checkReaderParts(directory: string, document: DocID, parts
     saveReaderCheck(directory, document, key, checked.value)
   })
   return hits.flat()
+}
+
+/** A checked retirement must also remove that exact hit from the ordinary
+ * current-part cache, or a later apply can restore it. Preserve other hits
+ * and historical keys. A missing cache is no whole-part audience verdict: its
+ * uninspected paragraphs still need the ordinary reader job. */
+export function retireCurrentReaderHits(directory: string, document: DocID, retired: { pid: string; statement: string }[]) {
+  const plan = plannedDocument(directory, document)
+  if (!plan || !retired.length) return
+  const parts = readerParts(plan, readParagraphs(directory, document), finalBodyParagraphs(directory, document))
+  const acting = planActingFor(directory).party
+  const furniture = furnitureLines(plan)
+  const saved = readReaderChecks(directory, document)
+  const falseHits = new Set(retired.map(row => `${row.pid}\0${normalize(row.statement)}`))
+  for (const { rows } of parts) {
+    const key = readerCheckKey(readerCheckPrompt(plan, acting, rows, furniture))
+    const hits = saved[key]
+    if (!hits) continue
+    const kept = hits.filter(hit => !falseHits.has(`${hit.pid}\0${normalize(hit.sentence)}`))
+    if (kept.length !== hits.length) saveReaderCheck(directory, document, key, kept)
+  }
 }
 
 /** The lines code prints on a document's pages: the firm's legend for its form and a legend the request asks for. */

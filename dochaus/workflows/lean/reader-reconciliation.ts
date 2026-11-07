@@ -5,7 +5,7 @@ import { appendLeanEvent, leanElapsedMs } from "./events"
 import type { PackageReview } from "./package-review"
 import { FIRST_DOCUMENT, planActingFor, plannedDocument, type DocID } from "./plan"
 import { retryPrompt, tagged } from "./prompts"
-import { READER_CHECK_PERMISSIONS, parseReaderHits, readReaderChecks, readerCheckKey, readerCheckPrompt, saveReaderCheck, type ReaderHit } from "./reader-check"
+import { READER_CHECK_PERMISSIONS, parseReaderHits, readReaderChecks, readerCheckKey, readerCheckPrompt, retireCurrentReaderHits, saveReaderCheck, type ReaderHit } from "./reader-check"
 import { LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, stepSessionTitle, type LeanDeps } from "./stages"
 import { readLeanText, readOpenItems, writeOpenItems, type LeanState } from "./state"
 
@@ -48,6 +48,8 @@ export async function reconcilePackageReaderItems(directory: string, state: Lean
     items.forEach(row => removed.add(row.id))
   })
   if (!removed.size) return false
+  for (const [document, items] of Map.groupBy(original.filter(item => removed.has(item.id)), item => item.ref.document ?? FIRST_DOCUMENT))
+    retireCurrentReaderHits(directory, document, items.map(item => ({ pid: item.ref.pid!, statement: item.ref.statement! })))
   writeOpenItems(directory, original.filter(item => !removed.has(item.id)))
   return true
 }
