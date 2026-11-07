@@ -523,6 +523,25 @@ describe("an act whose document the instructions leave out", () => {
     expect(parseCoverage(reply({ document: null, quote: APPROVE.toUpperCase(), excluded_by: first }), directory, documents)).toEqual({ issues: [directing(first, APPROVE.toUpperCase())] })
   })
 
+  test("is retried when it only lists the files to deliver, and accepted when it says the act's document is not prepared here", () => {
+    const directory = matter(SOURCE_TEXT)
+    const FILES = "Output: `release-letter.docx` and `cover-note.docx`."
+    const COUNSEL = "The committee's approval will be prepared by Kestrel Works' own counsel."
+    const NOT_PREPARING = "We are not preparing the resolutions."
+    const NAMED = "Do not prepare `committee-approval.docx`; leave it to the committee."
+    writeLeanText(directory, "request.md", [REQUEST, FILES, COUNSEL, NOT_PREPARING, NAMED].join("\n\n"))
+    const listing = (words: string) => `${WHERE} gives "excluded_by": "${words}", which only names files. ` +
+      "A list of files names what is delivered; it does not say that this act's document is not prepared in this package. " +
+      "Copy verbatim the whole sentence of the request, one update or one answer that says so, or leave \"excluded_by\" out."
+    expect(parseCoverage(reply({ document: null, excluded_by: FILES }), directory, documents)).toEqual({ issues: [listing(FILES)] })
+    // On the last attempt the words are dropped and the act is held to the plan like any other.
+    expect(parseCoverage(reply({ document: null, excluded_by: FILES }), directory, documents, { final: true })).toEqual({ issues: [], value: [act({ document: null })] })
+    // Words that say the act's document is prepared elsewhere or not at all, naming its file or not, still count.
+    accepted(directory, COUNSEL)
+    accepted(directory, NOT_PREPARING)
+    accepted(directory, "Do not prepare `committee-approval.docx`")
+  })
+
   test("listed both with and without excluded_by for the same parties is retried, naming the entries", () => {
     const directory = excluding()
     const conflict = (all: string, withIt: string, without: string) =>
