@@ -114,11 +114,14 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const spineBlock = spine ? tagged("drafting_spine", "Source-linked drafting decisions and unresolved points. Retrieve the underlying evidence as needed; this handoff does not replace it.\n" + spine) : ""
   const answerBlock = answers ? tagged("answers", `The lawyer answered these decisions; their own answers remain controlling and must not be re-asked under narrower or different wording. An adopted recommendation is the drafter's judgment, as its label says:\n${answers}`) : ""
   const provenance = sourceProvenance(directory)
+  const adopted = adoptedSources(directory)
   const sources = tagged("sources", [
     "Matter documents (use these exact names with search-document and read-document, and as source names):",
     ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`),
-    `To quote the request or the lawyer's answers, use the source name "${REQUEST_SOURCE}".`,
-    ...adoptedSources(directory).map(name => `To quote the recommendation adopted for question ${name.slice("adopted:".length)}, which the lawyer delegated, use the source name "${name}"; its words are the drafter's judgment, not the lawyer's.`),
+    `To quote the request or the lawyer's answers, including an option the lawyer chose, use the source name "${REQUEST_SOURCE}".`,
+    ...adopted.map(name => `To quote the recommendation adopted for question ${name.slice("adopted:".length)}, which the lawyer delegated, use the source name "${name}"; its words are the drafter's judgment, not the lawyer's.`),
+    ...adopted.length ? [`Only those question ids take an "adopted:" name; every other answer is quoted under "${REQUEST_SOURCE}".`] : [],
+    "Tag names only label the sections of this prompt and are never source names. Cite a source by its exact name with no section suffix, research by its URL, and a quote taken from a group's evidence under the source_id given beside it.",
   ].join("\n"))
   if (step === "finalize") return draftingNotesSections(directory, request).filter(Boolean).join("\n\n")
   const document = stepDocument(step) ?? FIRST_DOCUMENT

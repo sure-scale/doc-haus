@@ -7,7 +7,7 @@ import { appendLeanEvent, leanElapsedMs } from "./events"
 import { intakeActingFor, matterDatesBlock } from "./intake"
 import { FIRST_DOCUMENT, FIXED_PLAN, planActingFor, readLeanPlan, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, tagged } from "./prompts"
-import { REQUEST_SOURCE, isAnswerSource, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
+import { REQUEST_SOURCE, isAnswerSource, matterSourceIDs, quoteFound, quoteMissIssue, sourceNameIssue } from "./quotes"
 import { scopeQuestionOffersNewDocument, scopeQuestionTitles } from "./package-coverage"
 import { matterClient } from "../../lib/matter-client"
 import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../lib/source-provenance"
@@ -381,7 +381,9 @@ export function basisIssues(directory: string, value: unknown, requireRelevance 
   const issues = rows.flatMap((row, index) => {
     const at = `${field}[${index}]`
     // An instruction from one of the lawyer's answers is cited as that answer (instructions.ts).
-    if (!row || !(sources.has(row.source_id) || isAnswerSource(row.source_id))) return [`${at}.source_id must be "request", an exact matter source name or an approved research URL.`]
+    // A refused name is echoed with the name to use instead (sourceNameIssue).
+    if (!row) return [`${at} must be {"source_id","quote","relevance"}.`]
+    if (!(sources.has(row.source_id) || isAnswerSource(row.source_id))) return [sourceNameIssue(at, row.source_id, sources, directory)!]
     if (!row.quote.trim()) return [`${at}.quote must be non-empty words copied exactly from that source.`]
     if (requireRelevance && !row.relevance) return [`${at}.relevance must explain how this passage supports this answer in the affected matter, document and conditions.`]
     const found = request !== undefined && row.source_id === REQUEST_SOURCE ? normalize(request).includes(normalize(row.quote)) : quoteFound(directory, row)

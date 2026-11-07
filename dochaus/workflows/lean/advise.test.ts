@@ -128,6 +128,7 @@ describe("advice checker", () => {
     ["a passage from no allowed source", { ...VALID, recommendation: { ...VALID.recommendation, basis: [{ source_id: "memory", quote: "thirty days" }] } }, "source_id"],
     ["a blank quote", { ...VALID, recommendation: { ...VALID.recommendation, basis: [{ source_id: "request", quote: "  " }] } }, "non-empty"],
     ["a quote its source does not hold", { ...VALID, recommendation: { ...VALID.recommendation, basis: [{ source_id: SOURCE, quote: "within fourteen days" }] } }, "within fourteen days"],
+    ["a passage under a tag name, echoed with the names to use", { ...VALID, recommendation: { ...VALID.recommendation, basis: [{ source_id: "sources", quote: "thirty days" }] } }, `recommendation.basis[0].source_id "sources" is not a known source name. Use the exact name of a matter document, "request" for the request and the lawyer's answers, or an approved research URL.`],
   ]
   for (const [name, reply, issue, question] of rejected)
     test(`rejects ${name}`, () => {
@@ -135,6 +136,13 @@ describe("advice checker", () => {
       expect(checked.advice).toBeUndefined()
       expect(checked.issues.join(" ")).toContain(issue)
     })
+
+  test("a passage under an answered question's id is pointed to the name its words take", () => {
+    const directory = matter()
+    writeQuestions(directory, [{ ...QUESTION, status: "answered", answer: "Thirty days from the order date", answer_kind: "option", option_id: "o1" }])
+    const reply = JSON.stringify({ ...VALID, recommendation: { ...VALID.recommendation, basis: [{ source_id: "q-delivery", quote: "Thirty days" }] } })
+    expect(checkAdvice(directory, { ...QUESTION, id: "q-period" }, reply).issues).toEqual([`recommendation.basis[0].source_id "q-delivery" is not a known source name. Use the exact name of a matter document, "request" for the request and the lawyer's answers, or an approved research URL. "q-delivery" names question q-delivery; its answer is the lawyer's own: quote the lawyer's own answer under "request".`])
+  })
 })
 
 describe("advising asked questions", () => {
