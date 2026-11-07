@@ -347,13 +347,13 @@ function numberStyleProblems(markdown: string, pref: DraftStyle["numberStyle"]) 
       .filter((m) => !(m[1] && m[3]))
       .map((m) => `"${m[2]}${m[4]}"`)
     if (bare.length === 0) return []
-    return [`durations must be words then numerals ("thirty (30) days") per firm preferences: ${[...new Set(bare)].join(", ")}`]
+    return [`durations must be words then numerals ("thirty (30) days"): ${[...new Set(bare)].join(", ")}`]
   }
   const wordy = [
     ...markdown.matchAll(new RegExp(`\\b(?:${NUMBER_WORDS})(?:[ -](?:${NUMBER_WORDS}))?\\s*\\(\\d{1,4}\\)`, "gi")),
   ].map((m) => `"${m[0]}"`)
   if (wordy.length === 0) return []
-  return [`numbers must be plain numerals ("30 days") per firm preferences: ${[...new Set(wordy)].join(", ")}`]
+  return [`numbers must be plain numerals ("30 days"): ${[...new Set(wordy)].join(", ")}`]
 }
 
 const MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December"
@@ -394,7 +394,7 @@ function dateFormatProblems(markdown: string, pref: DraftStyle["dateFormat"]) {
     .filter(([key]) => key !== pref)
     .flatMap(([, format]) => [...markdown.matchAll(format.strict)].map((m) => `"${m[0]}"`))
   if (offenders.length === 0) return []
-  return [`dates must be written ${DATE_FORMS[pref].example} per firm preferences: ${[...new Set(offenders)].join(", ")}`]
+  return [`dates must be written ${DATE_FORMS[pref].example}: ${[...new Set(offenders)].join(", ")}`]
 }
 
 function escapeRegExp(text: string) {

@@ -3,7 +3,8 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import { renderMarkdownToDocx, uploadDeliverable } from "../lib/render"
 import { fillTemplate, TemplateContentError } from "../lib/template-fill"
-import { matterDraftingPreferences } from "../lib/matter-client"
+import { appliedDraftingPreferences } from "../lib/drafting-preferences"
+import { matterDateFormat } from "../lib/matter-client"
 import { pageFurniture } from "../lib/page-furniture"
 import { safeFileName } from "../lib/safe-file-name"
 
@@ -95,7 +96,7 @@ export default tool({
     // The firm's drafting preferences with, until the firm sets them, the
     // date style the matter's sources use: the header date and the read-back
     // lint follow it.
-    const preferences = matterDraftingPreferences(ctx.directory)
+    const preferences = appliedDraftingPreferences(matterDateFormat(ctx.directory))
 
     // From-scratch mode is the shared markdown -> seed -> docx -> ingest render
     // core; only template mode needs its own session for the

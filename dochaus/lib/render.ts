@@ -158,8 +158,8 @@ function warnOnce(detail: string) {
 }
 
 /** `style` is the date and number style the draft is held to: the firm's
- * saved preferences by default, or a matter's (lib/matter-client.ts
- * matterDraftingPreferences) when the caller knows the matter. */
+ * saved preferences by default, or a matter's (drafting-preferences.ts
+ * appliedDraftingPreferences) when the caller knows the matter. */
 export function lintRenderedDraftMarkdown(markdown: string, style: DraftStyle = normalizePreferences(readFirmPreferences())) {
   return lintDraftMarkdown(markdown, style)
 }

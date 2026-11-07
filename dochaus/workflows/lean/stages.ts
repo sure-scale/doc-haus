@@ -15,10 +15,10 @@ import { draftedDefaultItems } from "./drafted-defaults"
 import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
 import { currentResearchGaps, intakeDiscrepancy, researchOutputValid } from "./research"
-import { normalizeLegend, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
+import { appliedDraftingPreferences, normalizeLegend, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { firmPracticeAreaContext } from "../../lib/practice-areas"
 import { pageFurniture, type FurnitureKind, type RequestedFurniture } from "../../lib/page-furniture"
-import { matterClient, matterDraftingPreferences } from "../../lib/matter-client"
+import { matterClient } from "../../lib/matter-client"
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
 import path from "node:path"
 import { ensureParagraphRows, paragraphSha256 } from "../../lib/drafting-amendment"
@@ -525,7 +525,7 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
  * state rather than the render clock or a step's start (steps restart), so
  * every file and render in the run reads the same date. */
 export function renderedFurniture(directory: string, kind: FurnitureKind, requested?: RequestedFurniture) {
-  return pageFurniture(kind, matterDraftingPreferences(directory, runDateFormat(directory)), readLeanState(directory)?.created_at, requested)
+  return pageFurniture(kind, appliedDraftingPreferences(runDateFormat(directory)), readLeanState(directory)?.created_at, requested)
 }
 
 /** The clause list of the original a planned document is compared against, and

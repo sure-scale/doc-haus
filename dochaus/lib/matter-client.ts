@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite"
 import { existsSync, readFileSync, statSync } from "node:fs"
 import path from "node:path"
-import { effectiveDateFormat, isPosture, normalizePreferences, type DateFormat, type DraftingPreferences, type Posture } from "./drafting-preferences"
+import { isPosture, normalizePreferences, type DateFormat, type Posture } from "./drafting-preferences"
 import { detectDateFormat } from "./markdown"
 import { readFirmPreferences } from "./preferences"
 
@@ -80,12 +80,4 @@ function sourcesText(file: string) {
   } finally {
     db.close()
   }
-}
-
-/** The firm's preferences as work on the matter applies them: until the firm
- * sets its drafting preferences, with the date style the matter's sources use
- * (`sources`; a drafting run passes the style its plan froze, runDateFormat). */
-export function matterDraftingPreferences(directory: string, sources: DateFormat | undefined = matterDateFormat(directory)): DraftingPreferences {
-  const prefs = normalizePreferences(readFirmPreferences())
-  return { ...prefs, dateFormat: effectiveDateFormat(prefs, sources) }
 }

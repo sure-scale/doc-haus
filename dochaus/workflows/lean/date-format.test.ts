@@ -8,6 +8,7 @@ import { matterDateFormat } from "../../lib/matter-client"
 import { leanSteps, readLeanPlan, runDateFormat, writeLeanPlan } from "./plan"
 import { runLean } from "./runner"
 import { stageInputs } from "./stages"
+import { draftingStyleWarnings } from "./style-warnings"
 import { AGENT, SOURCE_TEXT, cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
 // The date style a run writes until the firm sets its drafting preferences:
@@ -67,6 +68,8 @@ test("a plan saved before the style was frozen into it takes the default, not th
     const bytes = rendered(directory, step)
     if (bytes !== undefined) expect(bytes).toContain(DEFAULT)
   }
+  // The style lint (and the header date, which reads the same preferences) follow the frozen default, not the live sources.
+  expect(draftingStyleWarnings(directory, [{ pid: "p1", text: "Due 30 June 2026." }])).toHaveLength(1)
 })
 
 test("the outline freezes the sources' style into the plan; a source added to the matter moves the live reading but neither the run's style nor the preferences any stage reads", async () => {

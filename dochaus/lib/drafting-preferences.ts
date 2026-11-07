@@ -249,6 +249,16 @@ export function effectiveDateFormat(prefs: DraftingPreferences, sources: DateFor
   return prefs.draftingConfigured || !sources ? prefs.dateFormat : sources
 }
 
+/** The firm's preferences as work applies them: until the firm sets its
+ * drafting preferences, with `sources` as the date style. Callers always pass
+ * it: the style the matter's sources use (lib/matter-client.ts
+ * matterDateFormat) or the one a drafting run froze (workflows/lean/plan.ts
+ * runDateFormat), undefined when they settle on none. */
+export function appliedDraftingPreferences(sources: DateFormat | undefined): DraftingPreferences {
+  const prefs = normalizePreferences(readFirmPreferences())
+  return { ...prefs, dateFormat: effectiveDateFormat(prefs, sources) }
+}
+
 const POSTURE: Record<Posture, string> = {
   "client-favorable":
     "Favor the represented person's or organization's stated objectives and protect its interests where reasonably defensible.",
