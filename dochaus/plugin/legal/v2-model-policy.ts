@@ -20,10 +20,11 @@ export function nativeAgentSampling(body: unknown) {
 }
 
 // A model may forbid sampling controls even when an agent declares them.
-// Honor the selected model's explicit capability declaration after role policy.
-export function applyDeclaredModelSampling(config: unknown, model: { providerID: string; id: string }, options: Record<string, unknown>) {
+// Honor the selected model's explicit capability declaration after role policy:
+// the installation's declaration, or the engine's catalog capability.
+export function applyDeclaredModelSampling(config: unknown, model: { providerID: string; id: string; capabilities?: { temperature?: boolean } }, options: Record<string, unknown>) {
   const provider = record(record(record(config).provider)[model.providerID])
-  if (record(record(provider.models)[model.id]).temperature !== false) return
+  if (record(record(provider.models)[model.id]).temperature !== false && model.capabilities?.temperature !== false) return
   delete options.temperature
   delete options.topP
   delete options.topK
