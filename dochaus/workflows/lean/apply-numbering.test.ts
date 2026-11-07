@@ -7,7 +7,7 @@ import { renderMarkdownToDocx } from "../../lib/render"
 import { runApply, splitNumberingIssues, writeProjectedNumbers } from "./apply-stage"
 import { changeReviewPrompt, projectedChangeParagraphs } from "./change-pipeline"
 import { readParagraphs, shownText, withoutListLabel, type ParagraphRow } from "./checks"
-import { writeLeanPlan } from "./plan"
+import { FIXED_PLAN, writeLeanPlan } from "./plan"
 import { paragraphRows } from "./stages"
 import { leanFile, readLeanJson, readLeanState, writeLeanBytes, writeLeanText } from "./state"
 import { cleanupMatters, matter } from "./test-support"
@@ -144,8 +144,11 @@ test("change review reads each amended paragraph's list number beside its text",
     { pid: at(rows, "Officers"), updated: "Officers. RESOLVED, that the officers are re-elected." },
   ])
   await writeProjectedNumbers(directory, "d1")
-  const changes = JSON.parse(/<reconciled_changes>\n([\s\S]*?)\n<\/reconciled_changes>/.exec(changeReviewPrompt(directory, "d1"))![1]!)
+  const prompt = changeReviewPrompt(directory, "d1")
+  const changes = JSON.parse(/<reconciled_changes>\n([\s\S]*?)\n<\/reconciled_changes>/.exec(prompt)![1]!)
   expect(changes.amendments).toEqual([expect.objectContaining({ updated: "Officers. RESOLVED, that the officers are re-elected.", list_label: "2." })])
+  // A finding that the document should not be prepared started repair rounds to the cap.
+  expect(prompt.split(FIXED_PLAN).length - 1).toBe(1)
 }, 60_000)
 
 const SECTIONS = "# Supply Agreement\n\n## 1. Supply\n\n1.1 The Supplier shall supply the Goods.\n\n## 2. Price\n\n2.1 The price is fixed.\n\n2.2 Payment is due on delivery.\n\n## 3. Term\n\n3.1 This runs one year.\n"

@@ -7,7 +7,7 @@ import { openItem } from "./quotes"
 import { runLean, stageInputSha } from "./runner"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, type StageSessionPort } from "./stages"
 import { keepAskedQuestions, readLeanState, readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
-import { writeLeanPlan } from "./plan"
+import { FIXED_PLAN, writeLeanPlan } from "./plan"
 import { confirmationQuestions, writeInstructionsFile } from "./instructions"
 import { AGENT, SOURCE, SOURCE_TEXT, cleanupMatters, matter, scriptedModel } from "./test-support"
 import { withWorkflowLimit } from "./model-concurrency-test-support"
@@ -333,4 +333,15 @@ test("advice reads the matter's dates, so a deadline option does not run from th
   expect(advisePrompt(directory, QUESTION)).not.toContain("<matter_dates>")
   writeLeanText(directory, "intake.json", JSON.stringify({ ready: true, dates: { document_date: { date: "2026-03-01", basis: "request", source_id: "request", quote: "dated 1 March 2026" }, operative_dates: [] } }))
   expect(advisePrompt(directory, QUESTION)).toContain("<matter_dates>\nDate the document 2026-03-01")
+})
+
+// An option to discard a planned document and prepare another was recommended,
+// adopted and asked again until the repair cap: nothing can carry it out once
+// the plan is saved.
+test("once the plan is saved, advice on any but a package-scope question keeps the planned documents", () => {
+  const directory = matter()
+  expect(advisePrompt(directory, QUESTION)).not.toContain(FIXED_PLAN)
+  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record the delivery terms", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
+  expect(advisePrompt(directory, { ...QUESTION, stage: "change-plan", document: "d1", kind: "instruction" })).toContain(FIXED_PLAN)
+  expect(advisePrompt(directory, { ...QUESTION, kind: "scope" })).not.toContain(FIXED_PLAN)
 })

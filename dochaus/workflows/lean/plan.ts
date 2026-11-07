@@ -93,6 +93,11 @@ export type LeanOutline = { documents: Omit<PlannedDocument, "id">[]; acting_for
 
 export const LEAN_PLAN_SCHEMA = "dochaus.lean.plan/2"
 export const FIRST_DOCUMENT: DocID = "d1"
+/** Once saved, the plan fixes which documents a draft prepares: a question,
+ * option or finding that adds, drops or swaps one is one nothing can carry
+ * out, and asking it again cannot settle it. The lawyer changes the plan only
+ * by stopping the draft (coverageScopeQuestion's context says how). */
+export const FIXED_PLAN = "Which documents this draft prepares is fixed by its saved document plan: no question, option or finding may add, drop or replace a planned document."
 export const NOT_STATED: ActingFor = { party: "", basis: "none" }
 const ACTING_FOR_BASES: ActingForBasis[] = ["stated", "matter", "inferred", "none"]
 
