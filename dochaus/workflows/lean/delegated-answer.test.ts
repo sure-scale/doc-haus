@@ -142,8 +142,9 @@ test("a delegated decision reaches every stage as Decide for me does, marked as 
   const { finalize: adoptedNotes, ...adoptedSteps } = adopted
   const { finalize: delegatedNotes, ...delegatedSteps } = delegated
   expect(delegatedSteps).toEqual(adoptedSteps)
-  // Every step reads the decision as delegated, not as the lawyer's own words.
-  for (const step of Object.keys(typedSteps)) expect([step, adoptedSteps[step] === typedSteps[step]]).toEqual([step, false])
+  // Every step from intake on reads the decision as delegated, not as the
+  // lawyer's own words; the discrepancy record, before intake, reads no answer.
+  for (const step of Object.keys(typedSteps)) expect([step, adoptedSteps[step] === typedSteps[step]]).toEqual([step, step === "discrepancy"])
   // The notes are also given the lawyer's own delegating words.
   expect(new Set([typedNotes, adoptedNotes, delegatedNotes]).size).toBe(3)
 })
@@ -279,7 +280,8 @@ test("a question delegated in the lawyer's own words runs through the queue as a
   expect(prompts.filter(prompt => prompt.agent === AGENT.answer)).toHaveLength(1)
   // Bound: every stage reads the decision as a delegated one, never the delegating words.
   const line = `- [${id}] Q: ${QUESTION}\n  A (${ADOPTED_ANSWER}): ${RECOMMENDED}`
-  for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT.spine, AGENT.draft, AGENT.review, AGENT["change-plan"], AGENT.changes, AGENT["package-review"]])
+  expect(prompts.some(prompt => prompt.agent === AGENT.discrepancy)).toBe(false)
+  for (const agent of [AGENT.intake, AGENT.research, AGENT.spine, AGENT.draft, AGENT.review, AGENT["change-plan"], AGENT.changes, AGENT["package-review"]])
     expect([agent, prompts.some(prompt => prompt.agent === agent && prompt.text.includes(line))]).toEqual([agent, true])
   for (const prompt of prompts.filter(prompt => prompt.agent !== AGENT.answer && prompt.agent !== AGENT.finalize))
     expect([prompt.agent, prompt.text.includes(DELEGATION)]).toEqual([prompt.agent, false])

@@ -9,7 +9,7 @@ import { comparisonBasis } from "./comparison"
 import { checkPackageReview, isLeftOpenPackageFinding, isWithheldDeliveryItem, readPackageReview, withholdUngroundedDelivery } from "./package-review"
 import { coverageItems, planCoverageCurrent } from "./package-coverage"
 import { placementItems, planPlacementCurrent, SPINE_ATOMS } from "./spine-placement"
-import { ACT_RECORD_ANSWERS, readActRecord } from "./act-record"
+import { readActRecord } from "./act-record"
 import { requestedFilesItems } from "./requested-files"
 import { draftedDefaultItems } from "./drafted-defaults"
 import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
@@ -62,7 +62,6 @@ import {
   writeLeanBytes,
   writeLeanText,
   WORKING_DRAFT,
-  type AnswerReader,
   type LeanModel,
   type OpenItem,
   type Question,
@@ -247,12 +246,11 @@ const DISCLOSED_STAGES: StageID[] = ["spine", "research", "research-review", "ch
  * gives its id to another document, drafts it again. Answers, updates,
  * research, an earlier document's final text and accepted explanations, and
  * whom the lawyer acts for reach a drafted document as amendments through its
- * review and change-plan keys. Answers are inputs of every other step; the
- * preparation steps (instructions to spine) read only run-level answers (no
- * document's and no package-scope question's), and a document's own steps
- * read, of the questions its steps asked, those asked at or before each of
- * them (askedAtOrBefore), so an answer to a later step's question re-runs
- * that step onward and not the reviews before it; the gate reads its own. The
+ * review and change-plan keys. Answers are inputs of every other step, each
+ * reading the questions asked at or before it (askedAtOrBefore): a run-level
+ * answer re-runs the step that asked it and the steps after it, never one
+ * before it, and a document's answer that document's steps from the asking
+ * one onward, never the preparation steps; the gate reads its own. The
  * changes step's own previous output
  * and open questions are shown to it but are not inputs, so its output never
  * changes its own key. The planned documents' ids, titles and purposes are
@@ -283,7 +281,7 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     ...(!["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine"].includes(step) ? ["discrepancy.json", "spine.json", SPINE_ATOMS].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
     ...(clarifications.length && ["checklist-check", "package-review", "gate"].includes(step) ? [{ name: "inspection-clarifications", bytes: JSON.stringify(clarifications) }] : []),
     { name: "source-content", bytes: matterSourceBasis(directory) },
-    ...(!inputs.some(part => part.name === "answers") ? [{ name: "answers", bytes: answeredQuestionsText(directory, { documents: askedAtOrBefore(directory, step) }) }] : []),
+    ...(!inputs.some(part => part.name === "answers") ? [{ name: "answers", bytes: answeredQuestionsText(directory, { asked: askedAtOrBefore(directory, step) }) }] : []),
     ...(updates && !inputs.some(part => part.name === "updated-notes.md") ? [{ name: "updated-notes.md", bytes: updates }] : [])]
 }
 
@@ -306,35 +304,35 @@ function keyedQuestions(directory: string, gate = false) {
 
 function baseStageInputs(directory: string, step: StepID, options: { repairContext?: false; researchGaps?: false }): { name: string; bytes: string | Uint8Array }[] {
   const file = (name: string) => ({ name, bytes: existsSync(leanFile(directory, name)) ? readFileSync(leanFile(directory, name)) : "" })
-  const answers = { name: "answers", bytes: answeredQuestionsText(directory, { documents: askedAtOrBefore(directory, step) }) }
+  const answers = { name: "answers", bytes: answeredQuestionsText(directory, { asked: askedAtOrBefore(directory, step) }) }
   const sources = { name: "sources", bytes: matterSourceIDs(directory).join("\n") }
   const planned = readLeanPlan(directory)?.documents.map(row => row.id) ?? []
   if (step === "checklist-check") return [{ name: "checklist-refinement-contract", bytes: "source-unit-refinement-1" }, { name: "checklist-refinement-selection", bytes: JSON.stringify(checklistRefinementSelections(directory)) }, file("checklist/refinements.json"), file("request.md"), file("plan.json"), file("checklist/extraction.json"), file("drafting-notes.docx"), file("research-context.txt"), ...planned.flatMap(id => [file(`${id}/body.docx`), file(`${id}/body-applied.docx`), file(`${id}/redline.docx`), file(`${id}/review-independent.json`), file(`${id}/changes.json`), file(`${id}/apply.json`)])]
-  // What an instruction settled is not an input of the list it was settled by.
-  if (step === "instructions") return outlineInputs(directory, { settled: false })
+  // The list reads no answer (none is asked before it): a new direction arrives as a later instruction.
+  if (step === "instructions") return outlineInputs(directory, step, { settled: false })
   // The gaps job reads the instruction list to find what the sources leave
   // silent; the differences and verify jobs' own keys leave it out (discrepancy.ts).
-  if (step === "discrepancy") return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), { name: "discrepancy-contract", bytes: DISCREPANCY_CONTRACT }]
+  if (step === "discrepancy") return [...outlineInputs(directory, step), file(INSTRUCTIONS_FILE), { name: "discrepancy-contract", bytes: DISCREPANCY_CONTRACT }]
   if (step === "intake") {
     // Only with a client recorded on the matter, so a matter without one keeps its key.
     const client = matterClient(directory)
     // Intake reads the discrepancy record without the gaps a source supplies (intakeDiscrepancy).
-    return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), { name: "discrepancy.json", bytes: intakeDiscrepancy(directory) }, ...(client ? [{ name: "matter-client", bytes: client }] : [])]
+    return [...outlineInputs(directory, step), file(INSTRUCTIONS_FILE), { name: "discrepancy.json", bytes: intakeDiscrepancy(directory) }, ...(client ? [{ name: "matter-client", bytes: client }] : [])]
   }
   // The act record reads the instructions, the sources and the approved research; it runs before the spine and reads no discrepancy record.
-  if (step === "acts") return [...outlineInputs(directory, ACT_RECORD_ANSWERS), file("intake.json"), file("research.json"), file("research-review.json"), { name: "act-record-contract", bytes: ACT_RECORD_CONTRACT }]
+  if (step === "acts") return [...outlineInputs(directory, step), file("intake.json"), file("research.json"), file("research-review.json"), { name: "act-record-contract", bytes: ACT_RECORD_CONTRACT }]
   // The spine is shown the act record when it plans documents, parties and signatories; its entries are then split into atoms.
-  if (step === "spine") return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), file("discrepancy.json"), file("intake.json"), file("research.json"), file("research-review.json"), file("acts.json"), { name: "spine-contract", bytes: SPINE_CONTRACT }]
+  if (step === "spine") return [...outlineInputs(directory, step), file(INSTRUCTIONS_FILE), file("discrepancy.json"), file("intake.json"), file("research.json"), file("research-review.json"), file("acts.json"), { name: "spine-contract", bytes: SPINE_CONTRACT }]
   // Applied deletion evidence includes the original paragraph's exact wording.
   if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(reviewStages(directory, id).includes("review-playbook") ? [file(`${id}/review-playbook.json`)] : [])]),
     packageReviewOpenItems(directory)]
   if (step === "research") {
     // Without a gap round the key is unchanged.
     const gaps = options.researchGaps === false ? undefined : currentResearchGaps(directory, researchBasis(directory))
-    return [...outlineInputs(directory), file("intake.json"), { name: "research-repairs", bytes: JSON.stringify(readRepairRound(directory)?.items.filter(item => item.ref.repair_target === "research") ?? []) },
+    return [...outlineInputs(directory, step), file("intake.json"), { name: "research-repairs", bytes: JSON.stringify(readRepairRound(directory)?.items.filter(item => item.ref.repair_target === "research") ?? []) },
       ...(gaps?.length ? [{ name: "research-gaps", bytes: JSON.stringify(gaps) }] : [])]
   }
-  if (step === "research-review") return [...outlineInputs(directory), file("intake.json"), file("research.json"), file("research-context.txt")]
+  if (step === "research-review") return [...outlineInputs(directory, step), file("intake.json"), file("research.json"), file("research-context.txt")]
   if (step === "finalize")
     return [file("repairs.json"),file("request.md"), file("plan.json"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/changes.json`), file(`${id}/apply.json`), file(`${id}/redline.docx`)]),
       { name: "open-items", bytes: JSON.stringify(disclosableItems(directory)) },
@@ -399,7 +397,7 @@ function exhaustedReview(directory: string, step: StepID) {
  * sources. A saved plan records it as its basis, which marks an outlined plan
  * and ties the requested-files record to it; once saved, the plan is followed. */
 export function outlineBasis(directory: string) {
-  return hashStageInputs(`${FIRST_DOCUMENT}.draft`, LEAN_PROMPT_VERSION, [{ name: "outline-contract", bytes: OUTLINE_CONTRACT }, ...outlineInputs(directory), ...["research.json", "research-review.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" }))])
+  return hashStageInputs(`${FIRST_DOCUMENT}.draft`, LEAN_PROMPT_VERSION, [{ name: "outline-contract", bytes: OUTLINE_CONTRACT }, ...outlineInputs(directory, `${FIRST_DOCUMENT}.draft`), ...["research.json", "research-review.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" }))])
 }
 
 /** The drafting preferences every lean stage reads (the legal plugin renders
@@ -413,12 +411,13 @@ export function stageDraftingPreferences(directory: string) {
   return areas ? `${preferences}\n${areas}` : preferences
 }
 
-function outlineInputs(directory: string, options: AnswerReader & { settled?: false } = {}) {
+/** The inputs the preparation steps share, with the answers `step` reads (askedAtOrBefore). */
+function outlineInputs(directory: string, step: StepID, options: { settled?: false } = {}) {
   const request = leanFile(directory, "request.md")
   const updates = readLeanText(directory, "updated-notes.md")
   // Only with a working draft, so a run without one keeps its keys.
   const working = readLeanText(directory, WORKING_DRAFT)
-  return [{ name: "drafting-preferences", bytes: stageDraftingPreferences(directory) }, { name: "source-content", bytes: matterSourceBasis(directory) }, { name: "answers", bytes: answeredQuestionsText(directory, { documents: false, ...options }) }, ...(updates ? [{ name: "updated-notes.md", bytes: updates }] : []), { name: "request.md", bytes: existsSync(request) ? readFileSync(request) : "" }, { name: "sources", bytes: matterSourceIDs(directory).join("\n") }, ...(working ? [{ name: WORKING_DRAFT, bytes: working }] : [])]
+  return [{ name: "drafting-preferences", bytes: stageDraftingPreferences(directory) }, { name: "source-content", bytes: matterSourceBasis(directory) }, { name: "answers", bytes: answeredQuestionsText(directory, { asked: askedAtOrBefore(directory, step), ...options }) }, ...(updates ? [{ name: "updated-notes.md", bytes: updates }] : []), { name: "request.md", bytes: existsSync(request) ? readFileSync(request) : "" }, { name: "sources", bytes: matterSourceIDs(directory).join("\n") }, ...(working ? [{ name: WORKING_DRAFT, bytes: working }] : [])]
 }
 
 /** Checks a model reply and, when it passes, writes the step's output files. */

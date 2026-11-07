@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { checkConflicts, conflictQuestion, reconcilePrompt } from "./answer-reconcile"
 import { OutputLimitError } from "./native-stage-result"
-import { writeLeanPlan } from "./plan"
+import { askedAtOrBefore, writeLeanPlan } from "./plan"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
 import { LEAN_MAX_RETRIES } from "./stages"
@@ -242,8 +242,9 @@ test("a conflict between one document's answers is that document's question: ans
   const before = keys()
   answerQuestion(directory, asked!.id, { text: NO_REMEDY })
   const after = keys()
-  expect(answeredQuestionsText(directory, { documents: false })).toBe("")
-  expect(answeredQuestionsText(directory)).toContain(`[${asked!.id}] Q:`)
+  // No preparation step reads it; the document's steps do.
+  expect(answeredQuestionsText(directory, { asked: askedAtOrBefore(directory, "spine") })).toBe("")
+  expect(answeredQuestionsText(directory, { asked: askedAtOrBefore(directory, "d1.review") })).toContain(`[${asked!.id}] Q:`)
   expect([after.instructions, after.spine]).toEqual([before.instructions, before.spine])
   expect(after["d1.change-plan"]).not.toBe(before["d1.change-plan"])
 })

@@ -90,7 +90,7 @@ const PLACEMENT_SHAPE = 'Reply with the JSON object only: {"placements":[{"act":
 const READ_ONLY = "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply."
 
 /** The lawyer's instructions the coverage and act-record jobs read: the request, the later updates and the answers
- * `options` reads (the act record's: ACT_RECORD_ANSWERS). */
+ * `options` reads (the act record's: actRecordAnswers). */
 export function instructionSections(directory: string, options: AnswerReader = {}) {
   const updates = readLeanText(directory, "updated-notes.md")?.trim()
   const answers = answeredQuestionsText(directory, options)

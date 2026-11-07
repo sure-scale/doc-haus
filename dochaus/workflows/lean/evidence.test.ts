@@ -34,7 +34,9 @@ test("a quotation of the run's own record of a settled question points to the la
   const entry = { detail: "One document is wanted", evidence: [{ source_id: "request", quote: "Keep one combined document" }], limitations: [], material: false, status: "resolved", resolution: "The instruction settles it." }
   const [issue] = checkEvidence(directory, "discrepancy", { entries: [entry], gaps: [], limitations: [] })
   expect(issue).toContain(`Those words are the run's own record of question q-one, which an instruction settled; they are not the lawyer's words. The lawyer's words behind it are "${SOURCE_TEXT}" in "${SOURCE}".`)
-  expect(evidencePrompt(directory, "discrepancy")).toContain(`from their words "${SOURCE_TEXT}" in ${SOURCE}`)
+  // The spine reads intake's settled question; the discrepancy record, before intake, reads no answer.
+  expect(evidencePrompt(directory, "spine")).toContain(`from their words "${SOURCE_TEXT}" in ${SOURCE}`)
+  expect(evidencePrompt(directory, "discrepancy")).not.toContain("q-one")
 })
 
 // A gap is a point the request or instructions need that no source settles.
@@ -156,18 +158,21 @@ test("a verify job asks one gap against the source index, the lawyer's later ins
   expect(checkGapVerify(directory, { ...supplies, supplied: false, evidence: [GAP.requirement] }, GAP)).toEqual([])
   expect(checkGapVerify(directory, { supplied: "yes", evidence: [], limitations: [] }, GAP)).toEqual(['Return JSON {"supplied":true or false,"evidence":[{"source_id","quote"}],"limitations":[]}.'])
 
-  // The lawyer's later instructions and answers, in the gaps job's blocks, and
-  // their words quoted as "request"; an adopted recommendation is not the lawyer's.
+  // The lawyer's later instructions, in the gaps job's block, their words
+  // quoted as "request". The discrepancy record is made before any question
+  // is asked and reads no answer: an intake answer is not shown to it, and a
+  // gap that answer supplies reaches intake beside the answer. An adopted
+  // recommendation is not the lawyer's words.
   writeLeanText(directory, "updated-notes.md", "Keep the note to one page.")
   writeQuestions(directory, [
     { id: "q-law", stage: "intake", question: "Which law governs the note?", context: "", status: "answered", answer: "Singapore law governs the note." },
     { id: "q-venue", stage: "intake", question: "Which courts?", context: "", status: "answered", answer: "The Singapore courts.", answer_kind: "adopted" },
   ])
   const answered = gapVerifyPrompt(directory, GAP)
-  expect([...answered.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["gap", "user_updates", "answers", "sources", "question", "output_contract"])
+  expect([...answered.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["gap", "user_updates", "sources", "question", "output_contract"])
   expect(answered).toContain("<user_updates>\nLater instructions from the lawyer, in arrival order.")
   expect(answered).toContain("Keep the note to one page.\n</user_updates>")
-  expect(answered).toContain("- [q-law] Q: Which law governs the note?\n  A: Singapore law governs the note.")
+  expect(answered).not.toContain("Singapore law governs the note.")
   // Not the request, nor the rest of the matter.
   expect(answered).not.toContain("<request>")
   expect(answered).not.toContain("<instructions>")
@@ -197,10 +202,14 @@ test("later answers and same-name source revisions invalidate dependent work", (
   db.close()
   expect(stageInputSha(directory, "discrepancy")).not.toBe(before)
   const review = stageInputSha(directory, "d1.review")
+  const discrepancy = stageInputSha(directory, "discrepancy")
   writeQuestions(directory, [{ id: "q-choice", stage: "intake", question: "Which delivery term applies?", context: "Versions conflict", status: "open" }])
   answerQuestion(directory, "q-choice", { text: "Use the later expressly agreed term." })
   expect(stageInputSha(directory, "d1.review")).not.toBe(review)
-  expect(evidencePrompt(directory, "discrepancy")).toContain("Use the later expressly agreed term.")
+  // Intake's answer reaches intake and the steps after it, not the discrepancy record before it.
+  expect(stageInputSha(directory, "discrepancy")).toBe(discrepancy)
+  expect(evidencePrompt(directory, "discrepancy")).not.toContain("Use the later expressly agreed term.")
+  expect(evidencePrompt(directory, "spine")).toContain("Use the later expressly agreed term.")
   const spine = stageInputSha(directory, "spine")
   writeLeanText(directory, "updated-notes.md", "Use the earlier term instead.")
   expect(stageInputSha(directory, "spine")).not.toBe(spine)
@@ -370,7 +379,8 @@ test("the spine cites the recommendation adopted for a delegated question under 
   expect(prompt).toContain(`Evidence source_id values: ${JSON.stringify(["request", SOURCE, "adopted:q-venue"])}`)
   expect(prompt).toContain('An "adopted:" source_id, as listed, holds the recommendation adopted for a question the lawyer delegated')
   expect(checkEvidence(directory, "spine", reply("adopted:q-venue", "The Singapore courts."))).toEqual([])
-  expect(checkEvidence(directory, "discrepancy", { ...reply("adopted:q-venue", "The Singapore courts."), entries: [{ ...reply("adopted:q-venue", "The Singapore courts.").entries[0], material: false, status: "benign", resolution: "Noted." }], gaps: [] })).toEqual([])
+  // The discrepancy record, made before intake asks, reads no adopted recommendation.
+  expect(checkEvidence(directory, "discrepancy", { ...reply("adopted:q-venue", "The Singapore courts."), entries: [{ ...reply("adopted:q-venue", "The Singapore courts.").entries[0], material: false, status: "benign", resolution: "Noted." }], gaps: [] })[0]).toContain('Unknown evidence source_id "adopted:q-venue"')
   expect(checkEvidence(directory, "spine", reply("request", "Singapore law governs."))).toEqual([])
   expect(checkEvidence(directory, "spine", reply("adopted:q-venue", "The English courts."))[0]).toContain('as from "adopted:q-venue", but those words are not in the recommendation adopted for that question.')
   // The adopted words under "request" are pointed to their own name; a question id to the name its words are quoted under.

@@ -64,7 +64,9 @@ test("an adopted recommendation runs through the queue as the lawyer's answer, r
   const line = `- [${late.id}] Q: ${QUESTION}\n  A (${ADOPTED_ANSWER}): ${CHOSEN}`
   expect(answeredQuestionsText(directory)).toContain(line)
   const prompts = model.prompts.slice(start)
-  for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.acts, AGENT.spine, AGENT.draft,
+  // The discrepancy record, made before intake asked, is not run again.
+  expect(prompts.some(prompt => prompt.agent === AGENT.discrepancy)).toBe(false)
+  for (const agent of [AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.acts, AGENT.spine, AGENT.draft,
     AGENT.review, AGENT["review-independent"], AGENT["review-wording"], AGENT["review-client-disadvantage"], AGENT["change-plan"], AGENT.changes, AGENT["package-review"]])
     expect([agent, prompts.some(prompt => prompt.agent === agent && prompt.text.includes(line))]).toEqual([agent, true])
   const notes = prompts.find(prompt => prompt.agent === AGENT.finalize)!.text

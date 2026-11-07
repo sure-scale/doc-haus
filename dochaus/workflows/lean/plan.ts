@@ -111,18 +111,24 @@ export function leanSteps(directory: string): StepID[] {
   return ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", ...ids.flatMap(id => DOC_STAGES.filter(stage => stage !== "review-playbook" || reviewStages(directory, id).includes(stage)).map((stage): StepID => `${id}.${stage}`)), "finalize", "checklist-check", "package-review", "gate"]
 }
 
-/** Which answered questions `step` reads of those a document's step asked (one
- * with `document`): its own and those of the steps before it in walk order,
- * never a later step's, which that step applies and an earlier step's output
- * cannot depend on. A question with no document (a run-level one, the gate's
- * package-scope one) or whose asking step is not in the walk is read by every
- * step. The step's prompt and its key read the same, so neither changes for
- * an answer the step never reads. */
+/** Which answered questions `step` reads: those the step asked itself and
+ * those asked by the steps before it in walk order, never a later step's,
+ * which that step applies and an earlier step's output cannot depend on. A
+ * run-level question (one with no document) is asked by its stage's step; a
+ * document's question by that document's step of its stage, or, when its
+ * stage is no document step (the gate's package-scope question, a conflict
+ * question on one document's answers), by the first document step, so no
+ * preparation step reads it. A question whose asking step is not in the walk
+ * is read by every step. The step's prompt and its key read the same, so
+ * neither changes for an answer the step never reads. */
 export function askedAtOrBefore(directory: string, step: StepID) {
   const order = leanSteps(directory), at = order.indexOf(step)
+  const documents = order.findIndex(row => stepDocument(row) !== null)
   return (question: Question) => {
-    if (!question.document || at < 0) return true
-    const asker = order.indexOf(`${question.document}.${question.stage}` as StepID)
+    if (at < 0) return true
+    const asker = question.document ? Math.max(order.indexOf(`${question.document}.${question.stage}` as StepID), documents)
+      : question.stage === "gate" ? documents
+      : order.indexOf(question.stage as StepID)
     return asker < 0 || asker <= at
   }
 }

@@ -246,22 +246,21 @@ test("a difference whose verify reply never passes its check stays as it is, and
   expect(resumed.attempts).toEqual({ differences: 0, gaps: 0, differs: 1, verify: 0 })
 })
 
-test("a gap the lawyer's own answer supplies, quoted as request, is recorded under supplied and kept from intake", async () => {
+test("the record reads the lawyer's later instructions and no answer: a gap an intake answer supplies stays recorded, and intake reads it beside the answer", async () => {
   const directory = matter()
   writeLeanText(directory, "updated-notes.md", "Keep the note to one page.")
   writeQuestions(directory, [{ id: "q-law", stage: "intake", question: "Which law governs the note?", context: "", status: "answered", answer: "Singapore law governs the note." }])
-  const answered = { supplied: true, evidence: [{ source_id: "request", quote: "Singapore law governs the note." }], limitations: [] }
-  const scripted = jobs({ verify: () => answered })
+  const scripted = jobs()
   const { result, model } = await run(directory, scripted.reply)
   expect(result.status).toBe("done")
-  // Passed at once: the answer's words are found under "request".
   expect(scripted.attempts).toEqual({ differences: 1, gaps: 1, differs: 1, verify: 1 })
   const verify = model.prompts.find(prompt => kind(prompt.text) === "verify")!.text
-  expect([...verify.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["gap", "user_updates", "answers", "sources", "question", "output_contract"])
-  expect(verify).toContain("A: Singapore law governs the note.")
+  expect([...verify.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["gap", "user_updates", "sources", "question", "output_contract"])
+  expect(verify).not.toContain("Singapore law governs the note.")
   expect(verify).toContain("Keep the note to one page.")
-  expect(readLeanJson(directory, "discrepancy.json")).toEqual({ entries: [ENTRY], gaps: [], supplied: [{ ...GAP, evidence: answered.evidence }], limitations: ["Differences limit.", "Gaps limit."] })
+  expect(readLeanJson(directory, "discrepancy.json")).toEqual({ entries: [ENTRY], gaps: [GAP], limitations: ["Differences limit.", "Gaps limit."] })
   expect(evidenceOutputValid(directory, "discrepancy")).toBe(true)
-  expect(readLeanEvents(directory).find(event => event.event === "discrepancy_record")?.counts).toMatchObject({ gaps: 1, gaps_supplied: 1, gaps_unchecked: 0 })
-  expect(researchPrompt(directory, "intake", researchBasis(directory))).not.toContain(GAP.detail)
+  const intake = researchPrompt(directory, "intake", researchBasis(directory))
+  expect(intake).toContain(GAP.detail)
+  expect(intake).toContain("A: Singapore law governs the note.")
 })

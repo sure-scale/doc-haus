@@ -510,28 +510,20 @@ export function instructionSettledQuestions(directory: string) {
 }
 
 /** Which answered questions a reader reads: every one by default; with
- * `documents: false`, only run-level ones, which no step asked as its own
- * (stepQuestion); with a predicate, also the steps' questions it accepts.
- * `except` leaves out the questions it accepts, whichever they are. */
-export type AnswerReader = { documents?: false | ((question: Question) => boolean); except?: (question: Question) => boolean }
+ * `asked`, only the questions it accepts, which for a step are those asked at
+ * or before it (plan.ts askedAtOrBefore). `except` leaves out the questions
+ * it accepts, whichever they are. */
+export type AnswerReader = { asked?: (question: Question) => boolean; except?: (question: Question) => boolean }
 
-/** A question a step asked as its own, not a run-level one: a document's, or
- * a package-scope question (kind "scope"), which the plan step or the gate
- * asks and reads itself and which carries no document. */
-const stepQuestion = (question: Question) => Boolean(question.document) || question.kind === "scope"
-
-export const readsQuestion = ({ documents, except }: AnswerReader) => (question: Question) =>
-  !except?.(question) && (documents === undefined || !stepQuestion(question) || documents !== false && documents(question))
+export const readsQuestion = ({ asked, except }: AnswerReader) => (question: Question) =>
+  !except?.(question) && (asked?.(question) ?? true)
 
 /** Canonical text of every lawyer's answer, however given, then each
  * question settled by an instruction, marked as such; the "answers" input of
- * every drafting stage and its key. The instructions step reads the lawyer's
- * answers alone (`settled: false`): what an instruction settled is not a new
- * instruction. The preparation steps ask no document's or package-scope
- * questions and read only run-level answers (`documents: false`), so
- * answering a document's question, or the gate's package-scope one, keeps
- * them done; that answer reaches the document through its own steps, those
- * asked at or before each (askedAtOrBefore). */
+ * every stage and its key, each reading the questions asked at or before it
+ * (askedAtOrBefore), so an answer keeps every earlier step done and reaches
+ * the asking step and those after it. `settled: false` leaves out what an
+ * instruction settled, which is not a new instruction. */
 export function answeredQuestionsText(directory: string, options: AnswerReader & { settled?: false } = {}) {
   return [...answeredQuestions(directory), ...options.settled === false ? [] : instructionSettledQuestions(directory)]
     .filter(readsQuestion(options))
