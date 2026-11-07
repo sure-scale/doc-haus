@@ -88,7 +88,7 @@ const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
  * change to how it words or keys a question, or how it composes the delivered
  * notes, re-runs a done gate, so an open question it asked takes the current
  * form and the delivered notes are written again. */
-const GATE_CONTRACT = "checklist-open-delivery-6"
+const GATE_CONTRACT = "checklist-open-delivery-7-fact-markers"
 /** Keys the act-record step: a change to its jobs, prompts or checks re-runs it. */
 const ACT_RECORD_CONTRACT = "act-record-7"
 /** Keys the spine step and each saved split of one of its entries: a change to
@@ -674,13 +674,13 @@ export type ChecklistUnresolvedFinding = ChecklistOpenFinding & { class: Checkli
 /** A refined parent whose reconciled coverage is unsatisfied or indeterminate,
  * with its coverage issues and each issue's kind. */
 export type ChecklistUnresolvedParent = { parent_id: string; item: ChecklistItem; status: "unsatisfied" | "indeterminate"; issues: string[]; issue_kinds: ChecklistCoverageIssue[] }
-export type ChecklistOutputState = { valid: boolean; open: boolean; openFindings: ChecklistOpenFinding[]; unresolved: ChecklistUnresolvedFinding[]; unresolvedParents: ChecklistUnresolvedParent[] }
+export type ChecklistOutputState = { valid: boolean; open: boolean; openFindings: ChecklistOpenFinding[]; unresolved: ChecklistUnresolvedFinding[]; unresolvedParents: ChecklistUnresolvedParent[]; currentFindings?: ChecklistOpenFinding[] }
 
 /** Validate authoritative effective IDs and recompute coverage; archived originals
  * remain evidence, not the current delivery verdict. Output that is incomplete,
  * failed or stale is invalid. A completed adverse finding, or adverse parent
  * coverage, is valid output returned for disclosure, never as a pass. */
-export function checklistOutputState(directory: string): ChecklistOutputState {
+export function checklistOutputState(directory: string, { includeCurrentFindings = false } = {}): ChecklistOutputState {
   const invalid: ChecklistOutputState = { valid: false, open: false, openFindings: [], unresolved: [], unresolvedParents: [] }
   try {
     const extraction = z.object({
@@ -727,6 +727,7 @@ export function checklistOutputState(directory: string): ChecklistOutputState {
     // as recorded; a parent's coverage is open only through such a child finding.
     const openFindings = current.filter(row => !unresolved.some(adverse => adverse.item_id === row.item_id) &&
       (row.finding.status === "open" || row.finding.open_decisions?.length))
-    return { valid: true, open: openFindings.length > 0 || coverage.some(row => row.status === "open"), openFindings, unresolved, unresolvedParents }
+    return { valid: true, open: openFindings.length > 0 || coverage.some(row => row.status === "open"), openFindings, unresolved, unresolvedParents,
+      ...(includeCurrentFindings ? { currentFindings: current } : {}) }
   } catch { return invalid }
 }

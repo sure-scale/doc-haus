@@ -1,7 +1,7 @@
 import type { ChecklistFindingClass } from "./checklist-classify"
 import type { ChecklistFinding, ChecklistItem } from "./checklist-contract"
 import { CHECKLIST_COVERAGE_ISSUES, type ChecklistCoverageIssue } from "./checklist-flow"
-import { checklistOutputState, type ChecklistOpenFinding, type ChecklistUnresolvedFinding, type ChecklistUnresolvedParent } from "./stages"
+import { checklistOutputState, LEAN_PROMPT_VERSION, stageInputs, type ChecklistOpenFinding, type ChecklistUnresolvedFinding, type ChecklistUnresolvedParent } from "./stages"
 import { changeReviewItem, readChangeReview, reviewWithheldFinding, deferredFindingItems } from "./change-pipeline"
 import { renderNotesCoverage } from "../../lib/notes-coverage-report"
 import { hasOpenItemMarker } from "../../lib/open-items"
@@ -21,8 +21,8 @@ import { placementItems } from "./spine-placement"
 import { draftedDefaultItems } from "./drafted-defaults"
 import { combinedFileItems } from "./deliverables"
 import { withheldChecklistRepair } from "./requests"
-import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, undecidedQuestion, type LeanState, type OpenItem, type Question } from "./state"
-import { currentFactDisposition } from "./fact-answers"
+import { isReviewStage, currentOpenItems, hashStageInputs, readLeanText, readLeanJson, readLeanState, readQuestions, undecidedQuestion, type LeanState, type OpenItem, type Question } from "./state"
+import { canonicalProvisionalFactChoice, currentFactDisposition, PROVISIONAL_FACT_MARKER_DUTY } from "./fact-answers"
 
 // Final legal gate: the only place an open item blocks delivery. It covers every
 // planned document; each item is settled against the final body of the
@@ -98,6 +98,7 @@ type SettleContext = {
   documents: Map<DocID, FinalBody>
   notes: string
   questions: Map<string, Question>
+  markerFindings?: ChecklistOpenFinding[]
 }
 
 export function finalGate(directory: string): GateResult {
@@ -151,7 +152,11 @@ export function finalGate(directory: string): GateResult {
   const leanState = readLeanState(directory)
   const checklistState = leanState?.stages["checklist-check"]
   const checked = checklistState && (checklistState.status !== "pending" || readLeanJson(directory, "checklist/extraction.json") !== undefined)
-    ? checklistOutputState(directory) : undefined
+    ? checklistOutputState(directory, { includeCurrentFindings: true }) : undefined
+  // Reuse the existing focused semantic checks only when the entire current
+  // checklist succeeded on unchanged inputs. No separate marker receipt exists.
+  if (checked?.valid && checklistState?.status === "done" && checklistState.input_sha === hashStageInputs("checklist-check", LEAN_PROMPT_VERSION, stageInputs(directory, "checklist-check")))
+    context.markerFindings = checked.currentFindings
   const conflict = checked?.valid ? checklistConflictQuestion(conflictItemPairs(checked.unresolved)) : undefined
   // Adverse checklist findings lead: the lawyer's list of items may be capped.
   const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row, conflict?.id)),
@@ -840,7 +845,7 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
       const visible = pid ? marked(final, pid) : unscoped
         ? [...context.documents.values()].some(body => inBody(body, item.ref.placeholder, undefined))
         : inBody(final, item.ref.placeholder, undefined)
-      return visible ? disclosed("the fact remains unknown; marked in the body and named in the drafting notes")
+      return visible || !pid && checklistFactMarked(context, question, document, unscoped) ? disclosed("the fact remains unknown; marked in the body and named in the drafting notes")
         : open("the fact remains unknown; its body placeholder is missing")
     }
     if (question && undecidedQuestion(question)) {
@@ -874,6 +879,32 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
   return open(named
     ? "named in the notes, but its paragraph has no visible open-item marker"
     : "neither marked in its paragraph nor named in the drafting notes")
+}
+
+/** A descriptive marker need not copy the whole original question. Its
+ * equivalence must already have been checked as this selected option's exact
+ * marker duty, not merely another duty sharing the same answer or some marker
+ * elsewhere. The fact and preparation-only permission remain unchanged. */
+function checklistFactMarked(context: SettleContext, question: Question, document: DocID, unscoped: boolean) {
+  if (!canonicalProvisionalFactChoice(question) || !context.markerFindings) return false
+  const markerSource = (ref: { document: string; locator: string; quote: string }) => ref.document === "request" &&
+    ref.locator === `.dochaus/lean/questions.json answer (${question.id})` && normalize(ref.quote) === normalize(PROVISIONAL_FACT_MARKER_DUTY)
+  // The extraction isolates this one duty; the checker may quote the full
+  // human answer as its supporting context, but never an unrelated answer.
+  const answerSource = (ref: { document: string; locator: string; quote: string }) => ref.document === "request" &&
+    ref.locator === `.dochaus/lean/questions.json answer (${question.id})` && normalize(question.answer!).includes(normalize(ref.quote)) &&
+    normalize(ref.quote).includes(normalize(PROVISIONAL_FACT_MARKER_DUTY))
+  const duties = context.markerFindings.filter(({ item }) => item.source_refs.some(markerSource))
+  return duties.length > 0 && duties.every(({ item, finding }) => {
+    const target = checklistDocument(context.directory, item)
+    if (item.basis !== "directive" || item.target.treatment !== "open_issue" || !target || !unscoped && target !== document ||
+      finding.status !== "satisfied" || finding.open_decisions?.length || finding.action_status !== undefined && finding.action_status !== "fulfilled" ||
+      !finding.source_refs.some(answerSource)) return false
+    const final = context.documents.get(target)
+    const body = finding.evidence.filter(row => row.kind === "body")
+    return !!final && body.length > 0 && body.every(row => plannedID(context.directory, row.document) === target &&
+      paragraphShowsOpenItem(row.text) && final.rows.some(paragraph => normalize(paragraph.text) === normalize(row.text)))
+  })
 }
 
 function inBody(final: FinalBody, text: string | undefined, pid: string | undefined) {

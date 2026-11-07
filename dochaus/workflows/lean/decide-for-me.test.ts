@@ -258,7 +258,7 @@ const INPUTS: Record<string, string> = {
   "finalize": "c128a42322f88dcdd33a2a6a5500bcaa2d816afe51ab237b7df77f9893d9f127",
   "checklist-check": "8276d20b72411334f034803a1d707e5b5bad9438c545a40143af0fb4efd27560",
   "package-review": "33324cc0d053a0e8393aa94207d8febf58596647ef9c94c8166131e668dceaca",
-  "gate": "289ace864d7b925fbe7914aade1c650cb560e1a1a58abb186e3184bffc6eeb6b",
+  "gate": "faff4cf1cb3e89b70403b322dbab69843a7c720003ec46a82a2538608c2f2e2c",
 }
 
 test("the answers text and every step's inputs are pinned, however the lawyer gave the answer", () => {

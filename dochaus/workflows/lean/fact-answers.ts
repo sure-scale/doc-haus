@@ -7,6 +7,17 @@ export { factDisposition } from "./state"
 // while unchanged Continue requests keep the new contract's bounded result.
 const FACT_CONTEXT_VERSION = 2
 
+/** The selected product option keeps a missing fact open. Its separate marker
+ * duty can be checked against the body without turning it into a fact answer. */
+export const PROVISIONAL_FACT_MARKER_DUTY = "show a placeholder wherever it is needed"
+export const PROVISIONAL_FACT_DRAFT_OPTION = `Continue with a marked review draft using the documents provided; leave this fact unverified, ${PROVISIONAL_FACT_MARKER_DUTY}, and disclose the outstanding check in the drafting notes. This does not authorise sending, signing or serving the document.`
+
+export function canonicalProvisionalFactChoice(question: Question) {
+  const option = questionOptions(question).find(row => row.id === question.option_id)
+  return question.answer_kind === "option" && option?.fact_action === "provisional" &&
+    option.text === PROVISIONAL_FACT_DRAFT_OPTION && question.answer === option.text
+}
+
 /** A waiting decision is reconsidered only when its relevant inputs change. */
 export function factContext(directory: string) {
   return shortHash(JSON.stringify([FACT_CONTEXT_VERSION, readLeanText(directory, "request.md") ?? "", readLeanText(directory, "updated-notes.md") ?? "", matterSourceBasis(directory)]), 40)
@@ -49,7 +60,7 @@ export function laterFactInstructions(directory: string, question: Question) {
 export function withFactOptions(question: Question): Question {
   if (question.kind !== "fact" || question.stage !== "intake" || question.options || question.advice?.options?.length) return question
   return { ...question, options: [
-    { id: "o1", text: "Continue with a marked review draft using the documents provided; leave this fact unverified, show a placeholder wherever it is needed, and disclose the outstanding check in the drafting notes. This does not authorise sending, signing or serving the document.", fact_action: "provisional" },
+    { id: "o1", text: PROVISIONAL_FACT_DRAFT_OPTION, fact_action: "provisional" },
     { id: "o2", text: "Wait for me to supply or confirm this fact before drafting further. Keep the evidence request open; do not ask again for a status update.", fact_action: "wait" },
   ] }
 }
