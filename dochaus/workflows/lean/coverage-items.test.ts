@@ -16,7 +16,7 @@ import {
   currentOpenItems, readLeanJson, readLeanState, readOpenItems, readQuestions, replaceStageOpenItems, updateLeanStage, writeLeanText, writeOpenItems, writeQuestions,
   type OpenItem,
 } from "./state"
-import { AGENT, NO_FINDINGS, SOURCE, actRecordOf, cleanupMatters, draftingNotes, matter, noChanges, placementJob, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, SOURCE, actRecordOf, cleanupMatters, draftingNotes, labelledPart, matter, noChanges, placementJob, scriptedModel, type Reply } from "./test-support"
 
 // Plan coverage left open after the plan step reaches the lawyer: the open
 // items are derived from the current coverage.json, never stored, so the
@@ -502,7 +502,7 @@ describe("plan coverage open items", () => {
 // coverage stays uncovered, and the finalize and gate steps carry the items.
 const ONE = "Acting for: not stated\n# Release letter\nExecuted by: Kestrel Works\n## Terms\nThe release."
 /** The outline keeps one document, revised or not; each part gets one plain paragraph. */
-const outliner: Reply = text => /^Draft part \d+ of \d+ of "/m.test(text) ? "The terms are recorded." : ONE
+const outliner: Reply = text => /^Draft part \d+ of \d+ of "/m.test(text) ? labelledPart(text, "The terms are recorded.") : ONE
 /** A whole run's replies, for one scripted model: the act record lists the act. */
 const replies = (): Record<string, Reply> => ({
   [AGENT.acts]: actRecordOf([act]),

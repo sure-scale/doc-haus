@@ -13,7 +13,7 @@ import {
 import { LEAN_MAX_RETRIES, disclosableItems } from "./stages"
 import { leanFile, readLeanState, readLeanText, writeLeanText } from "./state"
 import { writeLeanPlan } from "./plan"
-import { AGENT, cleanupMatters, matter, scriptedModel } from "./test-support"
+import { AGENT, cleanupMatters, labelledPart, matter, scriptedModel } from "./test-support"
 
 // Spine placement: for each drafting-spine entry, one focused job says whether
 // it binds some part's text or the package, and another, beside it, names the
@@ -47,7 +47,7 @@ const documents: PlannedDocument[] = [{ id: "d1", title: "Supply note", purpose:
 
 /** The draft agent: `first` answers the outline, `revised` any revision request, each part one paragraph. */
 const outliner = (first: string, revised = first) => (text: string) =>
-  /^Draft part \d+ of \d+ of "/m.test(text) ? "The terms are recorded." : text.startsWith(REVISE) ? revised : first
+  /^Draft part \d+ of \d+ of "/m.test(text) ? labelledPart(text, "The terms are recorded.") : text.startsWith(REVISE) ? revised : first
 
 /** A part's reverse job, as the placement agent answers it: the part and every entry, without quotes. */
 const reverseJob = (text: string) => text.includes("<part>\n")

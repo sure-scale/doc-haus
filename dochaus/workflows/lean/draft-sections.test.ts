@@ -17,6 +17,7 @@ import { stageInputSha } from "./runner"
 import { acceptStageReply, LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, outlineBasis, type StageSessionPort } from "./stages"
 import { initLeanState, leanFile, updateLeanStage, writeLeanState, writeLeanText, type LeanState } from "./state"
 import { rowsBody } from "./template-coverage"
+import { labelledPart } from "./test-support"
 
 // Real plan parser, section checks, assembly, renderer and pointer writer.
 // Only the draft agent's replies are scripted.
@@ -141,9 +142,9 @@ describe("sectioned draft stage", () => {
     const outline = "Acting for: not stated\n# Notice letter\nForm: letter\n## Opening instructions\nDisplay heading: none\nOpening text.\n## Terms &amp; drafting\nDisplay heading: **Terms**\nTerms text.\n## Closing instructions\nDisplay heading: none\nClosing text."
     const model = scripted((text, index) => {
       if (index === 0) return outline
-      if (text.includes("part 1 of 3")) return "Opening instructions\n\nRepeated text."
-      if (text.includes("part 2 of 3")) return "Repeated text.\n\n| Item | Value |\n| --- | --- |\n| Notice | Written |"
-      return "Repeated text.\n\nWe await your reply."
+      if (text.includes("part 1 of 3")) return labelledPart(text, "Opening instructions\n\nRepeated text.")
+      if (text.includes("part 2 of 3")) return labelledPart(text, "Repeated text.\n\n| Item | Value |\n| --- | --- |\n| Notice | Written |")
+      return labelledPart(text, "Repeated text.\n\nWe await your reply.")
     })
     const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
     expect(result.status).toBe("done")
@@ -326,7 +327,7 @@ describe("sectioned draft stage", () => {
     writeLeanText(directory, "spine.json", JSON.stringify({ entries: [{ detail: "Source-backed notice requirement" }], limitations: [] }))
     const model = scripted((text, index) => {
       if (index === 0) return OUTLINE
-      return text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given in writing." : "We await your reply."
+      return labelledPart(text, text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given in writing." : "We await your reply.")
     })
     const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
     expect(result.status).toBe("done")
@@ -345,7 +346,7 @@ describe("sectioned draft stage", () => {
     const { directory, state } = matter()
     const model = scripted((text, index) => {
       if (index === 0) return OUTLINE
-      if (text.includes("part 1 of 3")) return "The parties signed the terms.\n\nThey remain in force."
+      if (text.includes("part 1 of 3")) return labelledPart(text, "The parties signed the terms.\n\nThey remain in force.")
       // The second part first strays into the third; the retry is clean.
       if (text.includes("part 2 of 3")) return "## Notice\n\nNotice must be given in writing.\n\n## Next steps\n\nWe will wait."
       if (text.startsWith("Your reply did not pass the draft checks:")) return "## Notice\n\n\"Notice must be given in writing\" [source: terms.docx]."
@@ -476,7 +477,7 @@ describe("sectioned draft stage", () => {
     const model = scripted((text, index) => {
       if (index === 0) return OUTLINE.replace("Acting for: not stated\n", "")
       if (index === 1) return OUTLINE.replace("not stated", "the sender")
-      return text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given." : "We will wait."
+      return labelledPart(text, text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given." : "We will wait.")
     })
     const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
     expect(result.status).toBe("done")
@@ -489,7 +490,7 @@ describe("sectioned draft stage", () => {
   test("an outline that never states the line is accepted on the last attempt as not stated", async () => {
     const { directory, state } = matter()
     const model = scripted((text, index) => index < 4 ? OUTLINE.replace("Acting for: not stated\n", "")
-      : text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given." : "We will wait.")
+      : labelledPart(text, text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given." : "We will wait."))
     const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
     expect(result.status).toBe("done")
     expect(readLeanPlan(directory)?.acting_for).toEqual(NOT_STATED)
@@ -498,7 +499,12 @@ describe("sectioned draft stage", () => {
 
   test("a part reply is checked against its outlined heading", () => {
     const outline = { title: "T", parts: [{ heading: "One", scope: "" }, { heading: "Two", scope: "" }] }
-    expect(checkSection("Text only.", outline, 0)).toEqual({ issues: [], value: "## One\n\nText only." })
+    // The part begins at its label: a sentence before it is left out, and a reply without it is retried.
+    expect(checkSection("Text only.", outline, 0)).toEqual({ issues: ['Begin the part with the line "## One".'] })
+    expect(checkSection("Now the first part, consistent with the outline:\n\n## One\n\nText.", outline, 0)).toEqual({ issues: [], value: "## One\n\nText." })
+    expect(checkSection("Now the first part:\n\n## One\n\nText.\n\n## Two\n\nMore text.", outline, 0).issues).toEqual([expect.stringContaining('also contains other parts ("Two")')])
+    // A heading before the label is not narration: nothing is dropped, and the reply is retried.
+    expect(checkSection("## Two\n\nText.\n\n## One\n\nMore text.", outline, 0).issues).toEqual(['Begin the part with the line "## One".', expect.stringContaining('"## " heading in its body')])
     expect(checkSection("## One\n\nText.\n\n## **Two**\n\nMore text.", outline, 0).issues).toEqual([expect.stringContaining('use "### " or lower headings inside it')])
     expect(checkSection("## One\n\nText.\n\n## T&#119;o\n\nMore text.", outline, 0).issues).toEqual([expect.stringContaining('use "### " or lower headings inside it')])
     expect(checkSection("## One\n\nText.\n\n## One\n\nMore text.", outline, 0).issues).toEqual([expect.stringContaining('use "### " or lower headings inside it')])
@@ -510,7 +516,7 @@ describe("sectioned draft stage", () => {
   test("the part that opens the document is retried for an opening line repeating the printed title, naming the line; a later part, or a mention, keeps it", () => {
     const deed = { title: "Rent Deposit Deed", form: "other" as const, parts: [{ heading: "One", scope: "", display_heading: "" }, { heading: "Two", scope: "", display_heading: "" }] }
     const issue = (line: string) => `The part opens with the document title "Rent Deposit Deed". The title is printed once at the top of the document: keep the "## " line first and remove the line "${line}" after it.`
-    for (const [reply, line] of [["## One\n\n**RENT DEPOSIT DEED**\n\nThis deed is made on [date].", "**RENT DEPOSIT DEED**"], ["**Rent deposit deed.**\n\nText.", "**Rent deposit deed.**"], ["## One\n\n### _Rent  Deposit_ `Deed`\n\nText.", "### _Rent  Deposit_ `Deed`"]])
+    for (const [reply, line] of [["## One\n\n**RENT DEPOSIT DEED**\n\nThis deed is made on [date].", "**RENT DEPOSIT DEED**"], ["## One\n\n**Rent deposit deed.**\n\nText.", "**Rent deposit deed.**"], ["## One\n\n### _Rent  Deposit_ `Deed`\n\nText.", "### _Rent  Deposit_ `Deed`"]])
       expect(checkSection(reply!, deed, 0).issues).toEqual([issue(line!)])
     expect(checkSection("## One\n\n**RENT DEPOSIT DEED**", deed, 0).issues).toEqual([issue("**RENT DEPOSIT DEED**"), 'The part "One" has no text under its heading.'])
     expect(checkSection("## One\n\nThis Rent Deposit Deed is made on [date].", deed, 0)).toEqual({ issues: [], value: "## One\n\nThis Rent Deposit Deed is made on [date]." })
@@ -631,7 +637,7 @@ describe("a planned document's form", () => {
   })
 
   test("a missing Form line is retried in the outline session; an outline that never gives one is saved without a form, its labels unheaded", async () => {
-    const part = (text: string) => text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given." : "We will wait."
+    const part = (text: string) => labelledPart(text, text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given." : "We will wait.")
     const formless = OUTLINE.replace("Form: letter\nHeadings: shown\n", "")
     for (const [given, form] of [[1, "letter"], [4, undefined]] as const) {
       const { directory, state } = matter()
@@ -655,10 +661,10 @@ describe("a planned document's form", () => {
       const { directory, state } = matter()
       const model = scripted((text, index) => {
         if (index === 0) return ["Acting for: not stated", "# Notice letter", `Form: ${form}`, ...labels.flatMap(label => [`## ${label}`, "What it covers."])].join("\n")
-        if (text.includes("part 1 of 3")) return "We write about the terms."
-        // A part may begin with its label line, which the check requires as written.
+        if (text.includes("part 1 of 3")) return labelledPart(text, "We write about the terms.")
+        // A part begins with its label line, which the check requires as written.
         if (text.includes("part 2 of 3")) return `## ${labels[1]}\n\n"Notice must be given in writing" [source: terms.docx].`
-        return "We await your reply."
+        return labelledPart(text, "We await your reply.")
       })
       const result = await withFirm({}, () => runDraftStage(directory, dated(directory, state), { sessions: model.sessions }, () => {}, "d1", () => {}))
       expect(result.status).toBe("done")
@@ -686,7 +692,7 @@ describe("a planned document's form", () => {
   test("an advice letter carries the firm's advice legend and the draft line from its first page, which has no page number", async () => {
     const { directory, state } = matter()
     const outline = "Acting for: not stated\n# Advice on the notice\nForm: advice letter\n## Advice\nThe advice."
-    const model = scripted((_, index) => index === 0 ? outline : "We advise that notice be given in writing.")
+    const model = scripted((text, index) => index === 0 ? outline : labelledPart(text, "We advise that notice be given in writing."))
     const firm = { firm: "Doe Partners LLP", adviceLegend: "Privileged and confidential", agreementLegend: "Subject to contract" }
     expect((await withFirm(firm, () => runDraftStage(directory, dated(directory, state), { sessions: model.sessions }, () => {}, "d1", () => {}))).status).toBe("done")
     const parts = unzipSync(new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx"))))
@@ -1037,7 +1043,7 @@ describe("a document's furniture lines", () => {
     for (const [given, requested] of [[1, ["Without prejudice save as to costs"]], [4, []]] as const) {
       const { directory, state } = matter()
       writeLeanText(directory, "request.md", REQUEST)
-      const model = scripted((text, index) => text.includes("Draft part") ? part : reply(index < given ? "Strictly private" : "Without prejudice save as to costs"))
+      const model = scripted((text, index) => text.includes("Draft part") ? labelledPart(text, part) : reply(index < given ? "Strictly private" : "Without prejudice save as to costs"))
       const result = await withFirm({ adviceLegend: "Privileged and confidential" }, () => runDraftStage(directory, dated(directory, state), { sessions: model.sessions }, () => {}, "d1", () => {}))
       expect(result.status).toBe("done")
       expect(model.prompts.filter(prompt => prompt.text.includes(UNGROUNDED.replace("Notice letter", "Advice on the notice")))).toHaveLength(given === 1 ? 1 : LEAN_MAX_RETRIES)

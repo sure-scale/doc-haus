@@ -11,7 +11,7 @@ import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES } from "./stages"
 import { leanFile, readLeanJson, readLeanText, readOpenItems, readQuestions, writeLeanText, writeOpenItems } from "./state"
-import { AGENT, NO_FINDINGS, actRecordJob, actRecordOf, cleanupMatters, draftingNotes, listedActs, matter, noChanges, registering, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, actRecordJob, actRecordOf, cleanupMatters, draftingNotes, labelledPart, listedActs, matter, noChanges, registering, scriptedModel, type Reply } from "./test-support"
 
 // Plan coverage through the whole run (runLean): the outline's placement job,
 // its revision requests to the outline session, and what the later steps
@@ -61,12 +61,12 @@ const coverageOf = (...acts: Instructed[]): Record<string, Reply> => ({
 
 /** The outline agent: `first` answers the outline prompt, `revised` any
  * revision request, and each part gets one plain paragraph, or `part`'s. */
-const outliner = (first: string, revised = first, part: Reply = () => "The terms are recorded."): Reply => (text, index) =>
+const outliner = (first: string, revised = first, part: Reply = text => labelledPart(text, "The terms are recorded.")): Reply => (text, index) =>
   /^Draft part \d+ of \d+ of "/m.test(text) ? part(text, index) : text.startsWith(REVISE) ? revised : first
 
 /** Parts whose resolution leaves its meeting date to be inserted: a draft item of d1's own. */
 const MEETING = "[insert meeting date]"
-const dated: Reply = text => /^Draft part \d+ of \d+ of "Committee resolution"/m.test(text) ? `The approval is given on ${MEETING}.` : "The terms are recorded."
+const dated: Reply = text => labelledPart(text, /^Draft part \d+ of \d+ of "Committee resolution"/m.test(text) ? `The approval is given on ${MEETING}.` : "The terms are recorded.")
 const draftItems = (directory: string, document: string) => readOpenItems(directory).filter(item => item.stage === "draft" && item.ref.document === document)
 
 /** A whole run whose act record lists `acts` (an empty list is a record that

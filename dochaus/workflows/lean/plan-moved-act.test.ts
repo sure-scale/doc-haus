@@ -4,7 +4,7 @@ import { NO_NEW_DOCUMENT, readLeanCoverage, type CoverageAct } from "./package-c
 import { leanSteps, readLeanPlan } from "./plan"
 import { runLean } from "./runner"
 import { readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
-import { AGENT, NO_FINDINGS, actRecordOf, cleanupMatters, draftingNotes, listedActs, matter, noChanges, scriptedModel } from "./test-support"
+import { AGENT, NO_FINDINGS, actRecordOf, cleanupMatters, draftingNotes, labelledPart, listedActs, matter, noChanges, scriptedModel } from "./test-support"
 
 // An answer that moves an instructed act to a separate document keeps that act
 // in the package: the act record lists it, blind to the plan, and the placement
@@ -45,7 +45,7 @@ const placement = (text: string) => {
 
 const PART = /^Draft part \d+ of \d+ of "([^"]*)"/m
 /** The outline agent: the release letter alone, the separate document on revision, and one plain paragraph per part. */
-const outliner = (text: string) => PART.test(text) ? "The terms are recorded." : text.startsWith(REVISE) ? SEPARATE : ONE
+const outliner = (text: string) => PART.test(text) ? labelledPart(text, "The terms are recorded.") : text.startsWith(REVISE) ? SEPARATE : ONE
 
 describe("an act an answer moves to a separate document", () => {
   test("listed with no planned document and no excluded_by, it sends the plan back for that document, which the run plans and drafts", async () => {

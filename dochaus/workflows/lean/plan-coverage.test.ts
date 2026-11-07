@@ -8,7 +8,7 @@ import { readLeanPlan, writeLeanPlan } from "./plan"
 import { LEAN_MAX_RETRIES, disclosableItems, outlineBasis } from "./stages"
 import { PACKAGE_SCOPE_QUESTION } from "./package-scope"
 import { leanFile, readLeanState, readQuestions, updateLeanStage, writeLeanText, writeQuestions, type LeanStageState } from "./state"
-import { AGENT, cleanupMatters, matter, placementJob, scriptedModel } from "./test-support"
+import { AGENT, cleanupMatters, labelledPart, matter, placementJob, scriptedModel } from "./test-support"
 
 // The outline step's coverage check: the run's act record (acts.json) lists the
 // instructed acts blind to the plan; a placement job in a session of its own
@@ -36,7 +36,7 @@ const ACTS = JSON.stringify({ acts: [act] })
 /** The outline agent: `first` answers the outline prompt, `revised` any
  * revision request, and each part gets one plain paragraph. */
 const outliner = (first: string, revised = first) => (text: string) =>
-  /^Draft part \d+ of \d+ of "/m.test(text) ? "The terms are recorded." : text.startsWith(REVISE) ? revised : first
+  /^Draft part \d+ of \d+ of "/m.test(text) ? labelledPart(text, "The terms are recorded.") : text.startsWith(REVISE) ? revised : first
 
 type RecordedAct = { act: string; source: string; quote: string; parties: string[] }
 
