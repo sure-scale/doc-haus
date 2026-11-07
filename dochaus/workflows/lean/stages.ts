@@ -80,7 +80,7 @@ export const LEAN_PROMPT_VERSION = "lean-32-change-contracts"
 const OUTLINE_CONTRACT = "outline-one-pass-reverse-24"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
-const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-focused-sections-5"
+const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-checked-sections-6"
 /** Keys finalize only when the notes are a requested memo (the plan has a
  * memo name), so runs without one keep their finalize key. */
 const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
@@ -124,6 +124,8 @@ export const LEAN_STAGE_AGENTS = {
   "change-review": "lean-change-review",
   changes: "lean-changes",
   finalize: "lean-drafting-notes",
+  // One tool-denied verification job per proposed notes section, before prose is accepted and its references attached.
+  notesCheck: "lean-notes-check",
   // A job of the outline, not a stage: it places each act the act record lists in the planned document that carries it.
   coverage: "lean-coverage",
   // A job of the outline, not a stage: one per spine entry, it says whether the entry binds some part's text or the package.

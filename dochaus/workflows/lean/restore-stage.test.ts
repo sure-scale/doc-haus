@@ -140,7 +140,7 @@ test("restoring keeps a question whose answer is still queued, and the next run 
   // answer does not re-key it. The preparation steps read only run-level
   // answers and the accepted draft is kept.
   // The applied change amends a part, which the apply step's reader check reads again.
-  expect(resume.agents().filter(agent => agent !== LEAN_STAGE_AGENTS.finalize)).toEqual([LEAN_STAGE_AGENTS.answer, "lean-checklist-extract", LEAN_STAGE_AGENTS["review-wording"], LEAN_STAGE_AGENTS["review-client-disadvantage"], LEAN_STAGE_AGENTS["review-independent"], LEAN_STAGE_AGENTS["change-plan"], LEAN_STAGE_AGENTS.changes, LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS.reader, LEAN_STAGE_AGENTS["package-review"]])
+  expect(resume.agents().filter(agent => agent !== LEAN_STAGE_AGENTS.finalize && agent !== LEAN_STAGE_AGENTS.notesCheck)).toEqual([LEAN_STAGE_AGENTS.answer, "lean-checklist-extract", LEAN_STAGE_AGENTS["review-wording"], LEAN_STAGE_AGENTS["review-client-disadvantage"], LEAN_STAGE_AGENTS["review-independent"], LEAN_STAGE_AGENTS["change-plan"], LEAN_STAGE_AGENTS.changes, LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS.reader, LEAN_STAGE_AGENTS["package-review"]])
   expect(resume.count(LEAN_STAGE_AGENTS.finalize)).toBe(focusedNotesInputs(directory).length)
   expect(readLeanJson(directory, `requests/done/${request.id}.json`)).toMatchObject({ kind: "answer", outcome: { status: "answered" } })
   expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: question.id, status: "answered", answer: "No remedy." })])

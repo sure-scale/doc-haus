@@ -284,8 +284,11 @@ test("a question delegated in the lawyer's own words runs through the queue as a
   expect(prompts.some(prompt => prompt.agent === AGENT.discrepancy)).toBe(false)
   for (const agent of [AGENT.intake, AGENT.research, AGENT.spine, AGENT.draft, AGENT.review, AGENT["change-plan"], AGENT.changes, AGENT["package-review"]])
     expect([agent, prompts.some(prompt => prompt.agent === agent && prompt.text.includes(line))]).toEqual([agent, true])
-  for (const prompt of prompts.filter(prompt => prompt.agent !== AGENT.answer && prompt.agent !== AGENT.finalize))
+  for (const prompt of prompts.filter(prompt => prompt.agent !== AGENT.answer && prompt.agent !== AGENT.finalize && prompt.agent !== AGENT.notesCheck))
     expect([prompt.agent, prompt.text.includes(DELEGATION)]).toEqual([prompt.agent, false])
+  // The independent notes check reads the section's assigned explanation,
+  // including the original delegation it must describe faithfully.
+  expect(prompts.some(prompt => prompt.agent === AGENT.notesCheck && prompt.text.includes(DELEGATION) && prompt.text.includes("<assigned_writer_packet>"))).toBe(true)
   // Disclosed: the notes are given the decision with its attribution, reason and evidence, and list it.
   const notesPrompt = prompts.find(prompt => prompt.agent === AGENT.finalize && prompt.text.includes("<section_kind>\ndelegated\n"))!.text
   expect(notesPrompt).toContain(`<decision>\nDelegated by the lawyer, in their words: "${DELEGATION}"\nDecision taken under the delegated judgment: ${RECOMMENDED}\nReason: ${RATIONALE}`)

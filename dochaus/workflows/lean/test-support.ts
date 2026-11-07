@@ -68,6 +68,7 @@ export function scriptedModel(replies: Record<string, Reply>) {
         [AGENT.level]: () => JSON.stringify({ level: "text" }),
         // Every drafted part speaks to its reader.
         [AGENT.reader]: () => JSON.stringify({ hits: [] }),
+        [AGENT.notesCheck]: () => JSON.stringify({ status: "pass", reason: "The synthetic section substantively addresses its assigned point." }),
         [AGENT.placement]: prompt => JSON.stringify(prompt.includes("<part>\n") ? { entries: [] } : { parts: [] }),
         // The plan rejects every listed review finding: the scripted changes
         // stage amends from the findings it is shown, whatever the plan says.

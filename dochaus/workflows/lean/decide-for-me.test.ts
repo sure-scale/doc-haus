@@ -230,7 +230,8 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // digits (spine-atoms-7), and when a requirement began to record a working
 // direction by its effect on the document (spine-atoms-8).
 // Finalize was re-pinned when each open item began with the marker the notes
-// copy (lawyer-facing-notes-plain-refs-4).
+// copy (lawyer-facing-notes-plain-refs-4), and when focused prose sections
+// gained a separate substantive coverage check before caching their text.
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", `  A (${ADOPTED_ANSWER}): Singapore law.`)
 // A draft keys its outline contract and plan entry, never answers.
@@ -254,7 +255,7 @@ const INPUTS: Record<string, string> = {
   "d1.changes": "d30eb5ee0a14f6b80c046c34469197ec62e228c858f4c4348010af0a6e410beb",
   "d1.change-review": "3ce900d5fe48a19dbbc77a918877a1791f360120a7631e3c9a219addc9e98e96",
   "d1.apply": "56d08255bf3abd89af535d2ed8d9fab99e55eedaad6e2a14ce5bf2d0dbba69bb",
-  "finalize": "8b4eb5f3c3b3755ae37bb48d013e9925a398fec8b6465837d6ef32c014e0bddf",
+  "finalize": "c128a42322f88dcdd33a2a6a5500bcaa2d816afe51ab237b7df77f9893d9f127",
   "checklist-check": "8276d20b72411334f034803a1d707e5b5bad9438c545a40143af0fb4efd27560",
   "package-review": "33324cc0d053a0e8393aa94207d8febf58596647ef9c94c8166131e668dceaca",
   "gate": "289ace864d7b925fbe7914aade1c650cb560e1a1a58abb186e3184bffc6eeb6b",

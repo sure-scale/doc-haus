@@ -4,6 +4,7 @@ import { reviewDispositionText } from "./change-pipeline"
 import { comparisonDescription } from "./comparison"
 import { deliveryArtifactEvidence, requestedMemo } from "./deliverables"
 import { appendLeanEvent, leanElapsedMs } from "./events"
+import { checkFocusedNotesCoverage } from "./focused-notes-coverage"
 import { matterDatesBlock } from "./intake"
 import { readLeanPlan, type DocID } from "./plan"
 import { actingForBlock, delegatedLines, focusedNotesPrompt, tagged } from "./prompts"
@@ -17,7 +18,7 @@ import { answeredQuestionsText, delegatedQuestions, hashStageInputs, readLeanJso
 
 // Actual prose outputs are saved under their content keys. They are the
 // accepted sections themselves, not a second progress or coverage record.
-const NOTES_SECTIONS_CONTRACT = "focused-notes-sections-1"
+const NOTES_SECTIONS_CONTRACT = "focused-notes-sections-2-checked-explanation"
 const PASSAGE_CHARS = 4_000
 
 export type FocusedNotesInput = {
@@ -341,6 +342,20 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
         calls.attempts = Math.max(calls.attempts, attempt + 1)
         progress({ attempts: calls.attempts, calls: calls.count, feedback })
         appendLeanEvent(directory, { stage: "finalize", step: input.id, event: "checker", attempt, issues: feedback, wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
+        if (!feedback.length) {
+          let verifierCalls = 0
+          const coverage = await checkFocusedNotesCoverage(directory, state, deps, input, reply, patch => {
+            for (const id of patch.session_ids ?? []) if (!sessions.includes(id)) sessions.push(id)
+            if (patch.calls !== undefined) { calls.count += patch.calls - verifierCalls; verifierCalls = patch.calls }
+            calls.attempts = Math.max(calls.attempts, patch.attempts ?? 0)
+            progress({ ...patch, calls: calls.count, attempts: calls.attempts, session_id: sessions[0], session_ids: [...sessions] })
+          })
+          if (coverage.status === "failed") { failures.push(coverage.reason); return }
+          if (coverage.status === "rewrite") {
+            feedback = [`This prose does not substantively explain its assigned point: ${coverage.reason} Return the complete substantive section; earlier or interrupted text cannot supply missing content.`]
+            progress({ feedback })
+          }
+        }
         if (!feedback.length) {
           // Preserve only an answer to unchanged inputs. The walk re-keys if
           // instructions or evidence changed while any section was in flight.

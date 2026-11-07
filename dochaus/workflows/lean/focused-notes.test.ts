@@ -1,12 +1,15 @@
 import { afterEach, expect, test } from "bun:test"
+import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { delegatedDecisionsText, stagePrompt } from "./prompts"
 import { readLeanPlan, writeLeanPlan } from "./plan"
-import { readLeanState, readLeanText, writeLeanText, writeOpenItems, writeQuestions, type OpenItem, type Question } from "./state"
+import { leanFile, readLeanState, readLeanText, writeLeanText, writeOpenItems, writeQuestions, type OpenItem, type Question } from "./state"
 import { paragraphSha256 } from "../../lib/drafting-amendment"
 import { checkDraftingNotes } from "./checks"
 import { assembleFocusedNotes, checkFocusedNotesSection, focusedNotesInputs, runFocusedNotes } from "./focused-notes"
 import { LEAN_MAX_RETRIES, type LeanDeps, type StageSessionPort } from "./stages"
 import { cleanupMatters, matter, SOURCE } from "./test-support"
+import { nativeStageResult } from "./native-stage-result"
+import { NOTES_COVERAGE_AGENT } from "./focused-notes-coverage"
 
 afterEach(cleanupMatters)
 
@@ -50,20 +53,23 @@ function noteMatter(items: OpenItem[] = []) {
   return directory
 }
 
-function scriptedSections(answer: (input: { text: string; sessionID: string; initial: string; attempt: number }) => string | Promise<string>) {
+function scriptedSections(answer: (input: { text: string; sessionID: string; initial: string; attempt: number }) => string | Promise<string>,
+  coverage: (text: string, initial: string) => string = () => JSON.stringify({ status: "pass", reason: "The synthetic section substantively explains its assigned point." })) {
   const prompts: { text: string; sessionID: string; initial: string; attempt: number }[] = []
   const sessions: Parameters<StageSessionPort["createSession"]>[0][] = []
+  const verifications: string[] = []
   const first = new Map<string, string>()
   const port: StageSessionPort = {
     async createSession(input) { sessions.push(input); return `notes-${sessions.length}` },
     async prompt(input) {
       if (!first.has(input.sessionID)) first.set(input.sessionID, input.text)
+      if (input.agent === NOTES_COVERAGE_AGENT) { verifications.push(input.text); return coverage(input.text, first.get(input.sessionID)!) }
       const call = { text: input.text, sessionID: input.sessionID, initial: first.get(input.sessionID)!, attempt: prompts.filter(row => row.sessionID === input.sessionID).length }
       prompts.push(call)
       return answer(call)
     },
   }
-  return { deps: { sessions: port } as LeanDeps, prompts, sessions }
+  return { deps: { sessions: port } as LeanDeps, prompts, sessions, verifications }
 }
 
 test("code attaches each full input reference once while prose jobs receive no reference-copying task", () => {
@@ -108,8 +114,10 @@ test("an unsupported section retries alone and an unchanged resume reuses every 
   for (const session of new Set(model.prompts.filter(input => !input.initial.includes(OPEN_POINTS[1]!.detail)).map(input => input.sessionID)))
     expect(model.prompts.filter(input => input.sessionID === session)).toHaveLength(1)
   const acceptedCalls = model.prompts.length
+  const acceptedChecks = model.verifications.length
   expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
   expect(model.prompts).toHaveLength(acceptedCalls)
+  expect(model.verifications).toHaveLength(acceptedChecks)
   const notes = readLeanText(directory, "drafting-notes.md")!
   for (const item of OPEN_POINTS) expect(notes).toContain(`[ref: ${item.id}]`)
   expect(notes).not.toContain("Remove the archive label")
@@ -125,6 +133,7 @@ test("a section exhausting its retries preserves accepted neighbors for recovery
   const recovered = scriptedSections(() => "The seal design remains for the custodian to supply.")
   expect((await runFocusedNotes(directory, readLeanState(directory)!, recovered.deps, () => {})).status).toBe("done")
   expect(recovered.prompts).toHaveLength(1)
+  expect(recovered.verifications).toHaveLength(1)
   expect(recovered.prompts[0]!.text).toContain(OPEN_POINTS[1]!.detail)
 })
 
@@ -156,6 +165,7 @@ test("unscoped notes repairs replace the linked wrong section and preserve accep
     : "The note is drafted for the archive custodian, as instructed.")
   expect((await runFocusedNotes(directory, readLeanState(directory)!, corrected.deps, () => {})).status).toBe("done")
   expect(corrected.prompts).toHaveLength(2)
+  expect(corrected.verifications).toHaveLength(1)
   expect(corrected.prompts.filter(input => !input.initial.includes("separate repair-link job"))[0]!.text).toContain(`<required_repairs>\n- ${repair.detail}`)
   const notes = readLeanText(directory, "drafting-notes.md")!
   expect(notes).not.toContain(wrong)
@@ -214,4 +224,93 @@ test("changed acting-for instructions invalidate dependent cached notes without 
   const second = scriptedSections(() => "The note explains the instruction for the container keeper.")
   expect((await runFocusedNotes(directory, readLeanState(directory)!, second.deps, () => {})).status).toBe("done")
   expect(second.prompts.some(input => input.initial.includes("<section_kind>\npassage\n"))).toBe(true)
+})
+
+test("an interrupted native reply followed by continuation metatext must explain its section before caching or attaching a reference", async () => {
+  const directory = noteMatter(OPEN_POINTS)
+  const meta = "No further content is needed; the previous section was complete."
+  const discarded = "The interrupted draft discussed the record and its limitations. ".repeat(18)
+  const continued = nativeStageResult([
+    { info: { id: "notes-turn", role: "user", time: { created: 1 } }, parts: [{ type: "text", text: "Explain the assigned open point." }] },
+    { info: { id: "interrupted", role: "assistant", parentID: "notes-turn", agent: "lean-drafting-notes", time: { created: 2, completed: 3 }, error: { name: "ProviderError", data: { message: "Rate limited." } } }, parts: [{ type: "text", text: discarded }] },
+    { info: { id: "continued", role: "assistant", parentID: "notes-turn", agent: "lean-drafting-notes", time: { created: 4, completed: 5 } }, parts: [{ type: "text", text: meta }] },
+  ], "notes-turn", "lean-drafting-notes")
+  expect(continued).toBe(meta)
+  expect(continued).not.toContain(discarded)
+  const sessions: Parameters<StageSessionPort["createSession"]>[0][] = []
+  const prompts: { agent: string; sessionID: string; text: string; initial: string }[] = []
+  const initial = new Map<string, string>()
+  const port: StageSessionPort = {
+    async createSession(input) { sessions.push(input); return `continuation-${sessions.length}` },
+    async prompt(input) {
+      if (!initial.has(input.sessionID)) initial.set(input.sessionID, input.text)
+      const first = initial.get(input.sessionID)!
+      const attempt = prompts.filter(row => row.sessionID === input.sessionID).length
+      prompts.push({ agent: input.agent, sessionID: input.sessionID, text: input.text, initial: first })
+      if (input.agent === "lean-notes-check") return JSON.stringify(input.text.includes(meta)
+        ? { status: "rewrite", reason: "The prose comments on a previous response instead of explaining the unknown seal design and the custodian's action." }
+        : { status: "pass", reason: "The prose substantively explains the assigned point and its remaining action." })
+      if (first.includes(OPEN_POINTS[1]!.detail)) return !attempt ? continued : "The seal design remains unknown; the custodian must supply it before relying on the handover."
+      return first.includes(OPEN_POINTS[0]!.detail) ? "The label colour remains unknown; the custodian must supply it." : "The note preserves the instruction to keep the archive label on the container."
+    },
+  }
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, { sessions: port }, () => {})).status).toBe("done")
+  const target = prompts.filter(row => row.agent === "lean-drafting-notes" && row.initial.includes(OPEN_POINTS[1]!.detail))
+  expect(target).toHaveLength(2)
+  expect(target[1]!.text).toContain("complete")
+  const notes = readLeanText(directory, "drafting-notes.md")!
+  expect(notes).not.toContain(meta)
+  expect(notes).not.toContain(discarded)
+  expect(notes).toContain("The seal design remains unknown; the custodian must supply it before relying on the handover.")
+  expect(notes.split(`[ref: ${OPEN_POINTS[1]!.id}]`)).toHaveLength(2)
+  for (const session of new Set(prompts.filter(row => row.agent === "lean-drafting-notes" && !row.initial.includes(OPEN_POINTS[1]!.detail)).map(row => row.sessionID)))
+    expect(prompts.filter(row => row.sessionID === session)).toHaveLength(1)
+  const calls = prompts.length
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, { sessions: port }, () => {})).status).toBe("done")
+  expect(prompts).toHaveLength(calls)
+})
+
+function savedSections(directory: string) {
+  const folder = leanFile(directory, "notes-sections")
+  return existsSync(folder) ? readdirSync(folder).map(file => readFileSync(`${folder}/${file}`, "utf8")) : []
+}
+
+test("malformed explanation verdicts retry only the verifier, save no unchecked prose, and preserve checked neighbors", async () => {
+  const directory = noteMatter(OPEN_POINTS)
+  const targetProse = "The seal design remains unknown; the custodian must supply it before relying on the handover."
+  const broken = scriptedSections(input => input.initial.includes(OPEN_POINTS[1]!.detail) ? targetProse : "The note preserves the container label instruction.",
+    (_text, initial) => initial.includes(OPEN_POINTS[1]!.detail)
+      ? JSON.stringify({ status: ["pass"], reason: "The response appears complete." })
+      : JSON.stringify({ status: "pass", reason: "The section explains the assigned container instruction." }))
+  const result = await runFocusedNotes(directory, readLeanState(directory)!, broken.deps, () => {})
+  expect(result.status).toBe("failed")
+  if (result.status === "failed") expect(result.reason).toContain("supplied no valid verdict")
+  expect(broken.prompts.filter(input => input.initial.includes(OPEN_POINTS[1]!.detail))).toHaveLength(1)
+  expect(broken.verifications.filter(text => text.includes("Correct only this explanation-check reply's format"))).toHaveLength(LEAN_MAX_RETRIES)
+  expect(readLeanText(directory, "drafting-notes.md")).toBeUndefined()
+  expect(savedSections(directory).length).toBe(focusedNotesInputs(directory).length - 1)
+  expect(savedSections(directory).some(prose => prose.includes(targetProse))).toBe(false)
+
+  const recovered = scriptedSections(() => targetProse)
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, recovered.deps, () => {})).status).toBe("done")
+  expect(recovered.prompts).toHaveLength(1)
+  expect(recovered.verifications).toHaveLength(1)
+  expect(recovered.prompts[0]!.initial).toContain(OPEN_POINTS[1]!.detail)
+  expect(readLeanText(directory, "drafting-notes.md")).toContain(`${targetProse} [ref: ${OPEN_POINTS[1]!.id}]`)
+})
+
+test("a substantive negative verdict remains mandatory on the final bounded writer attempt", async () => {
+  const directory = noteMatter(OPEN_POINTS)
+  const irrelevant = "This response covers everything already discussed."
+  const model = scriptedSections(input => input.initial.includes(OPEN_POINTS[1]!.detail) ? irrelevant : "The note preserves the container label instruction.",
+    (_text, initial) => JSON.stringify(initial.includes(OPEN_POINTS[1]!.detail)
+      ? { status: "rewrite", reason: "The section never explains the missing seal design or the custodian's action." }
+      : { status: "pass", reason: "The section explains the assigned container instruction." }))
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("failed")
+  const target = model.prompts.filter(input => input.initial.includes(OPEN_POINTS[1]!.detail))
+  expect(target).toHaveLength(LEAN_MAX_RETRIES + 1)
+  expect(model.verifications.filter(text => text.includes(`<proposed_prose>\n${irrelevant}`))).toHaveLength(LEAN_MAX_RETRIES + 1)
+  expect(target.at(-1)!.text).toContain("Return the complete substantive section")
+  expect(readLeanText(directory, "drafting-notes.md")).toBeUndefined()
+  expect(savedSections(directory).some(prose => prose.includes(irrelevant))).toBe(false)
 })
