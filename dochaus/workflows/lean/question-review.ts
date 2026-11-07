@@ -39,7 +39,7 @@ export async function reviewProposedQuestion(directory: string, question: Questi
     let issues: string[] = []
     for (let index = 0; index <= LEAN_MAX_RETRIES; index += 1) {
       const reply = await context.sessions.prompt({ directory, sessionID, agent, text: index ? retryPrompt("advise", issues) : `${prompt}\n\n${preflight}` })
-      const checked = checkReview(directory, question, context, reply)
+      const checked = checkReview(directory, question, context, reply, index === LEAN_MAX_RETRIES)
       if (checked.review) return checked.review
       issues = checked.issues
     }
@@ -54,7 +54,7 @@ export async function reviewProposedQuestion(directory: string, question: Questi
 const SOURCE_FACT_SHAPE = '"source_fact" is only for a settled fact: {"kind":"fact","fact":"the factual finding","basis":[...]}. Otherwise return "recommendation" or "unavailable".'
 
 /** The review a reply gives `question`, or the issues for a retry. */
-function checkReview(directory: string, question: Question, context: QuestionReviewContext, reply: string): { issues: string[]; review?: QuestionReview } {
+function checkReview(directory: string, question: Question, context: QuestionReviewContext, reply: string, final: boolean): { issues: string[]; review?: QuestionReview } {
   const parsed = parseJsonObject(reply)
   if (!parsed.ok) return { issues: [`Reply with one JSON object. ${parsed.error}`] }
   if ("source_fact" in parsed.value) {
@@ -65,7 +65,7 @@ function checkReview(directory: string, question: Question, context: QuestionRev
     const basis = basisIssues(directory, row.basis, true, context.request, "source_fact.basis")
     return basis.issues.length ? { issues: basis.issues } : { issues: [], review: { source: { fact: row.fact.trim(), basis: basis.rows } } }
   }
-  const checked = checkAdvice(directory, question, reply, { requireRelevance: true, request: context.request })
+  const checked = checkAdvice(directory, question, reply, { requireRelevance: true, request: context.request, final })
   return checked.advice ? { issues: [], review: { advice: checked.advice, ...(checked.group ? { group: checked.group } : {}) } } : { issues: checked.issues }
 }
 

@@ -34,6 +34,22 @@ describe("advice checker", () => {
     } })
   })
 
+  test("option texts or a rationale naming an internal id are retried with how to say it, and kept in words on the last attempt", () => {
+    const directory = matter()
+    writeQuestions(directory, [{ id: "q-0a1b2c3d4e", stage: "intake", question: "Which delivery period applies?", context: "The period decides lateness.", status: "answered", kind: "judgment", answer: "Thirty days." }])
+    const reply = JSON.stringify({ options: [{ text: "Keep the answer to q-0a1b2c3d4e" }, OPTIONS[1]],
+      recommendation: { option: "Keep the answer to q-0a1b2c3d4e", rationale: "The answer to q-0a1b2c3d4e sets thirty days.", basis: BASIS } })
+    expect(checkAdvice(directory, QUESTION, reply)).toEqual({ issues: [
+      'options[0].text names the internal id "q-0a1b2c3d4e". The lawyer sees only words: name the question or answer by what it asked.',
+      'recommendation.rationale names the internal id "q-0a1b2c3d4e". The lawyer sees only words: name the question or answer by what it asked.',
+    ] })
+    const final = checkAdvice(directory, QUESTION, reply, { final: true })
+    expect(final.issues).toEqual([])
+    expect(JSON.stringify(final.advice)).not.toContain("q-0a1b2c3d4e")
+    expect(final.advice).toMatchObject({ recommendation: { option: "o1" } })
+    expect(final.advice && "recommendation" in final.advice ? final.advice.recommendation.rationale : "").toContain("Which delivery period applies")
+  })
+
   test("no supported option is kept as unavailable, with no options or with two to four", () => {
     expect(check(UNAVAILABLE)).toEqual({ issues: [], advice: UNAVAILABLE })
     expect(check({ options: OPTIONS, ...UNAVAILABLE }).advice).toEqual({ options: [{ id: "o1", text: OPTIONS[0]!.text }, { id: "o2", text: OPTIONS[1]!.text }], ...UNAVAILABLE })
