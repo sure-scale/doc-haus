@@ -75,6 +75,28 @@ test("independent groups prepare concurrently with focused context; full text is
   expect(readParagraphs(directory, "d1", "paragraphs-applied.json").map(row => row.text)).toContain(PAYMENT)
 }, 120_000)
 
+test("a preparation job returns amendments only for paragraphs that change, and a group with none still completes", async () => {
+  const directory = matter(), texts: string[] = []
+  const prepare = preparing()
+  const model = scriptedModel({ ...replies(),
+    [AGENT["change-prepare"]]: (prompt, index, sessionID) => {
+      if (prompt.includes("<group_goal_and_evidence>")) texts.push(prompt)
+      const value = JSON.parse(prepare(prompt, index, sessionID))
+      return JSON.stringify(value.amendments.some((row: { updated: string }) => row.updated === PAYMENT) ? { amendments: [], questions: [] } : value)
+    },
+    [AGENT.changes]: prompt => JSON.stringify({ amendments: [{ pid: pidOf(prompt, "The supplier shall deliver the goods."), updated: DELIVERY, reason: "States source delivery period.", sources: SUPPORT }], questions: [] }),
+  })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(texts).toHaveLength(2)
+  for (const text of texts) {
+    expect(text).toContain("Return an amendment only for a listed pid whose wording must change; omit the rest.")
+    expect(text).not.toContain("One explicit operation per initial pid")
+  }
+  const applied = readParagraphs(directory, "d1", "paragraphs-applied.json").map(row => row.text)
+  expect(applied).toContain(DELIVERY)
+  expect(applied).toContain("Payment timing remains to be agreed.")
+}, 120_000)
+
 test("canonical support and dependency admission reject only the mutated input", async () => {
   const directory = matter()
   expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
