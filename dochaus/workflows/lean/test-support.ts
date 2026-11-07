@@ -100,8 +100,15 @@ export function scriptedModel(replies: Record<string, Reply>) {
         [AGENT["research-review"]]: () => JSON.stringify({ approved: [], rejected: [], limitations: [], gaps: [] }),
         // Every asked question is advised; the fixture's advisor recommends nothing.
         [AGENT.advise]: () => JSON.stringify({ unavailable: { reason: "The scripted advisor recommends nothing." } }),
-        // Every answer in the lawyer's words is read as their own answer.
-        [AGENT.answer]: prompt => JSON.stringify({ class: "answered", fact_status: "supplied", fact_quote: /<reply>\n([\s\S]*?)\n<\/reply>/.exec(prompt)?.[1] ?? "" }),
+        // Typed replies are their own answers; refresh adds no evidence or permission.
+        [AGENT.answer]: prompt => {
+          if (prompt.includes('"drafting_permission"')) {
+            const prior = /"prior_status":"(provisional|wait)"/.exec(prompt)?.[1]
+            return JSON.stringify({ drafting_permission: prior ?? "none", reason: "The scripted review preserves the prior drafting instruction.", basis: [] })
+          }
+          if (prompt.includes('"evidence_status"')) return JSON.stringify({ evidence_status: "missing", reason: "The scripted check supplies no new evidence.", basis: [] })
+          return JSON.stringify({ class: "answered", fact_status: "supplied", fact_quote: /<reply>\n([\s\S]*?)\n<\/reply>/.exec(prompt)?.[1] ?? "" })
+        },
         // Every set of answers can be followed together.
         [AGENT.reconcile]: () => JSON.stringify({ conflicts: [] }),
       }

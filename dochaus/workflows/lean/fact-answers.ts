@@ -3,9 +3,13 @@ import { factDisposition, questionOptions, readLeanText, readQuestions, shortHas
 
 export { factDisposition } from "./state"
 
+// A changed refresh contract must reconsider holds cached by the earlier job,
+// while unchanged Continue requests keep the new contract's bounded result.
+const FACT_CONTEXT_VERSION = 2
+
 /** A waiting decision is reconsidered only when its relevant inputs change. */
 export function factContext(directory: string) {
-  return shortHash(JSON.stringify([readLeanText(directory, "request.md") ?? "", readLeanText(directory, "updated-notes.md") ?? "", matterSourceBasis(directory)]), 40)
+  return shortHash(JSON.stringify([FACT_CONTEXT_VERSION, readLeanText(directory, "request.md") ?? "", readLeanText(directory, "updated-notes.md") ?? "", matterSourceBasis(directory)]), 40)
 }
 
 /** Only source-derived resolutions need revalidation; the lawyer's original

@@ -118,8 +118,10 @@ for (const form of ["option", "text"] as const) test(`a queued later update can 
   // Both requests arrived while work was in flight; processing happens later.
   await new Promise(resolve => setTimeout(resolve, 5))
   const model = scriptedModel({ ...quiet,
-    [AGENT.answer]: prompt => prompt.includes("Reconsider ONE pending factual uncertainty")
-      ? JSON.stringify({ fact_status: "provisional", reason: "The later instruction permits a marked review draft.", basis: [{ source_id: "updated-notes", quote: permission }] })
+    [AGENT.answer]: prompt => prompt.includes('"drafting_permission"')
+      ? JSON.stringify({ drafting_permission: "provisional", reason: "The later instruction permits a marked review draft.", basis: [{ source_id: "updated-notes", quote: permission }] })
+      : prompt.includes('"evidence_status"')
+      ? JSON.stringify({ evidence_status: "missing", reason: "The location is still unknown.", basis: [] })
       : JSON.stringify({ class: "answered", fact_status: "wait", fact_quote: waiting }),
     [AGENT.draft]: drafter(`# Supply note\n\n## Delivery location\n\nDelivery location: [open item: ${question.question}].\n`),
   })

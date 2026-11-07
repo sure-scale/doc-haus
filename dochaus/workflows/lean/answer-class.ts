@@ -3,7 +3,7 @@ import { parallel } from "./checklist-flow"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { OutputLimitError } from "./native-stage-result"
 import { retryPrompt, tagged } from "./prompts"
-import { factContext, laterFactInstructions, missingFactEvidence, originalFactHold, sourceResolvedFact } from "./fact-answers"
+import { factContext, laterFactInstructions, missingFactEvidence, originalFactHold } from "./fact-answers"
 import { matterSourceIDs, quoteFound } from "./quotes"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, type LeanDeps } from "./stages"
 import { ANSWER_CLASSES, FACT_STATUSES, factDisposition, questionOptions, readLeanText, readQuestions, recordAnswerClasses, unclassifiedAnswer, writeQuestions, type AnswerClass, type FactStatus, type LeanState, type Question } from "./state"
@@ -37,7 +37,8 @@ export async function classifyAnswers(directory: string, state: LeanState, deps:
 export async function refreshFactAnswers(directory: string, state: LeanState, deps: LeanDeps) {
   const input = factContext(directory)
   const pending = readQuestions(directory).filter(question => question.stage === "intake" && question.kind === "fact" &&
-    question.status === "answered" && (["wait", "unknown", "provisional"].includes(factDisposition(question) ?? "") || sourceResolvedFact(question)))
+    question.status === "answered" && (["wait", "unknown", "provisional"].includes(factDisposition(question) ?? "") ||
+      factDisposition(question) === "supplied" && question.fact_resolution))
   const changes = new Map<string, { before: Question; status?: FactStatus; resolution?: Question["fact_resolution"]; clearResolution?: boolean }>()
   await parallel(pending, async question => {
     const missing = missingFactEvidence(directory, question)
@@ -58,22 +59,43 @@ export async function refreshFactAnswers(directory: string, state: LeanState, de
   }))
 }
 
-async function refreshFactAnswer(directory: string, state: LeanState, deps: LeanDeps, question: Question): Promise<{ status: FactStatus; resolution?: Question["fact_resolution"] } | undefined> {
+type FactBasis = { source_id: string; quote: string }[]
+type FactEvidence = { evidence_status: "supplied" | "missing"; reason: string; basis: FactBasis }
+type FactPermission = { drafting_permission: "provisional" | "wait" | "none"; reason: string; basis: FactBasis }
+
+async function refreshFactAnswer(directory: string, state: LeanState, deps: LeanDeps, question: Question): Promise<{ status: FactStatus; resolution?: Question["fact_resolution"]; clearResolution?: boolean } | undefined> {
+  // Missing evidence and permission to draft with it missing are separate
+  // questions. Neither job decides the other's answer.
+  const evidence = await readFactRefresh(directory, state, deps, question, "evidence", factEvidencePrompt(directory, question), reply => checkFactEvidence(directory, question, reply))
+  if (!evidence || deps.pause?.aborted) return
+  const permission = await readFactRefresh(directory, state, deps, question, "permission", factPermissionPrompt(directory, question, evidence), reply => checkFactPermission(directory, question, evidence, reply))
+  if (!permission) return
+  const status: FactStatus = permission.drafting_permission === "wait" ? "wait" : evidence.evidence_status === "supplied" ? "supplied"
+    : permission.drafting_permission === "provisional" ? "provisional" : "unknown"
+  // A supplied fact's source revalidation must never look for the original
+  // permission as if it were an indexed source. The original answer stays put.
+  const basis = status === "supplied" ? [...evidence.basis, ...permission.basis.filter(row => row.source_id !== "original-answer")] : permission.basis
+  const reason = status === "supplied" ? [evidence.reason, permission.reason].join(" ") : permission.reason
+  return { status, ...(basis.length ? { resolution: { reason, basis } } : status !== factDisposition(question) ? { clearResolution: true } : {}) }
+}
+
+async function readFactRefresh<T>(directory: string, state: LeanState, deps: LeanDeps, question: Question, job: "evidence" | "permission", prompt: string,
+  check: (reply: string) => { issues: string[]; value?: T }): Promise<T | undefined> {
   const agent = LEAN_STAGE_AGENTS.answer
-  const at = { stage: "intake" as const, step: `reconsider fact ${question.id}` }
+  const at = { stage: "intake" as const, step: `reconsider fact ${question.id}: ${job}` }
   try {
     const sessionID = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent,
-      title: "Check whether new instructions or evidence change this wait", model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
+      title: job === "evidence" ? "Check whether the requested fact is now supplied" : "Check the lawyer's permission to draft", model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
     let issues: string[] = []
     for (let index = 0; index <= LEAN_MAX_RETRIES; index += 1) {
       appendLeanEvent(directory, { ...at, event: index ? "retry" : "model_call", attempt: index, session_id: sessionID })
       const started = performance.now()
-      const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: index ? retryPrompt("answer", issues) : refreshFactPrompt(directory, question) })
+      const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: index ? retryPrompt("answer", issues) : prompt })
       const replied = performance.now()
-      const checked = checkFactRefresh(directory, question, reply)
+      const checked = check(reply)
       issues = checked.issues
       appendLeanEvent(directory, { ...at, event: "checker", attempt: index, issues, wait_ms: leanElapsedMs(started, replied), check_ms: leanElapsedMs(replied) })
-      if (checked.status) return { status: checked.status, ...(checked.resolution ? { resolution: checked.resolution } : {}) }
+      if (checked.value) return checked.value
     }
   } catch (error) {
     // Exhausted model output leaves the existing hold in force under these
@@ -82,47 +104,92 @@ async function refreshFactAnswer(directory: string, state: LeanState, deps: Lean
   }
 }
 
-function refreshFactPrompt(directory: string, question: Question) {
-  const data = (value: unknown) => JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e").replaceAll("&", "\\u0026")
+function factData(value: unknown) {
+  return JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e").replaceAll("&", "\\u0026")
+}
+
+function factQuestion(question: Question) {
+  return factData({ question: question.question, context: question.context, answer: question.answer, answer_kind: question.answer_kind,
+    selected_option: questionOptions(question).find(option => option.id === question.option_id), prior_status: factDisposition(question), prior_resolution: question.fact_resolution })
+}
+
+function factEvidencePrompt(directory: string, question: Question) {
   return [
-    "Reconsider ONE pending factual uncertainty against changed instructions or supplied evidence. Do not answer for the lawyer, invent evidence, or perform the outside task. Preserve the current treatment unless an actual later instruction changes it or supplied evidence satisfies its stated condition. Unrelated updates never cancel a wait or revoke already authorised provisional drafting. A request to obtain or check evidence is not proof it was obtained or checked.",
-    "Use targeted source lookup only for this question, preserving qualifications and contrary evidence. supplied means the exact missing fact is now supplied; it is not independent verification. provisional requires the lawyer's explicit permission to continue with uncertainty marked. Evidence cannot create permission to proceed with a fact still unknown. An original provisional choice remains permission only if the later instructions do not supersede it with a hold. Read all later instructions in receipt order; an earlier permission never overrides a later hold. If nothing establishes a change, keep the current treatment; never infer approval or silently weaken a release restriction.",
-    tagged("original_fact_question", data({ question: question.question, context: question.context, answer: question.answer, prior_status: factDisposition(question), prior_resolution: question.fact_resolution })),
-    tagged("current_request", data(readLeanText(directory, "request.md") ?? "")),
-    tagged("later_instructions", data(laterFactInstructions(directory, question))),
-    tagged("source_names", data(matterSourceIDs(directory))),
-    'Reply JSON only: {"fact_status":"supplied|provisional|wait|unknown","reason":"the actual effect of the current instructions or evidence","basis":[{"source_id":"request, updated-notes, original-answer or an exact matter source name","quote":"exact relevant words"}]}. A change of treatment requires a checked supporting quotation. Keeping the same treatment needs no new approval and basis may be empty. A new provisional permission or human hold must quote later_instructions under updated-notes. To reestablish express provisional permission in the original typed reply or code-offered choice after an unrelated update, quote that original permission under original-answer and explain why no later instruction supersedes it; never do so while a later hold remains unsatisfied. original-answer supplies no missing fact. The original request predates the answer and a matter source alone supplies no human approval. Later instructions contain only timestamped updates received after the original answer; missing chronology cannot establish an override.',
+    "Check ONE factual uncertainty: is the exact fact or completed check requested by this question now supplied? Do not decide whether drafting is permitted, answer for the lawyer, invent evidence, or perform the outside task.",
+    "Use targeted source lookup only for this question. Preserve the question's evidence conditions, source qualifications and contrary evidence. A repeated unverified assertion is not the completed verification requested. A request to obtain or check evidence, a source name, or permission to draft supplies no missing fact. Supplied means the requested information is actually present, not that it has been independently verified beyond what the evidence establishes. If the requested fact or check remains absent or uncertain, report missing even if a marked working draft is authorised.",
+    tagged("original_fact_question", factQuestion(question)),
+    tagged("current_request", factData(readLeanText(directory, "request.md") ?? "")),
+    tagged("later_instructions", factData(laterFactInstructions(directory, question))),
+    tagged("source_names", factData(matterSourceIDs(directory))),
+    'Reply JSON only: {"evidence_status":"supplied|missing","reason":"whether the exact requested information or check is now supplied, preserving qualifications","basis":[{"source_id":"request, updated-notes or an exact matter source name","quote":"exact relevant words"}]}. Supplied requires a checked supporting quotation. Missing may have an empty basis. original-answer is a prior treatment decision, not new evidence. Later instructions contain only updates received after the original answer.',
   ].join("\n\n")
 }
 
-function checkFactRefresh(directory: string, question: Question, reply: string): { issues: string[]; status?: FactStatus; resolution?: Question["fact_resolution"] } {
+function factPermissionPrompt(directory: string, question: Question, evidence: FactEvidence) {
+  return [
+    "Decide ONE permission question: under the lawyer's original answer and later instructions, may drafting proceed with this fact in the checked state below? Do not reassess or supply the fact. Evidence availability and drafting permission are separate; a fact remaining unverified does not cancel express permission to prepare a marked working draft.",
+    "Read all later instructions in receipt order; an earlier permission never overrides a later hold. Unrelated updates never revoke already authorised provisional drafting. Provisional requires express human permission to draft with the uncertainty visibly marked. A genuinely human-picked option is the lawyer's instruction, including an older option without a code-owned fact_action; an assistant recommendation alone or an adopted professional judgment supplies no human approval. The original request predates the answer and cannot override it.",
+    "Keep an actual wait, approval condition or release restriction binding while its condition remains unsatisfied, even when evidence arrives. Distinguish a hold on drafting from a hold on sending, signing, serving or release: permission for a marked working draft does not release it. none means no remaining drafting restriction and no need for provisional permission: for example, supplied evidence satisfies the sole condition to wait for that fact. Evidence never creates human approval or satisfies an independent approval condition. Preserve the current treatment when no actual change is established.",
+    tagged("original_fact_question", factQuestion(question)),
+    tagged("later_instructions", factData(laterFactInstructions(directory, question))),
+    tagged("checked_fact_evidence", factData(evidence)),
+    'Reply JSON only: {"drafting_permission":"provisional|wait|none","reason":"the current permission and any condition still binding","basis":[{"source_id":"updated-notes or original-answer","quote":"exact relevant human words"}]}. A new permission or hold requires checked supporting human words under updated-notes. To preserve or reestablish express provisional permission in the original typed reply or human-picked option after an unrelated update, quote it under original-answer and explain why no later instruction supersedes it; never do so while a later hold remains unsatisfied. Keeping an existing treatment needs no new approval and basis may be empty. Do not cite source documents as permission. Missing chronology cannot establish a later override.',
+  ].join("\n\n")
+}
+
+function factRefreshValue(reply: string, field: "evidence_status" | "drafting_permission", statuses: readonly string[]): { issues: string[]; value?: { status: string; reason: string; basis: FactBasis } } {
   const parsed = parseJsonObject(reply)
   if (!parsed.ok) return { issues: [`Reply with one JSON object. ${parsed.error}`] }
   const value = parsed.value
-  if (!(FACT_STATUSES as readonly unknown[]).includes(value.fact_status) || typeof value.reason !== "string" || !value.reason.trim() || !Array.isArray(value.basis))
-    return { issues: ["Give fact_status, the reason preserving or changing the hold, and a basis array."] }
-  const allowed = new Set([...matterSourceIDs(directory), "request", "updated-notes", "original-answer"])
-  const basis: { source_id: string; quote: string }[] = []
+  if (!statuses.includes(value[field] as string) || typeof value.reason !== "string" || !value.reason.trim() || !Array.isArray(value.basis))
+    return { issues: [`Give ${field}, its reason, and a basis array.`] }
+  const basis: FactBasis = []
   for (const row of value.basis) {
-    if (!row || typeof row !== "object" || typeof row.source_id !== "string" || !allowed.has(row.source_id) || typeof row.quote !== "string" || !row.quote.trim())
+    if (!row || typeof row !== "object" || typeof row.source_id !== "string" || typeof row.quote !== "string" || !row.quote.trim())
       return { issues: ["Every basis needs a known source_id and exact supporting quote."] }
-    const originalPermission = !question.answer_kind || questionOptions(question).find(option => option.id === question.option_id)?.fact_action === "provisional"
-    if (row.source_id === "original-answer" && (value.fact_status !== "provisional" || !originalPermission))
-      return { issues: ["original-answer can establish only express permission in the lawyer's own reply or original code-offered provisional choice, never a missing fact or new override."] }
-    const found = row.source_id === "original-answer" ? (question.answer ?? "").includes(row.quote) : row.source_id === "request" || row.source_id === "updated-notes"
+    basis.push({ source_id: row.source_id, quote: row.quote })
+  }
+  return { issues: [], value: { status: value[field] as string, reason: value.reason.trim(), basis } }
+}
+
+function checkFactEvidence(directory: string, question: Question, reply: string): { issues: string[]; value?: FactEvidence } {
+  const checked = factRefreshValue(reply, "evidence_status", ["supplied", "missing"])
+  if (!checked.value) return { issues: checked.issues }
+  const { status, reason, basis } = checked.value
+  const allowed = new Set([...matterSourceIDs(directory), "request", "updated-notes"])
+  for (const row of basis) {
+    if (!allowed.has(row.source_id)) return { issues: ["Fact evidence must quote the request, a later update or an exact matter source, never original-answer."] }
+    const found = row.source_id === "request" || row.source_id === "updated-notes"
       ? (row.source_id === "request" ? readLeanText(directory, "request.md") ?? "" : laterFactInstructions(directory, question)).includes(row.quote)
       : quoteFound(directory, row)
     if (!found) return { issues: [`The supporting quote is not in ${row.source_id}.`] }
-    basis.push({ source_id: row.source_id, quote: row.quote })
   }
-  const status = value.fact_status as FactStatus
+  if (status === "supplied" && !basis.length) return { issues: ["A supplied fact requires actual quoted evidence satisfying the question's conditions."] }
+  return { issues: [], value: { evidence_status: status as FactEvidence["evidence_status"], reason, basis } }
+}
+
+function checkFactPermission(directory: string, question: Question, evidence: FactEvidence, reply: string): { issues: string[]; value?: FactPermission } {
+  const checked = factRefreshValue(reply, "drafting_permission", ["provisional", "wait", "none"])
+  if (!checked.value) return { issues: checked.issues }
+  const { status, reason, basis } = checked.value
+  const selected = questionOptions(question).find(option => option.id === question.option_id)
+  const originalPermission = !question.answer_kind || question.answer_kind === "option" && selected?.text === question.answer
+  for (const row of basis) {
+    if (row.source_id !== "updated-notes" && row.source_id !== "original-answer")
+      return { issues: ["Drafting permission must quote human instructions, never a source-derived assumption or the earlier request."] }
+    if (row.source_id === "original-answer" && (status !== "provisional" || !originalPermission))
+      return { issues: ["original-answer can establish only express permission in the lawyer's own reply or human-picked option, never an assistant recommendation or a new override."] }
+    const text = row.source_id === "original-answer" ? question.answer ?? "" : laterFactInstructions(directory, question)
+    if (!text.includes(row.quote)) return { issues: [`The supporting quote is not in ${row.source_id}.`] }
+  }
   const prior = factDisposition(question)
-  if ((status === "supplied" || status !== prior) && !basis.length)
-    return { issues: ["Releasing a wait requires actual quoted evidence or a later human instruction."] }
-  if ((status === "provisional" && prior !== "provisional" || status === "wait" && prior === "provisional") && !basis.some(row => row.source_id === "updated-notes" || status === "provisional" && row.source_id === "original-answer"))
-    return { issues: ["Provisional drafting requires quoted later human permission, not the original request or a source-derived assumption."] }
-  if ((status === "wait" || status === "unknown") && factDisposition(question) === "wait") return { issues: [], status: "wait" }
-  return { issues: [], status, ...(basis.length ? { resolution: { reason: value.reason.trim(), basis } } : {}) }
+  if (status === "provisional" && prior !== "provisional" && !basis.length)
+    return { issues: ["Provisional drafting requires quoted later human permission or express original permission that no later hold supersedes."] }
+  if (status === "wait" && prior !== "wait" && !basis.some(row => row.source_id === "updated-notes"))
+    return { issues: ["A new drafting hold requires quoted later human instructions."] }
+  if (status === "none" && evidence.evidence_status === "missing" && (prior === "wait" || prior === "provisional"))
+    return { issues: ["The fact is still missing: preserve the existing wait or provisional permission unless later human instructions change it."] }
+  return { issues: [], value: { drafting_permission: status as FactPermission["drafting_permission"], reason, basis } }
 }
 
 async function classifyAnswer(directory: string, state: LeanState, deps: LeanDeps, question: Question): Promise<{ answer_class: AnswerClass; fact_status?: FactStatus } | undefined> {
