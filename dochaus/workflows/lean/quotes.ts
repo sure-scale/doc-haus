@@ -314,7 +314,7 @@ export function derivedRecordNote(directory: string, quote: string, { adopted: q
       ? `quote the lawyer's own answer under "${REQUEST_SOURCE}".`
       : quotable ? `quote the adopted answer under "${adoptedSource(question.id)}".` : "quote the lawyer's request or the matter sources that support the point instead.")
   return lawyerWordsHold([readFirmDraftingPreferences("full", runPosture(directory))], quote)
-    ? "Those words are the firm's drafting preferences, not a source. A presentation change needs no supporting quote: leave its sources empty and say in its limitations that it applies the saved preferences."
+    ? "Those words are the firm's drafting preferences, not a source. A presentation change needs no supporting quote: leave its sources empty and say that it applies the saved preferences, in its limitations or, where it has none, its reason."
     : ""
 }
 

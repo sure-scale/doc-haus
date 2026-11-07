@@ -110,7 +110,7 @@ test("words quoted as the lawyer's that are the answers record or the firm's dra
   process.env.WORKSPACE_ROOT = root
   mkdirSync(path.join(root, ".preferences"))
   writeFileSync(path.join(root, ".preferences/preferences.json"), JSON.stringify({ houseStyle: "Put each defined term in bold where it is defined." }))
-  const preferences = "Those words are the firm's drafting preferences, not a source. A presentation change needs no supporting quote: leave its sources empty and say in its limitations that it applies the saved preferences."
+  const preferences = "Those words are the firm's drafting preferences, not a source. A presentation change needs no supporting quote: leave its sources empty and say that it applies the saved preferences, in its limitations or, where it has none, its reason."
   expect(derivedRecordNote(directory, "Put each defined term in bold")).toBe(preferences)
   for (const format of ["json", "prose"] as const) {
     const issue = miss("Put each defined term in bold", format)
