@@ -71,7 +71,7 @@ export function scriptedModel(replies: Record<string, Reply>) {
         // stage amends from the findings it is shown, whatever the plan says.
         [AGENT["change-plan"]]: prompt => {
           const resolves = listedFindingIDs(prompt)
-          return JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [], findings: resolves.length ? [{
+          return JSON.stringify({ shared_decisions: [], groups: [], questions: [], findings: resolves.length ? [{
             disposition: "rejected", kind: "suggestion", detail: "The scripted plan adjudicates the review findings.", reason: "The scripted changes stage decides the amendments.",
             documents: [/^- (d\d+) "[^"]*" \(this document\)$/m.exec(prompt)?.[1] ?? "d1"], sources: [], limitations: ["Scripted fixture."], resolves,
           }] : [] })

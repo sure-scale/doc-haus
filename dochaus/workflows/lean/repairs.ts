@@ -161,10 +161,20 @@ function documentRepairBasis(directory: string, document: DocID) {
     .filter(part => part.name !== "repairs"))
 }
 
+const REPAIR_INSTRUCTIONS = [
+  "Each item is a defect the draft still has. Fix each one with an amendment to the paragraph named:",
+  "quote the source exactly, remove the unsupported point, or replace it with a visible [open item: what is needed] marker.",
+  "For a template part missing or cut short in the draft, which names no paragraph, add the missing wording from the template: split the paragraph the part belongs after, or replace a paragraph of the part with its full wording. " +
+  "For one in the draft without its heading, split the part's first paragraph to put its heading before it: the template's, or the heading the instructions give it.",
+  "For an unanswered question, repeat it with its \"id\" and the \"pid\" of the paragraph it affects, and put a visible [open item: ...] marker in that paragraph.",
+]
+
 /** Prompt sections for one document's changes step beyond its findings: the
  * defects it must repair, the change list it replaces, and the questions
- * already asked. */
-export function changesRepairSections(directory: string, document: DocID) {
+ * already asked. The change review (audience "review") reads the same items as
+ * findings to verify against the projected body, not as defects the draft
+ * still has, and no change list to carry forward. */
+export function changesRepairSections(directory: string, document: DocID, { audience = "writer" }: { audience?: "writer" | "review" } = {}) {
   const paragraphs = readParagraphs(directory, document)
   const items = readOpenItems(directory).filter(item => ofDocument(item, document))
   const required = [
@@ -174,13 +184,10 @@ export function changesRepairSections(directory: string, document: DocID) {
   const checklistFindings = required.filter(item => item.stage === "checklist-check")
   const defects = required.filter(item => item.stage !== "checklist-check")
   const unverifiedFindings = items.filter(item => isReviewStage(item.stage) && item.kind === "quote_miss")
+  const review = audience === "review"
   return [
-    defects.length ? tagged("required_repairs", [
-      "Each item is a defect the draft still has. Fix each one with an amendment to the paragraph named:",
-      "quote the source exactly, remove the unsupported point, or replace it with a visible [open item: what is needed] marker.",
-      "For a template part missing or cut short in the draft, which names no paragraph, add the missing wording from the template: split the paragraph the part belongs after, or replace a paragraph of the part with its full wording. " +
-      "For one in the draft without its heading, split the part's first paragraph to put its heading before it: the template's, or the heading the instructions give it.",
-      "For an unanswered question, repeat it with its \"id\" and the \"pid\" of the paragraph it affects, and put a visible [open item: ...] marker in that paragraph.",
+    defects.length ? tagged(review ? "previous_findings" : "required_repairs", [
+      ...(review ? ["Findings the previous review raised; verify each against the projected body and report only what is still present:"] : REPAIR_INSTRUCTIONS),
       ...defects.map(item => `- ${item.id} ${pidLabel(item, paragraphs)}: ${item.detail}${quoteLabel(item)}`),
     ].join("\n")) : "",
     checklistFindings.length ? tagged("checklist_findings", [
@@ -191,7 +198,7 @@ export function changesRepairSections(directory: string, document: DocID) {
       "These quotations in the review were not found in the named source. Check the source before relying on the finding:",
       ...unverifiedFindings.map(item => `- "${excerpt(item.ref.quote ?? "")}" [source: ${item.ref.source_id ?? "unknown"}]`),
     ].join("\n")) : "",
-    previousChanges(directory, document, paragraphs),
+    review ? "" : previousChanges(directory, document, paragraphs),
     openQuestions(directory, document),
   ].filter(Boolean)
 }
