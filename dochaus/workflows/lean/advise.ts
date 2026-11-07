@@ -250,12 +250,24 @@ export function advisePrompt(directory: string, question: Question, siblings: Qu
     tagged("acting_for", actingForAdvice(directory)),
     ...[matterDatesBlock(directory)].filter(Boolean),
     tagged("legal_research", researchHandoff(directory)),
+    // A package-scope question places an act by its own rules; a question with
+    // its own options is answered by index.
+    ...(question.options || question.kind === "scope" ? [] : [carriersBlock(directory)]),
     `Matter source names (use these exact names with search-document and read-document): ${JSON.stringify(matterSourceIDs(directory))}`,
     ...(provenanceLine ? [provenanceLine] : []),
     question.options
       ? `Reply with one JSON object only, including "group":"short topic": {"recommendation":{"option":0,"rationale":"why this option",${basis}}}, where "option" is the index of one of the options above; or, when no option is supported, {"unavailable":{"reason":"why no option can be recommended"}}. Do not return options of your own.`
       : `Reply with one JSON object only, including "group":"short topic": {"options":[{"text":"one option the lawyer could choose"}],"recommendation":{"option":"the recommended option's text","rationale":"why this option",${basis},"decided_by":"i1"}}, with 2 to 4 distinct options and "option" the text of the one recommended, copied exactly from your options; or, when no option is supported, {"options":[],"unavailable":{"reason":"why no option can be recommended"}}, with no options or 2 to 4. Give "decided_by" only when one item of <instructions> expressly decides this question, as that item's id, and recommend the option that follows it, quoting the item's own words in basis; otherwise leave it out. An item that is only related, that would need inference to apply, or whose validity as given the question asks about, does not decide the question.`,
   ].join("\n\n")
+}
+
+/** What the run delivers, the only places an advisor's own option can put
+ * what it decides: the planned documents once the plan is saved, before it
+ * every document the request asks for; the drafting notes; an open item. */
+function carriersBlock(directory: string) {
+  const plan = readLeanPlan(directory)
+  const documents = plan ? plan.documents.map(document => document.file ? `${document.title} (${document.file})` : document.title) : ["every document the request asks for"]
+  return tagged("carriers", ["What the run delivers:", ...[...documents, "the drafting notes", "an open item for the lawyer"].map(name => `- ${name}`)].join("\n"))
 }
 
 /** An advised question as a sibling's advisor reads it: the recommended
@@ -320,7 +332,7 @@ function adviceOptions(directory: string, question: Question, value: unknown, re
   const issues = [
     ...(recommended ? texts.length < 2 || texts.length > 4 ? ["Give 2 to 4 options with a recommendation."] : [] : texts.length === 1 || texts.length > 4 ? ['Give no options, or 2 to 4, with "unavailable".'] : []),
     ...(new Set(texts.map(optionKey)).size < texts.length ? ["Each option must differ from the others."] : []),
-    ...(question.kind === "scope" ? [...sourceCarrierIssues(directory, question, texts), ...plannedCarrierIssues(directory, question, texts)] : []),
+    ...carrierIssues(directory, question, texts),
   ]
   return issues.length ? { issues } : { issues: [], options: texts.map((text, index) => ({ id: `o${index + 1}`, text })) }
 }
@@ -332,19 +344,32 @@ function plannedCarrierNames(directory: string, question: Question) {
   return [...(readLeanPlan(directory)?.documents ?? []).flatMap(document => [document.title, ...(document.file ? [document.file] : [])]), ...scopeQuestionTitles(question)]
 }
 
-/** A package-scope option may put an act in a planned document, a new one or
- * outside this request, never in an uploaded matter source: the package writes
- * only planned documents. An option naming a source by its file name is refused
- * unless it also names a planned document, whose title may hold a source's.
- * A source's title alone is ordinary prose ("an amendment to the Supply
- * Agreement") and passes. */
-function sourceCarrierIssues(directory: string, question: Question, texts: string[]) {
+/** Where an option puts what it decides. Each option of a package-scope
+ * question places an act. Any other question's option is checked only where it
+ * names a document: an uploaded source by its file name, other than a source
+ * the question names, which is what the question asks about ("follow the
+ * notes.docx"), not where its answer goes. As a source and a planned document
+ * are the only documents a name can show, the source check is also that
+ * question's planned check once the plan is saved. */
+function carrierIssues(directory: string, question: Question, texts: string[]) {
+  if (question.kind === "scope") return [...sourceCarrierIssues(directory, question, texts), ...plannedCarrierIssues(directory, question, texts)]
+  const asked = `${question.question}\n${question.context ?? ""}`
+  return sourceCarrierIssues(directory, question, texts, matterSourceIDs(directory).filter(name => !holdsName(asked, name)))
+}
+
+/** An option may put an act or an answer in a document the package writes,
+ * never in an uploaded matter source. An option naming a source by its file
+ * name is refused unless it also names a planned document, whose title may
+ * hold a source's. A source's title alone is ordinary prose ("an amendment to
+ * the Supply Agreement") and passes. */
+function sourceCarrierIssues(directory: string, question: Question, texts: string[], sources = matterSourceIDs(directory)) {
   const planned = plannedCarrierNames(directory, question)
-  const sources = matterSourceIDs(directory)
   return texts.flatMap(text => {
     const source = sources.find(name => holdsName(text, name))
-    return source && !planned.some(name => holdsName(text, name, "iu"))
-      ? [`Option ${JSON.stringify(text)} puts the act in ${JSON.stringify(source)}, an uploaded matter source the package does not write: offer a planned document, a new document, or "outside this request".`] : []
+    return !source || planned.some(name => holdsName(text, name, "iu")) ? []
+      : question.kind === "scope"
+      ? [`Option ${JSON.stringify(text)} puts the act in ${JSON.stringify(source)}, an uploaded matter source the package does not write: offer a planned document, a new document, or "outside this request".`]
+      : [`Option ${JSON.stringify(text)} puts it in ${JSON.stringify(source)}, an uploaded matter source the package does not write: put it in what <carriers> lists.`]
   })
 }
 

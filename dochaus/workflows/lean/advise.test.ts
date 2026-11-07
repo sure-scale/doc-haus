@@ -94,7 +94,6 @@ describe("advice checker", () => {
     const named = check(scopeReply("Add it to supply-terms.docx, executed by the supplier and the buyer"), SCOPE)
     expect(named.advice).toBeUndefined()
     expect(named.issues).toEqual(['Option "Add it to supply-terms.docx, executed by the supplier and the buyer" puts the act in "supply-terms.docx", an uploaded matter source the package does not write: offer a planned document, a new document, or "outside this request".'])
-    expect(check(scopeReply("Add it to supply-terms.docx, signed by both"), { ...SCOPE, kind: "judgment" }).issues).toEqual([])
     // A source's title alone is prose, such as an amendment to it.
     expect(check(scopeReply("A new amendment to the supply-terms, signed by both"), SCOPE).issues).toEqual([])
   })
@@ -125,6 +124,24 @@ describe("advice checker", () => {
     expect(checkAdvice(directory, saved, reply("A new letter executed by the supplier and the buyer", "Outside this request")).issues).toHaveLength(1)
     // Before its plan is saved, the plan step's question offers a new document, which no list names.
     expect(checkAdvice(matter(), SCOPE, reply("A new letter executed by the supplier and the buyer", "Outside this request")).issues).toEqual([])
+  })
+
+  const FACT: Question = { ...QUESTION, question: "Which delivery period should the note state, as the order form is silent?", kind: "fact" }
+  const factReply = (...texts: string[]) => JSON.stringify({ options: texts.map(text => ({ text })), recommendation: { option: texts[0], rationale: "The supply terms set thirty days.", basis: BASIS } })
+
+  test("any question's option naming an uploaded source as where its answer goes is a retry issue, before and after the plan", () => {
+    const issue = 'Option "Record thirty days in supply-terms.docx" puts it in "supply-terms.docx", an uploaded matter source the package does not write: put it in what <carriers> lists.'
+    expect(checkAdvice(matter(), FACT, factReply("Record thirty days in supply-terms.docx", "Fourteen days from the order date")).issues).toEqual([issue])
+    // Before the plan is saved, an option naming no source passes, whatever it calls the requested document.
+    expect(checkAdvice(matter(), FACT, factReply("State thirty days in the supply note", "Record the period as an open item")).issues).toEqual([])
+    const directory = matter()
+    writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record the delivery terms", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
+    expect(checkAdvice(directory, FACT, factReply("Record thirty days in supply-terms.docx", "Fourteen days from the order date")).issues).toEqual([issue])
+    expect(checkAdvice(directory, FACT, factReply("State thirty days in supply-note.docx", "Leave the period to the drafting notes")).advice).toMatchObject({ recommendation: { option: "o1" } })
+    // A source the question names is what it asks about, not where its answer goes.
+    const named = { ...FACT, question: "Should the note follow supply-terms.docx on the delivery period?" }
+    expect(checkAdvice(directory, named, factReply("Follow supply-terms.docx: thirty days", "Fourteen days from the order date")).issues).toEqual([])
+    expect(checkAdvice(directory, { ...named, question: "Which delivery period?", context: "Asked of supply-terms.docx." }, factReply("Follow supply-terms.docx: thirty days", "Fourteen days")).issues).toEqual([])
   })
 
   const rejected: [string, unknown, string, Question?][] = [
@@ -391,6 +408,18 @@ test("advice reads the matter's dates, so a deadline option does not run from th
   expect(advisePrompt(directory, QUESTION)).not.toContain("<matter_dates>")
   writeLeanText(directory, "intake.json", JSON.stringify({ ready: true, dates: { document_date: { date: "2026-03-01", basis: "request", source_id: "request", quote: "dated 1 March 2026" }, operative_dates: [] } }))
   expect(advisePrompt(directory, QUESTION)).toContain("<matter_dates>\nDate the document 2026-03-01")
+})
+
+// A recommended option put its answer in a document the run does not deliver.
+test("the advisor's own options get what the run delivers: every requested document before the plan, the planned documents after", () => {
+  const directory = matter()
+  const fact = { ...QUESTION, kind: "fact" as const }
+  expect(advisePrompt(directory, fact)).toContain("<carriers>\nWhat the run delivers:\n- every document the request asks for\n- the drafting notes\n- an open item for the lawyer\n</carriers>")
+  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record the delivery terms", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] },
+    { title: "Cover memo", purpose: "Explain the note", parts: [{ heading: "Summary", scope: "What the note does" }] }])
+  expect(advisePrompt(directory, fact)).toContain("<carriers>\nWhat the run delivers:\n- Supply note (supply-note.docx)\n- Cover memo\n- the drafting notes\n- an open item for the lawyer\n</carriers>")
+  expect(advisePrompt(directory, { ...QUESTION, kind: "scope" })).not.toContain("<carriers>")
+  expect(advisePrompt(directory, FILES)).not.toContain("<carriers>")
 })
 
 // An option to discard a planned document and prepare another was recommended,
