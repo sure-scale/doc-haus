@@ -80,8 +80,10 @@ export function stepGroups(status: LeanDraftingStatus) {
 function groupTitle(id: string, planned: Array<{ id: string; title: string }>, position: number) {
   if (id === "preparation") return "Preparation"
   if (id === "run") return "Finishing"
-  const title = planned.find((row) => row.id === id)?.title
-  return title ? cleanTitle(title) || `Document ${position + 1}` : `Document ${position + 1}`
+  const title = cleanTitle(planned.find((row) => row.id === id)?.title ?? "")
+  // The first document's draft step writes the plan; until then no document
+  // has a title or a place in a numbered list.
+  return title || (planned.length ? `Document ${position + 1}` : "Draft")
 }
 
 /** The step the run is in or stopped at: its key, 1-based position and the total. */
