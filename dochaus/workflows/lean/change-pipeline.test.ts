@@ -1,12 +1,13 @@
 import { afterEach, expect, spyOn, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { acceptChangePlan, acceptChangeReview, checkChangePlan, checkChangeReview, projectedChangeParagraphs } from "./change-pipeline"
+import { acceptChangePlan, acceptChangeReview, changeReviewPrompt, checkChangePlan, checkChangeReview, projectedChangeParagraphs } from "./change-pipeline"
 import { checkChanges } from "./change-checks"
 import { parseJsonObject, readChangeList, readParagraphs } from "./checks"
 import { readLeanEvents } from "./events"
 import { finalGate, type GateResult } from "./gate"
+import { openItem } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
-import { readRepairRound } from "./repairs"
+import { changesRepairSections, readRepairRound } from "./repairs"
 import { restoreLeanStage } from "./restore-stage"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, runLean, stageInputSha } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS, stageOutputValid } from "./stages"
@@ -113,6 +114,22 @@ test("a body review finding names a paragraph of its owning draft; a null pid co
   expect(acceptChangeReview(directory, "d1", JSON.stringify(review({ pid: null, target: "research" }))).issues).toEqual([])
   expect(readLeanJson(directory, "d1/change-review.json")).toEqual(review({ target: "research" }))
   expect(acceptChangeReview(directory, "d1", JSON.stringify(review({ pid: null }))).issues).toEqual([missing])
+}, 120_000)
+
+// The writer repairs each listed item; the change review only checks whether
+// the previous review's findings are still present in the projected body.
+test("the change review reads repair items as findings to verify, without the writer's repair instructions or change list", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
+  const pid = readParagraphs(directory, "d1")[0]!.pid
+  const item = openItem("draft", "quote_miss", "The quoted figure is not in the supplied terms.", { document: "d1", pid })
+  leanState.replaceStageOpenItems(directory, "draft", "d1", [item])
+  const writer = changesRepairSections(directory, "d1").join("\n")
+  expect(writer).toContain(`<required_repairs>\nEach item is a defect the draft still has.`)
+  expect(writer).toContain("<previous_changes>")
+  const prompt = changeReviewPrompt(directory, "d1")
+  expect(prompt).toContain(`<previous_findings>\nFindings the previous review raised; verify each against the projected body and report only what is still present:\n- ${item.id} [${pid}]: ${item.detail}`)
+  for (const writing of ["<required_repairs>", "Each item is a defect the draft still has", "Fix each one with an amendment", "<previous_changes>"]) expect(prompt).not.toContain(writing)
 }, 120_000)
 
 test("canonical support and dependency admission reject only the mutated input", async () => {
