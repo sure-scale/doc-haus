@@ -125,8 +125,9 @@ export type LeanDraftingStatus = {
   /** Set while the run is blocked only because the lawyer paused it. */
   paused_at?: string
   /** Set while the run is failed only because the model provider or setup needs
-   * the lawyer in Settings (dochaus/lib/provider-stop.ts); Continue resumes. */
-  provider_stop?: "auth" | "setup" | "model"
+   * the lawyer, in Settings or (credit) with the provider
+   * (dochaus/lib/provider-stop.ts); Continue resumes. */
+  provider_stop?: "auth" | "setup" | "model" | "credit"
   owner_session_id: string
   model: { providerID: string; modelID: string } | null
   created_at: string

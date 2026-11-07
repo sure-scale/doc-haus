@@ -536,12 +536,12 @@ export function drafts(matters: MatterActivity[], limit = Infinity): Draft[] {
     .slice(0, limit)
 }
 
-export type AttentionItem = { matter: Matter; kind: "provider" | "failed" | "questions" | "stalled" | "blocked" | "paused"; count?: number; session: string }
+export type AttentionItem = { matter: Matter; kind: "provider" | "credit" | "failed" | "questions" | "stalled" | "blocked" | "paused"; count?: number; session: string }
 
 // Drafting runs that wait on the lawyer, most urgent first. The sample matter
 // counts: the lawyer may be trying a draft on it.
 export function attention(matters: MatterActivity[]): AttentionItem[] {
-  const rank = { provider: 0, failed: 1, questions: 2, stalled: 3, blocked: 4, paused: 5 }
+  const rank = { provider: 0, credit: 0, failed: 1, questions: 2, stalled: 3, blocked: 4, paused: 5 }
   return matters
     .flatMap(({ matter, drafting }): AttentionItem[] => {
       // A run the lawyer stopped settles as failed but needs nothing more.
@@ -549,7 +549,9 @@ export function attention(matters: MatterActivity[]): AttentionItem[] {
       const session = drafting.owner_session_id
       // Answers already queued for the run wait on it, not on the lawyer.
       const open = openQuestions(drafting).length
-      if (drafting.status === "failed") return [{ matter, kind: drafting.provider_stop ? "provider" : "failed", session }]
+      // Credit is added with the provider, not reconnected in Settings.
+      if (drafting.status === "failed")
+        return [{ matter, kind: drafting.provider_stop === "credit" ? "credit" : drafting.provider_stop ? "provider" : "failed", session }]
       if (open) return [{ matter, kind: "questions", count: open, session }]
       // Still marked running with nothing working on it (ingest restarted):
       // it moves again only when the lawyer presses Continue.

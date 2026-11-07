@@ -3,7 +3,7 @@ import { Link } from "react-router-dom"
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
 import { postureLabel } from "../../api/ingest/preferences"
 import { formatAgo, formatElapsed } from "../../lib/format"
-import { activeStep, providerStopMessage, stepActivityLabel, stoppedByTechnicalProblem } from "../narration/activity"
+import { activeStep, providerStopMessage, providerStopNeed, stepActivityLabel, stoppedByTechnicalProblem } from "../narration/activity"
 import { draftedIn } from "../narration/timeline"
 import {
   afterCheckChange,
@@ -330,7 +330,7 @@ export function runHeadline(status: LeanDraftingStatus, now: number, resuming = 
       title: step ? `Paused at ${runStepName(status, step.key).toLowerCase()}` : "Paused",
       meta: [position?.document ?? "", "You paused drafting", "Continue picks up from this step"],
     }
-  if (providerStopMessage(status)) return { tone: "paused", title: "Paused: Settings need attention", meta: ["The work so far is kept", steps] }
+  if (providerStopMessage(status)) return { tone: "paused", title: `Paused: ${providerStopNeed(status)}`, meta: ["The work so far is kept", steps] }
   if (stoppedByTechnicalProblem(status))
     return { tone: "paused", title: "Paused after a technical problem", meta: ["The work so far is kept", steps] }
   if (step?.key === "gate") {

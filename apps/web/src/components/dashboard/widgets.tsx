@@ -223,6 +223,7 @@ function MatterSpend({ data, period, now }: WidgetContext) {
 
 const ATTENTION = {
   provider: { icon: "plug", tone: "error", text: () => "Reconnect your AI provider" },
+  credit: { icon: "error", tone: "error", text: () => "AI account needs credit" },
   failed: { icon: "error", tone: "error", text: () => "Drafting run failed" },
   questions: { icon: "question", tone: "info", text: (count = 1) => `${plural(count, "question")} waiting` },
   stalled: { icon: "pause", tone: "warning", text: () => "Drafting stalled, press Continue" },
