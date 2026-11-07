@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync, readdirSync, rmSync } from "node:fs"
 import path from "node:path"
 import { appendLeanEvent } from "./events"
+import { writeInstructionsFile } from "./instructions"
 import { isStepID, leanSteps, stepDocument, stepStage, type StepID } from "./plan"
 import { queuedAnswerIDs } from "./requests"
 import { LEAN_PROMPT_VERSION, OPTIONAL_OUTPUTS, stageInputs, stepOutputs } from "./stages"
@@ -54,6 +55,9 @@ export function restoreLeanStage(directory: string, step: StepID) {
   const queued = queuedAnswerIDs(directory)
   writeQuestions(directory, keepAskedQuestions(readQuestions(directory), readOpenItems(directory),
     question => keeps(question.stage, question.document) || queued.has(question.id)))
+  // Snapshots may precede a preserved confirmation answer. Derive its current
+  // instruction standing before hashing the completed steps that consume it.
+  writeInstructionsFile(directory)
   const finished = new Date().toISOString()
   // The restored plan fixes the steps from here on.
   const stages = Object.fromEntries(leanSteps(directory).map((row): [StepID, LeanStageState] => [row, kept.includes(row)

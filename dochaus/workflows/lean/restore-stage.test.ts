@@ -1,10 +1,12 @@
 import { afterEach, expect, test } from "bun:test"
+import { Database } from "bun:sqlite"
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { LEAN_ACTS_SCHEMA } from "./act-record"
 import { readLeanDocuments } from "./deliverables"
 import { readLeanEvents } from "./events"
 import { focusedNotesInputs } from "./focused-notes"
+import { confirmationQuestionID, followsDocument, INSTRUCTIONS_FILE } from "./instructions"
 import { writeLeanPlan } from "./plan"
 import { LEAN_COVERAGE_SCHEMA } from "./package-coverage"
 import { enqueueLeanRequest, pendingLeanRequests } from "./requests"
@@ -12,7 +14,7 @@ import { restoreLeanStage } from "./restore-stage"
 import { runLean } from "./runner"
 import { LEAN_STAGE_AGENTS } from "./stages"
 import { leanDir, leanFile, readLeanJson, readLeanState, readLeanText, readOpenItems, readQuestions, writeLeanText } from "./state"
-import { changes, happyLeanReplies, leanFixtureMatter, sameSession, scriptedLeanModel } from "./test-support"
+import { SOURCE, SOURCE_TEXT, changes, happyLeanReplies, leanFixtureMatter, sameSession, scriptedLeanModel } from "./test-support"
 
 const directories: string[] = []
 afterEach(() => directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true })))
@@ -62,6 +64,53 @@ test("restoring a step that never ran is refused without touching the run", asyn
   expect(() => restoreLeanStage(directory, "d1.review")).toThrow('No snapshot of step "d1.review" exists')
   expect(readFileSync(leanFile(directory, "state.json"), "utf8")).toBe(before)
 })
+
+test("restoring derives instructions from a preserved evidence-only answer before hashing completed steps", async () => {
+  const directory = leanFixtureMatter("lean-restore-")
+  directories.push(directory)
+  const direction = "For this draft, please use a table for the delivery terms."
+  const source = `${direction} ${SOURCE_TEXT}`
+  const db = new Database(path.join(directory, ".dochaus", "legal.db"))
+  try { db.query("UPDATE chunks SET text = ?, char_end = ? WHERE doc_name = ?").run(source, source.length, SOURCE) } finally { db.close() }
+  const model = scriptedLeanModel({
+    ...happyLeanReplies(),
+    [LEAN_STAGE_AGENTS.instructions]: () => JSON.stringify({
+      items: [{ text: "Use a table for the delivery terms.", source_id: SOURCE, quote: direction }],
+      documents: [{ source_id: SOURCE, from: "the client's drafting contact", quote: direction }],
+    }),
+  })
+  const blocked = await runLean(directory, { sessions: model.port })
+  expect(blocked.status).toBe("blocked")
+  expect(readLeanText(directory, INSTRUCTIONS_FILE)).toContain("Awaiting the lawyer's confirmation")
+  expect(model.count(LEAN_STAGE_AGENTS.intake)).toBe(0)
+  const questionID = confirmationQuestionID(SOURCE)
+  enqueueLeanRequest(directory, { kind: "answer", question_id: questionID, option_id: "o2" })
+  const completed = await runLean(directory, { sessions: model.port })
+  expect(completed.status).toBe("completed")
+  expect(model.count(LEAN_STAGE_AGENTS.instructions)).toBe(1)
+  const answer = readQuestions(directory).find(question => question.id === questionID)!
+  expect(answer).toMatchObject({ status: "answered", option_id: "o2", answer: "Treat it as evidence only" })
+  expect(followsDocument(directory, SOURCE)).toBe(false)
+  const current = readLeanText(directory, INSTRUCTIONS_FILE)
+  expect(current).not.toContain("Awaiting the lawyer's confirmation")
+  expect(current).not.toContain("Use a table for the delivery terms.")
+
+  // The instructions snapshot preceded the human answer. Its projection must
+  // be derived again before the restored intake/research inputs are hashed.
+  const restored = restoreLeanStage(directory, "d1.apply")
+  expect(readQuestions(directory).find(question => question.id === questionID)).toEqual(answer)
+  expect(readLeanText(directory, INSTRUCTIONS_FILE)).toBe(current)
+  expect(followsDocument(directory, SOURCE)).toBe(false)
+  const resume = scriptedLeanModel()
+  const resumed = await runLean(directory, { sessions: resume.port })
+  expect(resumed.status).toBe("completed")
+  expect(resume.agents()).toEqual(["lean-checklist-extract", LEAN_STAGE_AGENTS["package-review"]])
+  for (const step of ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.draft", "d1.apply"] as const) {
+    expect(resumed.stages[step]?.input_sha).toBe(restored.stages[step]?.input_sha)
+    expect(resumed.stages[step]?.finished_at).toBe(completed.stages[step]?.finished_at)
+  }
+  expect(readQuestions(directory).find(question => question.id === questionID)).toEqual(answer)
+}, 120_000)
 
 test("restoring keeps a question whose answer is still queued, and the next run applies that answer", async () => {
   const directory = leanFixtureMatter("lean-restore-")
