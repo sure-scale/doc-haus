@@ -332,13 +332,14 @@ function holdsName(text: string, name: string, flags = "u") {
 const optionKey = (text: string) => normalize(text).toLowerCase().replace(/[\s.,;:!?]+$/, "")
 
 /** At least one supporting passage, each from the request, a matter source
- * or approved research, with non-blank words that source holds. */
-export function basisIssues(directory: string, value: unknown, requireRelevance = false, request?: string): { issues: string[]; rows: { source_id: string; quote: string; relevance?: string }[] } {
-  if (!Array.isArray(value) || !value.length) return { issues: ['"recommendation.basis" must list at least one {"source_id","quote"} passage supporting the recommendation.'], rows: [] }
+ * or approved research, with non-blank words that source holds. `field` names
+ * the reply's list in each issue. */
+export function basisIssues(directory: string, value: unknown, requireRelevance = false, request?: string, field = "recommendation.basis"): { issues: string[]; rows: { source_id: string; quote: string; relevance?: string }[] } {
+  if (!Array.isArray(value) || !value.length) return { issues: [`"${field}" must list at least one {"source_id","quote"} passage that supports it.`], rows: [] }
   const sources = new Set([REQUEST_SOURCE, ...matterSourceIDs(directory), ...approvedResearch(directory).map(row => row.url)])
   const rows = value.map(row => record(row) && typeof row.source_id === "string" && typeof row.quote === "string" ? { source_id: row.source_id.trim(), quote: row.quote, ...(typeof row.relevance === "string" && row.relevance.trim() ? { relevance: row.relevance.trim() } : {}) } : undefined)
   const issues = rows.flatMap((row, index) => {
-    const at = `recommendation.basis[${index}]`
+    const at = `${field}[${index}]`
     // An instruction from one of the lawyer's answers is cited as that answer (instructions.ts).
     if (!row || !(sources.has(row.source_id) || isAnswerSource(row.source_id))) return [`${at}.source_id must be "request", an exact matter source name or an approved research URL.`]
     if (!row.quote.trim()) return [`${at}.quote must be non-empty words copied exactly from that source.`]

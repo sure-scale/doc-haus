@@ -4,7 +4,8 @@ import { parseJsonObject, record } from "./checks"
 import { ADVISOR_FAILED, advisePrompt, basisIssues, checkAdvice } from "./advise"
 import type { DocID } from "./plan"
 import { matterSourceIDs } from "./quotes"
-import { LEAN_CHILD_PERMISSIONS, LEAN_STAGE_AGENTS, type StageSessionPort } from "./stages"
+import { retryPrompt } from "./prompts"
+import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, type StageSessionPort } from "./stages"
 import { readQuestions, shortHash, type LeanModel, type Question, type QuestionAdvice, type StageID } from "./state"
 
 type SourceFact = { fact: string; basis: { source_id: string; quote: string; relevance?: string }[] }
@@ -12,7 +13,10 @@ export type QuestionReview = { source?: SourceFact; advice?: QuestionAdvice; gro
 export type QuestionReviewContext = { sessions: StageSessionPort; parentID: string; model: LeanModel | null; request?: string; questionContext?: string; classifyFact?: boolean; cleanupSession?: boolean }
 
 /** Read-only evidence review before escalation. A source finding goes back to
- * the asking model, never into the lawyer's answers or the request queue. */
+ * the asking model, never into the lawyer's answers or the request queue. An
+ * unchecked reply is retried in its session with the checker's issues, as every
+ * lean job is (adviseQuestion); when the retries run out, or on a runtime
+ * error, the question is asked with its advice unavailable. */
 export async function reviewProposedQuestion(directory: string, question: Question, context: QuestionReviewContext): Promise<QuestionReview> {
   const agent = LEAN_STAGE_AGENTS.advise
   let sessionID: string | undefined
@@ -32,22 +36,37 @@ export async function reviewProposedQuestion(directory: string, question: Questi
       "This question has NOT been presented to the lawyer. If its factual uncertainty is already fully settled in the supplied instructions, an existing user decision or the applicable source, return instead {\"source_fact\":{\"kind\":\"fact\",\"fact\":\"the factual finding, preserving qualifications\",\"basis\":[{\"source_id\":\"exact source name or request\",\"quote\":\"exact words\",\"relevance\":\"why these words settle this exact fact in this matter and document\"}]}}.",
       "This is evidence feedback to the asking model, not an answer by or on behalf of the lawyer. Do not use this outcome for a missing preference, permission, approval, disputed or conflicting fact, uncertain applicability, a new negotiating proposal, or a choice requiring professional judgment. Check relevant contrary evidence before declaring the fact settled. Otherwise give the advice/unavailable response above.",
     ].join("\n") : "This question may require a human choice. Return advice or unavailable only, never source_fact."
-    const reply = await context.sessions.prompt({ directory, sessionID, agent, text: `${prompt}\n\n${preflight}` })
-    const parsed = parseJsonObject(reply)
-    if (!parsed.ok) return failed()
-    if ("source_fact" in parsed.value) {
-      const row = parsed.value.source_fact
-      if ((!context.classifyFact && question.kind !== "fact") || !record(row) || (context.classifyFact && row.kind !== "fact") || typeof row.fact !== "string" || !row.fact.trim() || "recommendation" in parsed.value || "unavailable" in parsed.value) return failed()
-      const basis = basisIssues(directory, row.basis, true, context.request)
-      return basis.issues.length ? failed() : { source: { fact: row.fact.trim(), basis: basis.rows } }
+    let issues: string[] = []
+    for (let index = 0; index <= LEAN_MAX_RETRIES; index += 1) {
+      const reply = await context.sessions.prompt({ directory, sessionID, agent, text: index ? retryPrompt("advise", issues) : `${prompt}\n\n${preflight}` })
+      const checked = checkReview(directory, question, context, reply)
+      if (checked.review) return checked.review
+      issues = checked.issues
     }
-    const checked = checkAdvice(directory, question, reply, { requireRelevance: true, request: context.request })
-    return checked.advice ? { advice: checked.advice, ...(checked.group ? { group: checked.group } : {}) } : failed()
+    return failed()
   } catch {
     return failed()
   } finally {
     if (context.cleanupSession && sessionID) await context.sessions.interrupt?.({ directory, sessionID }).catch(() => undefined)
   }
+}
+
+const SOURCE_FACT_SHAPE = '"source_fact" is only for a settled fact: {"kind":"fact","fact":"the factual finding","basis":[...]}. Otherwise return "recommendation" or "unavailable".'
+
+/** The review a reply gives `question`, or the issues for a retry. */
+function checkReview(directory: string, question: Question, context: QuestionReviewContext, reply: string): { issues: string[]; review?: QuestionReview } {
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok) return { issues: [`Reply with one JSON object. ${parsed.error}`] }
+  if ("source_fact" in parsed.value) {
+    const row = parsed.value.source_fact
+    if (!context.classifyFact && question.kind !== "fact") return { issues: ['This question may require a human choice: return "recommendation" or "unavailable", never "source_fact".'] }
+    if ("recommendation" in parsed.value || "unavailable" in parsed.value) return { issues: ['Return exactly one of "source_fact", "recommendation" or "unavailable".'] }
+    if (!record(row) || (context.classifyFact && row.kind !== "fact") || typeof row.fact !== "string" || !row.fact.trim()) return { issues: [SOURCE_FACT_SHAPE] }
+    const basis = basisIssues(directory, row.basis, true, context.request, "source_fact.basis")
+    return basis.issues.length ? { issues: basis.issues } : { issues: [], review: { source: { fact: row.fact.trim(), basis: basis.rows } } }
+  }
+  const checked = checkAdvice(directory, question, reply, { requireRelevance: true, request: context.request })
+  return checked.advice ? { issues: [], review: { advice: checked.advice, ...(checked.group ? { group: checked.group } : {}) } } : { issues: checked.issues }
 }
 
 function failed(): QuestionReview {

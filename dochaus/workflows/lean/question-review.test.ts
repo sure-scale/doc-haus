@@ -3,6 +3,7 @@ import { nativeQuestionHistory, reviewNativeQuestions } from "../../plugin/legal
 import { basisIssues, checkAdvice } from "./advise"
 import { proposedFactQuestions, reviewProposedQuestion, sourceFactsFeedback, type QuestionReview } from "./question-review"
 import { runLean } from "./runner"
+import { LEAN_MAX_RETRIES } from "./stages"
 import { readLeanState, readQuestions, writeQuestions, type Question } from "./state"
 import { AGENT, SOURCE, cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
@@ -39,6 +40,22 @@ test("an existing human question and a genuine judgment cannot become a source f
   const fresh = matter()
   expect(proposedFactQuestions(fresh, JSON.stringify({ questions: [{ ...FACT, pid: "p0123456789ab", document: "d2" }] }), "changes", "d1")[0])
     .toMatchObject({ pid: "p0123456789ab", document: "d1" })
+})
+
+test("an unchecked review is retried in its session with the checker's issues", async () => {
+  const directory = matter()
+  const context = (model: ReturnType<typeof scriptedModel>) => ({ sessions: model.port, parentID: "ses_owner", model: readLeanState(directory)!.model })
+  const unlisted = { source_fact: { ...FINDING.source_fact, basis: [{ ...BASIS[0]!, source_id: "an unlisted note" }] } }
+  const model = scriptedModel({ [AGENT.advise]: (_prompt, index) => JSON.stringify(index ? FINDING : unlisted) })
+  expect(await reviewProposedQuestion(directory, FACT, context(model))).toEqual({ source: { fact: FINDING.source_fact.fact, basis: BASIS } })
+  const [first, second] = model.prompts.filter(row => row.agent === AGENT.advise)
+  expect(second!.sessionID).toBe(first!.sessionID)
+  expect(second!.text).toContain("did not pass the advise checks")
+  expect(second!.text).toContain("source_fact.basis[0].source_id")
+  // Retries are bounded: a reply that never passes leaves the question to be asked, its advice unavailable.
+  const failing = scriptedModel({ [AGENT.advise]: () => "Not JSON." })
+  expect((await reviewProposedQuestion(directory, FACT, context(failing))).advice).toMatchObject({ unavailable: { reason_code: "advisor_failed" } })
+  expect(failing.count(AGENT.advise)).toBe(1 + LEAN_MAX_RETRIES)
 })
 
 test("native request authority contains actual answers, never assistant-authored question or recommendation prose", () => {
