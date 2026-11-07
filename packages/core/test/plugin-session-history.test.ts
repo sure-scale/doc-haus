@@ -8,8 +8,6 @@ import { OpenAIChat } from "@opencode/ai/protocols"
 import { fromPromise } from "@opencode/plugin/promise/adapter"
 import { Bus } from "@opencode/core/bus"
 import { Database } from "@opencode/core/database/database"
-import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
-import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Location } from "@opencode/core/location"
 import { PluginHost } from "@opencode/core/plugin/host"
 import { Session } from "@opencode/core/session"
@@ -24,15 +22,12 @@ import type { SessionStore } from "@opencode/core/session/store"
 import { Effect, Exit, Schema } from "effect"
 import { sql } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
-import { offlineModels } from "./fixture/models"
-import { PluginTestGraph, PluginTestReplacements } from "./plugin/fixture"
+import { makePluginTestLayer } from "./plugin/fixture"
 
 const it = testEffect(
-  AppNodeBuilder.build(LayerNode.group([PluginTestGraph, Database.node]), [
-    ...PluginTestReplacements,
+  makePluginTestLayer(undefined, undefined, [
     Bus.node.replace(Bus.configured({ persist: true })),
     SessionExecution.node.replace(SessionExecution.noopLayer),
-    offlineModels,
   ]),
 )
 const model = Model.Ref.make({ id: Model.ID.make("fixture-model"), providerID: Provider.ID.make("fixture-provider") })
@@ -55,8 +50,8 @@ describe("Plugin native full session history", () => {
         yield* sessions.synthetic({ sessionID: parent.id, ...note, resume: false })
         yield* SessionInbox.promote(db, bus, parent.id, "steer")
       }
-      yield* bus.publish(SessionEvent.Compaction.Started, { sessionID: parent.id, reason: "manual", recent: "Retained recent material" })
-      yield* bus.publish(SessionEvent.Compaction.Ended, { sessionID: parent.id, reason: "manual", text: "Neutral compaction summary", recent: "Retained recent material" })
+      yield* bus.publish(SessionEvent.Compaction.Started, { sessionID: parent.id, reason: "manual" })
+      yield* bus.publish(SessionEvent.Compaction.Ended, { sessionID: parent.id, reason: "manual", text: "Neutral compaction summary" })
       const laterID = SessionMessage.ID.make("msg_history_later_admission")
       yield* sessions.prompt({ sessionID: parent.id, id: laterID, text: "Later exact request", resume: false })
       yield* SessionInbox.promote(db, bus, parent.id, "steer")
@@ -103,6 +98,8 @@ describe("Plugin native full session history", () => {
         },
       }).effect(host)
     }),
+    // Seeding 201 admitted notes (more than one 200-row page) can pass the 5 s default on a busy machine.
+    { timeout: 30_000 },
   )
 
   it.effect("propagates a native full-history decode failure through Promise context preparation before the stream boundary", () =>

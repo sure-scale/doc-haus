@@ -2,9 +2,9 @@ import { expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { LLM, Message } from "../../packages/ai/src/index"
+import { AI } from "../../packages/ai/src/index"
+import { ai, Message } from "../../packages/ai/src/effect"
 import { OpenAIChat } from "../../packages/ai/src/protocols/openai-chat"
-import { AI } from "../../packages/ai/src/promise"
 import { ConfigMarkdown } from "@opencode/core/config/markdown"
 import { ConfigAgentV1 } from "@opencode/core/v1/config/agent"
 import { ConfigMigrateV1 } from "@opencode/core/v1/config/migrate"
@@ -80,7 +80,7 @@ test("independent ordinary workflows use the installed legal hooks", async () =>
         messages: [Message.make({ id: prompt.id, role: "user", content: prompt.text })], tools: {},
       }
       await hooks.get("context")!(event as never)
-      const body = await lowering.run(OpenAIChat.fromRequest(LLM.request({
+      const body = await lowering.run(OpenAIChat.fromRequest(ai.request({
         model: OpenAIChat.route.with({ endpoint: { baseURL: "http://provider.invalid" } }).model({ id: "model" }),
         system: event.system, messages: event.messages, tools: [],
       })))

@@ -40,3 +40,15 @@ test("host credentials still reach the existing live-probe gate", () => {
   expect(connectedProviderIDs(hosts, [])).toEqual([...GATED_PROVIDERS])
   expect(connectedProviderIDs(hosts.map((item) => ({ ...item, activation: "disabled" })), [])).toEqual([])
 })
+
+test("an external sign-in counts as connected only while its active connection reports no needs_auth", () => {
+  const claude = { ...provider, id: "claude-agent", integrationID: "claude-agent", name: "Claude Agent", activation: "auto" as const }
+  const signedIn: IntegrationInfo = {
+    id: "claude-agent", name: "Claude Agent", methods: [{ id: "claude-login", type: "external", label: "Claude Code login" }],
+    connections: [{ type: "credential", id: "local-sign-in", label: "Claude Agent", method: "external" }],
+  }
+  expect(connectedProviderIDs([claude], [signedIn])).toEqual(["claude-agent"])
+  const needsAuth = { ...signedIn, connections: [{ ...signedIn.connections[0]!, status: { status: "needs_auth" as const, message: "Claude Code is not logged in." } }] }
+  expect(connectedProviderIDs([claude], [needsAuth])).toEqual([])
+  expect(connectedProviderIDs([claude], [{ ...signedIn, connections: [] }])).toEqual([])
+})

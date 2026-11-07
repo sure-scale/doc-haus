@@ -22,7 +22,9 @@ function fixture(filename = "opencode-local.db") {
   const imported: unknown[] = []
   const create = async (input: unknown) => { imported.push(input); return { id: "new-native-credential" } }
   const service = credentialReuse({ directory, targetDirectory: path.join(directory, "target"), create })
-  return { directory, file, key, oauth, imported, service, create }
+  // Pre-v2.1 form answers in `configuration` arrive as native metadata.
+  const migratedKey = { type: "key", key: key.key, metadata: { region: "synthetic", tenant: "test" } }
+  return { directory, file, key, migratedKey, oauth, imported, service, create }
 }
 
 test("discovery returns metadata only without source writes or sidecars", () => {
@@ -62,7 +64,7 @@ test("current opencode.db is independently discoverable and copies only explicit
   for (const secret of [f.key.key, f.oauth.access, f.oauth.refresh, "synthetic-unselected-legacy", "source-key", "source-oauth", f.directory, "synthetic-column-method-not-used"]) expect(wire).not.toContain(secret)
   expect(f.imported).toEqual([])
   await f.service.importSelected({ sourceId: source.id, connectionId: source.connections.find(connection => connection.integrationID === "opencode-go")!.id })
-  expect(f.imported).toEqual([{ integrationID: "opencode-go", label: "Test key", value: f.key }])
+  expect(f.imported).toEqual([{ integrationID: "opencode-go", label: "Test key", value: f.migratedKey }])
   await f.service.importSelected({ sourceId: source.id, connectionId: source.connections.find(connection => connection.integrationID === "openai")!.id })
   expect(f.imported[1]).toEqual({ integrationID: "openai", label: "Test OAuth", value: { ...f.oauth, methodID: "chatgpt-browser" } })
   expect(readdirSync(f.directory)).toEqual(files)
@@ -80,7 +82,7 @@ test("selection imports only one connection, preserving OAuth and API-key metada
   expect(JSON.stringify(result)).not.toContain(f.oauth.access)
   const key = source.connections.find(connection => connection.integrationID === "opencode-go")!
   await f.service.importSelected({ sourceId: source.id, connectionId: key.id })
-  expect(f.imported[1]).toEqual({ integrationID: "opencode-go", label: "Test key", value: f.key })
+  expect(f.imported[1]).toEqual({ integrationID: "opencode-go", label: "Test key", value: f.migratedKey })
   expect(readFileSync(f.file)).toEqual(before)
 })
 

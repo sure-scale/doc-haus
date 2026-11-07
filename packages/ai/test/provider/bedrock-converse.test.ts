@@ -1,27 +1,27 @@
 import { EventStreamCodec } from "@smithy/eventstream-codec"
 import { fromUtf8, toUtf8 } from "@smithy/util-utf8"
 import { describe, expect } from "bun:test"
-import { Effect, Encoding, Ref, Schema, Stream } from "effect"
-import { HttpClientRequest } from "effect/unstable/http"
+import { Effect, Ref, Schema, Stream } from "effect"
+import { Base64 } from "effect/encoding"
+import { HttpClientRequest } from "effect/http"
 import {
-  Media,
+  ai,
   CacheHint,
   GenerationOptions,
   type LanguageModel,
-  LLM,
   LLMEvent,
   LLMRequest,
+  Media,
   Message,
-  Tool,
+  tool,
   ToolCallPart,
   ToolChoice,
   ToolDefinition,
   ToolRuntime,
-} from "../../src/index.js"
+} from "../../src/effect.js"
 import { LLMClient } from "../../src/route.js"
 import { compileRequest } from "../../src/route/client.js"
 import { AmazonBedrock } from "../../src/providers.js"
-import * as BedrockConverse from "../../src/protocols/bedrock-converse.js"
 import { it } from "../lib/effect.js"
 import { withProcessEnv } from "../lib/env.js"
 import { dynamicResponse, fixedResponse } from "../lib/http.js"
@@ -141,7 +141,7 @@ const model = AmazonBedrock.configure({
   apiKey: "test-bearer",
 }).model("anthropic.claude-sonnet-4-5-20250929-v1:0")
 
-const baseRequest = LLM.request({
+const baseRequest = ai.request({
   id: "req_1",
   model,
   system: "You are concise.",
@@ -168,9 +168,9 @@ describe("Bedrock Converse route", () => {
 
   it.effect("omits empty initial system blocks", () =>
     Effect.gen(function* () {
-      const empty = yield* compileRequest(LLM.request({ model, system: "", prompt: "hello" }))
+      const empty = yield* compileRequest(ai.request({ model, system: "", prompt: "hello" }))
       const cachedEmpty = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           system: [{ type: "text", text: "", cache: new CacheHint({ type: "ephemeral" }) }],
           prompt: "hello",
@@ -187,7 +187,7 @@ describe("Bedrock Converse route", () => {
     Effect.gen(function* () {
       const cache = new CacheHint({ type: "ephemeral" })
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           system: [
             { type: "text", text: "", cache },
@@ -277,7 +277,7 @@ describe("Bedrock Converse route", () => {
   it.effect("lowers chronological system updates to wrapped user text in order", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [Message.user("Before."), Message.system("Update."), Message.assistant("After.")],
           cache: "none",
@@ -404,7 +404,7 @@ describe("Bedrock Converse route", () => {
   it.effect("lowers assistant tool-call + tool-result message history", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           id: "req_history",
           model,
           messages: [
@@ -452,7 +452,7 @@ describe("Bedrock Converse route", () => {
       Effect.gen(function* () {
         const call = ToolCallPart.make({ id: "call_unknown", name: item.name, input: { query: "weather" } })
         const error = `No tool named "${item.name}" is currently available. Please use a tool from the available tool list.`
-        const request = LLM.request({
+        const request = ai.request({
           model,
           cache: "none",
           tools: [ToolDefinition.make({ name: "execute", description: "Run code", inputSchema: { type: "object" } })],
@@ -498,28 +498,26 @@ describe("Bedrock Converse route", () => {
       const original = structuredClone(input)
       const call = ToolCallPart.make({ id: "tool_1", name: "edit", input })
       const prepared = yield* compileRequest(
-        LLM.request({ model, messages: [Message.assistant([call])], cache: "none" }),
+        ai.request({ model, messages: [Message.assistant([call])], cache: "none" }),
       )
 
-      expect(prepared.body.messages).toEqual([
-        {
-          role: "assistant",
-          content: [
-            {
-              toolUse: {
-                toolUseId: "tool_1",
-                name: "edit",
-                input: {
-                  path: "file.ts",
-                  edits: [{ oldText: "a", newText: "b" }, null, true, 7, "text", ["kept", { nested: { value: "ok" } }]],
-                  nested: { empty: {}, onlyEmpty: {} },
-                  " ": "preserve whitespace key",
-                },
+      expect(prepared.body.messages[0]).toEqual({
+        role: "assistant",
+        content: [
+          {
+            toolUse: {
+              toolUseId: "tool_1",
+              name: "edit",
+              input: {
+                path: "file.ts",
+                edits: [{ oldText: "a", newText: "b" }, null, true, 7, "text", ["kept", { nested: { value: "ok" } }]],
+                nested: { empty: {}, onlyEmpty: {} },
+                " ": "preserve whitespace key",
               },
             },
-          ],
-        },
-      ])
+          },
+        ],
+      })
       expect(input).toEqual(original)
       expect(call.input).toBe(input)
     }),
@@ -528,7 +526,7 @@ describe("Bedrock Converse route", () => {
   it.effect("keeps empty tool inputs and empties inputs containing only empty keys", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.assistant([
@@ -540,22 +538,20 @@ describe("Bedrock Converse route", () => {
         }),
       )
 
-      expect(prepared.body.messages).toEqual([
-        {
-          role: "assistant",
-          content: [
-            { toolUse: { toolUseId: "tool_empty_key", name: "first", input: {} } },
-            { toolUse: { toolUseId: "tool_empty_object", name: "second", input: {} } },
-          ],
-        },
-      ])
+      expect(prepared.body.messages[0]).toEqual({
+        role: "assistant",
+        content: [
+          { toolUse: { toolUseId: "tool_empty_key", name: "first", input: {} } },
+          { toolUse: { toolUseId: "tool_empty_object", name: "second", input: {} } },
+        ],
+      })
     }),
   )
 
   it.effect("merges parallel tool results into one user message", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           id: "req_parallel_history",
           model,
           messages: [
@@ -606,7 +602,7 @@ describe("Bedrock Converse route", () => {
   it.effect("lowers image content in tool-result messages", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           id: "req_tool_image",
           model,
           messages: [
@@ -652,6 +648,177 @@ describe("Bedrock Converse route", () => {
     }),
   )
 
+  it.effect("hoists tool-result images beside the result for Bedrock GPT models", () =>
+    Effect.gen(function* () {
+      const prepared = yield* compileRequest(
+        ai.request({
+          model: AmazonBedrock.configure({ baseURL: "https://bedrock-runtime.test", apiKey: "test-bearer" }).model(
+            "global.openai.gpt-6-sol",
+          ),
+          messages: [
+            Message.user("What is in this image?"),
+            Message.assistant([ToolCallPart.make({ id: "tool_1", name: "read", input: {} })]),
+            Message.tool({
+              id: "tool_1",
+              name: "read",
+              result: {
+                type: "content",
+                value: [
+                  { type: "text", text: "Image loaded." },
+                  { type: "file", uri: "data:image/png;base64,AAAA", mime: "image/png" },
+                  { type: "file", uri: "data:application/pdf;base64,QkI=", mime: "application/pdf", name: "note.pdf" },
+                ],
+              },
+            }),
+          ],
+          cache: "none",
+        }),
+      )
+
+      expect(prepared.body.messages[2]).toEqual({
+        role: "user",
+        content: [
+          {
+            toolResult: {
+              toolUseId: "tool_1",
+              content: [
+                { text: "Image loaded." },
+                { text: 'Attached file "note.pdf" has document label "note".' },
+                { document: { format: "pdf", name: "note", source: { bytes: "QkI=" } } },
+              ],
+              status: "success",
+            },
+          },
+          { image: { format: "png", source: { bytes: "AAAA" } } },
+        ],
+      })
+    }),
+  )
+
+  it.effect("hoists tool-result images for other Bedrock model families", () =>
+    Effect.gen(function* () {
+      for (const id of [
+        "qwen.qwen3-vl-235b-a22b",
+        "global.xai.grok-4.7",
+        "global.moonshotai.kimi-k3",
+        "us.meta.llama4-scout-17b-instruct-v1:0",
+      ]) {
+        const prepared = yield* compileRequest(
+          ai.request({
+            model: AmazonBedrock.configure({ baseURL: "https://bedrock-runtime.test", apiKey: "test-bearer" }).model(
+              id,
+            ),
+            messages: [
+              Message.assistant([ToolCallPart.make({ id: "tool_1", name: "read", input: {} })]),
+              Message.tool({
+                id: "tool_1",
+                name: "read",
+                result: {
+                  type: "content",
+                  value: [{ type: "file", uri: "data:image/png;base64,AAAA", mime: "image/png" }],
+                },
+              }),
+            ],
+            cache: "none",
+          }),
+        )
+        expect(prepared.body.messages[1]).toEqual({
+          role: "user",
+          content: [
+            { toolResult: { toolUseId: "tool_1", content: [{ text: "See attached image." }], status: "success" } },
+            { image: { format: "png", source: { bytes: "AAAA" } } },
+          ],
+        })
+      }
+    }),
+  )
+  ;["global.anthropic.claude-sonnet-4-5-20250929-v1:0", "us.amazon.nova-pro-v1:0"].forEach((id) => {
+    it.effect(`keeps ${id} tool images inside the result`, () =>
+      Effect.gen(function* () {
+        const prepared = yield* compileRequest(
+          ai.request({
+            model: AmazonBedrock.configure({ baseURL: "https://bedrock-runtime.test", apiKey: "test-bearer" }).model(
+              id,
+            ),
+            messages: [
+              Message.assistant([ToolCallPart.make({ id: "tool_1", name: "read", input: {} })]),
+              Message.tool({
+                id: "tool_1",
+                name: "read",
+                result: {
+                  type: "content",
+                  value: [{ type: "file", uri: "data:image/png;base64,AAAA", mime: "image/png" }],
+                },
+              }),
+            ],
+            cache: "none",
+          }),
+        )
+
+        expect(prepared.body.messages[1]).toEqual({
+          role: "user",
+          content: [
+            {
+              toolResult: {
+                toolUseId: "tool_1",
+                content: [{ image: { format: "png", source: { bytes: "AAAA" } } }],
+                status: "success",
+              },
+            },
+          ],
+        })
+      }),
+    )
+  })
+
+  it.effect("keeps parallel tool results before hoisted images and gives image-only results text", () =>
+    Effect.gen(function* () {
+      const prepared = yield* compileRequest(
+        ai.request({
+          model: AmazonBedrock.configure({ baseURL: "https://bedrock-runtime.test", apiKey: "test-bearer" }).model(
+            "global.openai.gpt-6-sol",
+          ),
+          messages: [
+            Message.assistant([
+              ToolCallPart.make({ id: "tool_1", name: "first", input: {} }),
+              ToolCallPart.make({ id: "tool_2", name: "second", input: {} }),
+            ]),
+            Message.tool({
+              id: "tool_1",
+              name: "first",
+              result: {
+                type: "content",
+                value: [{ type: "file", uri: "data:image/png;base64,AAAA", mime: "image/png" }],
+              },
+            }),
+            Message.tool({
+              id: "tool_2",
+              name: "second",
+              result: {
+                type: "content",
+                value: [
+                  { type: "text", text: "Second image." },
+                  { type: "file", uri: "data:image/jpeg;base64,BBBB", mime: "image/jpeg" },
+                ],
+              },
+            }),
+          ],
+          cache: "none",
+        }),
+      )
+
+      expect(prepared.body.messages[1]).toEqual({
+        role: "user",
+        content: [
+          { toolResult: { toolUseId: "tool_1", content: [{ text: "See attached image." }], status: "success" } },
+          { toolResult: { toolUseId: "tool_2", content: [{ text: "Second image." }], status: "success" } },
+          { image: { format: "png", source: { bytes: "AAAA" } } },
+          { image: { format: "jpeg", source: { bytes: "BBBB" } } },
+        ],
+      })
+    }),
+  )
+
   it.effect("decodes text-delta + messageStop + metadata usage from binary event stream", () =>
     Effect.gen(function* () {
       const body = eventStreamBody(
@@ -682,6 +849,28 @@ describe("Bedrock Converse route", () => {
     }),
   )
 
+  it.effect("raw events carry the event payload without decoder fields or padding", () =>
+    Effect.gen(function* () {
+      const body = eventStreamBody(
+        ["contentBlockDelta", { contentBlockIndex: 0, delta: { text: "Hi" }, p: "abc" }],
+        ["messageStop", { stopReason: "end_turn" }],
+        ["metadata", { usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 } }],
+      )
+      const events = Array.from(
+        yield* LLMClient.stream(LLMRequest.update(baseRequest, { includeRaw: true })).pipe(
+          Stream.runCollect,
+          Effect.provide(fixedBytes(body)),
+        ),
+      )
+
+      expect(events.filter((event) => event.type === "raw").map((event) => event.data)).toEqual([
+        { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "Hi" } } },
+        { messageStop: { stopReason: "end_turn" } },
+        { metadata: { usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 } } },
+      ])
+    }),
+  )
+
   it.effect("rejects truncated event-stream frames after message stop", () =>
     Effect.gen(function* () {
       const partialFrames = [
@@ -699,7 +888,7 @@ describe("Bedrock Converse route", () => {
           reason: { _tag: "InvalidProviderOutput", classification: "incomplete-stream" },
           message: `Incomplete Bedrock Converse event-stream frame: ${partial.length} buffered bytes remain at end of stream`,
         })
-        expect(error.reason.body).toBe(Encoding.encodeBase64(partial))
+        expect(error.reason.body).toBe(Base64.encode(partial))
       }
     }),
   )
@@ -903,7 +1092,7 @@ describe("Bedrock Converse route", () => {
       expect(call.name).toBe("browser.tabs.open")
       const dispatched = yield* ToolRuntime.dispatch(
         {
-          browser_tabs_open: Tool.make({
+          browser_tabs_open: tool({
             description: "Open a tab",
             parameters: Schema.Struct({}),
             success: Schema.String,
@@ -919,7 +1108,7 @@ describe("Bedrock Converse route", () => {
       })
 
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           cache: "none",
           messages: [response.message, Message.tool({ id: call.id, name: call.name, result: dispatched.result })],
@@ -965,7 +1154,7 @@ describe("Bedrock Converse route", () => {
     }),
   )
 
-  it.effect("recovers incomplete tool input at finalization", () =>
+  it.effect("rejects incomplete tool input at finalization", () =>
     Effect.gen(function* () {
       const body = eventStreamBody(
         ["messageStart", { role: "assistant" }],
@@ -982,10 +1171,11 @@ describe("Bedrock Converse route", () => {
       )
       const response = yield* LLMClient.generate(baseRequest).pipe(Effect.provide(fixedBytes(body)))
 
-      expect(response.events.find((event) => event.type === "tool-call")).toMatchObject({
+      expect(response.toolCalls).toEqual([])
+      expect(response.events.find((event) => event.type === "tool-input-error")).toMatchObject({
         id: "tool_1",
         name: "lookup",
-        input: { query: "partial" },
+        raw: '{"query":"partial',
       })
       expect(response.finishReason).toEqual({ normalized: "tool-calls", raw: "end_turn" })
     }),
@@ -1007,10 +1197,10 @@ describe("Bedrock Converse route", () => {
 
   for (const signature of [undefined, "", "   "]) {
     for (const cache of ["none", "auto"] as const) {
-      it.effect(`demotes unsigned reasoning to text (${JSON.stringify(signature)}, cache: ${cache})`, () =>
+      it.effect(`drops unsigned reasoning (${JSON.stringify(signature)}, cache: ${cache})`, () =>
         Effect.gen(function* () {
           const prepared = yield* compileRequest(
-            LLM.request({
+            ai.request({
               model,
               messages: [
                 Message.user("Think"),
@@ -1027,10 +1217,15 @@ describe("Bedrock Converse route", () => {
               cache,
             }),
           )
-          expect(prepared.body.messages[1]).toEqual({
-            role: "assistant",
-            content: [{ text: "Partial thought" }, { cachePoint: { type: "default" } }],
-          })
+          expect(prepared.body.messages).toEqual([
+            {
+              role: "user",
+              content:
+                cache === "auto"
+                  ? [{ text: "Think" }, { text: "Continue" }, { cachePoint: { type: "default" } }]
+                  : [{ text: "Think" }, { text: "Continue" }],
+            },
+          ])
         }),
       )
     }
@@ -1040,7 +1235,7 @@ describe("Bedrock Converse route", () => {
     Effect.gen(function* () {
       const cache = new CacheHint({ type: "ephemeral" })
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.user("Think"),
@@ -1062,11 +1257,11 @@ describe("Bedrock Converse route", () => {
     }),
   )
 
-  it.effect("demotes foreign reasoning while preserving signed, redacted, text, and tool blocks", () =>
+  it.effect("drops foreign reasoning while preserving signed, redacted, text, and tool blocks", () =>
     Effect.gen(function* () {
       const cache = new CacheHint({ type: "ephemeral" })
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.assistant([
@@ -1091,12 +1286,17 @@ describe("Bedrock Converse route", () => {
         {
           role: "assistant",
           content: [
-            { text: "Foreign thought" },
             { reasoningContent: { reasoningText: { text: "Signed thought", signature: "sig_1" } } },
             { reasoningContent: { reasoningText: { text: "", signature: "sig_2" } } },
             { reasoningContent: { redactedContent: "cmVkYWN0ZWQ=" } },
             { text: "Checking" },
             { toolUse: { toolUseId: "call_1", name: "lookup", input: {} } },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            { toolResult: { toolUseId: "call_1", content: [{ text: "Tool result missing" }], status: "error" } },
           ],
         },
       ])
@@ -1122,7 +1322,7 @@ describe("Bedrock Converse route", () => {
       })
 
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.assistant([
@@ -1178,7 +1378,7 @@ describe("Bedrock Converse route", () => {
       })
 
       const prepared = yield* compileRequest(
-        LLM.request({ model: compatible, messages: [response.message], cache: "none" }),
+        ai.request({ model: compatible, messages: [response.message], cache: "none" }),
       )
       expect(prepared.body.messages).toEqual([
         {
@@ -1221,7 +1421,7 @@ describe("Bedrock Converse route", () => {
         },
       ])
 
-      const prepared = yield* compileRequest(LLM.request({ model, messages: [response.message], cache: "none" }))
+      const prepared = yield* compileRequest(ai.request({ model, messages: [response.message], cache: "none" }))
       expect(prepared.body.messages).toEqual([
         {
           role: "assistant",
@@ -1301,11 +1501,11 @@ describe("Bedrock Converse route", () => {
           ),
         ),
       )
-      expect(response.events.filter((event) => event.type === "reasoning-delta" && event.text === "").at(-1)).toEqual({
-        type: "reasoning-delta",
+      expect(response.events.filter((event) => event.type === "reasoning-delta")).toEqual([])
+      expect(response.events.find((event) => event.type === "reasoning-start")).toEqual({
+        type: "reasoning-start",
         id: "reasoning-0",
-        text: "",
-        providerMetadata: { bedrock: { redactedData } },
+        providerMetadata: undefined,
       })
       expect(response.events.find((event) => event.type === "reasoning-end")).toEqual({
         type: "reasoning-end",
@@ -1313,7 +1513,7 @@ describe("Bedrock Converse route", () => {
         providerMetadata: { bedrock: { redactedData } },
       })
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.user("Say hello."),
@@ -1383,6 +1583,13 @@ describe("Bedrock Converse route", () => {
         ),
       )
 
+      expect(response.events.filter((event) => event.type === "reasoning-delta")).toEqual([])
+      expect(response.events.find((event) => event.type === "reasoning-end")).toEqual({
+        type: "reasoning-end",
+        id: "reasoning-0",
+        providerMetadata: { bedrock: { redactedData: "AQID" } },
+        text: undefined,
+      })
       expect(response.message.content).toEqual([
         { type: "reasoning", text: "", providerMetadata: { bedrock: { redactedData: "AQID" } } },
       ])
@@ -1476,9 +1683,9 @@ describe("Bedrock Converse route", () => {
     }),
   )
 
-  it.effect("uses originalMessage from model stream exception frames", () =>
+  it.effect("uses originalMessage and originalStatusCode from model stream exception frames", () =>
     Effect.gen(function* () {
-      const error = yield* LLMClient.generate(baseRequest).pipe(
+      const serverError = yield* LLMClient.generate(baseRequest).pipe(
         Effect.provide(
           fixedBytes(
             exceptionFrame("modelStreamErrorException", {
@@ -1489,8 +1696,20 @@ describe("Bedrock Converse route", () => {
         ),
         Effect.flip,
       )
+      const clientError = yield* LLMClient.generate(baseRequest).pipe(
+        Effect.provide(
+          fixedBytes(
+            exceptionFrame("modelStreamErrorException", {
+              originalMessage: "Upstream rejected request",
+              originalStatusCode: 400,
+            }),
+          ),
+        ),
+        Effect.flip,
+      )
 
-      expect(error).toMatchObject({ reason: { _tag: "ProviderInternal" }, message: "Upstream model failed" })
+      expect(serverError).toMatchObject({ reason: { _tag: "ProviderInternal" }, message: "Upstream model failed" })
+      expect(clientError).toMatchObject({ reason: { _tag: "InvalidRequest" }, message: "Upstream rejected request" })
     }),
   )
 
@@ -1673,7 +1892,7 @@ describe("Bedrock Converse route", () => {
     Effect.gen(function* () {
       const cache = new CacheHint({ type: "ephemeral" })
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           id: "req_cache",
           model,
           system: [{ type: "text", text: "System prefix.", cache }],
@@ -1715,7 +1934,7 @@ describe("Bedrock Converse route", () => {
   it.effect("lowers image media into Bedrock image blocks", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           id: "req_image",
           model,
           messages: [
@@ -1752,7 +1971,7 @@ describe("Bedrock Converse route", () => {
   it.effect("base64-encodes Uint8Array image bytes", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           id: "req_image_bytes",
           model,
           messages: [
@@ -1776,7 +1995,7 @@ describe("Bedrock Converse route", () => {
   it.effect("rejects image media that is not valid base64", () =>
     Effect.gen(function* () {
       const error = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [Message.user({ type: "media", media: Media.base64("not base64!", "image/png") })],
         }),
@@ -1790,7 +2009,7 @@ describe("Bedrock Converse route", () => {
   it.effect("rejects remote image URLs that were not materialized", () =>
     Effect.gen(function* () {
       const error = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.user({
@@ -1809,7 +2028,7 @@ describe("Bedrock Converse route", () => {
   it.effect("lowers document media into Bedrock document blocks with format and name", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           id: "req_doc",
           model,
           cache: "none",
@@ -1886,7 +2105,7 @@ describe("Bedrock Converse route", () => {
   ].forEach((item) => {
     it.effect(`normalizes ${item.label} in user and tool-result documents`, () =>
       Effect.gen(function* () {
-        const request = LLM.request({
+        const request = ai.request({
           model,
           cache: "none",
           messages: [
@@ -1934,7 +2153,7 @@ describe("Bedrock Converse route", () => {
   it.effect("keeps colliding document labels distinct within a request", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           cache: "none",
           messages: [
@@ -1965,7 +2184,7 @@ describe("Bedrock Converse route", () => {
   it.effect("annotates renamed document-only messages with their original filename", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           cache: "none",
           messages: [
@@ -1993,7 +2212,7 @@ describe("Bedrock Converse route", () => {
   it.effect("quotes original filenames in annotations and omits redundant mappings", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           cache: "none",
           messages: [
@@ -2021,7 +2240,7 @@ describe("Bedrock Converse route", () => {
   it.effect("lowers document media in tool results", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           cache: "none",
           messages: [
@@ -2074,7 +2293,7 @@ describe("Bedrock Converse route", () => {
   it.effect("rejects remote media URLs in tool results", () =>
     Effect.gen(function* () {
       const error = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.assistant([ToolCallPart.make({ id: "call_1", name: "read", input: {} })]),
@@ -2105,7 +2324,7 @@ describe("Bedrock Converse route", () => {
   it.effect("rejects unsupported image media types", () =>
     Effect.gen(function* () {
       const error = yield* compileRequest(
-        LLM.request({
+        ai.request({
           id: "req_bad_image",
           model,
           messages: [Message.user([{ type: "media", media: Media.base64("x", "image/svg+xml") }])],
@@ -2119,7 +2338,7 @@ describe("Bedrock Converse route", () => {
   it.effect("rejects unsupported document media types", () =>
     Effect.gen(function* () {
       const error = yield* compileRequest(
-        LLM.request({
+        ai.request({
           id: "req_bad_doc",
           model,
           messages: [
@@ -2132,11 +2351,11 @@ describe("Bedrock Converse route", () => {
     }),
   )
 
-  it.effect("maps ttlSeconds >= 3600 to cachePoint ttl: '1h'", () =>
+  it.effect("sends the hint ttl on cachePoint", () =>
     Effect.gen(function* () {
-      const cache = new CacheHint({ type: "ephemeral", ttlSeconds: 3600 })
+      const cache = new CacheHint({ type: "ephemeral", ttl: "1h" })
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           system: [{ type: "text", text: "system", cache }],
           prompt: "hi",
@@ -2153,7 +2372,7 @@ describe("Bedrock Converse route", () => {
     Effect.gen(function* () {
       const cache = new CacheHint({ type: "ephemeral" })
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           tools: [{ name: "lookup", description: "lookup", inputSchema: { type: "object", properties: {} }, cache }],
           messages: [
@@ -2185,7 +2404,7 @@ describe("Bedrock Converse route", () => {
     Effect.gen(function* () {
       const cache = new CacheHint({ type: "ephemeral" })
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           system: [
             { type: "text", text: "a", cache },
@@ -2241,7 +2460,7 @@ describe("Bedrock Converse recorded", () => {
     Effect.gen(function* () {
       const llm = yield* LLMClient.Service
       const response = yield* llm.generate(
-        LLM.request({
+        ai.request({
           id: "recorded_bedrock_text",
           model: recordedModel(),
           system: "Reply with the single word 'Hello'.",
@@ -2262,7 +2481,7 @@ describe("Bedrock Converse recorded", () => {
     Effect.gen(function* () {
       const llm = yield* LLMClient.Service
       const response = yield* llm.generate(
-        LLM.request({
+        ai.request({
           id: "recorded_bedrock_tool_call",
           model: recordedModel(),
           system: "Call tools exactly as requested.",
@@ -2297,7 +2516,7 @@ describe("Bedrock Converse recorded", () => {
   recorded.effect.with("continues after parallel tool results", { tags: ["tool", "tool-loop", "parallel"] }, () =>
     Effect.gen(function* () {
       const response = yield* LLMClient.generate(
-        LLM.request({
+        ai.request({
           id: "recorded_bedrock_parallel_tool_results",
           model: recordedModel(),
           system: "After receiving both tool results, reply exactly: Paris is sunny; London is rainy.",

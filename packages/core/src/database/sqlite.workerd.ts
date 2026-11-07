@@ -1,8 +1,8 @@
 import { Context, Effect, Exit, Fiber, Layer, Scope, Semaphore } from "effect"
-import { Reactivity } from "effect/unstable/reactivity"
-import { SqlClient, Statement } from "effect/unstable/sql"
-import type { Connection } from "effect/unstable/sql/SqlConnection"
-import { classifySqliteError, SqlError, UnknownError } from "effect/unstable/sql/SqlError"
+import { Reactivity } from "effect/reactivity"
+import { SqlClient, Statement } from "effect/sql"
+import type { Connection } from "effect/sql/SqlConnection"
+import { classifySqliteError, SqlError, UnknownError } from "effect/sql/SqlError"
 import type { NativeTransactionSqlClient } from "./drizzle/effect-sqlite/session.js"
 import { Sqlite } from "./sqlite.js"
 
@@ -185,6 +185,7 @@ const make = (options: Config) =>
         compiler,
         transactionAcquirer,
         transactionService: WorkerdTransaction,
+        driver: "sqlite-do",
         spanAttributes: [
           ...(options.spanAttributes ? Object.entries(options.spanAttributes) : []),
           [ATTR_DB_SYSTEM_NAME, "sqlite"],

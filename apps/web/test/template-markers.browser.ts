@@ -62,7 +62,7 @@ const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: request => {
   const { pathname } = new URL(request.url)
   if (pathname === "/harness.js") return new Response(script, { headers: { "content-type": "text/javascript" } })
   if (pathname === "/app.css") return new Response(styles, { headers: { "content-type": "text/css" } })
-  if (pathname === "/template.docx") return new Response(bytes, { headers: { "content-type": `${CT}.document` } })
+  if (pathname === "/template.docx") return new Response(new Uint8Array(bytes), { headers: { "content-type": `${CT}.document` } })
   if (pathname.startsWith("/wasm/")) {
     const file = path.join(wasmDir, decodeURIComponent(pathname.slice("/wasm/".length)))
     return file.startsWith(wasmDir + path.sep) && existsSync(file) && statSync(file).isFile() ? new Response(Bun.file(file)) : new Response("Not found", { status: 404 })

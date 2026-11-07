@@ -190,10 +190,10 @@ try {
     const matter = await (await api("/matters", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Synthetic Counterparty Markup" }) })).json() as { id: string; dir: string }
     expect(matter.dir.startsWith(dataRoot)).toBe(true)
     Object.assign(file, { matter: matter.id, dir: matter.dir, path: path.join(matter.dir, NAME) })
-    const source = new FormData(); source.append("file", new File([counterpartyMarkupDocx()], NAME))
+    const source = new FormData(); source.append("file", new File([new Uint8Array(counterpartyMarkupDocx())], NAME))
     const uploaded = await api(`/matters/${matter.id}/documents`, { method: "POST", body: source })
     expect(uploaded.status).toBe(200)
-    const deliverable = new FormData(); deliverable.append("file", new File([counterpartyMarkupDocx()], DELIVERABLE))
+    const deliverable = new FormData(); deliverable.append("file", new File([new Uint8Array(counterpartyMarkupDocx())], DELIVERABLE))
     expect((await api(`/matters/${matter.id}/deliverables`, { method: "POST", body: deliverable })).status).toBe(200)
     hashes.seeded = hash(await Bun.file(file.path).bytes())
     expect(hashes.seeded).toBe(hash(counterpartyMarkupDocx()))

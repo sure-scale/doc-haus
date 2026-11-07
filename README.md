@@ -56,6 +56,12 @@ matter to explore. Opening setup does not make a paid model
 request; connection tests run only when requested. Provider access and quota
 remain subject to the provider's account and organization policies.
 
+An optional local integration can use Claude Code on the same computer when you
+choose it in setup. It needs `claude` 2.1.248 or newer on `PATH`, signed in with
+`claude auth login`; set `OPENCODE_CLAUDE_PATH` to the executable to use another
+copy. doc.haus stores no Claude credentials, and Claude Code's own settings,
+instructions and memory are not loaded.
+
 Only Bun is required, and the launcher installs it. The stack starts without
 declined tools, and a declined set is not offered again until another tool goes
 missing. The container includes every tool. See [setup](docs/setup.md).

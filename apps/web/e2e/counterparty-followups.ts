@@ -236,7 +236,7 @@ try {
     expect(matter.dir.startsWith(dataRoot)).toBe(true)
     Object.assign(file, { matter: matter.id, dir: matter.dir })
     for (const name of [BROKEN, CLEAN, UNCHECKED]) {
-      const body = new FormData(); body.append("file", new File([numberedMarkupDocx()], name))
+      const body = new FormData(); body.append("file", new File([new Uint8Array(numberedMarkupDocx())], name))
       expect((await api(`/matters/${matter.id}/documents`, { method: "POST", body })).status).toBe(200)
     }
   })
@@ -287,7 +287,7 @@ try {
   })
 
   await step("5 a reply saved with no decision is listed as the replies it added", async () => {
-    const body = new FormData(); body.append("file", new File([counterpartyMarkupDocx()], MARKUP))
+    const body = new FormData(); body.append("file", new File([new Uint8Array(counterpartyMarkupDocx())], MARKUP))
     expect((await api(`/matters/${file.matter}/documents`, { method: "POST", body })).status).toBe(200)
     const viewer = await openDocument(MARKUP)
     const panel = viewer.locator("#document-markup")
@@ -313,7 +313,7 @@ try {
   })
 
   await step("6 each of their changes and threads shows what the drafting run did with it", async () => {
-    const body = new FormData(); body.append("file", new File([counterpartyMarkupDocx()], ANSWERED))
+    const body = new FormData(); body.append("file", new File([new Uint8Array(counterpartyMarkupDocx())], ANSWERED))
     expect((await api(`/matters/${file.matter}/documents`, { method: "POST", body })).status).toBe(200)
     const bytes = new Uint8Array(await (await api(`/matters/${file.matter}/documents/content?name=${encodeURIComponent(ANSWERED)}`)).arrayBuffer())
     // A run revising these bytes: the delivery-period replace made in the
@@ -430,7 +430,7 @@ try {
   })
 
   await step("7 the save bar counts only their changes, not the lawyer's own edits beside them", async () => {
-    const body = new FormData(); body.append("file", new File([counterpartyMarkupDocx()], OWN))
+    const body = new FormData(); body.append("file", new File([new Uint8Array(counterpartyMarkupDocx())], OWN))
     expect((await api(`/matters/${file.matter}/documents`, { method: "POST", body })).status).toBe(200)
     // A doc.haus proposal on clause 9, accepted through the proposals route:
     // the file holds it as the lawyer's own tracked deletion and insertion.

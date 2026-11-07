@@ -1,4 +1,4 @@
-import { LLM, LLMClient } from "@opencode/ai"
+import { ai, LLMClient } from "@opencode/ai/effect"
 import { Model } from "@opencode/core/model"
 import { ModelResolver } from "@opencode/core/model-resolver"
 import { SessionID } from "@opencode/schema/session-id"
@@ -38,7 +38,7 @@ export function probeProvider(ref: Model.Ref) {
     if (!model?.enabled) return unavailableModel
     const resolved = yield* ModelResolver.Service.use(resolver => resolver.resolve(ref))
     if (!resolved) return unavailableModel
-    yield* LLMClient.Service.use(client => client.generate(LLM.request({
+    yield* LLMClient.Service.use(client => client.generate(ai.request({
       model: resolved.model,
       prompt: "Reply with OK.",
       http: { headers: { "x-opencode-session": SessionID.create() } },
@@ -84,7 +84,10 @@ export function providerTestFailure(error: unknown): ProviderTestResult {
           /\bkey\b[\s\S]{0,80}\bexpir(?:ed|y|ation)\b|\bexpir(?:ed|y|ation)\b[\s\S]{0,80}\bkey\b/i.test(text.slice(0, 8192)))
       }
     }
-    if (item._tag === "Generate.ModelSelectionError" || typeof item._tag === "string" && item._tag.startsWith("SessionRunnerModel.")) model = true
+    // Core Generate reports an unknown, unsupported or unresolvable model with these classes.
+    if (item._tag === "Generate.ModelNotFoundError" || item._tag === "Generate.UnsupportedModelError" ||
+      item._tag === "Generate.InvalidRequestError" && typeof item.field === "string" && /^model(?:\.|$)/.test(item.field) ||
+      typeof item._tag === "string" && item._tag.startsWith("SessionRunnerModel.")) model = true
     for (const key of ["reason", "cause", "error", "defect"]) if (item[key] !== undefined) queue.push(item[key])
     if (Array.isArray(item.reasons)) queue.push(...item.reasons.slice(0, 8))
   }

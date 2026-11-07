@@ -1,4 +1,4 @@
-import { LLM, LLMClient } from "@opencode/ai"
+import { ai, LLMClient } from "@opencode/ai/effect"
 import { Model } from "@opencode/core/model"
 import { ModelResolver } from "@opencode/core/model-resolver"
 import { SessionID } from "@opencode/schema/session-id"
@@ -16,7 +16,7 @@ export function concurrencyProbe(ref: Model.Ref) {
     if (!model?.enabled) return { ok: false, kind: "model" } as const
     const resolved = yield* ModelResolver.Service.use(resolver => resolver.resolve(ref))
     if (!resolved) return { ok: false, kind: "model" } as const
-    const result = yield* LLMClient.Service.use(client => client.generate(LLM.request({
+    const result = yield* LLMClient.Service.use(client => client.generate(ai.request({
       model: resolved.model,
       prompt: "Write eight short friendly sentences, each on a separate line, about everyday activities.",
       http: { headers: { "x-opencode-session": SessionID.create() } },

@@ -1,4 +1,4 @@
-import { LLMClient } from "@opencode/ai"
+import { LLMClient } from "@opencode/ai/effect"
 import { llmClient } from "@opencode/core/effect/app-node-platform"
 import { Context, Effect, Layer, Stream } from "effect"
 import { modelConcurrency, readEffectiveSettings } from "./effective-settings"

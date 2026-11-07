@@ -12,7 +12,10 @@ export function connectedProviderIDs(providers: ProviderInfo[], integrations: In
     if (isRemovedProvider(provider.id) || provider.activation === "disabled") return false
     if (GATED_PROVIDERS.has(provider.id)) return true
     const integration = byID.get(provider.integrationID ?? provider.id)
-    if (integration?.connections.length) return true
+    // The first connection is the active one. An integration that reports
+    // needs_auth, such as an external sign-in that is missing, is not ready.
+    const active = integration?.connections[0]
+    if (active) return active.status?.status !== "needs_auth"
     // Native local-provider discovery removes its integration once no sign-in is needed.
     return provider.integrationID === undefined && !integration
   }).map((provider) => provider.id)

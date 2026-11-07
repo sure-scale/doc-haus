@@ -13,7 +13,7 @@ import { SessionSchema } from "./schema.js"
 import { SessionStore } from "./store.js"
 import { toSessionError } from "./to-session-error.js"
 import { SessionInbox } from "./inbox.js"
-import { SessionInboxTable, SessionMessageTable, SessionPendingTable, SessionTable } from "./sql.js"
+import { SessionInboxTable, SessionMessageTable, SessionTable } from "./sql.js"
 import { eq, asc } from "drizzle-orm"
 import { EventSequenceTable } from "../event/sql.js"
 
@@ -30,15 +30,12 @@ export interface Interface {
    * Interrupt active work owned by this process. Idle interruption is a no-op. Resolves once
    * the interruption is accepted; cleanup settles asynchronously in the execution fiber.
    * Returns whether an active execution was interrupted. Compose with `awaitIdle` when
-   * settlement matters. `awaitSettlement` waits only for the interrupted execution,
-   * rather than fresh work admitted during its cleanup.
+   * settlement matters.
    */
   readonly interrupt: (
     sessionID: SessionSchema.ID,
     options?: {
       readonly resume?: boolean
-      readonly reason?: "user" | "inactivity"
-      readonly awaitSettlement?: boolean
     },
   ) => Effect.Effect<boolean>
   /** Preparation/count and native execution share one coordinator reservation. */
@@ -53,7 +50,7 @@ export interface Interface {
 /** Routes execution from a Session ID to its selected instance's runner. */
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionExecution") {}
 
-type InterruptReason = "user" | "shutdown" | "inactivity"
+type InterruptReason = "user" | "shutdown"
 
 export function terminal(exit: Exit.Exit<void, SessionRunner.RunError>, reason?: InterruptReason) {
   if (Exit.isSuccess(exit)) return { type: "succeeded" as const }
@@ -97,11 +94,12 @@ export const layer = Layer.effect(
       force: boolean,
       continuation?: SessionRunner.Continuation,
       promotable: SessionInbox.Promotable = "input",
+      stepped = false,
     ): Effect.fn.Return<void, SessionRunner.RunError> {
       const session = yield* store.get(sessionID)
       if (!session) return yield* Effect.die(new Error(`Session not found: ${sessionID}`))
       const result = yield* SessionRunner.Service.use((runner) =>
-        runner.drain({ sessionID, force, continuation, promotable }),
+        runner.drain({ sessionID, force, continuation, promotable, stepped }),
       ).pipe(
         instances.provide(session),
         Effect.tapCause((cause) =>
@@ -112,8 +110,8 @@ export const layer = Layer.effect(
       )
       return yield* SessionRunner.DrainResult.$match(result, {
         Complete: () => Effect.void,
-        Moved: (result) => drain(sessionID, false, result.continuation, promotable),
-        Reloaded: (result) => drain(sessionID, result.force, result.continuation, promotable),
+        Moved: (result) => drain(sessionID, false, result.continuation, promotable, result.stepped),
+        Reloaded: (result) => drain(sessionID, result.force, result.continuation, promotable, result.stepped),
       })
     })
     const coordinator = yield* SessionRunCoordinator.make<SessionSchema.ID, SessionRunner.RunError, InterruptReason>({
@@ -162,15 +160,14 @@ export const layer = Layer.effect(
           const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie)
           const messages = yield* db.select().from(SessionMessageTable).where(eq(SessionMessageTable.session_id, sessionID)).orderBy(asc(SessionMessageTable.seq)).all().pipe(Effect.orDie)
           const inbox = yield* db.select().from(SessionInboxTable).where(eq(SessionInboxTable.session_id, sessionID)).all().pipe(Effect.orDie)
-          const pending = yield* db.select().from(SessionPendingTable).where(eq(SessionPendingTable.session_id, sessionID)).all().pipe(Effect.orDie)
           const sequence = yield* db.select().from(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, sessionID)).get().pipe(Effect.orDie)
-          return { row, messages, inbox, pending, sequence }
+          return { row, messages, inbox, sequence }
         })
         const before = yield* snapshot
         // No terminal/user stop, no inbox, and an actual unfinished activity.
         // A lost zero counter is never treated as a known prior zero.
         if (!before.row?.parent_id || before.row.time_suspended !== null || before.row.time_idle !== null ||
-          before.row.idle_outcome !== null || before.inbox.length || before.pending.length ||
+          before.row.idle_outcome !== null || before.inbox.length ||
           !before.messages.some(message => message.type === "user") ||
           !before.messages.some(message => message.type === "assistant") || before.messages.at(-1)?.type === "idle") return false
         if (!(yield* authorize) || !quiet()) return false
@@ -187,7 +184,7 @@ export const layer = Layer.effect(
       isActive: coordinator.isActive,
       interrupt: (sessionID, options) =>
         Effect.gen(function* () {
-          const interrupted = yield* coordinator.interrupt(sessionID, options?.reason ?? "user", options)
+          const interrupted = yield* coordinator.interrupt(sessionID, "user")
           if (!options?.resume) return interrupted
           // Resume steering input and between-turn control work from the interrupted
           // intent. Queued next-turn prompts stay parked: a steer-scoped drain never

@@ -37,7 +37,7 @@ export type Settings = ProviderPackage.Settings &
 const route = Route.make({
   id: "google-vertex-messages",
   provider: id,
-  providerMetadataKey: "anthropic",
+  providerMetadataKey: "vertex",
   protocol: Protocol.make({
     id: AnthropicMessages.protocol.id,
     body: {
@@ -54,6 +54,7 @@ const route = Route.make({
         ),
     },
     stream: AnthropicMessages.protocol.stream,
+    supportsEffortUpdates: AnthropicMessages.protocol.supportsEffortUpdates,
   }),
   endpoint: Endpoint.path(({ request }) => `/${request.model.id}:streamRawPredict`),
   auth: Auth.none,
@@ -76,7 +77,7 @@ const configuredRoute = (input: Config) => {
     project: inputProject,
     ...rest
   } = input
-  const location = GoogleVertexShared.location(inputLocation, "global")
+  const location = GoogleVertexShared.location(inputLocation)
   const project = GoogleVertexShared.project(inputProject)
   return route.with({
     ...rest,
@@ -103,17 +104,17 @@ export const provider = {
   configure,
 }
 
-export const model: ProviderPackage.Definition<Settings, AnthropicMessages.ProviderOptionsInput>["model"] = (
+export const model: ProviderPackage.Model<Settings, AnthropicMessages.ProviderOptionsInput> = (
   modelID,
-  { accessToken, apiKey, baseURL, body, headers, location, project, ...providerOptions },
+  { accessToken, apiKey, baseURL, body, headers, location, project, ...providerOptions }: Settings = {},
 ) => {
   if (apiKey !== undefined)
     throw new ProviderConfigurationError({ provider: id, message: "Google Vertex Messages does not support API keys" })
   return configure({
     accessToken,
     baseURL,
-    headers: headers === undefined ? undefined : { ...headers },
-    http: body === undefined ? undefined : { body: { ...body } },
+    headers,
+    http: body === undefined ? undefined : { body },
     location,
     project,
     providerOptions,

@@ -2,7 +2,7 @@ import { startupObservation, startupObservationEnabled, startupObservationSpan }
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { appendTrace, describeError, ensureTraceRoot, resolveTraceRoot, sha256, TRACE_ROOT_ENV } from "../../../dochaus/lib/trace-sink"
 import { NodeServices } from "@effect/platform-node"
-import { LLMClient } from "@opencode/ai"
+import { LLMClient } from "@opencode/ai/effect"
 import { RequestExecutor } from "@opencode/ai/route"
 import { Config } from "@opencode/core/config"
 import { AbsolutePath } from "@opencode/core/schema"
@@ -16,7 +16,6 @@ import { Session } from "@opencode/core/session"
 import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { Location } from "@opencode/core/location"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
-import { ManagedPolicy } from "@opencode/core/managed-policy"
 import { WellKnown } from "@opencode/core/wellknown"
 import { Watcher } from "@opencode/core/filesystem/watcher"
 import { nativeFailureEvidenceLogger } from "./native-failure-evidence"
@@ -33,19 +32,19 @@ import { Session as SessionSchema } from "@opencode/schema/session"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
+import { AppProcess } from "@opencode/util/process"
 import { Context, Deferred, Effect, Layer, Logger, Option, References, Schema, Scope, Tracer } from "effect"
-import { HttpClient, HttpEffect, HttpMiddleware, HttpRouter, HttpServer, HttpServerRequest } from "effect/unstable/http"
+import { HttpClient, HttpEffect, HttpMiddleware, HttpRouter, HttpServer, HttpServerRequest } from "effect/http"
 import path from "node:path"
 import { existsSync, mkdirSync, openSync, closeSync, readFileSync, unlinkSync, writeFileSync, realpathSync } from "node:fs"
 import { dataPaths } from "./data-paths"
-import { legalConfigLayer, legalManagedPolicy } from "./config-layer"
+import { legalConfigLayer } from "./config-layer"
 import { generationAdmissionError } from "./generation-admission"
 import { modelConcurrency, readEffectiveSettings } from "./effective-settings"
 import { createReusedCredential, credentialReuse, credentialReuseHandler, nativeCredentialDirectory } from "./credential-reuse"
 import { researchConsentStatus } from "../../../dochaus/lib/research-consent-status"
 import { providerCandidates, ProviderCandidateError } from "./provider-candidate"
 import { providerCatalog } from "./provider-catalog"
-import { modelHttp } from "./model-http"
 import { probeProvider, providerTestCache, providerTestFailure, providerTestInput, unavailableModel } from "./provider-health"
 import { concurrencyProbe, runConcurrencyTest, type ConcurrencyProbe } from "./concurrency-test"
 import { limitModelClient, modelConcurrencyNode } from "./model-concurrency"
@@ -91,7 +90,7 @@ if (tracing) process.env[TRACE_ROOT_ENV] = tracing
 const legalConfig = makeLocationNode({
   service: Config.Service,
   layer: legalConfigLayer(legal),
-  deps: [Watcher.node, Bus.node, FSUtil.node, Global.node, Location.node, Credential.node, WellKnown.node],
+  deps: [Watcher.node, Bus.node, FSUtil.node, Global.node, Location.node, Credential.node, WellKnown.node, AppProcess.node],
 })
 
 const ChildInput = Schema.Struct({
@@ -177,7 +176,6 @@ await runEngine(
       })
       const building = Layer.build(
         createRoutes(options, () => [], [
-            modelHttp,
             modelConcurrencyNode,
             Global.node.replace(Global.layerWith({
               data: path.join(runtime, "data", "opencode"),
@@ -195,9 +193,9 @@ await runEngine(
               add: () => Effect.fail(new Error("Remote configuration discovery is disabled in the legal engine")),
               remove: () => Effect.void,
               resolve: () => Effect.succeed([]),
+              cached: () => Effect.succeed([]),
             })),
             Config.node.replace(legalConfig),
-            ManagedPolicy.node.replace(legalManagedPolicy),
             InstructionDiscovery.node.replace(InstructionDiscovery.configured({ global: false, project: false })),
         ]).pipe(Layer.provide(HttpServer.layerServices)),
       )

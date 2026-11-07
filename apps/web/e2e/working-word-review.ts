@@ -316,10 +316,10 @@ try {
   await step("1 seed synthetic DOCX with a numbered list and a table through the isolated ingest", async () => {
     const matter = await (await api("/matters", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Synthetic Working Word Review" }) })).json() as { id: string; dir: string }
     expect(matter.dir.startsWith(dataRoot)).toBe(true)
-    const form = new FormData(); form.append("file", new File([syntheticDocx()], NAME))
+    const form = new FormData(); form.append("file", new File([new Uint8Array(syntheticDocx())], NAME))
     expect((await api(`/matters/${matter.id}/deliverables`, { method: "POST", body: form })).status).toBe(200)
     Object.assign(file, { matter: matter.id, dir: matter.dir, path: path.join(matter.dir, NAME) })
-    const other = new FormData(); other.append("file", new File([syntheticDocx()], OTHER))
+    const other = new FormData(); other.append("file", new File([new Uint8Array(syntheticDocx())], OTHER))
     expect((await api(`/matters/${matter.id}/deliverables`, { method: "POST", body: other })).status).toBe(200)
     hashes.seeded = await current()
     seeded = inspect(await Bun.file(file.path).bytes())
@@ -414,7 +414,7 @@ try {
 
   await step("5 API refuses the stale card, a hashless revision upload and a deliverable overwrite", async () => {
     const [stale] = await pending()
-    const form = () => { const body = new FormData(); body.append("file", new File([syntheticDocx()], NAME)); return body }
+    const form = () => { const body = new FormData(); body.append("file", new File([new Uint8Array(syntheticDocx())], NAME)); return body }
     expect((await api(`/matters/${file.matter}/redlines/${stale.id}/accept`, { method: "POST" })).status).toBe(409)
     expect(await current()).toBe(hashes.accepted)
     expect((await api(`/matters/${file.matter}/documents/revisions`, { method: "POST", body: form() })).status).toBe(409)

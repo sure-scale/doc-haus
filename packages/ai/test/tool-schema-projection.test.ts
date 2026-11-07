@@ -1,14 +1,201 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
-import { LLM } from "../src/index.js"
-import { OpenAIChat } from "../src/protocols.js"
+import { Effect, Schema, SchemaGetter } from "effect"
+import { ai } from "../src/effect.js"
+import { AnthropicMessages, Gemini, OpenAIChat, OpenAIResponses } from "../src/protocols.js"
 import { ToolSchemaProjection } from "../src/protocols/utils/tool-schema.js"
-import { Tool, toDefinitions } from "../src/tool.js"
+import { toDefinitions, tool } from "../src/tool.js"
 import { Auth } from "../src/route.js"
 import { compileRequest } from "../src/route/client.js"
 import { it } from "./lib/effect.js"
 
+const Token = Schema.Struct({ token: Schema.String })
+const token = {
+  type: "object",
+  properties: { token: { type: "string" } },
+  required: ["token"],
+  additionalProperties: false,
+}
+const fromEmpty = {
+  decode: SchemaGetter.transform(() => ({ token: "default" })),
+  encode: SchemaGetter.transform(() => ({})),
+}
+// Callers send `{}`; the handler receives a token.
+const defaulted = Schema.Struct({}).pipe(Schema.decodeTo(Token, fromEmpty))
+// Callers send a token; the handler receives an empty struct.
+const reversed = Token.pipe(
+  Schema.decodeTo(Schema.Struct({}), {
+    decode: SchemaGetter.transform(() => ({})),
+    encode: SchemaGetter.transform(() => ({ token: "default" })),
+  }),
+)
+
 describe("tool schema projections", () => {
+  test("only normalizes typed empty input structs, preserving raw schemas and output schemas", () => {
+    const schema = { not: { type: "null" } }
+    const definitions = toDefinitions({
+      typed: tool({
+        description: "Typed",
+        parameters: Schema.Struct({}),
+        success: Schema.Struct({}),
+        execute: () => Effect.succeed({}),
+      }),
+      raw: tool({ description: "Raw", jsonSchema: schema, execute: () => Effect.succeed({}) }),
+    })
+    expect(definitions[0]?.inputSchema).toEqual({ type: "object", properties: {}, additionalProperties: false })
+    expect(definitions[0]?.outputSchema).toEqual(schema)
+    expect(definitions[1]?.inputSchema).toEqual(schema)
+  })
+
+  test("retains empty input descriptions and preserves named outputs and explicit raw schemas", () => {
+    const parameters = Schema.Struct({}).annotate({ identifier: "Ping", description: "No arguments" })
+    const raw = { $ref: "#/$defs/Raw", $defs: { Raw: { not: { type: "null" }, description: "Raw schema" } } }
+    const definitions = toDefinitions({
+      typed: tool({ description: "Ping", parameters, success: parameters, execute: () => Effect.succeed({}) }),
+      raw: tool({ description: "Raw", jsonSchema: raw, execute: () => Effect.succeed({}) }),
+    })
+    expect(definitions[0]?.inputSchema).toEqual({
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+      description: "No arguments",
+    })
+    expect(definitions[0]?.outputSchema).toEqual({
+      $ref: "#/$defs/Ping",
+      $defs: { Ping: { not: { type: "null" }, description: "No arguments" } },
+    })
+    expect(definitions[1]?.inputSchema).toEqual(raw)
+  })
+
+  test("normalizes inputs whose encoded side is an empty struct", () => {
+    const definitions = toDefinitions({
+      defaulted: tool({ description: "Defaulted", parameters: defaulted, success: defaulted }),
+      named: tool({
+        description: "Named",
+        parameters: defaulted.annotate({ identifier: "Defaulted" }),
+        success: Schema.String,
+      }),
+      encodedMetadata: tool({
+        description: "Encoded metadata",
+        parameters: Schema.Struct({})
+          .annotate({ identifier: "Ping", title: "Ping", description: "No arguments" })
+          .pipe(Schema.decodeTo(Token, fromEmpty)),
+        success: Schema.String,
+      }),
+      decodedCheck: tool({
+        description: "Decoded check",
+        parameters: defaulted.check(Schema.makeFilter(() => true, { toJsonSchema: () => ({ minProperties: 1 }) })),
+        success: Schema.String,
+      }),
+      reversed: tool({ description: "Reversed", parameters: reversed, success: Schema.String }),
+      encodedCheck: tool({
+        description: "Encoded check",
+        parameters: Schema.Struct({}).check(Schema.isMinProperties(1)),
+        success: Schema.String,
+      }),
+      // A filter without a JSON Schema form emits nothing, so the input still describes an empty object.
+      encodedFilter: tool({
+        description: "Encoded filter",
+        parameters: Schema.Struct({}).check(Schema.makeFilter(() => true)),
+        success: Schema.String,
+      }),
+    })
+    expect(definitions[0]?.inputSchema).toEqual(empty)
+    expect(definitions[0]?.outputSchema).toEqual({ not: { type: "null" } })
+    expect(definitions[1]?.inputSchema).toEqual(empty)
+    expect(definitions[2]?.inputSchema).toEqual({ ...empty, title: "Ping", description: "No arguments" })
+    expect(definitions[3]?.inputSchema).toEqual(empty)
+    expect(definitions[4]?.inputSchema).toEqual(token)
+    expect(definitions[5]?.inputSchema).toEqual({ not: { type: "null" }, minProperties: 1 })
+    expect(definitions[6]?.inputSchema).toEqual(empty)
+  })
+
+  const empty = { type: "object", properties: {}, additionalProperties: false }
+  const nonempty = {
+    type: "object",
+    properties: { query: { type: "string" } },
+    required: ["query"],
+    additionalProperties: false,
+  }
+  const raw = { type: "object", properties: { value: { type: "number" } }, additionalProperties: true }
+  const names = ["ping", "lookup", "raw", "reversed", "checked"]
+  const schemas = [empty, nonempty, raw, token, { type: "object", minProperties: 1 }]
+
+  for (const scenario of [
+    {
+      route: OpenAIChat.route,
+      tools: schemas.map((parameters, index) => ({
+        type: "function",
+        function: { name: names[index], parameters },
+      })),
+    },
+    {
+      route: OpenAIResponses.route,
+      tools: schemas.map((parameters, index) => ({
+        type: "function",
+        name: names[index],
+        parameters,
+      })),
+    },
+    {
+      route: AnthropicMessages.route,
+      tools: schemas.map((input_schema, index) => ({
+        name: names[index],
+        input_schema,
+      })),
+    },
+    {
+      route: Gemini.route,
+      tools: [
+        {
+          functionDeclarations: schemas.map((parametersJsonSchema, index) => ({
+            name: names[index],
+            parametersJsonSchema,
+          })),
+        },
+      ],
+    },
+  ]) {
+    it.effect(`${scenario.route.id} prepares empty Effect Struct tools alongside nonempty and raw schemas`, () =>
+      Effect.gen(function* () {
+        const prepared = yield* compileRequest(
+          ai.request({
+            model: scenario.route.with({ auth: Auth.bearer("test") }).model({ id: "test-model" }),
+            prompt: "Use a tool.",
+            tools: toDefinitions({
+              ping: tool({
+                description: "Ping",
+                parameters: Schema.Struct({}),
+                success: Schema.String,
+                execute: () => Effect.succeed("pong"),
+              }),
+              lookup: tool({
+                description: "Lookup",
+                parameters: Schema.Struct({ query: Schema.String }),
+                success: Schema.String,
+                execute: (input) => Effect.succeed(input.query),
+              }),
+              raw: tool({ description: "Raw", jsonSchema: raw, execute: () => Effect.succeed("raw") }),
+              reversed: tool({
+                description: "Reversed",
+                parameters: reversed,
+                success: Schema.String,
+                execute: () => Effect.succeed("reversed"),
+              }),
+              checked: tool({
+                description: "Checked",
+                parameters: Schema.Struct({}).check(Schema.isMinProperties(1)),
+                success: Schema.String,
+                execute: () => Effect.succeed("checked"),
+              }),
+            }),
+          }),
+        )
+        expect(prepared.body.tools).toMatchObject(scenario.tools)
+        expect(JSON.stringify(prepared.body.tools)).not.toContain('"not"')
+      }),
+    )
+  }
+
   test("moonshot strips $ref siblings and converts tuple arrays to a schema object", () => {
     expect(
       ToolSchemaProjection.moonshot({
@@ -17,7 +204,20 @@ describe("tool schema projections", () => {
           linked: { $ref: "#/$defs/Linked", description: "drop me" },
           tuple: { type: "array", items: [{ type: "string" }, { type: "number" }] },
           prefixTuple: { type: "array", prefixItems: [{ type: "boolean" }, { type: "string" }] },
+          closedTuple: { type: "array", prefixItems: [{ type: "string" }, { type: "number" }], items: false },
+          restTuple: { type: "array", prefixItems: [{ type: "string" }], items: { type: "number" } },
+          prefixItems: { type: "string" },
+          unevaluatedItems: { type: "boolean" },
+          items: { type: "array", items: { type: "string" } },
+          cart: {
+            type: "object",
+            default: { items: ["a", "b"], $ref: "#/literal", count: 1 },
+            const: { enum: ["literal"] },
+            examples: [{ items: ["x", "y"] }],
+          },
         },
+        dependentRequired: { items: ["cart"] },
+        dependencies: { items: ["cart"], prefixItems: { required: ["items"] } },
       }),
     ).toEqual({
       type: "object",
@@ -25,7 +225,20 @@ describe("tool schema projections", () => {
         linked: { $ref: "#/$defs/Linked" },
         tuple: { type: "array", items: { anyOf: [{ type: "string" }, { type: "number" }] } },
         prefixTuple: { type: "array", items: { anyOf: [{ type: "boolean" }, { type: "string" }] } },
+        closedTuple: { type: "array", items: { anyOf: [{ type: "string" }, { type: "number" }] } },
+        restTuple: { type: "array", items: { anyOf: [{ type: "string" }, { type: "number" }] } },
+        prefixItems: { type: "string" },
+        unevaluatedItems: { type: "boolean" },
+        items: { type: "array", items: { type: "string" } },
+        cart: {
+          type: "object",
+          default: { items: ["a", "b"], $ref: "#/literal", count: 1 },
+          const: { enum: ["literal"] },
+          examples: [{ items: ["x", "y"] }],
+        },
       },
+      dependentRequired: { items: ["cart"] },
+      dependencies: { items: ["cart"], prefixItems: { required: ["items"] } },
     })
   })
 
@@ -69,14 +282,14 @@ describe("tool schema projections", () => {
       })
       const parameters = (inputSchema: Record<string, unknown>, model = route.model({ id: "gpt-6-luna" })) =>
         compileRequest(
-          LLM.request({
+          ai.request({
             model,
             prompt: "Use the tool.",
             tools: [{ name: "lookup", description: "Lookup data.", inputSchema }],
           }),
         ).pipe(Effect.map((prepared) => prepared.body.tools?.[0]?.function.parameters))
       const parameterless = toDefinitions({
-        lookup: Tool.make({
+        lookup: tool({
           description: "Lookup data.",
           parameters: Schema.Struct({}).annotate({ description: "No input." }),
           success: Schema.String,
@@ -91,7 +304,12 @@ describe("tool schema projections", () => {
       const exclusive = { oneOf: [{ type: "object" }, { type: "object", required: ["a"] }] }
       const object = { type: "object", properties: {} }
 
-      expect(yield* parameters(parameterless)).toEqual({ type: "object", description: "No input." })
+      expect(yield* parameters(parameterless)).toEqual({
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+        description: "No input.",
+      })
       expect(yield* parameters({})).toEqual({ type: "object" })
       expect(yield* parameters({ description: "Query", properties: { q: { type: "string" } } })).toEqual({
         type: "object",
@@ -124,7 +342,7 @@ describe("tool schema projections", () => {
       }
       const parameters = (model: ReturnType<typeof route.model>) =>
         compileRequest(
-          LLM.request({
+          ai.request({
             model,
             prompt: "Use the tool.",
             tools: [{ name: "lookup", description: "Lookup data.", inputSchema: original }],
@@ -157,7 +375,7 @@ describe("tool schema projections", () => {
         .with({ endpoint: { baseURL: "https://api.openai.test/v1/" }, auth: Auth.bearer("test") })
         .model({ id: "kimi-k2", compatibility: { sanitizer: "moonshot" } })
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           prompt: "Use the tool.",
           tools: [
