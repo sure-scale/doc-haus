@@ -580,3 +580,15 @@ test("memo and semantic review inspect the final body rather than initial or pro
   expect(packageReviewPrompt(directory)).toContain("Actual final operative wording")
   expect(checkPackageReview(directory, { status: "changes-required", delivery: [], findings: [{ document: "d1", pid: "p111111111111", detail: "Wrong baseline" }], limitations: [] }).join(" ")).toContain("named final document")
 })
+
+test("a package review finding may give null for an omitted document or pid", () => {
+  const directory = matter()
+  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record agreed supply terms", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
+  writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([{ pid: "p222222222222", sha256: "final", text: "Final wording" }]))
+  const review = (finding: Record<string, unknown>) => checkPackageReview(directory, { status: "changes-required", delivery: [], findings: [{ detail: "A specific correction", ...finding }], limitations: [] })
+  expect(review({ target: "memo", document: null, pid: null })).toEqual([])
+  expect(review({ target: "memo", document: "", pid: "" })).toEqual([])
+  expect(review({ target: "body", document: null })).toEqual(["A body finding needs the affected document id."])
+  expect(review({ target: "body", document: "d9" }).join(" ")).toContain('unknown document "d9"; use a final document id (d1)')
+  expect(review({ target: "body", document: "d1", pid: null })).toEqual([])
+})

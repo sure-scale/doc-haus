@@ -101,9 +101,12 @@ export function checkPackageReview(directory: string, value: unknown): string[] 
     const item = finding as Record<string, unknown>
     if (typeof item.detail !== "string" || !item.detail.trim()) return ["Each finding must state a specific detail."]
     if (item.target !== undefined && !["body", "memo", "research"].includes(String(item.target))) return ["Finding target must be body, memo or research."]
-    if (item.target === "body" && item.document === undefined) return ["A body finding needs the affected document id."]
-    if (item.document !== undefined && !documents.some(document => document.id === item.document)) return ["Finding names an unknown document; use a final document id or omit it for a package/memo finding."]
-    if (item.pid !== undefined && (typeof item.document !== "string" || !finalBodyParagraphs(directory, item.document as DocID).some(paragraph => paragraph.pid === item.pid))) return ["Finding pid must belong to its named final document."]
+    // null or "" reads as omitted, as packageReviewItem reads it.
+    const document = item.document === null || item.document === "" ? undefined : item.document
+    const pid = item.pid === null || item.pid === "" ? undefined : item.pid
+    if (item.target === "body" && document === undefined) return ["A body finding needs the affected document id."]
+    if (document !== undefined && !documents.some(row => row.id === document)) return [`Finding names an unknown document ${JSON.stringify(document)}; use a final document id (${documents.map(row => row.id).join(", ")}), or omit the field (or give null) for a package or memo finding.`]
+    if (pid !== undefined && (typeof document !== "string" || !finalBodyParagraphs(directory, document as DocID).some(paragraph => paragraph.pid === pid))) return ["Finding pid must belong to its named final document; omit it (or give null) when no paragraph is affected."]
     return []
   })]
   if (row.status === "pass" && row.findings.length) issues.push("A pass cannot contain unresolved correction findings; use changes-required.")
