@@ -10,7 +10,7 @@ import { finalBodyParagraphs, parseJsonObject, readChangeList, readParagraphs, r
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { reviewStages, earlierDocuments, readLeanPlan, type DocID } from "./plan"
 import { SPLIT_NUMBERING, packageCompositionBlock, revisionPreferenceScope, stagePrompt, retryPrompt } from "./prompts"
-import { excerpt, inDocument, matterSourceIDs, openItem, quoteFound, quoteMissIssue, sourceQuotes } from "./quotes"
+import { adoptedSources, excerpt, inDocument, matterSourceIDs, openItem, quoteFound, quoteMissIssue, sourceNameIssues, sourceQuotes } from "./quotes"
 import { normalize, normalizeWithMap, quotePlaces, sourceReadings, verifyQuote } from "../../lib/quote-verify"
 import { changesRepairSections, documentRepairs } from "./repairs"
 import { drainLeanRequests } from "./requests"
@@ -110,7 +110,7 @@ export function checkChangePlan(directory: string, document: DocID, value: unkno
   if (!record(value) || !strings(value.shared_decisions) || !Array.isArray(value.groups) || !strings(value.dismissed) || !Array.isArray(value.questions) || (value.findings !== undefined && !Array.isArray(value.findings)))
     return ["Return shared_decisions and dismissed string arrays, groups and questions arrays, and a findings array of review dispositions."]
   const paragraphs = new Map(readParagraphs(directory, document).map(row => [row.pid, row]))
-  const sources = new Set([...matterSourceIDs(directory), "request", ...approvedResearch(directory).map(row => row.url)])
+  const sources = new Set([...matterSourceIDs(directory), "request", ...adoptedSources(directory), ...approvedResearch(directory).map(row => row.url)])
   const documents = new Set(readLeanPlan(directory)?.documents.map(row => row.id) ?? [document])
   const findings = new Set<string>()
   const seen = new Set<string>()
@@ -127,13 +127,11 @@ export function checkChangePlan(directory: string, document: DocID, value: unkno
         if (pids.has(pid)) issues.push(`${at}: [${pid}] appears in more than one group; dependent changes must be prepared together.`)
         pids.add(pid)
       }
-      group.sources.forEach(source => {
-        if (!record(source) || !nonempty(source.source_id) || !nonempty(source.quote) || !sources.has(source.source_id)) {
-          issues.push(`${at}.sources must name canonical matter sources, request or approved authority and exact nonempty quotes.`)
-          return
-        }
+      group.sources.forEach((source, n) => {
+        const named = sourceNameIssues(`${at}.sources[${n}]`, source, sources)
+        if (named.length || !record(source) || !nonempty(source.source_id) || !nonempty(source.quote)) return void issues.push(...named)
         if (!quoteFound(directory, { source_id: source.source_id, quote: source.quote }))
-          issues.push(quoteMissIssue(directory, `${at}.sources`, { source_id: source.source_id, quote: source.quote }, "json"))
+          issues.push(quoteMissIssue(directory, `${at}.sources`, { source_id: source.source_id, quote: source.quote }, "json", { adopted: true }))
       })
       return issues
     }),
@@ -147,13 +145,11 @@ export function checkChangePlan(directory: string, document: DocID, value: unkno
       const issues = findings.has(key) ? [`${at}: consolidate duplicate findings into one disposition with all affected documents.`] : []
       findings.add(key)
       if (finding.documents.some(id => !documents.has(id as DocID))) issues.push(`${at}: affected documents must be planned document ids.`)
-      finding.sources.forEach(source => {
-        if (!record(source) || !nonempty(source.source_id) || !nonempty(source.quote) || !sources.has(source.source_id)) {
-          issues.push(`${at}.sources must name canonical matter sources, request or approved authority and exact nonempty quotes.`)
-          return
-        }
+      finding.sources.forEach((source, n) => {
+        const named = sourceNameIssues(`${at}.sources[${n}]`, source, sources)
+        if (named.length || !record(source) || !nonempty(source.source_id) || !nonempty(source.quote)) return void issues.push(...named)
         if (!quoteFound(directory, { source_id: source.source_id, quote: source.quote }))
-          issues.push(quoteMissIssue(directory, `${at}.sources`, { source_id: source.source_id, quote: source.quote }, "json"))
+          issues.push(quoteMissIssue(directory, `${at}.sources`, { source_id: source.source_id, quote: source.quote }, "json", { adopted: true }))
       })
       if (!finding.sources.length && !finding.limitations.length) issues.push(`${at}: disclose the evidence limitation when no supporting source passage is provided.`)
       return issues

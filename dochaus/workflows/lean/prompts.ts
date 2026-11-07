@@ -8,7 +8,7 @@ import { combinedDelivery, deliveryArtifactEvidence, requestedMemo } from "./del
 import { researchHandoff } from "./research"
 import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult, shownText } from "./checks"
 import { guidanceTemplate, reviewGuidance, reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type StepID } from "./plan"
-import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
+import { REQUEST_SOURCE, adoptedSources, matterSourceIDs } from "./quotes"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
 import { escapeTagOpeners } from "../../lib/untrusted"
 import { readRepairRound, changesRepairSections, notesRepair } from "./repairs"
@@ -117,6 +117,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
     "Matter documents (use these exact names with search-document and read-document, and as source names):",
     ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`),
     `To quote the request or the lawyer's answers, use the source name "${REQUEST_SOURCE}".`,
+    ...adoptedSources(directory).map(name => `To quote the recommendation adopted for question ${name.slice("adopted:".length)}, which the lawyer delegated, use the source name "${name}"; its words are the drafter's judgment, not the lawyer's.`),
   ].join("\n"))
   if (step === "finalize") return draftingNotesSections(directory, request).filter(Boolean).join("\n\n")
   const document = stepDocument(step) ?? FIRST_DOCUMENT

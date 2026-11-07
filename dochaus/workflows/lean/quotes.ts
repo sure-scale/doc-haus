@@ -1,13 +1,14 @@
+import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { boundPlaybook } from "../../lib/playbook-source"
 import { approvedResearch, researchSource } from "./research"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearSpan, nearestGap, normalize, normalizeWithMap, quotePlaces, verifyQuote } from "../../lib/quote-verify"
-import type { DocID } from "./plan"
+import { runPosture, type DocID } from "./plan"
 import { INSTRUCTIONS_FILE } from "./instructions"
 import { leanUserUpdates } from "./requests"
-import { readLeanText, readQuestions, readsQuestion, shortHash, type AnswerReader, type OpenItem, type StageID } from "./state"
+import { answeredQuestionsText, readLeanText, readQuestions, readsQuestion, shortHash, type AnswerReader, type OpenItem, type StageID } from "./state"
 import { scanSourceQuotes, type SourceQuote, type SourceQuoteScanOptions } from "./source-quote-scan"
 
 // Source-quote helpers shared by the lean stage checks and the final gate. A
@@ -42,6 +43,19 @@ const ADOPTED_SOURCE = /^adopted:\S+$/
  * id: those of the questions `options` reads, as answeredQuestionsText. */
 export function adoptedSources(directory: string, options: AnswerReader = {}) {
   return adoptedQuestions(directory).filter(readsQuestion(options)).map(question => adoptedSource(question.id))
+}
+
+/** Retry feedback for one {source_id, quote} entry at `where`: a source name
+ * outside `accepted`, named with the names accepted, and an empty quote.
+ * Whether the quote is in its source is quoteFound's to say. */
+export function sourceNameIssues(where: string, source: unknown, accepted: ReadonlySet<string>): string[] {
+  if (typeof source !== "object" || source === null || Array.isArray(source)) return [`${where} must be {source_id, quote}.`]
+  const { source_id, quote } = source as Record<string, unknown>
+  const adopted = [...accepted].filter(name => ADOPTED_SOURCE.test(name)).map(name => `"${name}"`)
+  return [
+    ...typeof source_id === "string" && accepted.has(source_id) ? [] : [`${where}.source_id ${JSON.stringify(source_id ?? null)} is not a known source name. Use the exact name of a matter document, "${REQUEST_SOURCE}" for the request and the lawyer's answers, ${adopted.length ? `${adopted.join(" or ")} for an adopted answer, ` : ""}or an approved research URL.`],
+    ...typeof quote === "string" && quote.trim() ? [] : [`${where}.quote must be non-empty.`],
+  ]
 }
 
 function adoptedQuestions(directory: string) {
@@ -277,7 +291,8 @@ function lawyerPassages(directory: string): { source_id: string; text: string }[
 }
 
 /** When words quoted as the lawyer's are the run's own record (the instructions
- * list, a question an instruction settled, or an adopted recommendation),
+ * list, a question an instruction settled, an adopted recommendation or the
+ * answers record's question and label) or the firm's drafting preferences,
  * where the lawyer's words are. An adopted recommendation's words are pointed
  * to their own source name (adoptedSource) where the check accepts it
  * (`adopted`), otherwise to the request or the matter sources. */
@@ -290,8 +305,16 @@ export function derivedRecordNote(directory: string, quote: string, { adopted: q
   if (adopted)
     return `Those words are the recommendation adopted for question ${adopted.id}, which the lawyer delegated; they are not the lawyer's words. ` +
       (quotable ? `Quote them under the source name "${adoptedSource(adopted.id)}".` : "Quote the lawyer's request or the matter sources that support the point instead.")
-  return lawyerWordsHold([readLeanText(directory, INSTRUCTIONS_FILE) ?? ""], quote)
-    ? "Those words are the run's list of the lawyer's instructions, not the lawyer's words; quote the words the list shows from its named source, under that source's name."
+  if (lawyerWordsHold([readLeanText(directory, INSTRUCTIONS_FILE) ?? ""], quote))
+    return "Those words are the run's list of the lawyer's instructions, not the lawyer's words; quote the words the list shows from its named source, under that source's name."
+  const recorded = answeredQuestionsText(directory, { settled: false }).split(/\n(?=- \[)/).find(entry => lawyerWordsHold([entry], quote))
+  const question = recorded && readQuestions(directory).find(row => recorded.startsWith(`- [${row.id}] Q: `))
+  if (question)
+    return `Those words are the run's record of question ${question.id}, not the lawyer's words; ` + (question.answer_kind !== "adopted"
+      ? `quote the lawyer's own answer under "${REQUEST_SOURCE}".`
+      : quotable ? `quote the adopted answer under "${adoptedSource(question.id)}".` : "quote the lawyer's request or the matter sources that support the point instead.")
+  return lawyerWordsHold([readFirmDraftingPreferences("full", runPosture(directory))], quote)
+    ? "Those words are the firm's drafting preferences, not a source. A presentation change needs no supporting quote: leave its sources empty and say in its limitations that it applies the saved preferences."
     : ""
 }
 
@@ -327,26 +350,32 @@ export function quoteMissIssue(directory: string, where: string, quote: SourceQu
     .filter(doc => doc !== quote.source_id)
   const short = elided?.parts.some(part => part.length < SHORT_QUOTE)
   const near = !elsewhere.length && !short && !request && !answer && !adopted ? nearSpan({ directory, quote: quote.quote, document: quote.source_id }) : undefined
+  // A note says where the words come from and what to quote instead; the
+  // generic advice to copy them would contradict it.
+  const note = !short && (request || answer) ? derivedRecordNote(directory, quote.quote, options) : ""
   return [
     short
       ? `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}". A passage around the "…" is too short to locate on its own.`
       : request
-        ? [`${where} quotes "${excerpt(quote.quote)}" as from "${REQUEST_SOURCE}", but those words are not in the request, user updates or any one of the lawyer's answers.`, derivedRecordNote(directory, quote.quote, options)].filter(Boolean).join(" ")
+        ? `${where} quotes "${excerpt(quote.quote)}" as from "${REQUEST_SOURCE}", but those words are not in the request, user updates or any one of the lawyer's answers.`
         : answer
-        ? [`${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in the lawyer's answer to that question.`, derivedRecordNote(directory, quote.quote, options)].filter(Boolean).join(" ")
+        ? `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in the lawyer's answer to that question.`
         : adopted
         ? `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in the recommendation adopted for that question.`
         : `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in that document.`,
+    note,
     elsewhere.length
       ? `They do appear in ${elsewhere.map(doc => `"${doc}"`).join(", ")}; cite that document if it is the source you meant.`
       : near
       ? `The document reads: "${near.replace(/\s+/g, " ")}". Copy those exact characters, or write [x] for a change of case.`
+      : note
+      ? ""
       : format === "json"
         ? "The JSON quote field requires verbatim source words. Copy them with read-document or check them with verify-quote. Record paraphrases outside source-quote entries; removing JSON string delimiters does not make a paraphrase a valid quote."
         : short
           ? "Quote one continuous passage without an ellipsis, or drop the quotation marks."
           : "Copy the exact words with read-document (or check them with verify-quote), or drop the quotation marks and paraphrase.",
-  ].join(" ")
+  ].filter(Boolean).join(" ")
 }
 
 /** Open items for quotations in `text` that the named source does not contain. */

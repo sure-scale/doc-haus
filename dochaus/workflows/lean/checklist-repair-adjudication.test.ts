@@ -148,7 +148,7 @@ test("each supersession needs its own canonical exact support, not a sourced unr
     const row = result[field][0]!
     for (const sources of [undefined, []])
       expect(repairAdjudicationIssues(directory, "d1", input, { ...result, [field]: [{ ...row, sources }] }).join(" ")).toContain("supersession requires nonempty")
-    expect(repairAdjudicationIssues(directory, "d1", input, { ...result, [field]: [{ ...row, sources: [{ source_id: "generated-review", quote: SUPPORT[0]!.quote }] }] }).join(" ")).toContain("canonical matter sources")
+    expect(repairAdjudicationIssues(directory, "d1", input, { ...result, [field]: [{ ...row, sources: [{ source_id: "generated-review", quote: SUPPORT[0]!.quote }] }] }).join(" ")).toContain(`${field}[0].sources[0].source_id "generated-review" is not a known source name.`)
     expect(repairAdjudicationIssues(directory, "d1", input, { ...result, [field]: [{ ...row, sources: [{ source_id: SOURCE, quote: "Permission to abandon prior duties." }] }] }).join(" ")).toContain("but those words")
   }
 })

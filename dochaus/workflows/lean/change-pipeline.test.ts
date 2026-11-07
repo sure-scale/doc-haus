@@ -11,7 +11,7 @@ import { restoreLeanStage } from "./restore-stage"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, runLean, stageInputSha } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS, stageOutputValid } from "./stages"
 import * as leanState from "./state"
-import { answerQuestion, leanFile, readLeanJson, readLeanState, readLeanText, readOpenItems, readQuestions, updateLeanStage, writeLeanText, writeOpenItems } from "./state"
+import { answerQuestion, leanFile, readLeanJson, readLeanState, readLeanText, readOpenItems, readQuestions, updateLeanStage, writeLeanText, writeOpenItems, writeQuestions, type QuestionAdvice } from "./state"
 import { AGENT, DRAFT, SOURCE, SOURCE_TEXT, SUPPORT, changes, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
 
 afterEach(cleanupMatters)
@@ -89,6 +89,47 @@ test("canonical support and dependency admission reject only the mutated input",
   expect(checkChangePlan(directory, "d1", value)).toEqual([])
   value.groups[1].pids.push(value.groups[0].pids[0])
   expect(checkChangePlan(directory, "d1", value).join(" ")).toContain("more than one group")
+}, 120_000)
+
+test("a source name the change plan does not know is named with the names it accepts, and an adopted answer is quoted under its own name", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
+  // The lawyer delegated a question, so its recommended option was adopted.
+  const adopted = "Add no separate late-delivery remedy."
+  const advice: QuestionAdvice = { options: [{ id: "o1", text: adopted }, { id: "o2", text: "Reduce the price for late delivery." }], recommendation: { option: "o1", rationale: "The terms add no remedy.", basis: SUPPORT } }
+  writeQuestions(directory, [...readQuestions(directory), { id: "q-late", stage: "intake", question: "Should late delivery carry a remedy?", context: "The terms are silent.", status: "open", kind: "judgment", advice }])
+  answerQuestion(directory, "q-late", { adopt: true })
+  const value = structuredClone(readLeanJson(directory, "d1/change-plan.json")) as { groups: { sources: { source_id: string; quote: string }[] }[]; findings?: unknown[] }
+  expect(checkChangePlan(directory, "d1", value)).toEqual([])
+  const named = `"request" for the request and the lawyer's answers, "adopted:q-late" for an adopted answer, or an approved research URL.`
+  value.groups[0].sources[0].source_id = "terms.docx"
+  expect(checkChangePlan(directory, "d1", value)).toEqual([`groups[0].sources[0].source_id "terms.docx" is not a known source name. Use the exact name of a matter document, ${named}`])
+  value.groups[0].sources[0] = { source_id: SOURCE, quote: " " }
+  expect(checkChangePlan(directory, "d1", value)).toEqual(["groups[0].sources[0].quote must be non-empty."])
+  // Findings name their sources the same way.
+  value.groups[0].sources[0] = SUPPORT[0]
+  const finding = (source: { source_id: string; quote: string }) => ({ disposition: "deferred", kind: "information", detail: "The remedy for late delivery stays as adopted.", reason: "The lawyer delegated it.", documents: ["d1"], sources: [source], limitations: [] })
+  value.findings = [finding({ source_id: "terms.docx", quote: adopted })]
+  expect(checkChangePlan(directory, "d1", value)).toEqual([`findings[0].sources[0].source_id "terms.docx" is not a known source name. Use the exact name of a matter document, ${named}`])
+  // The adopted words are not the lawyer's: under "request" they are refused and pointed to their own name, without the generic copy advice.
+  value.findings = [finding({ source_id: "request", quote: adopted })]
+  const asRequest = checkChangePlan(directory, "d1", value).join(" ")
+  expect(asRequest).toContain(`Quote them under the source name "adopted:q-late".`)
+  expect(asRequest).not.toContain("read-document")
+  value.findings = [finding({ source_id: "adopted:q-late", quote: adopted })]
+  expect(checkChangePlan(directory, "d1", value)).toEqual([])
+  value.findings = [finding({ source_id: "adopted:q-late", quote: "Add a late-delivery remedy." })]
+  expect(checkChangePlan(directory, "d1", value).join(" ")).toContain("not in the recommendation adopted for that question")
+
+  // The change list's amendments accept the adopted answer the same way.
+  const list = readChangeList(directory, "d1")!, paragraphs = readParagraphs(directory, "d1")
+  const amended = (source: { source_id: string; quote: string }) => JSON.stringify({ amendments: [{ ...list.amendments[0], sources: [source] }], questions: [] })
+  expect(checkChanges(directory, amended({ source_id: "adopted:q-late", quote: adopted }), paragraphs).issues).toEqual([])
+  const changeIssues = checkChanges(directory, amended({ source_id: "request", quote: adopted }), paragraphs).issues.join(" ")
+  expect(changeIssues).toContain(`Quote them under the source name "adopted:q-late".`)
+  expect(changeIssues).not.toContain("read-document")
+  expect(checkChanges(directory, amended({ source_id: "terms.docx", quote: adopted }), paragraphs).issues)
+    .toContain(`amendments[0].sources[0].source_id "terms.docx" is not a known source name. Use the exact name of a matter document, ${named}`)
 }, 120_000)
 
 test("one wrapped JSON stage result is admitted without a formatting retry, with source checks unchanged", async () => {

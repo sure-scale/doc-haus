@@ -11,7 +11,7 @@ import { packageCompositionBlock, retryPrompt } from "./prompts"
 import { drainLeanRequests } from "./requests"
 import { LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, type LeanDeps } from "./stages"
 import { stageInputSha } from "./runner"
-import { matterSourceIDs, quoteFound, quoteMissIssue, type SourceQuote } from "./quotes"
+import { adoptedSources, matterSourceIDs, quoteFound, quoteMissIssue, sourceNameIssues, type SourceQuote } from "./quotes"
 import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../lib/source-provenance"
 import { approvedResearch } from "./research"
 import { QUESTION_KIND_CONTRACT, questionContent, readLeanJson, readQuestions, writeLeanText, type LeanState, type LeanStageState } from "./state"
@@ -105,12 +105,12 @@ export function repairAdjudicationIssues(directory: string, document: DocID, inp
  * checkable rather than borrowed from an unrelated new repair group. */
 function supersessionSourceIssues(directory: string, at: string, sources: unknown): string[] {
   if (!Array.isArray(sources) || !sources.length) return [`${at}: supersession requires nonempty supporting source citations; retain unsupported prior intent.`]
-  const canonical = new Set([...matterSourceIDs(directory), "request", ...approvedResearch(directory).map(row => row.url)])
-  return sources.flatMap(source => {
-    if (!record(source) || typeof source.source_id !== "string" || !canonical.has(source.source_id) || typeof source.quote !== "string" || !source.quote.trim())
-      return [`${at}.sources must name canonical matter sources, request or approved authority and exact nonempty quotes.`]
+  const canonical = new Set([...matterSourceIDs(directory), "request", ...adoptedSources(directory), ...approvedResearch(directory).map(row => row.url)])
+  return sources.flatMap((source, n) => {
+    const named = sourceNameIssues(`${at}.sources[${n}]`, source, canonical)
+    if (named.length || !record(source) || typeof source.source_id !== "string" || typeof source.quote !== "string") return named
     const quote = { source_id: source.source_id, quote: source.quote }
-    return quoteFound(directory, quote) ? [] : [quoteMissIssue(directory, `${at}.sources`, quote, "json")]
+    return quoteFound(directory, quote) ? [] : [quoteMissIssue(directory, `${at}.sources`, quote, "json", { adopted: true })]
   })
 }
 

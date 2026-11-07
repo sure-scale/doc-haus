@@ -1,11 +1,14 @@
 import { afterEach, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { checkAnswerClass, classifyAnswers } from "./answer-class"
 import { checkDraftingNotes } from "./checks"
 import { OutputLimitError } from "./native-stage-result"
 import { finalGate, type GateResult } from "./gate"
 import { writeLeanPlan } from "./plan"
 import { delegatedDecisionsText, stagePrompt } from "./prompts"
-import { derivedRecordNote, openItem, quoteFound } from "./quotes"
+import { derivedRecordNote, openItem, quoteFound, quoteMissIssue } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
 import type { StageSessionPort } from "./stages"
@@ -21,7 +24,14 @@ import { AGENT, cleanupMatters, happyPath, matter, NO_FINDINGS, noChanges, scrip
 // drafting notes list each delegated decision with its reason, evidence and
 // attribution. Synthetic matter; only the model is scripted.
 
-afterEach(cleanupMatters)
+const workspace = process.env.WORKSPACE_ROOT
+const roots: string[] = []
+afterEach(() => {
+  if (workspace === undefined) delete process.env.WORKSPACE_ROOT
+  else process.env.WORKSPACE_ROOT = workspace
+  roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true }))
+  cleanupMatters()
+})
 
 const DELEGATION = "No further information or documents are available. Proceed on your own professional judgment and disclose any unresolved points."
 const RECOMMENDED = "Add no separate late-delivery remedy."
@@ -73,6 +83,43 @@ test("a class is recorded once, only on the words that were read; later words of
   const replaced = answerQuestion(directory, "q-late", { text: OTHER })
   expect(replaced).toMatchObject({ status: "answered", answer: OTHER })
   for (const key of ["answer_kind", "option_id", "answer_class", "lawyer_words"]) expect(replaced).not.toHaveProperty(key)
+})
+
+test("words quoted as the lawyer's that are the answers record or the firm's drafting preferences are named as such, without the advice to copy them", () => {
+  const directory = matter()
+  writeQuestions(directory, [ASKED, { ...ASKED, id: "q-law", question: "Which law governs the note?", kind: "instruction" }])
+  answerQuestion(directory, "q-law", { text: "Singapore law." })
+  answerQuestion(directory, "q-late", { adopt: true })
+  const miss = (quote: string, format: "json" | "prose", options = {}) => quoteMissIssue(directory, "sources[0]", { source_id: "request", quote }, format, options)
+  // The record's question is the run's, not the lawyer's: their own answer is pointed to.
+  expect(derivedRecordNote(directory, "Which law governs the note?")).toBe(`Those words are the run's record of question q-law, not the lawyer's words; quote the lawyer's own answer under "request".`)
+  // An adopted question's record points to the adopted answer only where the check accepts that name.
+  expect(derivedRecordNote(directory, QUESTION, { adopted: true })).toBe(`Those words are the run's record of question q-late, not the lawyer's words; quote the adopted answer under "adopted:q-late".`)
+  expect(derivedRecordNote(directory, `A (${ADOPTED_ANSWER})`)).toBe("Those words are the run's record of question q-late, not the lawyer's words; quote the lawyer's request or the matter sources that support the point instead.")
+  for (const format of ["json", "prose"] as const) {
+    const issue = miss("Which law governs the note?", format)
+    expect(issue).toBe(`sources[0] quotes "Which law governs the note?" as from "request", but those words are not in the request, user updates or any one of the lawyer's answers. Those words are the run's record of question q-law, not the lawyer's words; quote the lawyer's own answer under "request".`)
+    expect(miss(QUESTION, format, { adopted: true })).not.toContain("read-document")
+  }
+  // The lawyer's own answer is still accepted as theirs.
+  expect(quoteFound(directory, { source_id: "request", quote: "Singapore law." })).toBe(true)
+
+  // The firm's saved drafting preferences are not a source: a presentation change cites nothing.
+  const root = mkdtempSync(path.join(tmpdir(), "dh-lean-preferences-"))
+  roots.push(root)
+  process.env.WORKSPACE_ROOT = root
+  mkdirSync(path.join(root, ".preferences"))
+  writeFileSync(path.join(root, ".preferences/preferences.json"), JSON.stringify({ houseStyle: "Put each defined term in bold where it is defined." }))
+  const preferences = "Those words are the firm's drafting preferences, not a source. A presentation change needs no supporting quote: leave its sources empty and say in its limitations that it applies the saved preferences."
+  expect(derivedRecordNote(directory, "Put each defined term in bold")).toBe(preferences)
+  for (const format of ["json", "prose"] as const) {
+    const issue = miss("Put each defined term in bold", format)
+    expect(issue).toEndWith(preferences)
+    expect(issue).not.toContain("read-document")
+  }
+  // Words found nowhere keep the generic advice.
+  expect(derivedRecordNote(directory, "Deliver the goods by sea.")).toBe("")
+  expect(miss("Deliver the goods by sea.", "json")).toContain("read-document")
 })
 
 test("a delegated decision reaches every stage as Decide for me does, marked as delegated; only the notes' input names the lawyer's words", () => {
