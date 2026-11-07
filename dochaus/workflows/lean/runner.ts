@@ -851,7 +851,7 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
 function unquotedFigureItems(spine: Record<string, unknown>, rows: UnquotedFigures[]) {
   const entries = spine.entries as { detail: string }[]
   return rows.map(row => openItem("spine", "omission",
-    `Drafting spine: this ${row.kind} states ${row.figures.map(figure => JSON.stringify(figure)).join(", ")}, which none of its quoted source words states; confirm each against the sources.`,
+    `Points for the draft: this ${row.kind} states ${row.figures.map(figure => JSON.stringify(figure)).join(", ")}, which none of its quoted source words states; confirm each against the sources.`,
     { statement: entries[row.index].detail, repair_target: "memo" }))
 }
 
