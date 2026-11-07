@@ -542,6 +542,25 @@ describe("an act whose document the instructions leave out", () => {
     accepted(directory, "Do not prepare `committee-approval.docx`")
   })
 
+  test("keeps explicit colon exclusions while refusing plain and delivery-labelled file lists", () => {
+    const directory = matter(SOURCE_TEXT)
+    const files = "`committee-approval.docx` and `cover-note.docx`."
+    const listings = [files, ...["Output", "Output files", "Files", "Deliverables"].map(label => `${label}: ${files}`)]
+    const exclusions = ["Do not prepare", "Outside this package", "Excluded"].map(label => `${label}: ${files}`)
+    writeLeanText(directory, "request.md", [REQUEST, ...listings, ...exclusions].join("\n\n"))
+    for (const words of listings) {
+      expect(parseCoverage(reply({ document: null, excluded_by: words }), directory, documents).issues)
+        .toEqual([expect.stringContaining("which only names files")])
+      expect(parseCoverage(reply({ document: null, excluded_by: words }), directory, documents, { final: true }))
+        .toEqual({ issues: [], value: [act({ document: null })] })
+    }
+    for (const words of exclusions) {
+      accepted(directory, words)
+      expect(parseCoverage(reply({ document: null, excluded_by: words }), directory, documents, { final: true }))
+        .toEqual({ issues: [], value: [act({ document: null, excluded_by: words })] })
+    }
+  })
+
   test("listed both with and without excluded_by for the same parties is retried, naming the entries", () => {
     const directory = excluding()
     const conflict = (all: string, withIt: string, without: string) =>

@@ -566,13 +566,14 @@ const FILE_NAME = /[^\s`'"“”‘’()[\]<>,;:*]+\.\p{L}[\p{L}\p{N}]{1,4}(?![\
 const LIST_GAP = /^[\s\p{P}\p{S}\p{N}]*(?:\p{L}+[\s\p{P}\p{S}\p{N}]*)?$/u
 const NO_WORD = /^[\s\p{P}\p{S}\p{N}]*$/u
 
-/** Whether `words` only list file names: after any label up to a ":" and
+/** Whether `words` only list file names: after a neutral delivery label and
  * without code or emphasis marks, one or more FILE_NAMEs with no word before
  * the first or after the last and at most one word between two. Such words
  * name what is delivered ("Output: `a.docx` and `b.docx`."); they never say
- * that an act's document is left out of the package. */
+ * that an act's document is left out of the package. Other words before a
+ * colon are kept: they may themselves say which files are excluded. */
 function onlyFileNames(words: string) {
-  const parts = words.replace(/[`*_]/g, "").replace(/^[^:]*:/, "").split(FILE_NAME)
+  const parts = words.replace(/[`*_]/g, "").replace(/^\s*(?:output(?:\s+files)?|files|deliverables)\s*:/iu, "").split(FILE_NAME)
   return parts.length > 1 && NO_WORD.test(parts[0]!) && NO_WORD.test(parts.at(-1)!) && parts.slice(1, -1).every(gap => LIST_GAP.test(gap))
 }
 
