@@ -397,7 +397,7 @@ export function leanDraftingRoutes(options: { directory: (id: string) => string;
       return c.json({ error: "The active drafting run changed. Reload before sending this update.", code: "lean_run_changed" }, 409)
     if (draftingRunStopped(state)) return c.json(STOPPED, 409)
     const admission = draftingUpdateAdmission({ ...state, in_flight: running.has(directory), pending_requests: pendingLeanRequests(directory).length })
-    if (admission === "closed") return c.json({ error: "This update was not sent. Late clarification requires an idle draft held at checklist checking. Wait for the current work to settle; completed drafts need an amendment. You can still answer specific questions.", code: "lean_update_too_late" }, 409)
+    if (admission === "closed") return c.json({ error: "This update was not sent: this draft is being applied or finished, or is complete. Keep further changes for a later amendment. You can still answer specific questions.", code: "lean_update_too_late" }, 409)
     const text = typeof input.text === "string" ? input.text.replace(/\r\n/g, "\n").trim() : ""
     if (!text || text.length > 20_000)
       return c.json({ error: "An update must contain 1–20,000 characters.", code: "invalid_update" }, 400)

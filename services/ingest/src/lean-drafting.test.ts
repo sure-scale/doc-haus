@@ -21,6 +21,7 @@ import {
   writeLeanText,
   writeOpenItems,
   writeQuestions,
+  type LeanState,
   type Question,
 } from "../../../dochaus/workflows/lean/state"
 import { FIXTURE_SOURCE_TEXT, NO_FINDINGS, happyPath, leanFixtureMatter, scriptedModel, noChanges } from "../../../dochaus/workflows/lean/test-support"
@@ -101,6 +102,12 @@ const OPTIONS = [{ id: "o1", text: "The buyer." }, { id: "o2", text: "The seller
 const RECOMMENDATION = { option: "o2", rationale: "The supplied terms put the cost on the seller.", basis: [{ source_id: "request", quote: "Draft the agreement." }] }
 const advised = (id: string, kind: NonNullable<Question["kind"]>): Question =>
   ({ id, stage: "intake", question: `Question ${id}?`, context: "", status: "open", kind, advice: { options: OPTIONS, recommendation: RECOMMENDATION } })
+/** The walk at apply: every step before it done and apply running. */
+const atApply = (stages: LeanState["stages"]) => {
+  const steps = Object.keys(stages), apply = steps.indexOf("d1.apply")
+  return Object.fromEntries(Object.entries(stages).map(([step, row], index) =>
+    [step, index < apply ? { ...row!, status: "done" } : index === apply ? { ...row!, status: "running" } : row])) as typeof stages
+}
 const queuedRequests = (directory: string) => pendingLeanRequests(directory).map(name => {
   const { id: _id, received_at: _received, ...request } = JSON.parse(readFileSync(path.join(leanDir(directory), "requests", name), "utf8"))
   return request
@@ -447,7 +454,7 @@ test("chat updates are queued for the matching run and late updates retain an ex
     expect(response.status).toBe(202)
     expect(await response.json()).toMatchObject({ mode: "queued", status: { updates: [{ text: "Use concise headings.", status: "queued", progress: "received" }] } })
     const state = readLeanState(directory)!
-    writeLeanState(directory, { ...state, stages: { ...state.stages, "d1.apply": { ...state.stages["d1.apply"]!, status: "running" } } })
+    writeLeanState(directory, { ...state, stages: atApply(state.stages) })
     const late = await send("Change the scope.")
     expect(late.status).toBe(409)
     expect(await late.json()).toMatchObject({ code: "lean_update_too_late" })
@@ -584,7 +591,7 @@ test("amendment status rows preserve stage order, worker-only sessions and the u
     }
     writeQuestions(directory, [{ id: "amendment-choice", stage: "change-plan", document: "d1", question: "Which allocation should the amendment use?", context: "The source leaves this decision open.", status: "open" }])
     const state = readLeanState(directory)!
-    writeLeanState(directory, { ...state, status: "blocked", stages: { ...state.stages, "d1.change-plan": { ...state.stages["d1.change-plan"]!, status: "blocked" }, "d1.apply": { ...state.stages["d1.apply"]!, status: "running" } } })
+    writeLeanState(directory, { ...state, status: "blocked", stages: atApply(state.stages) })
     const late = await routes.request("/matter/lean/updates", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "Change the allocation.", ownerSessionID: start.ownerSessionID }),
     })
