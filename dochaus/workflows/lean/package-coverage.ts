@@ -6,7 +6,7 @@ import { tagged } from "./prompts"
 import { approvedResearch, researchHandoff } from "./research"
 import { EXCERPT, REQUEST_SOURCE, adoptedSources, excerpt, lawyerWords, matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
 import { answeredScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows, type ScopeParties } from "./package-scope"
-import { answeredQuestionsText, hashStageInputs, questionOptions, readLeanJson, readLeanText, readQuestions, type AnswerReader, type OpenItem, type Question, type QuestionOption } from "./state"
+import { answeredQuestionsText, hashStageInputs, questionOptions, readLeanJson, readLeanText, readQuestions, undecidedQuestion, type AnswerReader, type OpenItem, type Question, type QuestionOption } from "./state"
 import { sourceText } from "./template-structure"
 
 // Package coverage: an instructed act needs an instrument executed by the
@@ -710,8 +710,9 @@ export function coverageScopeQuestion(acts: CoverageAct[], documents: PlannedDoc
  * revision is asked to settle: all but those of acts one of the `answered`
  * package-scope questions settled, read as the plan step's question reads them
  * (actScopeAnswers), since a revision never overrides the lawyer's answer. An
- * issue another act still raises stays. The record keeps every issue, so
- * coverageItems still discloses a settled act as uncovered. */
+ * issue another act still raises stays. The record keeps every issue;
+ * coverageItems reads the same answers and leaves out an act one the lawyer
+ * decided settled. */
 export function revisionCoverageIssues(issues: string[], acts: CoverageAct[], documents: PlannedDocument[], answered: Question[]) {
   const open = acts.filter(act => !act.excluded_by && actIssues(act, documents, acts).length)
   const settled = actScopeAnswers(open, answered, acts)
@@ -768,11 +769,14 @@ export function foldedCoverage(directory: string, coverage: { acts?: CoverageAct
  * of listing it as outstanding, and asks the lawyer to confirm whether it is to
  * be dealt with there or outside this package. "uncovered"
  * also gives one item per other act still without a document executed by the
- * parties who must take it, noting a package-scope question the lawyer
- * answered (never its answer) when that question settled the act
+ * parties who must take it, unless a package-scope question the lawyer
+ * answered, or whose recommendation they adopted, settled the act
  * (actScopeAnswers: it showed the act (showsAct), or has the id the plan step
- * would ask with), and
- * one per other recorded issue; "unchecked" gives one item saying the check
+ * would ask with): the plan follows that answer, so the act is not an
+ * omission. One the lawyer left open (undecidedQuestion) settles nothing, so
+ * the act's item stays and says so, naming no question. The issues of a
+ * settled act never return as other recorded issues. One item per other
+ * recorded issue; "unchecked" gives one item saying the check
  * gave no usable result. Either single item asks the lawyer to confirm
  * coverage. They belong to the drafting notes, so a repair goes to the
  * notes writer and a re-run of the draft step, which replaces draft-stage
@@ -799,10 +803,8 @@ export function coverageItems(directory: string): OpenItem[] {
   // the left-out words were verified against the lawyer's own words only.
   const lawyerQuote = (words: string) => `"${words.replace(/\s+/g, " ").trim()}"` + (matterSourceIDs(directory).includes(REQUEST_SOURCE) ? "" : ` [source: ${REQUEST_SOURCE}]`)
   const settled = actScopeAnswers(open, readQuestions(directory).filter(answeredScopeQuestion), coverage.acts)
-  const after = (act: CoverageAct) => {
-    const asked = settled.by(act).map(question => question.id)
-    return asked.length ? ` The lawyer answered the package-scope question ${asked.join(", ")}; the plan still leaves this act so.` : ""
-  }
+  const decided = (act: CoverageAct) => settled.by(act).some(question => !undecidedQuestion(question))
+  const after = (act: CoverageAct) => settled.by(act).length ? " The lawyer was asked where this act belongs and left the point open." : ""
   const stillPlanned = (act: CoverageAct) => {
     const planned = leftOutDocuments(act, plan.documents, coverage.acts).map(document => `${label(document)}, which is executed by ${quotedList(document.executed_by!)}`)
     return planned.length > 1 ? ` The lawyer should also confirm whether each of ${serialList(planned)}, should be in this package; none of them carries an instructed act.`
@@ -821,7 +823,7 @@ export function coverageItems(directory: string): OpenItem[] {
   const items = [
     ...coverage.acts.filter(act => act.excluded_by).map(act => item(`Plan coverage: the check of the document plan against the instructions read the lawyer's words ${lawyerQuote(act.excluded_by!)} ` +
       excludedReading(act, act.quote.replace(/\s+/g, " ").trim()) + stillPlanned(act))),
-    ...open.map(act => item("Plan coverage: the document plan leaves this instructed act without a document executed by the parties who must take it: " +
+    ...open.filter(act => !decided(act)).map(act => item("Plan coverage: the document plan leaves this instructed act without a document executed by the parties who must take it: " +
       actLine(act, plan.documents, act.quote.replace(/\s+/g, " ").trim()) + after(act))),
     ...coverage.issues.filter(issue => !tied.has(issue)).map(issue => item("Plan coverage: the check of the document plan against the instructions left this open: " +
       withoutOutlineFix(issue))),

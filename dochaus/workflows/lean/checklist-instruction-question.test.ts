@@ -625,14 +625,14 @@ describe("scope matching: fix wave 3", () => {
       expect(planAsks(first, [earlier], documents)).toBe(false)
       expect(planAsks(second, [earlier], documents)).toBe(true)
     }
-    // The disclosure refers to the answered question only for the act it listed.
+    // The answer settles only the act it listed; the other is still disclosed.
     const [first, second] = cases[0]!
     const directory = matter()
     const plan = writeLeanPlan(directory, [DOCS[0]!])
     writeLeanText(directory, "coverage.json", JSON.stringify({ schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(directory, plan.documents, plan.acting_for), status: "uncovered", acts: [first, second], issues: [] }))
     const earlier = planAnswered([first!], plan.documents)
     writeQuestions(directory, [earlier])
-    expect(coverageItems(directory).map(item => item.detail.includes(`The lawyer answered the package-scope question ${earlier.id}`))).toEqual([true, false])
+    expect(coverageItems(directory).map(item => [item.detail.includes(`"${first!.act}"`), item.detail.includes(`"${second!.act}"`)])).toEqual([[false, true]])
   })
 
   test("an open decision or check that quotes another instruction does not show it to the gate", () => {
@@ -801,7 +801,7 @@ describe("scope matching: fix wave 3", () => {
         expect([listed, beside, buyers].map(act => planAsks(act, [earlier]))).toEqual([false, false, true])
       }
     }
-    // The disclosure names the answered question only for the act it listed.
+    // The answer settles only the act it listed; the other party's is still disclosed.
     const listed = { ...actOf(SENTENCE, ["the Seller"], "deliver the documents"), source: "Heads of Terms [signed].pdf" }
     const directory = matter()
     const plan = writeLeanPlan(directory, [DOCS[0]!])
@@ -809,7 +809,7 @@ describe("scope matching: fix wave 3", () => {
       acts: [listed, { ...listed, act: "pay the deposit", parties: ["the Buyer"] }], issues: [] }))
     const earlier = planAnswered([listed, beside], plan.documents)
     writeQuestions(directory, [earlier])
-    expect(coverageItems(directory).map(item => item.detail.includes(`The lawyer answered the package-scope question ${earlier.id}`))).toEqual([true, false])
+    expect(coverageItems(directory).map(item => [item.detail.includes('"deliver the documents"'), item.detail.includes('"pay the deposit"')])).toEqual([[false, true]])
   })
 
   test("an act line's parties are read whole whatever quotation marks, commas or \"and\" their names hold", () => {
@@ -1003,10 +1003,10 @@ describe("scope matching: fix wave 3", () => {
     const directory = matter()
     writeLeanPlan(directory, SELLS)
     recordCoverage(directory, [delivery, buyer])
-    for (const [quote, cites] of [[SENTENCE, false], [BUYER, true]] as const) {
+    for (const [quote, settles] of [[SENTENCE, false], [BUYER, true]] as const) {
       const earlier = answered(gateOn(quote))
       writeQuestions(directory, [earlier])
-      expect(coverageItems(directory).map(item => item.detail.includes(`The lawyer answered the package-scope question ${earlier.id}`))).toEqual([cites])
+      expect(coverageItems(directory).map(item => item.detail.includes(`"${buyer.act}"`))).toEqual(settles ? [] : [true])
     }
   })
 
