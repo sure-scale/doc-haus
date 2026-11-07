@@ -1,17 +1,17 @@
 import UserText from "../chat/UserText"
-import { activeStep, isWorking, stepActivityLabel } from "./activity"
+import { isWorking } from "./activity"
 import { openQuestions } from "../drafting/model"
 import { runOutcome } from "./outcome"
 import ResultCard from "./ResultCard"
 import { narrationTimeline, type TimelineBlock } from "./timeline"
-import Thinking from "./Thinking"
 import TimelineEntry from "./TimelineEntry"
 import type { DraftingNarration as Narration } from "./use-drafting-narration"
 
 // The drafting run, narrated in the matter chat: one row per stage with its
-// activity folded beneath, the narrator's plain-English updates between them, a
-// live pill while a stage works, and the result once the run settles. The run
-// header above the chat carries the controls; this is the running commentary.
+// activity folded beneath, the narrator's plain-English updates between them,
+// and the result once the run settles. The run header above the chat carries the
+// controls and the live stage with its elapsed time; this is the running
+// commentary.
 export default function DraftingNarration({
   narration,
   matterId,
@@ -45,14 +45,6 @@ export default function DraftingNarration({
     return rows
   }, [])
   const outcome = runOutcome(status)
-  const step = activeStep(status)
-  const since = Date.parse((step && status.stages[step]?.started_at) || status.updated_at)
-  // What the run is doing this moment: the stage session's newest unfinished
-  // read, search or thought, else the stage itself.
-  const current = narration.lines
-    .filter((line) => line.kind !== "milestone" && line.state === "running" && line.step === step)
-    .sort((a, b) => a.at - b.at)
-    .at(-1)
   return (
     <>
       {showRequest && status.request && (
@@ -89,13 +81,6 @@ export default function DraftingNarration({
           <div className="narration-muted">
             A progress summary could not be written just now. The steps above are current.
           </div>
-        )}
-        {working && (
-          <Thinking
-            label={current?.text ?? (step ? stepActivityLabel(status, step) : "Working")}
-            since={since}
-            summarising={narration.narrating}
-          />
         )}
       </div>
     </>

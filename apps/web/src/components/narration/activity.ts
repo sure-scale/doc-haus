@@ -62,7 +62,7 @@ const STAGES: Record<string, { during: string; done: string }> = {
   research: { during: "researching legal authority", done: "Research findings and limitations recorded" },
   "research-review": { during: "checking research against retrieved sources", done: "Research support and limitations reviewed" },
   acts: { during: "listing the legal acts your instructions direct", done: "Instructed acts listed" },
-  spine: { during: "building the source-backed drafting spine", done: "Drafting spine prepared" },
+  spine: { during: "listing the points the draft must cover, with their sources", done: "Points for the draft listed with their sources" },
   draft: { during: "drafting", done: "Draft written" },
   review: { during: "reviewing the draft", done: "Reviewed the draft" },
   "review-playbook": { during: "Checking the applicable playbook", done: "Checked the applicable playbook" },
@@ -97,10 +97,14 @@ export function clip(text: string, max: number) {
   return flat.length <= max ? flat : `${flat.slice(0, max - 1).trimEnd()}…`
 }
 
-export function fileLabel(target: string) {
+/** A path as the lawyer knows it: a run file in plain words, a document by its
+ * name, and nothing for a folder (the matter folder or any path that is not a
+ * document), so a folder name never reaches the timeline. */
+export function fileLabel(target: string, matter?: string) {
   if (/(^|[\\/])\.dochaus[\\/]/.test(target))
     return RUN_FILES[basename(target)] ?? "the run's working files"
-  return basename(target)
+  const name = basename(target)
+  return name === matter || /[\\/]$/.test(target) || !/.\.[^.\s]+$/.test(name) ? undefined : name
 }
 
 /** One activity line for a stage session's part; undefined for parts that are
@@ -131,7 +135,7 @@ type ToolActivity = Pick<ActivityLine, "text" | "group" | "target" | "detail" | 
 function toolActivity(part: ToolPart, state: ActivityLine["state"], matter: string): ToolActivity {
   const input = part.state.input
   const running = state === "running"
-  const document = typeof input.document === "string" && input.document ? fileLabel(input.document) : undefined
+  const document = typeof input.document === "string" && input.document ? fileLabel(input.document, matter) : undefined
   if (["web-search", "websearch"].includes(part.tool)) {
     const query = typeof input.query === "string" ? input.query.trim() : ""
     const target = query ? `"${clip(query, SEARCH_CHARS)}"` : undefined
@@ -155,7 +159,12 @@ function toolActivity(part: ToolPart, state: ActivityLine["state"], matter: stri
   }
   if (part.tool === "read-document" || part.tool === "read") {
     const path = [input.filePath, input.path].find((value) => typeof value === "string" && value)
-    const target = document ?? (typeof path === "string" ? fileLabel(path) : undefined)
+    const target = document ?? (typeof path === "string" ? fileLabel(path, matter) : undefined)
+    // A read of a folder lists the matter's files; say so rather than naming the folder.
+    if (!target && typeof path === "string" && !input.document) {
+      if (state === "error") return { text: "Could not list the matter files" }
+      return { text: running ? "Listing the matter files" : "Listed the matter files", group: "read" }
+    }
     if (state === "error") return { text: `Could not read ${target ?? "a document"}` }
     return { text: `${running ? "Reading" : "Read"} ${target ?? "a document"}`, group: "read", target }
   }

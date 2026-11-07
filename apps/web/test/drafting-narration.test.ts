@@ -633,7 +633,7 @@ test("evidence stages narrate actual work", () => {
   const row = { status: "running" as const, attempts: 1, started_at: "2026-10-12T10:00:00.000Z", finished_at: null }
   const status = lean({ ...running, stages: { discrepancy: row, spine: row, "d1.review-independent": row, "package-review": row, finalize: { ...row, status: "pending", started_at: null }, gate: { ...row, status: "pending", started_at: null } } })
   expect(stageMilestones(status).map(line => line.text)).toEqual([
-    "Assessing discrepancies in the source materials", "Building the source-backed drafting spine",
+    "Assessing discrepancies in the source materials", "Listing the points the draft must cover, with their sources",
     "Independently checking function and fidelity", "Reviewing final semantics and the document package",
   ])
 })

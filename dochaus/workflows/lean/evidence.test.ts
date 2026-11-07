@@ -308,7 +308,7 @@ test("a spine that keeps an unquoted figure is retried with the figure named, th
   // One open item for the entry, which the notes name and the gate discloses.
   const items = readOpenItems(directory).filter(item => item.stage === "spine")
   expect(items.map(item => [item.kind, item.detail, item.ref])).toEqual([["omission",
-    'Drafting spine: this fact states "4,800,000", which none of its quoted source words states; confirm each against the sources.',
+    'Points for the draft: this fact states "4,800,000", which none of its quoted source words states; confirm each against the sources.',
     { statement: "The purchase price is $4,800,000.", repair_target: "memo" }]])
   expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass" })
 })

@@ -10,13 +10,12 @@ import { stepLabel } from "../src/components/chat/step-labels"
 import { partActivity, stageMilestones, type ActivityLine } from "../src/components/narration/activity"
 import DraftingNarration from "../src/components/narration/DraftingNarration"
 import ResultCard from "../src/components/narration/ResultCard"
-import Thinking from "../src/components/narration/Thinking"
 import TimelineEntry from "../src/components/narration/TimelineEntry"
 import { draftedIn, narrationTimeline, stepRows } from "../src/components/narration/timeline"
 
 // The chat side of a drafting run: folded tool rows, clipped searches, stage
-// rows with their roll-ups, the Thinking pill and the result, rendered from the
-// recorded lean status fixtures.
+// rows with their roll-ups and the result, rendered from the recorded lean
+// status fixtures.
 
 function lean(value: unknown): LeanDraftingStatus {
   if (!isLeanDraftingStatus(value)) throw new Error("fixture is not a lean drafting status")
@@ -51,6 +50,27 @@ test("a read names its file from the native path input, in the chat and the step
   })
   if (part.type !== "tool") throw new Error("expected a tool part")
   expect(stepLabel(part, "/m")).toContain("Supply Terms.docx")
+})
+
+test("a read of a folder never names the folder, and its fold carries no folder suffix", () => {
+  for (const path of ["/m/matter", "/m/matter/", "C:\\m\\matter", "/m/matter/sources"]) {
+    const line = activity(`f:${path}`, "read", { path })
+    expect([line.text, line.group, line.target]).toEqual(["Listed the matter files", "read", undefined])
+  }
+  expect(activity("f-doc", "read", { filePath: "/m/matter/Order form.pdf" }).target).toBe("Order form.pdf")
+
+  const lines = [
+    activity("r1", "read", { path: "/m/matter/Supply Terms.docx" }),
+    activity("r2", "read", { path: "/m/matter/Order form.pdf" }),
+    activity("r3", "read", { path: "/m/matter" }),
+  ]
+  expect(stepRows(lines).map((row) => [row.count, row.text, row.target])).toEqual([[3, "Read source material · 3", undefined]])
+  const live = narrationTimeline(lines, [], true).at(-1)
+  if (live?.kind !== "steps") throw new Error("expected a steps block")
+  const html = renderToStaticMarkup(createElement(TimelineEntry, { block: live }))
+  expect(html).toContain("Listed the matter files")
+  expect(html).not.toContain("narration-suffix")
+  expect(html.replaceAll("the matter files", "")).not.toMatch(/\bmatter\b/)
 })
 
 test("a long search shows a clipped query and keeps the full one for the tooltip", () => {
@@ -95,23 +115,7 @@ test("consecutive uses of one tool fold into a counted row with the latest targe
   expect(html).toContain('<span class="narration-suffix"> — two.docx</span>')
 })
 
-test("the Thinking pill alone is the live region and names what the run is doing, with its elapsed time", () => {
-  const html = renderToStaticMarkup(
-    createElement(Thinking, { label: "Reading Supply Terms.docx", since: Date.now() - 65_000, summarising: false }),
-  )
-  expect(html).toStartWith(
-    '<div class="narration-thinking" role="status" aria-live="polite" title="Reading Supply Terms.docx">',
-  )
-  expect(html.match(/aria-live/g)).toHaveLength(1)
-  expect(html).toContain('<span class="narration-thinking-text">Reading Supply Terms.docx</span>')
-  expect(html).toMatch(/1m [56]s/)
-  const summarising = renderToStaticMarkup(
-    createElement(Thinking, { label: "Reading Supply Terms.docx", since: Date.now(), summarising: true }),
-  )
-  expect(summarising).toContain('<span class="narration-thinking-text">Summarising progress</span>')
-})
-
-test("a running run shows its live stage and current activity; a finished one shows its result", () => {
+test("a running run shows its live stage once, in its row, with the current activity beneath; a finished one shows its result", () => {
   const narration = {
     status: running,
     visible: true,
@@ -133,8 +137,11 @@ test("a running run shows its live stage and current activity; a finished one sh
   const live = render(narration)
   expect(live).not.toContain("narration-intro")
   expect(live).toContain('class="narration-stage is-running"')
-  expect(live).toContain('<span class="narration-thinking-text">Drafting</span>')
-  expect(live.match(/aria-live/g)).toHaveLength(1)
+  // The run header above the chat carries the live stage, its elapsed time and
+  // the live region; the commentary names the stage only in its own row.
+  expect(live).toContain('<span class="narration-stage-text">Drafting</span>')
+  expect(live.match(/>Drafting</g)).toHaveLength(2) // the agent label and the stage row
+  expect(live).not.toContain("aria-live")
 
   const stage = narration.lines[0]!
   const reading: ActivityLine = {
@@ -145,9 +152,9 @@ test("a running run shows its live stage and current activity; a finished one sh
     text: "Reading Supply Terms.docx",
     step: "d1.draft",
   }
-  expect(render({ ...narration, lines: [...narration.lines, reading] })).toContain(
-    '<span class="narration-thinking-text">Reading Supply Terms.docx</span>',
-  )
+  const reads = render({ ...narration, lines: [...narration.lines, reading] })
+  expect(reads).toContain('<span class="narration-line-text">Reading Supply Terms.docx</span>')
+  expect(reads).not.toContain("aria-live")
 
   expect(draftedIn(running)).toBeUndefined()
   expect(draftedIn(done)).toMatch(/^(under a minute|\d+m|\d+h \d+m)$/)
@@ -155,7 +162,6 @@ test("a running run shows its live stage and current activity; a finished one sh
   expect(finished).toContain("Ready for review")
   expect(finished.match(/class="narration-stage is-done"/g)).toHaveLength(6)
   expect(finished).toContain('class="narration-duration"')
-  expect(finished).not.toContain("narration-thinking")
   // The run header above the chat says how long the run took; the result does not repeat it.
   expect(finished).not.toContain("Drafted in")
 })

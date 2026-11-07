@@ -107,7 +107,7 @@ const build = await Bun.build({ entrypoints: [entry], target: "browser", define:
 assert.equal(build.success, true, build.logs.join("\n"))
 const script = await build.outputs.find((output) => output.path.endsWith(".js"))!.text()
 const css = (await Promise.all([
-  "styles.css", "narration.css", "narration-live.css", "styles/primitives.css", "styles/upload.css", "styles/shell.css", "styles/chat-log.css", "styles/drafting.css", "styles/drafting-items.css", "styles/run-summary.css", "styles/motion.css", "styles/design-system.css", "styles/design-shell.css", "styles/design-documents.css", "styles/design-conversation.css", "styles/design-library.css", "styles/design-review.css", "styles/design-settings.css", "styles/design-matters.css", "styles/launch-notice.css", "styles/contrast.css",
+  "styles.css", "narration.css", "styles/primitives.css", "styles/upload.css", "styles/shell.css", "styles/chat-log.css", "styles/drafting.css", "styles/drafting-items.css", "styles/run-summary.css", "styles/motion.css", "styles/design-system.css", "styles/design-shell.css", "styles/design-documents.css", "styles/design-conversation.css", "styles/design-library.css", "styles/design-review.css", "styles/design-settings.css", "styles/design-matters.css", "styles/launch-notice.css", "styles/contrast.css",
 ].map((file) => Bun.file(path.resolve(import.meta.dir, "../src", file)).text()))).join("\n")
 const matter = { id: "matter", title: "Services matter", dir: "/matter", created_at: 1, documents: [{ id: 1, name: "Services.docx", doc_path: "/matter/Services.docx", created_at: 1, role: "source" }] }
 const json = (body: unknown) => Response.json(body)
