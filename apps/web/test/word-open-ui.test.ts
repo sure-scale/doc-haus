@@ -76,3 +76,47 @@ test("Open in Word uses the desktop handoff; failure exposes a deliberate linked
     }
   }
 })
+
+test("rows say nothing about Word while it is not set up, but keep an editing lock's recovery", async () => {
+  const browser = new Window({ url: "http://localhost:5275" })
+  const names = ["window", "document", "HTMLElement", "Node", "Event", "IS_REACT_ACT_ENVIRONMENT"] as const
+  const saved = names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const)
+  Object.defineProperties(globalThis, Object.fromEntries(names.map(name => [name, { configurable: true, writable: true,
+    value: name === "IS_REACT_ACT_ENVIRONMENT" ? true : browser[name as keyof Window] }])))
+  const originalFetch = globalThis.fetch
+  const { createRoot } = await import("react-dom/client")
+  const container = document.createElement("div")
+  document.body.append(container)
+  const root = createRoot(container)
+  let documents: unknown[] = []
+  let answerConfig: (() => void) | undefined
+  globalThis.fetch = (async (input) => {
+    const url = String(input)
+    if (url.endsWith("/word/config")) {
+      await new Promise<void>(resolve => { answerConfig = resolve })
+      return Response.json({ available: false, origin: null, manifestUrl: null, reason: "Synthetic: not set up." })
+    }
+    return Response.json({ documents })
+  }) as typeof fetch
+  const render = () => createElement(ToastProvider, null, createElement(WordDocumentsProvider, { matterId: "m", onChanged: () => {}, children: createElement(WordOpenControl, { matterId: "m", name: "Draft.docx", compact: true }) }))
+  try {
+    await act(async () => { root.render(render()) })
+    expect(container.querySelector(".word-controls")).toBeNull()
+    await act(async () => { answerConfig!() })
+    expect(container.querySelector(".word-controls")).toBeNull()
+    expect(container.textContent).toBe("")
+    documents = [{ name: "Draft.docx", open: false, currentVersion: "v-1", overlap: false, lease: { state: "other", generation: "g", expiresAt: Date.now() + 60000 } }]
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    expect(container.textContent).toContain("Take over editing")
+    expect(container.textContent).not.toContain("Open in Word")
+  } finally {
+    await act(async () => root.unmount())
+    container.remove()
+    await browser.happyDOM.close()
+    globalThis.fetch = originalFetch
+    for (const [name, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor)
+      else delete (globalThis as Record<string, unknown>)[name]
+    }
+  }
+})

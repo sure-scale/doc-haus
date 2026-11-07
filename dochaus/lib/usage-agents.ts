@@ -18,20 +18,79 @@ const BACKGROUND: Record<string, string> = {
   [WORD_SUGGESTIONS_AGENT]: "Suggest ideas in Word",
 }
 
+// The assistants and jobs the lawyer starts, by the name the lawyer knows them by.
 const WORK: Record<string, string> = {
   [UPKEEP_AGENT]: "Conversation titles and compaction",
   [PREPARE_CHANGES_AGENT]: "Prepare changes",
   [REPLY_DRAFTING_AGENT]: "Comment replies",
   router: "Choose an assistant",
-  "lean-advise": "Question check",
   "document-reviewer": "Word edit review",
+  chronology: "Build a chronology",
   "chronology-extract": "Build a chronology",
   "chronology-match": "Build a chronology",
   qa: "Questions",
+  "word-chat": "Questions in Word",
+  redliner: "Redline",
+  redactor: "Redact",
+  research: "Research",
+  "quick-draft": "Quick draft",
+  "client-summary": "Client summary",
+  compare: "Compare",
+  obligations: "Obligations",
+  summarizer: "Summaries",
+  "legal-review": "Full review",
+  "playbook-reviewer": "Full review",
+  "assumption-challenger": "Full review",
   extract: "Review table",
+  "review-suggest": "Review table",
   dashboard: "Build dashboards",
   "dashboard-chart": "Build dashboards",
+  "playbook-importer": "Playbook import",
+  "template-builder": "Template builder",
+  "workflow-builder": "Workflow builder",
+  "skill-builder": "Skill builder",
+  "agent-builder": "Agent builder",
 }
+
+// A drafting run's steps, grouped by the task each serves so the lawyer sees a
+// few plain tasks rather than one row per internal step.
+const DRAFTING_TASK: Record<string, string> = {
+  draft: "Drafting",
+  "lean-instructions": "Planning",
+  "lean-intake": "Planning",
+  "lean-discrepancy": "Planning",
+  "lean-act-record": "Planning",
+  "lean-advise": "Planning",
+  "lean-answer": "Planning",
+  "lean-answer-reconcile": "Planning",
+  "lean-spine": "Planning",
+  "lean-spine-split": "Planning",
+  "lean-spine-level": "Planning",
+  "lean-placement": "Planning",
+  "lean-coverage": "Planning",
+  "lean-files": "Planning",
+  "lean-research": "Research",
+  "lean-research-review": "Research",
+  "lean-draft": "Drafting",
+  "lean-drafting-notes": "Drafting",
+  "lean-review": "Review",
+  "lean-review-independent": "Review",
+  "lean-review-playbook": "Review",
+  "lean-review-wording": "Review",
+  "lean-review-client-disadvantage": "Review",
+  "lean-package-review": "Review",
+  "lean-change-plan": "Review",
+  "lean-change-prepare": "Review",
+  "lean-changes": "Review",
+  "lean-change-review": "Review",
+  "lean-spine-absence": "Checks",
+  "lean-spine-absence-verify": "Checks",
+  "lean-checklist-extract": "Checks",
+  "lean-checklist-check": "Checks",
+}
+
+// Usage under a name with no plain label: never shown as its internal id.
+export const OTHER_WORK = "Other work"
 
 type SessionLike = { metadata?: Record<string, unknown> | null } | undefined
 
@@ -44,13 +103,13 @@ export function usageAgentKey(agent: string | undefined, session?: SessionLike):
 export function usageAgent(agent: string | undefined, session?: SessionLike): UsageAgent {
   const key = usageAgentKey(agent, session)
   if (BACKGROUND[key]) return { key, label: BACKGROUND[key], group: "background" }
-  return { key, label: WORK[key] ?? humanize(key), group: "work" }
+  return { key, label: DRAFTING_TASK[key] ?? WORK[key] ?? OTHER_WORK, group: "work" }
 }
 
 export const USAGE_GROUP_LABEL: Record<UsageGroup, string> = { background: "Background agents", work: "Your work" }
 
-// Sentence case for an id with no plain name of its own (agents, tools).
+// Sentence case for a tool id.
 export function humanize(key: string) {
-  const words = key.replace(/^lean-/, "").replace(/[-_]+/g, " ").trim()
+  const words = key.replace(/[-_]+/g, " ").trim()
   return words ? words[0]!.toUpperCase() + words.slice(1) : "Other"
 }

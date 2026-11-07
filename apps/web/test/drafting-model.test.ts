@@ -82,10 +82,12 @@ test("equivalent topic labels keep separate decisions in one group and retain th
   ])
 })
 
-test("planned titles lose markdown ticks; an untitled document gets its position", () => {
+test("planned titles lose markdown ticks; an untitled document gets its position, or Draft before any plan", () => {
   expect(cleanTitle("  `Cover`   memo ")).toBe("Cover memo")
   const status = lean({ ...completed, plan: null })
-  expect(stepGroups(status).map((group) => group.title)).toEqual(["Document 1", "Finishing"])
+  expect(stepGroups(status).map((group) => group.title)).toEqual(["Draft", "Finishing"])
+  const untitled = lean({ ...completed, plan: { documents: [{ id: "d9", title: "Other", purpose: "" }] } })
+  expect(stepGroups(untitled)[0]!.title).toBe("Document 1")
   const ticked = lean({ ...completed, plan: { documents: [{ id: "d1", title: "`Note`", purpose: "" }] } })
   expect(stepGroups(ticked)[0]!.title).toBe("Note")
 })
@@ -807,7 +809,7 @@ test("evidence stages stay in preparation, document review and finishing order",
     ["run", ["finalize", "package-review", "gate"]],
   ])
   expect(runPosition(status)?.text).toBe("Preparation · Assess source discrepancies")
-  expect(stepGroups(lean({ ...status, plan: null }))[1]?.title).toBe("Document 1")
+  expect(stepGroups(lean({ ...status, plan: null }))[1]?.title).toBe("Draft")
   expect(stepName("d1.review-independent")).toBe("Independent function and fidelity review")
   expect(stepName("d1.review-wording")).toBe("Review problematic wording")
   expect(stepName("d1.review-client-disadvantage")).toBe("Review client disadvantage")

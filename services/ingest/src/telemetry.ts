@@ -104,13 +104,14 @@ export async function readDetailPayload(matterDir: string, signal: AbortSignal):
   const sessions = new Map(usage.sessions.map((session) => [session.id, session]))
   const { byTool, toolCallsByAgent } = readToolCalls(matterDir, sessions)
 
+  // One row per plain name: a task's steps share it, as in dashboard charts.
   const agents = new Map<string, DetailPayload["by_agent"][number]>()
   const agentRow = (key: string) => {
-    const existing = agents.get(key)
-    if (existing) return existing
     const { label, group } = usageAgent(key)
-    const row = { agent: key, label, group, cost_usd: 0, turns: 0, tool_calls: 0 }
-    agents.set(key, row)
+    const existing = agents.get(label)
+    if (existing) return existing
+    const row = { agent: label, label, group, cost_usd: 0, turns: 0, tool_calls: 0 }
+    agents.set(label, row)
     return row
   }
   const models = new Map<string | null, DetailPayload["by_model"][number]>()
