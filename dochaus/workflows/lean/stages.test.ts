@@ -172,8 +172,8 @@ describe("lean engine session port", () => {
 describe("lean stage keys", () => {
   afterEach(cleanupMatters)
 
-  test("an answer to a document's question re-keys no preparation step, a package-scope answer only the act record and only the plan step's; a run-level answer re-keys them", () => {
-    const steps = ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.review"] as const
+  test("an answer to a document's question re-keys the step that asked it and the document's later steps, no earlier one and no preparation step; a package-scope answer the document's steps only; a run-level answer re-keys them all", () => {
+    const steps = ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.review", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review"] as const
     const keys = (questions: Question[]) => {
       const directory = matter()
       writeLeanPlan(directory, [{ title: "Supply note", purpose: "Supply note", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
@@ -182,21 +182,24 @@ describe("lean stage keys", () => {
     }
     const answered: Question = { id: "q-late", stage: "intake", question: "Should late delivery carry a remedy?", context: "The terms are silent.", status: "answered", answer: "No remedy.", kind: "judgment" }
     const none = keys([])
-    const { "d1.review": review, ...preparation } = keys([{ ...answered, stage: "changes", document: "d1" }])
-    const { "d1.review": noneReview, ...nonePreparation } = none
-    expect(preparation).toEqual(nonePreparation)
-    expect(review).not.toBe(noneReview)
-    const intake = keys([answered])
-    for (const step of steps) expect([step, intake[step] === none[step]]).toEqual([step, false])
-    // The plan step's package-scope answer can direct acts, so it re-keys the
-    // act record too. Its question carries the step's document, as the runner
-    // records every document step's questions.
+    const unchanged = (keyed: Record<string, string>, same: (step: typeof steps[number]) => boolean) => {
+      for (const step of steps) expect([step, keyed[step] === none[step]]).toEqual([step, same(step)])
+    }
+    // The changes step applies its own answer: the reviews, the change plan
+    // and the preparation before it never read it and keep their keys.
+    unchanged(keys([{ ...answered, stage: "changes", document: "d1" }]), step => step !== "d1.changes" && step !== "d1.change-review")
+    unchanged(keys([{ ...answered, stage: "change-plan", document: "d1" }]), step => !step.startsWith("d1.change"))
+    unchanged(keys([answered]), () => false)
+    // The plan step's package-scope answer carries the step's document, as the
+    // runner records every document step's questions: it re-keys the document's
+    // steps after its draft, not the act record or the spine. The plan step
+    // settles it itself from questions.json; it directs no act of its own.
     const scope = keys([{ ...answered, id: `${PACKAGE_SCOPE_QUESTION}late`, stage: "draft", document: "d1", kind: "scope" }])
-    for (const step of steps) expect([step, scope[step] === none[step]]).toEqual([step, step !== "acts" && step !== "d1.review"])
+    unchanged(scope, step => !step.startsWith("d1."))
     // The gate's package-scope question carries no document and is asked once
     // the plan is saved: its answer re-keys no preparation step, the act record
     // included; the gate reads it itself and the document through its review.
     const gate = keys([{ ...answered, id: `${PACKAGE_SCOPE_QUESTION}gate`, stage: "gate", kind: "scope", mixed: true }])
-    for (const step of steps) expect([step, gate[step] === none[step]]).toEqual([step, step !== "d1.review"])
+    unchanged(gate, step => !step.startsWith("d1."))
   })
 })

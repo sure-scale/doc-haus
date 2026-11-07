@@ -10,8 +10,8 @@ import { enqueueLeanRequest } from "./requests"
 import type { RepairRound } from "./repairs"
 import { runLean } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS } from "./stages"
-import { leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
-import { AGENT, DRAFT, NO_FINDINGS, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, matter, noChanges, pidOf, registering, sameSession, scriptedModel, type Reply } from "./test-support"
+import { REVIEW_STAGES, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
+import { AGENT, DRAFT, NO_FINDINGS, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, noChanges, pidOf, registering, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // Real coordinator, checkers, renderer, pointer applier and comparison. Only the
 // model is scripted: each agent's reply is a function of the prompt it received.
@@ -235,7 +235,7 @@ describe("lean drafting runner", () => {
       .toContain("The supplier shall deliver the goods within thirty days of the order date.")
   }, 120_000)
 
-  test("a question is never answered by the run; an answer repeats the review, not the accepted draft, and is not asked again", async () => {
+  test("a question is never answered by the run; an answer repeats the step that asked it, not the accepted draft or its reviews, and is not asked again", async () => {
     const directory = matter()
     const asking = sameSession(prompt => JSON.stringify({ ...JSON.parse(changes(prompt, 0)), questions: [{ question: "Should late delivery carry a remedy?", kind: "judgment", context: "The terms are silent." }] }))
     const model = scriptedModel({ ...happyPath, [AGENT.changes]: asking })
@@ -252,7 +252,7 @@ describe("lean drafting runner", () => {
     enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: "No remedy; leave the terms silent." })
     const answered = scriptedModel({ ...happyPath, [AGENT.changes]: asking })
     const resumed = await runLean(directory, { sessions: answered.port })
-    expect(answered.counts()).toEqual([0, 1, 1, 1])
+    expect(answered.counts()).toEqual([0, 0, 1, 1])
     expect(answered.prompts.find(prompt => prompt.agent === AGENT.changes)!.text).toContain("No remedy; leave the terms silent.")
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: question!.id, status: "answered" })])
     expect(resumed.status).toBe("completed")
@@ -261,7 +261,7 @@ describe("lean drafting runner", () => {
     expect(readdirSync(leanFile(directory, "requests")).filter(name => name.endsWith(".json"))).toEqual([])
   }, 120_000)
 
-  test("an answer to a document's question keeps instructions through spine done and re-runs that document's review and change plan onward", async () => {
+  test("an answer to a document's changes question keeps instructions through spine, the reviews, the change plan and its preparation done, and re-runs changes onward", async () => {
     const preparation = ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine"] as const
     const directory = matter()
     const asking = sameSession(prompt => JSON.stringify({ ...JSON.parse(changes(prompt, 0)), questions: [{ question: "Should late delivery carry a remedy?", kind: "judgment", context: "The terms are silent." }] }))
@@ -275,17 +275,56 @@ describe("lean drafting runner", () => {
     const resumed = await runLean(directory, { sessions: answered.port })
 
     expect(resumed.status).toBe("completed")
+    // The steps before changes never read its answer: each keeps its key and makes no call.
     for (const step of preparation) {
       expect([step, resumed.stages[step]?.status, resumed.stages[step]?.input_sha]).toEqual([step, "done", blocked.stages[step]!.input_sha!])
       expect([step, answered.count(AGENT[step])]).toEqual([step, 0])
     }
+    for (const stage of [...REVIEW_STAGES, "change-plan", "change-prepare"] as const) {
+      expect([stage, resumed.stages[`d1.${stage}`]?.status, resumed.stages[`d1.${stage}`]?.input_sha]).toEqual([stage, "done", blocked.stages[`d1.${stage}`]!.input_sha!])
+      expect([stage, answered.count(AGENT[stage])]).toEqual([stage, 0])
+    }
     expect(answered.count(AGENT.draft)).toBe(0)
     expect(resumed.stages["d1.draft"]?.input_sha).toBe(blocked.stages["d1.draft"]!.input_sha!)
-    // The document's own steps read the answer, from its review onward.
-    for (const step of ["d1.review", "d1.change-plan"] as const)
-      expect([step, resumed.stages[step]?.status, resumed.stages[step]?.input_sha === blocked.stages[step]!.input_sha]).toEqual([step, "done", false])
-    expect(answered.count(AGENT.review)).toBe(1)
+    // Changes reads it, in its prompt as in its key; the change plan's prompt leaves it out, as its key does.
     expect(answered.prompts.find(prompt => prompt.agent === AGENT.changes)!.text).toContain("No remedy; leave the terms silent.")
+    expect(stagePrompt(directory, "d1.changes")).toContain("No remedy; leave the terms silent.")
+    expect(stagePrompt(directory, "d1.change-plan")).not.toContain("No remedy; leave the terms silent.")
+    expect(stagePrompt(directory, "d1.review")).not.toContain("No remedy; leave the terms silent.")
+  }, 120_000)
+
+  test("an answer to a document's change-plan question re-runs the change plan onward and none of the document's reviews", async () => {
+    const directory = matter()
+    // The scripted plan rejects the review findings, as the default does, and asks one question.
+    const asking: Reply = prompt => {
+      const resolves = listedFindingIDs(prompt)
+      return JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], findings: resolves.length ? [{
+        disposition: "rejected", kind: "suggestion", detail: "The scripted plan adjudicates the review findings.", reason: "The scripted changes stage decides the amendments.",
+        documents: ["d1"], sources: [], limitations: ["Scripted fixture."], resolves,
+      }] : [], questions: [{ pid: pidOf(prompt, "The supplier shall deliver the goods."), question: "Should late delivery carry a remedy?", kind: "judgment", context: "The terms are silent." }] })
+    }
+    const blocked = await runLean(directory, { sessions: scriptedModel({ ...happyPath, [AGENT["change-plan"]]: asking }).port })
+    const [question] = readQuestions(directory)
+    expect(question).toMatchObject({ stage: "change-plan", document: "d1", status: "open" })
+    expect(blocked.status).toBe("blocked")
+    for (const stage of REVIEW_STAGES) expect([stage, blocked.stages[`d1.${stage}`]?.status]).toEqual([stage, "done"])
+
+    enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: "No remedy; leave the terms silent." })
+    const answered = scriptedModel({ ...happyPath, [AGENT["change-plan"]]: asking })
+    const resumed = await runLean(directory, { sessions: answered.port })
+
+    expect(resumed.status).toBe("completed")
+    // The reviews never read the change plan's answer: each keeps its key and makes no call.
+    for (const stage of REVIEW_STAGES) {
+      expect([stage, resumed.stages[`d1.${stage}`]?.input_sha]).toEqual([stage, blocked.stages[`d1.${stage}`]?.input_sha])
+      expect([stage, answered.count(AGENT[stage])]).toEqual([stage, 0])
+    }
+    expect(answered.count(AGENT.draft)).toBe(0)
+    // The change plan reads its own answer and runs once more.
+    expect(answered.count(AGENT["change-plan"])).toBe(1)
+    expect(answered.prompts.find(prompt => prompt.agent === AGENT["change-plan"])!.text).toContain("No remedy; leave the terms silent.")
+    expect(stagePrompt(directory, "d1.review")).not.toContain("No remedy; leave the terms silent.")
+    expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: question!.id, status: "answered" })])
   }, 120_000)
 
   test("an answer to the gate's package-scope question after delivery keeps instructions through spine done and re-runs only the document's review and change path and the gate", async () => {

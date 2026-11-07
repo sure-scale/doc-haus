@@ -30,8 +30,10 @@ function stagePrompts(model: ReturnType<typeof scriptedModel>, title: string, st
 }
 
 const later: [string, (directory: string) => void][] = [
+  // A document's step reads the questions asked at or before it, so the first
+  // document's change-plan question reaches both change plans.
   ["a queued answer", directory => {
-    writeQuestions(directory, [{ id: "q-late", stage: "change-plan", document: "d2", pid: readParagraphs(directory, "d2")[0]!.pid, question: QUESTION, context: "The terms are silent.", status: "open" }])
+    writeQuestions(directory, [{ id: "q-late", stage: "change-plan", document: "d1", pid: readParagraphs(directory, "d1")[0]!.pid, question: QUESTION, context: "The terms are silent.", status: "open" }])
     enqueueLeanRequest(directory, { kind: "answer", question_id: "q-late", answer: "No remedy." })
   }],
   ["a lawyer's update", directory => { enqueueLeanRequest(directory, { kind: "update", text: "Use plain English throughout." }) }],

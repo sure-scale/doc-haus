@@ -3,7 +3,7 @@ import { effectivePosture, matterDateFormat } from "../../lib/matter-client"
 import { DOCUMENT_FORMS, type DocumentForm } from "../../lib/page-furniture"
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
 import { attachmentHead } from "./consistency"
-import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type ReviewStageID, type StageID } from "./state"
+import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type Question, type ReviewStageID, type StageID } from "./state"
 import { templateSource } from "./template-contract"
 
 // The run's plan: every document the request asks for, in drafting order, each
@@ -108,6 +108,22 @@ type Checked<T> = { issues: string[]; value?: T }
 export function leanSteps(directory: string): StepID[] {
   const ids = readLeanPlan(directory)?.documents.map(document => document.id) ?? [FIRST_DOCUMENT]
   return ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", ...ids.flatMap(id => DOC_STAGES.filter(stage => stage !== "review-playbook" || reviewStages(directory, id).includes(stage)).map((stage): StepID => `${id}.${stage}`)), "finalize", "checklist-check", "package-review", "gate"]
+}
+
+/** Which answered questions `step` reads of those a document's step asked (one
+ * with `document`): its own and those of the steps before it in walk order,
+ * never a later step's, which that step applies and an earlier step's output
+ * cannot depend on. A question with no document (a run-level one, the gate's
+ * package-scope one) or whose asking step is not in the walk is read by every
+ * step. The step's prompt and its key read the same, so neither changes for
+ * an answer the step never reads. */
+export function askedAtOrBefore(directory: string, step: StepID) {
+  const order = leanSteps(directory), at = order.indexOf(step)
+  return (question: Question) => {
+    if (!question.document || at < 0) return true
+    const asker = order.indexOf(`${question.document}.${question.stage}` as StepID)
+    return asker < 0 || asker <= at
+  }
 }
 
 /** Planning selects guidance per body; legacy and unassigned bodies retain the ordinary reviews. */
