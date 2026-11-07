@@ -52,6 +52,27 @@ test("a read names its file from the native path input, in the chat and the step
   expect(stepLabel(part, "/m")).toContain("Supply Terms.docx")
 })
 
+test("a read of a folder never names the folder, and its fold carries no folder suffix", () => {
+  for (const path of ["/m/matter", "/m/matter/", "C:\\m\\matter", "/m/matter/sources"]) {
+    const line = activity(`f:${path}`, "read", { path })
+    expect([line.text, line.group, line.target]).toEqual(["Listed the matter files", "read", undefined])
+  }
+  expect(activity("f-doc", "read", { filePath: "/m/matter/Order form.pdf" }).target).toBe("Order form.pdf")
+
+  const lines = [
+    activity("r1", "read", { path: "/m/matter/Supply Terms.docx" }),
+    activity("r2", "read", { path: "/m/matter/Order form.pdf" }),
+    activity("r3", "read", { path: "/m/matter" }),
+  ]
+  expect(stepRows(lines).map((row) => [row.count, row.text, row.target])).toEqual([[3, "Read source material · 3", undefined]])
+  const live = narrationTimeline(lines, [], true).at(-1)
+  if (live?.kind !== "steps") throw new Error("expected a steps block")
+  const html = renderToStaticMarkup(createElement(TimelineEntry, { block: live }))
+  expect(html).toContain("Listed the matter files")
+  expect(html).not.toContain("narration-suffix")
+  expect(html.replaceAll("the matter files", "")).not.toMatch(/\bmatter\b/)
+})
+
 test("a long search shows a clipped query and keeps the full one for the tooltip", () => {
   const query = "delivery obligations and the remedies available when goods arrive late or damaged in transit"
   const line = activity("s1", "search-document", { document: "a/terms.docx", query })
