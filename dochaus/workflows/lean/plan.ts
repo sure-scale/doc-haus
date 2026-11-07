@@ -1,4 +1,5 @@
 import { isDateFormat, isPosture, normalizeLegend, type DateFormat, type Posture } from "../../lib/drafting-preferences"
+import { OPEN_ITEM_PATTERN } from "../../lib/marker-patterns"
 import { effectivePosture, matterDateFormat } from "../../lib/matter-client"
 import { DOCUMENT_FORMS, type DocumentForm } from "../../lib/page-furniture"
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
@@ -278,6 +279,9 @@ export function earlierDocuments(directory: string, id: DocID): PlannedDocument[
  * request does not give is dropped and the title kept without Markdown code
  * marks; a title that is only a file name stands as that name's words
  * (plannedTitle).
+ * A part's scope describes the part; a scope carrying an open-item marker is
+ * retry feedback, and on the last attempt stands as the marker's words
+ * (scopeWords), since the drafter sets the marker.
  * A missing "Executed by:" line is not an issue; the package-coverage check
  * holds the parties it names to the request and sources.
  * A "Form:" line under each title gives the document's form, one of
@@ -453,6 +457,7 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
   const issues = [
     ...shapeIssues,
     ...lateIssues(late),
+    ...documents.flatMap(document => document.parts.flatMap(part => scopeIssues(plainTitle(document.title), part))),
     ...(!acting.length ? [ACTING_FOR_MISSING] : ungrounded ? [actingForUngrounded(party)] : []),
     ...documents.flatMap((document, index) => forms[index] ? [] : [formIssue(plainTitle(document.title), document.form)]),
     ...furniture.flatMap(row => row.issues),
@@ -508,7 +513,25 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
 function plannedPart(part: { heading: string; scope: string[]; display_heading?: string }, unheaded: boolean, attachments = true): PlannedPart {
   const attachment = attachments && Boolean(attachmentHead(part.display_heading || part.heading))
   const display = attachment ? part.display_heading || undefined : part.display_heading ?? (unheaded ? "" : undefined)
-  return { heading: part.heading, scope: part.scope.join(" "), ...(display !== undefined ? { display_heading: display } : {}), ...(attachment ? { attachment: true as const } : {}) }
+  return { heading: part.heading, scope: scopeWords(part.scope.join(" ")), ...(display !== undefined ? { display_heading: display } : {}), ...(attachment ? { attachment: true as const } : {}) }
+}
+
+/** An open-item marker or blank in a scope line (OPEN_ITEM_PATTERN, without its global flag). */
+const OPEN_ITEM_IN_SCOPE = new RegExp(OPEN_ITEM_PATTERN.source, "i")
+
+/** A part whose scope carries an open-item marker: a scope describes the part,
+ * and a marker in it is copied into the part beside the drafter's own. */
+function scopeIssues(title: string, part: { heading: string; scope: string[] }) {
+  return OPEN_ITEM_IN_SCOPE.test(part.scope.join(" "))
+    ? [`In "${title}", the scope of "${part.heading}" carries an open-item marker. Scope describes the part; write the open point as scope words, the drafter sets the marker.`]
+    : []
+}
+
+/** The scope the plan keeps: as written, except that an open-item marker still
+ * in it on the last attempt stands as its words, and a blank as nothing. */
+function scopeWords(scope: string) {
+  if (!OPEN_ITEM_IN_SCOPE.test(scope)) return scope
+  return scope.replace(OPEN_ITEM_PATTERN, marker => /^[[(]\s*open item:\s*(.*?)\s*[\])]$/i.exec(marker)?.[1] ?? "").replace(/\s+/g, " ").trim()
 }
 
 export function headingText(text: string) {

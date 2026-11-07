@@ -6,6 +6,7 @@ import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { referenceFields } from "../../lib/docx-crossrefs"
 import { compareDocxWithPointers, paragraphSha256 } from "../../lib/drafting-amendment"
+import { OPEN_ITEM_PATTERN } from "../../lib/marker-patterns"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { readParagraphs, shownText } from "./checks"
 import { LEAN_ACTS_SCHEMA } from "./act-record"
@@ -453,6 +454,24 @@ describe("sectioned draft stage", () => {
         expect(parsed.issues).toEqual([expect.stringContaining("carries a file name")])
         expect(parsed.value?.documents[0]?.title).toBe(planned)
       }
+    })
+
+    test("a part scope that carries an open-item marker is named, and on the last attempt stands as the marker's words", () => {
+      const marked = parsePlan("Acting for: not stated\n# Supply note\nForm: other\n## Delivery\nWhen the goods arrive [Open item: confirm the delivery window].\n## Price\nThe price (open item: confirm the currency) and ____ payment terms.")
+      expect(marked.issues).toEqual([
+        'In "Supply note", the scope of "Delivery" carries an open-item marker. Scope describes the part; write the open point as scope words, the drafter sets the marker.',
+        'In "Supply note", the scope of "Price" carries an open-item marker. Scope describes the part; write the open point as scope words, the drafter sets the marker.',
+      ])
+      const parts = marked.value!.documents[0]!.parts
+      expect(parts.map(part => part.scope)).toEqual(["When the goods arrive confirm the delivery window.", "The price confirm the currency and payment terms."])
+      // The drafter is handed the words, never the marker, in its scope line and the outline list.
+      const prompt = sectionPrompt({ title: "Supply note", parts }, 0)
+      expect(prompt).toContain("This part covers: When the goods arrive confirm the delivery window.")
+      expect(prompt.match(new RegExp(OPEN_ITEM_PATTERN.source, "gi"))).toBeNull()
+      // A scope without a marker reads as written.
+      const plain = parsePlan("Acting for: not stated\n# Supply note\nForm: other\n## Delivery\nWhen the goods arrive, and the open items on timing.")
+      expect(plain.issues).toEqual([])
+      expect(plain.value?.documents[0]?.parts[0]?.scope).toBe("When the goods arrive, and the open items on timing.")
     })
   })
 

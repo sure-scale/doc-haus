@@ -209,7 +209,10 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // the memo and never to fold advice (outline-one-pass-reverse-20), and when a
 // rejected memo name began to be renamed rather than dropped
 // (outline-one-pass-reverse-21), and when the writer was told that its
-// directions speak to it, never to the reader (outline-one-pass-reverse-22).
+// directions speak to it, never to the reader (outline-one-pass-reverse-22),
+// and when every part began to be told whom the lawyer acts for, a part's
+// grounds began to be split by level and a scope carrying an open-item marker
+// began to be sent back (outline-one-pass-reverse-23).
 // The spine was re-pinned when its entries
 // began to be split into atoms (spine-atoms-1), when a one-atom split began to
 // read as atomic (spine-atoms-2), when its checks began asking each figure of
@@ -238,7 +241,7 @@ const INPUTS: Record<string, string> = {
   "research-review": "d46bb345a28e68d58f42bdee05c7eb4f5e513513edeba8006b6b73c014df397c",
   "acts": "cdb825181d5933554a4aa72aa29b3c61e5e8bdb55cce05b128c53db211a1bdec",
   "spine": "a8fadb568dddf15425004c77b865dd935c647dedb2340b8fa1c2980a927246bb",
-  "d1.draft": "3638b07e04e737b3aaa285cb463cea0b27e8d2b6ec8abd5b68b80aac4f168c06",
+  "d1.draft": "dd85d7379c759150faf532ac72b030ed96e92787859409d6ee04e56668f4db44",
   "d1.review": "1bf22918ea02aad73fccf36d8e75154dbea6f35ea8e2b4e277a3e4f25f8493fd",
   "d1.review-independent": "0e641d9e56cab04b1265d74d16b142b0b64e683d15a1d60946733c52d09e372c",
   "d1.review-wording": "3125f01d1d8b308a3010baafafe16be01af50de62727fcd4e371284f6f2fbc80",
