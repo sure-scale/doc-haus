@@ -21,6 +21,14 @@ test("explicit unsupported sampling omits agent controls and preserves other opt
   expect(options).toEqual({ maxTokens: 4096, reasoningEffort: "high" })
 })
 
+test("catalog capability without temperature omits agent controls", () => {
+  const options: Record<string, unknown> = { temperature: 0.1, topP: 0.8, maxTokens: 4096 }
+  applyDeclaredModelSampling({}, { providerID: "openai", id: "selected", capabilities: { temperature: true } }, options)
+  expect(options.temperature).toBe(0.1)
+  applyDeclaredModelSampling({}, { providerID: "openai", id: "selected", capabilities: { temperature: false } }, options)
+  expect(options).toEqual({ maxTokens: 4096 })
+})
+
 test("compatible request retains body and headers while applying role thinking control", async () => {
   const directory = mkdtempSync(path.join(tmpdir(), "dochaus-native-options-"))
   try {
