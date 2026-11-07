@@ -77,6 +77,15 @@ function prepared(spine = SPINE) {
 /** The level agent: the delivery entry binds the package, every other entry some part's text. */
 const packageDelivery = (text: string) => JSON.stringify({ level: text.includes(DELIVERY) ? "package" : "text" })
 
+/** A spine of both audiences: a direction to the drafter, then a statement to the reader. */
+const DIRECTION = "Prepare the note on the working assumption that every order is placed in writing."
+const AUDIENCE = JSON.stringify({ entries: [
+  { kind: "requirement", detail: DIRECTION, evidence: [], limitations: [] },
+  JSON.parse(SPINE).entries[1],
+], limitations: [] })
+/** The level agent, answering by audience: the direction to the drafter is package, the statement to the reader text. */
+const byAudience = (text: string) => JSON.stringify({ level: text.includes(DIRECTION) ? "package" : "text" })
+
 const run = (directory: string, model: ReturnType<typeof scriptedModel>, document: "d1" | "d2" = "d1") =>
   runDraftStage(directory, readLeanState(directory)!, { sessions: model.port }, () => {}, document, () => {})
 /** The sessions of the parts' reverse jobs. */
@@ -121,6 +130,43 @@ describe("spine entry level", () => {
     // An entry without limitations reads as before.
     expect(spineLevelPrompt(delivery!)).not.toContain("limitations")
     expect(groundLine(delivery!)).toBe(`requirement: ${DELIVERY} [source: supply-terms.docx]`)
+  })
+
+  test("the question asks by audience: a statement to the reader is text, a direction to the drafter package, with no tie-break to text", () => {
+    const { directory } = prepared(AUDIENCE)
+    for (const entry of spineEntries(directory)) {
+      const question = spineLevelPrompt(entry).split("<question>\n")[1]!
+      expect(question).toContain('- "text": it is what the document says to its reader.')
+      expect(question).toContain('- "package": it is what the drafter does or works under in producing the documents. A direction to the drafter is "package", even where it shapes what the text says.')
+      expect(question).not.toContain("is both")
+    }
+    expect(parseEntryLevel(byAudience(spineLevelPrompt(spineEntries(directory)[0]!)))).toEqual({ issues: [], value: "package" })
+    expect(parseEntryLevel(byAudience(spineLevelPrompt(spineEntries(directory)[1]!)))).toEqual({ issues: [], value: "text" })
+  })
+
+  test("a direction to the drafter at the package level, placed in no part, raises no outline defect and is not disclosed; the statement to the reader is placed", async () => {
+    const { directory } = prepared(AUDIENCE)
+    const model = scriptedModel({ [AGENT.draft]: outliner(ONE), [AGENT.level]: byAudience, [AGENT.placement]: (text: string) => !reverseJob(text) && text.includes(DIRECTION) ? JSON.stringify({ parts: [] }) : placer(text) })
+    expect((await run(directory, model)).status).toBe("done")
+    expect(revisions(model)).toEqual([])
+    const record = readLeanPlacement(directory)!
+    expect(record).toMatchObject({ status: "placed", issues: [] })
+    expect(record.entries).toEqual([{ entry: 0, level: "package", parts: [] }, { entry: 1, level: "text", parts: ["d1/1"] }])
+    expect(planPlacementIssues(spineEntries(directory), record.entries)).toEqual([])
+    expect(placementItems(directory)).toEqual([])
+    // At the text level the same direction, placed nowhere, would go back to the outline.
+    expect(planPlacementIssues(spineEntries(directory), [{ ...record.entries[0]!, level: "text" }])).toEqual([
+      `No part covers requirement: ${DIRECTION}. Plan the part, or extend the scope of the part that should.`,
+    ])
+  })
+})
+
+describe("the outline's part scopes", () => {
+  test("a part's scope says what the part tells the reader, and a requested marking goes in its document's Legend: line", () => {
+    const prompt = stagePrompt(prepared().directory, "d1.draft", { outline: true })
+    expect(prompt).toContain('A part\'s scope line says what the part tells the reader; a marking the lawyer asked for goes in its document\'s "Legend:" line, never in a part. ' +
+      "Put internal source mappings in scope notes, not in visible headings or operative wording.")
+    expect(prompt).not.toContain("planning explanations")
   })
 })
 
