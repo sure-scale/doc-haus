@@ -305,6 +305,21 @@ describe("provider error classification", () => {
     expect(classifyProviderFailure({ message: "Payment Required", status: 402 })._tag).toBe("QuotaExceeded")
   })
 
+  test("classifies credit exhaustion under a generic request code as quota on any non-5xx status", () => {
+    // No billing code: the provider's explanation is the only signal, on 400 or mid-stream on 200.
+    const body = (message: string) => ({ type: "error", error: { type: "invalid_request_error", message } })
+    const cases = [
+      body("Your credit balance is too low for this request."),
+      body("Insufficient credits to complete the request."),
+    ]
+    const classify = (message: string, status: number | undefined) =>
+      classifyProviderFailure({ message, status, rawBody: JSON.stringify(body(message)) })._tag
+    expect(cases.flatMap((item) => [400, 200, undefined].map((status) => classify(item.error.message, status)))).toEqual(
+      Array(6).fill("QuotaExceeded"),
+    )
+    expect(cases.map((item) => classify(item.error.message, 500))).toEqual(["ProviderInternal", "ProviderInternal"])
+  })
+
   test("classifies OpenCode Zen account limits as quota rather than throttling", () => {
     const typed = (type: string, message: string) => ({ type: "error", error: { type, message } })
     const substituted = (message: string) => ({
