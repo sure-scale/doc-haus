@@ -144,7 +144,9 @@ test("one wrapped JSON stage result is admitted without a formatting retry, with
   const unsupported = structuredClone(value)
   unsupported.groups[0].sources[0].quote = "absent from the canonical source"
   expect(acceptChangePlan(directory, "d1", `Source check complete.\n\`\`\`json\n${JSON.stringify(unsupported)}\n\`\`\``).issues.join(" ")).toContain("not in that document")
-  expect(acceptChangePlan(directory, "d1", `${wrapped}\n\`\`\`json\n${reply}\n\`\`\``).issues.length).toBeGreaterThan(0)
+  // A second block of the same shape is the model's final answer; one of another shape leaves the reply ambiguous.
+  expect(acceptChangePlan(directory, "d1", `${wrapped}\n\`\`\`json\n${reply}\n\`\`\``).issues).toEqual([])
+  expect(acceptChangePlan(directory, "d1", `${wrapped}\n\`\`\`json\n{}\n\`\`\``).issues.length).toBeGreaterThan(0)
   expect(acceptChangePlan(directory, "d1", JSON.stringify([value])).issues.length).toBeGreaterThan(0)
   expect(acceptChangePlan(directory, "d1", `Result:\n\`\`\`json\n${JSON.stringify([value])}\n\`\`\``).issues.length).toBeGreaterThan(0)
   expect(acceptChangePlan(directory, "d1", `Result:\n\`\`\`json\n[${reply}\n\`\`\``).issues.length).toBeGreaterThan(0)
@@ -179,7 +181,13 @@ test("every stage reply is read as one object: bare, fenced or in prose, never a
     `The result is ${object} as asked.`,
   ]) expect(read(reply)).toEqual({ ok: true, value: { amendments: [], note: "kept" } })
   const refused = (reply: string) => { const parsed = read(reply); return parsed.ok ? "" : parsed.error }
+  // A model that drafts its object and then corrects it leaves several blocks: the last is taken when every
+  // block has the last's keys and no brace stands outside the fences; any other several are refused.
+  const revised = '{"amendments": [{"pid": "p1"}], "note": "revised"}'
+  expect(read(`First:\n\`\`\`json\n${object}\n\`\`\`\nOn reflection:\n\`\`\`json\n${revised}\n\`\`\``)).toEqual({ ok: true, value: { amendments: [{ pid: "p1" }], note: "revised" } })
   expect(refused(`\`\`\`json\n${object}\n\`\`\`\n\`\`\`json\n{}\n\`\`\``)).toContain("more than one fenced block")
+  expect(refused(`\`\`\`json\n${object}\n\`\`\`\nKeep {this} aside.\n\`\`\`json\n${revised}\n\`\`\``)).toContain("more than one fenced block")
+  expect(refused(`\`\`\`json\n${object}\n\`\`\`\n\`\`\`json\n${revised.slice(0, -1)}\n\`\`\``)).toContain("more than one fenced block")
   expect(refused(`Keep {this} aside.\n\`\`\`json\n${object}\n\`\`\``)).toContain("ambiguous")
   expect(refused(`Choose {"a": 1} or {"b": 2}.`)).toContain("not valid JSON")
   expect(refused(`[${object}]`)).toContain("not an object")

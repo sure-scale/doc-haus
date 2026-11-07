@@ -431,10 +431,13 @@ const NOT_OBJECT = "The JSON value is not an object; return one JSON object."
  * goes through: the whole reply when it is JSON, or else its one fenced
  * block, or else the one object from the first "{" to the last "}" in
  * prose around it. A reply that could be read two ways is refused, never
- * guessed at: two fenced blocks, braces outside the fenced block, or an
- * array (the whole value is preferred, so an array holding an object is
- * not taken for the object). The error is one or more sentences; a syntax
- * error says where the JSON breaks (jsonBreakNote). */
+ * guessed at: braces outside the fenced blocks, or an array (the whole
+ * value is preferred, so an array holding an object is not taken for the
+ * object). Several fenced blocks are a model's drafts of its one answer,
+ * the last its final one: the last is taken when every block is an object
+ * with the same keys as the last and no brace stands outside the fences;
+ * any other several blocks are refused. The error is one or more sentences;
+ * a syntax error says where the JSON breaks (jsonBreakNote). */
 export function parseJsonObject(content: string): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
   try {
     const value: unknown = JSON.parse(content.trim())
@@ -445,13 +448,21 @@ export function parseJsonObject(content: string): { ok: true; value: Record<stri
   if (start < 0) return { ok: false, error: "No JSON object was found in the reply." }
   if (end < start) return { ok: false, error: jsonBreakNote(content) ?? "The reply ends before its JSON object is closed." }
   const blocks = [...content.matchAll(REPLY_FENCE)]
-  if (blocks.length > 1) return { ok: false, error: "The reply holds more than one fenced block; return one JSON object." }
+  const bracesOutside = /[{}]/.test(content.replace(REPLY_FENCE, ""))
+  if (blocks.length > 1) {
+    const values = blocks.map(block => { try { return JSON.parse(block[1]!.trim()) as unknown } catch { return undefined } })
+    const last = values.at(-1)
+    const shape = (value: unknown) => record(value) ? JSON.stringify(Object.keys(value).toSorted()) : undefined
+    return record(last) && !bracesOutside && values.every(value => shape(value) === shape(last))
+      ? { ok: true, value: last }
+      : { ok: false, error: "The reply holds more than one fenced block; return one JSON object." }
+  }
   const candidate = blocks[0]?.[1]?.trim() ?? content.slice(start, end + 1)
   if (!blocks.length && (content.slice(0, start).trimEnd().endsWith("[") || content.slice(end + 1).trimStart().startsWith("]")))
     return { ok: false, error: NOT_OBJECT }
   try {
     const value: unknown = JSON.parse(candidate)
-    if (blocks.length && record(value) && content.slice(start, end + 1) !== candidate)
+    if (blocks.length && record(value) && bracesOutside)
       return { ok: false, error: "The reply has braces outside its fenced block, so its object is ambiguous; return one JSON object." }
     return record(value) ? { ok: true, value } : { ok: false, error: NOT_OBJECT }
   } catch (error) {
