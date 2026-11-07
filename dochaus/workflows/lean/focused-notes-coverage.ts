@@ -63,8 +63,9 @@ export async function checkFocusedNotesCoverage(directory: string, state: LeanSt
     const checked = checkNotesCoverageReply(reply)
     issues = checked.issues
     progress({ calls: attempt + 1, attempts: attempt + 1, feedback: issues })
+    // The explanation goes back to the writer; timing telemetry keeps only the bounded verdict.
     appendLeanEvent(directory, { stage: "finalize", step, event: "checker", attempt, issues,
-      ...(checked.value ? { outcome: checked.value.status, reason: checked.value.reason } : {}),
+      ...(checked.value ? { outcome: checked.value.status } : {}),
       wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
     if (checked.value) return checked.value
   }

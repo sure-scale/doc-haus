@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
+import { readLeanEvents } from "./events"
 import { checkFocusedNotesCoverage, checkNotesCoverageReply, notesCoveragePrompt, NOTES_CHECK_PERMISSIONS, NOTES_COVERAGE_AGENT } from "./focused-notes-coverage"
 import { LEAN_MAX_RETRIES, type StageSessionPort } from "./stages"
 import { readLeanState } from "./state"
@@ -68,4 +69,28 @@ test("a valid rewrite returns once to the writer but exhausted verifier format e
   expect(result.reason).toContain("supplied no valid verdict")
   expect(broken.sessions).toHaveLength(1)
   expect(broken.prompts).toHaveLength(LEAN_MAX_RETRIES + 1)
+})
+
+test("checker telemetry records only the bounded verdict and timings, keeping explanation prose in repair feedback", async () => {
+  const directory = matter()
+  const rewrite = { status: "rewrite" as const, reason: "The proposed prose omits the custodian's required action." }
+  const verdicts = [passed, rewrite]
+  for (const verdict of verdicts) {
+    const model = verifier([JSON.stringify(verdict)])
+    expect(await checkFocusedNotesCoverage(directory, readLeanState(directory)!, { sessions: model.port }, assignment, proposed, () => {})).toEqual(verdict)
+  }
+  const events = readLeanEvents(directory)
+  const checkers = events.filter(event => event.event === "checker")
+  expect(checkers.map(event => event.outcome)).toEqual(["pass", "rewrite"])
+  const keys = new Set(["at", "stage", "event", "step", "attempt", "issues", "outcome", "wait_ms", "check_ms"])
+  for (const event of checkers) {
+    expect(Object.keys(event).filter(key => !keys.has(key))).toEqual([])
+    expect(event.stage).toBe("finalize")
+    expect(event.step).toBe(`${assignment.id}:explanation-check`)
+    expect(event.issues).toEqual([])
+    expect(event.wait_ms).toBeGreaterThanOrEqual(0)
+    expect(event.check_ms).toBeGreaterThanOrEqual(0)
+  }
+  const log = JSON.stringify(events)
+  for (const text of [assignment.text, proposed, ...verdicts.map(verdict => verdict.reason)]) expect(log).not.toContain(text)
 })

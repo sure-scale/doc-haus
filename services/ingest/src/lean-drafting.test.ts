@@ -1061,12 +1061,19 @@ test("checker events time the model wait and the check as numbers, never content
   // A review prefetched beside its sibling counts only the wait left when its own step began.
   const prefetched = new Set(["review-independent", "review-wording", "review-client-disadvantage"])
   const checkerKeys = new Set(["at", "stage", "document", "event", "step", "attempt", "issues", "wait_ms", "check_ms"])
+  let explanationChecks = 0
   for (const event of checkers) {
-    expect(Object.keys(event).filter(key => !checkerKeys.has(key))).toEqual([])
+    const explanation = event.stage === "finalize" && event.step?.endsWith(":explanation-check") === true
+    expect(Object.keys(event).filter(key => !checkerKeys.has(key) && !(explanation && key === "outcome"))).toEqual([])
+    if (explanation) {
+      explanationChecks++
+      expect(["pass", "rewrite"]).toContain(event.outcome)
+    }
     expect(event.issues).toEqual([])
     expect(event.check_ms).toBeGreaterThanOrEqual(0)
     expect(event.wait_ms).toBeGreaterThanOrEqual(prefetched.has(event.stage) ? 0 : SLEEP_MS)
   }
+  expect(explanationChecks).toBeGreaterThan(0)
   const boundaries = events.filter(event => event.event === "started" || event.event === "skipped")
   expect(boundaries.length).toBeGreaterThan(0)
   for (const event of boundaries) expect(event.check_ms).toBeGreaterThanOrEqual(0)
