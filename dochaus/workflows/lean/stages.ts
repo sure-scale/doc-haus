@@ -132,6 +132,8 @@ export const LEAN_STAGE_AGENTS = {
   placement: "lean-placement",
   // A job of the outline, not a stage: it reads the files the lawyer asks to receive.
   files: "lean-files",
+  // A job of the draft and apply steps, not a stage: one per drafted part, it names the sentences written for the lawyer rather than the document's reader.
+  reader: "lean-reader-check",
   // A job of the spine, not a stage: it splits one spine entry into atoms that each state one point.
   split: "lean-spine-split",
   // A job of the spine, not a stage: one per spine entry, it lists what the entry says the sources do not record.

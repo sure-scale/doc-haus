@@ -219,6 +219,7 @@ const KIND_LABELS: Record<string, string> = {
   checklist_open: "Requirements left open by the checklist check",
   checklist_unresolved: "Unresolved checklist findings",
   draft_status: "Draft-status wording in the agreement",
+  reader: "Sentences written for you, not the document's reader",
   drafted_default: "Choices made for you to confirm",
 }
 

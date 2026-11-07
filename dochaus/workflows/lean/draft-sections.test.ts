@@ -44,15 +44,22 @@ function matter() {
 
 function scripted(reply: (text: string, index: number) => string) {
   const prompts: { sessionID: string; text: string }[] = []
+  // Each drafted part's reader job, in a session of its own, finds every sentence addressed to the reader.
+  const readers: { sessionID: string; text: string }[] = []
+  let readerSessions = 0
   const sessions: StageSessionPort = {
-    createSession: async () => "ses_draft",
+    createSession: async input => input.agent === LEAN_STAGE_AGENTS.reader ? `ses_reader${++readerSessions}` : "ses_draft",
     prompt: async input => {
+      if (input.agent === LEAN_STAGE_AGENTS.reader) {
+        readers.push({ sessionID: input.sessionID, text: input.text })
+        return JSON.stringify({ hits: [] })
+      }
       prompts.push({ sessionID: input.sessionID, text: input.text })
       expect(input.agent).toBe(LEAN_STAGE_AGENTS.draft)
       return reply(input.text, prompts.length - 1)
     },
   }
-  return { sessions, prompts }
+  return { sessions, prompts, readers }
 }
 
 /** Runs `run` with these firm settings saved in a fresh workspace, dates written day first. */
@@ -368,8 +375,10 @@ describe("sectioned draft stage", () => {
       "## Next steps", "", "### Timing", "", "We will wait for a reply. [open item: reply deadline]", "",
     ].join("\n"))
     // Five calls; the hardest step (the retried part) took two tries. The accepted draft's key is
-    // recorded with it.
-    expect(progress.slice(-2)).toEqual([{ attempts: 2, calls: 5, feedback: [] }, { input_sha: stageInputSha(directory, "d1.draft") }])
+    // recorded with it, before the parts' reader jobs report.
+    const settled = progress.findIndex(patch => typeof patch === "object" && patch !== null && "input_sha" in patch)
+    expect(progress.slice(settled - 1, settled + 1)).toEqual([{ attempts: 2, calls: 5, feedback: [] }, { input_sha: stageInputSha(directory, "d1.draft") }])
+    expect(model.readers.map(prompt => prompt.sessionID).toSorted()).toEqual(["ses_reader1", "ses_reader2", "ses_reader3"])
 
     // Every listed paragraph carries its hidden pointer bookmark in the body docx.
     const rows = readParagraphs(directory, "d1")
@@ -378,13 +387,18 @@ describe("sectioned draft stage", () => {
     expect(rows.map(row => row.text)).toContain("We will wait for a reply. [open item: reply deadline]")
     expect(marks.toSorted()).toEqual(rows.map(row => row.pid).toSorted())
 
+    // The parts' reader jobs run side by side once the body exists, so their events follow in no fixed order.
     const events = readLeanEvents(directory).map(event => `${event.event}:${event.step}`)
-    expect(events).toEqual([
+    expect(events.filter(event => !event.includes(":reader: part "))).toEqual([
       // The act record lists no act, so no act is placed.
       "model_call:outline", "checker:outline", "coverage:coverage",
       "model_call:part 1/3", "checker:part 1/3",
       "model_call:part 2/3", "checker:part 2/3", "retry:part 2/3", "checker:part 2/3",
       "model_call:part 3/3", "checker:part 3/3",
+    ])
+    expect(events.filter(event => event.includes(":reader: part ")).toSorted()).toEqual([
+      "checker:reader: part 1/3", "checker:reader: part 2/3", "checker:reader: part 3/3",
+      "model_call:reader: part 1/3", "model_call:reader: part 2/3", "model_call:reader: part 3/3",
     ])
   }, 60_000)
 

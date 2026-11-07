@@ -405,6 +405,9 @@ describe("plan coverage observability", () => {
     // The revised outline plans two documents, so the files job reads it too.
     const filed = [...new Set(model.prompts.filter(prompt => prompt.agent === AGENT.files).map(prompt => prompt.sessionID))]
     expect(filed).toHaveLength(1)
-    expect(readLeanState(directory)!.stages["d1.draft"]).toMatchObject({ session_id: outline, session_ids: [outline, ...covered, ...filed] })
+    // Once the body exists, each drafted part's reader job reads it in a session of its own.
+    const read = [...new Set(model.prompts.filter(prompt => prompt.agent === AGENT.reader).map(prompt => prompt.sessionID))]
+    expect(read.length).toBeGreaterThan(0)
+    expect(readLeanState(directory)!.stages["d1.draft"]).toMatchObject({ session_id: outline, session_ids: [outline, ...covered, ...filed, ...read] })
   }, 60_000)
 })

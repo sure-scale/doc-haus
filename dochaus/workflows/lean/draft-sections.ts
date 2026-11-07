@@ -36,6 +36,7 @@ import { stageInputSha } from "./runner"
 import { frozenDates, intakeActingFor } from "./intake"
 import { outlineCoverageIssues, partCarries, plannedContract } from "./template-contract"
 import { draftStatusItems } from "./draft-status"
+import { READER_CHECK_PERMISSIONS, checkReaderParts, readerItems, readerParts } from "./reader-check"
 import { draftTemplateItems } from "./template-coverage"
 import { originalTables, originalTablesBlock, partTableIssues, tableParts } from "./original-tables"
 import { parallel } from "./checklist-flow"
@@ -174,14 +175,21 @@ export async function runDraftStage(
   const failed = (label: string, issues: string[]): DraftStageRun =>
     ({ status: "failed", reason: `${step}: ${label}: checker failed after ${LEAN_MAX_RETRIES} retries: ${issues.join(" ")}` })
   // A coverage job's fresh session of its own, reported with the step's others.
-  const coverageSession = async (agent: string, label: string) => {
+  const coverageSession = async (agent: string, label: string, permissions = LEAN_CHILD_PERMISSIONS) => {
     const id = await deps.sessions.createSession({
-      directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, step, `draft: ${label}`), model: state.model, permissions: LEAN_CHILD_PERMISSIONS,
+      directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, step, `draft: ${label}`), model: state.model, permissions,
     })
     sessionIDs.push(id)
     progress({ ...(sessionIDs.length === 1 ? { session_id: id } : {}), session_ids: [...sessionIDs] })
     return id
   }
+  // Once the body's paragraphs exist, each drafted part's reader job reads
+  // that part alone in a fresh session of its own, side by side with the other
+  // parts' (reader-check.ts); a part settled before is not asked again. Its
+  // hits are the draft's "reader" items, repaired by the change cycle.
+  const readerAgent = LEAN_STAGE_AGENTS.reader
+  const readerCheck = async (plan: PlannedDocument) => readerItems("draft", document, await checkReaderParts(directory, document, readerParts(plan, readParagraphs(directory, document)),
+    async (label, text, check) => exchange({ id: await coverageSession(readerAgent, label, READER_CHECK_PERMISSIONS), agent: readerAgent })(label, text, check)))
   // The acts the instructions direct are the act record's (recordedActs), read
   // once per step: they serve every outline revision and the saved plan's
   // recheck. A record that is missing or never passed its listing check leaves
@@ -544,7 +552,8 @@ export async function runDraftStage(
   // recheck can leave the record without them.
   if (!outlined && draftOutputValid(directory, step) && state.stages[step]?.input_sha === stageInputSha(directory, step)) {
     await planned()
-    return { status: "done", outputs: stepOutputs(step), openItems: [...checkDraft(directory, readLeanText(directory, `${document}/draft.md`) ?? "").openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document)), ...draftStatusItems(directory, document, readParagraphs(directory, document), "draft")] }
+    const kept = plannedDocument(directory, document)
+    return { status: "done", outputs: stepOutputs(step), openItems: [...checkDraft(directory, readLeanText(directory, `${document}/draft.md`) ?? "").openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document)), ...draftStatusItems(directory, document, readParagraphs(directory, document), "draft"), ...(kept ? await readerCheck(kept) : [])] }
   }
   const plan = plannedDocument(directory, document)
   if (!plan) return { status: "failed", reason: `${step}: the run's plan has no document ${document}.` }
@@ -604,7 +613,7 @@ export async function runDraftStage(
     `The Word body could not place the part "${row.heading}": its label stays as rendered, and its paragraphs count with the part before it when the draft is checked against a template.`) })
   // Recorded with the body, so a pause or restart before the step settles keeps it.
   progress({ input_sha: key })
-  return { status: "done", outputs: accepted.outputs, openItems: [...accepted.openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document)), ...draftStatusItems(directory, document, readParagraphs(directory, document), "draft")], questions: accepted.questions }
+  return { status: "done", outputs: accepted.outputs, openItems: [...accepted.openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document)), ...draftStatusItems(directory, document, readParagraphs(directory, document), "draft"), ...await readerCheck(plan)], questions: accepted.questions }
 }
 
 export function sectionPrompt(outline: DraftOutline, index: number, template?: { source: string; parts: string[]; left?: string[] }, grounds: Ground[] = []) {

@@ -722,7 +722,7 @@ export function stageInputSha(directory: string, step: StepID) {
 function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, planned: () => void | Promise<void>, prepared?: PreparedReview, reinspectChecklist = false, recorded?: LeanStageState): Promise<StageRun> {
   const stage = stepStage(step)
   const document = stepDocument(step)
-  if (stage === "apply" && document) return runApply(directory, state, document)
+  if (stage === "apply" && document) return runApply(directory, state, document, deps)
   if (stage === "gate") return runGate(directory)
   if (stage === "checklist-check") return runChecklistStage(directory, state, deps, reinspectChecklist)
   if (stage === "acts") return runActRecordStage(directory, state, deps, progress)

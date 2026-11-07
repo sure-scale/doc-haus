@@ -9,9 +9,10 @@ import { amendmentParagraphs } from "../../lib/drafting-amendment"
 import { applyAmendments } from "../../lib/drafting-amendment-apply"
 import { finalBodyItems, readChangeList, readParagraphs, settleApply, withoutListLabel, type ApplyResult, type ChangeList } from "./checks"
 import type { DocID } from "./plan"
-import { draftedReferences, paragraphRows, stepOutputs } from "./stages"
+import { draftedReferences, paragraphRows, stepOutputs, type LeanDeps } from "./stages"
 import { leanFile, matterRelative, readLeanJson, writeLeanBytes, writeLeanText, type LeanState, type OpenItem } from "./state"
 import { draftStatusItems } from "./draft-status"
+import { applyReaderItems } from "./reader-check"
 import { templateItems } from "./template-coverage"
 import { consistencyItems } from "./consistency"
 import { tableItems } from "./original-tables"
@@ -43,13 +44,15 @@ const BODY = "word/document.xml"
 // Every amendment ends applied or as a visible open item: an amendment the
 // applier could not apply (an overlap included), did not report, or lost
 // because the applier itself stopped is unapplied and carries the applier's
-// detail.
+// detail. The one model job it runs is the reader check of the parts the
+// changes amended (reader-check.ts), through `deps`; without a port nothing
+// is asked.
 
 export type ApplyStageRun =
   | { status: "done"; outputs: string[]; openItems: OpenItem[] }
   | { status: "failed"; reason: string }
 
-export async function runApply(directory: string, state: LeanState, document: DocID): Promise<ApplyStageRun> {
+export async function runApply(directory: string, state: LeanState, document: DocID, deps?: Pick<LeanDeps, "sessions">): Promise<ApplyStageRun> {
   const step = `${document}.apply` as const
   const changes = readChangeList(directory, document)
   if (!changes) return { status: "failed", reason: `${step}: ${document}/changes.json is missing or unreadable.` }
@@ -76,7 +79,8 @@ export async function runApply(directory: string, state: LeanState, document: Do
   // so a number a change wrote or extended points at the clause it names; the
   // other paragraphs are only refreshed.
   const renumbered = renumberApplied(readFileSync(body), readFileSync(out), settled.result)
-  const rewritten = new Set([...settled.result.applied.flatMap(row => row.mode === "code" ? row.result_pids ?? [row.pid] : []), ...marked.map(row => row.pid)])
+  const amended = new Set(settled.result.applied.flatMap(row => row.mode === "code" ? row.result_pids ?? [row.pid] : []))
+  const rewritten = new Set([...amended, ...marked.map(row => row.pid)])
   const relink = (paragraph: Element) => paragraphPointers(paragraph).some(pointer => rewritten.has(pointer.pid))
   const links = draftedReferences(directory, document).links
   const linked = await linkCrossReferences(renumbered, links ? { ...links, relink } : { refreshOnly: true })
@@ -104,6 +108,7 @@ export async function runApply(directory: string, state: LeanState, document: Do
     status: "done", outputs: stepOutputs(step),
     openItems: [
       ...settled.openItems, ...annotated.openItems, ...bodyItems, ...draftStatusItems(directory, document, rows, "apply"),
+      ...await applyReaderItems(directory, state, document, rows, amended, deps),
       ...templateItems(directory, document, readParagraphs(directory, document), rows, changes.amendments, new Set(settled.result.applied.map(row => row.id))),
       ...consistencyItems(directory, document, readParagraphs(directory, document), rows, referenceFields(readFileSync(out))),
       ...tableItems(directory, document, readFileSync(out), rows),
