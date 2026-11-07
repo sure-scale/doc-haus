@@ -4,7 +4,7 @@ import { readActRecord, signerFlags, type ActRecord } from "./act-record"
 import { FIRST_DOCUMENT, nameKey, namedIn, readLeanPlan, type ActingFor, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { approvedResearch, researchHandoff } from "./research"
-import { EXCERPT, REQUEST_SOURCE, adoptedSources, excerpt, lawyerWords, matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
+import { EXCERPT, REQUEST_SOURCE, adoptedSources, excerpt, lawyerWords, matterSourceIDs, openItem, questionSourceNote, quoteFound, quoteMissIssue } from "./quotes"
 import { answeredScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows, type ScopeParties } from "./package-scope"
 import { answeredQuestionsText, hashStageInputs, questionOptions, readLeanJson, readLeanText, readQuestions, undecidedQuestion, type AnswerReader, type OpenItem, type Question, type QuestionOption } from "./state"
 import { sourceText } from "./template-structure"
@@ -144,7 +144,7 @@ export function listedActIssues(directory: string, where: string, act: Instructe
   const issues: string[] = []
   const sources = [REQUEST_SOURCE, ...adoptedSources(directory), ...matterSourceIDs(directory)]
   if (!sources.includes(act.source))
-    issues.push(`${where} gives the source "${act.source}", which is not a matter document. Use one of ${sources.map(name => `"${name}"`).join(", ")}.`)
+    issues.push(`${where} gives the source "${act.source}", which is not a matter document. Use one of ${sources.map(name => `"${name}"`).join(", ")}. ${questionSourceNote(act.source, new Set(sources), directory)}`.trimEnd())
   else if (!quoteFound(directory, { quote: act.quote, source_id: act.source }))
     issues.push(quoteMissIssue(directory, where, { quote: act.quote, source_id: act.source }, "json", { adopted: true }))
   for (const party of act.parties.filter(party => !texts().some(text => namedIn(text, party))))

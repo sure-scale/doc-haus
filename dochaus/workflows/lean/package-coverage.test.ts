@@ -262,6 +262,11 @@ describe("coverage reply", () => {
     expect(parseCoverage(reply({ source: "minutes.docx" }), directory, documents)).toEqual({
       issues: [`acts[0] ("approve the revised schedule") gives the source "minutes.docx", which is not a matter document. Use one of "request", "${SOURCE}".`],
     })
+    // A question id given as the source says where that question's words are quoted.
+    writeQuestions(directory, [{ id: "q-law", stage: "intake", question: "Which law governs?", context: "Needed to draft.", status: "answered", answer: "English law." }])
+    expect(parseCoverage(reply({ source: "answer:q-law" }), directory, documents).issues).toEqual([
+      expect.stringContaining(`"answer:q-law" names question q-law; its answer is the lawyer's own: quote the lawyer's own answer under "request".`),
+    ])
   })
 })
 
