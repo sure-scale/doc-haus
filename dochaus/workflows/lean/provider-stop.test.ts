@@ -25,6 +25,7 @@ test.each([
   ["auth", EXPIRED],
   ["setup", { error: "Finish installation setup before generating.", code: "setup_required" }],
   ["model", { type: "provider.no-route", message: "Model unavailable: test/scripted" }],
+  ["credit", { type: "provider.quota", message: "Account credit is exhausted", status: 402 }],
 ] as const)("a %s failure stops the run with its own reason, and Continue resumes once it is fixed", async (kind, cause) => {
   const directory = matter()
   const broken = scriptedModel({ ...happyPath, [AGENT.discrepancy]: failing(cause) })

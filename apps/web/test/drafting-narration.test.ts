@@ -349,6 +349,16 @@ test("a provider or setup stop names the fix in Settings, and Continue resumes i
   expect(excerpt).toContain(`- The run settled: ${PROVIDER_STOP_MESSAGES.auth}`)
 })
 
+test("a credit stop asks for credit with the provider, not a fix in Settings", () => {
+  const spent = lean({ ...stopped, stop_reason: `d1.draft: ${PROVIDER_STOP_MESSAGES.credit}`, provider_stop: "credit" })
+  expect(runOutcome(spent)).toEqual({ tone: "attention", text: PROVIDER_STOP_MESSAGES.credit })
+  expect(stageMilestones(spent).at(-1)).toMatchObject({ state: "paused", text: "Paused while drafting: the AI account needs credit" })
+  const runKey = `run:failed:${spent.updated_at}`
+  const excerpt = buildExcerpt({ status: spent, plan: { keys: [runKey], focus: runKey, reason: "checkpoint" }, activity: [], now: 0 })
+  expect(excerpt).toContain("Run state: paused until the AI account has credit; the work so far is kept.")
+  expect(excerpt).not.toContain("Settings")
+})
+
 test("checkpoints cover finished stages, the plan, open questions and the run settling", () => {
   expect(checkpointKeys(running)).toEqual([])
   const keys = checkpointKeys(question)

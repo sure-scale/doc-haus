@@ -3,7 +3,7 @@ import { Link } from "react-router-dom"
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
 import { postureLabel } from "../../api/ingest/preferences"
 import { formatAgo, formatElapsed } from "../../lib/format"
-import { activeStep, providerStopMessage, stepActivityLabel, stoppedByTechnicalProblem } from "../narration/activity"
+import { activeStep, providerStopMessage, providerStopNeed, stepActivityLabel, stoppedByTechnicalProblem } from "../narration/activity"
 import { draftedIn } from "../narration/timeline"
 import {
   afterCheckChange,
@@ -256,7 +256,7 @@ export default function RunHeader({
       <div id={detailsId} className={`run-head-details${details ? " is-open" : ""}`} inert={!details} aria-hidden={!details}>
         <div className="run-head-details-body">
           <Stepper status={status} now={now} />
-          <p className="run-note">{status.stages["research"] ? status.stages["research"].status === "done" ? status.research?.status === "not-needed" ? `External authority was not needed for this request; the reason is recorded with ${notesWording(status.memo).phrase}.` : status.research?.status === "limited" ? "Legal research is incomplete. Source and research limitations must be disclosed with this review draft." : "Retrieved legal research findings are independently checked before drafting." : "External legal research runs after material questions are answered. Unavailable sources and research gaps are disclosed." : "This earlier drafting run checked matter documents; external legal research was not included."}</p>
+          <p className="run-note">{status.stages["research"] ? status.stages["research"].status === "done" ? status.research?.status === "not-needed" ? `External authority was not needed for this request; the reason is recorded with ${notesWording(status.memo).phrase}.` : status.research?.status === "limited" ? status.research.checked_sources ? `Research found ${status.research.checked_sources} checked source${status.research.checked_sources === 1 ? "" : "s"}; its limits are listed in ${notesWording(status.memo).phrase}.` : "Legal research is incomplete. Source and research limitations must be disclosed with this review draft." : "Retrieved legal research findings are independently checked before drafting." : "External legal research runs after material questions are answered. Unavailable sources and research gaps are disclosed." : "This earlier drafting run checked matter documents; external legal research was not included."}</p>
           {held > 0 && !stopped && <p className="run-note">{held} prepared document{held === 1 ? " is" : "s are"} held until the final check passes.</p>}
           {note && <p className="run-note">{note}</p>}
           {head.tone === "done" && verdict && <p className="run-note">{verdict}</p>}
@@ -330,7 +330,7 @@ export function runHeadline(status: LeanDraftingStatus, now: number, resuming = 
       title: step ? `Paused at ${runStepName(status, step.key).toLowerCase()}` : "Paused",
       meta: [position?.document ?? "", "You paused drafting", "Continue picks up from this step"],
     }
-  if (providerStopMessage(status)) return { tone: "paused", title: "Paused: Settings need attention", meta: ["The work so far is kept", steps] }
+  if (providerStopMessage(status)) return { tone: "paused", title: `Paused: ${providerStopNeed(status)}`, meta: ["The work so far is kept", steps] }
   if (stoppedByTechnicalProblem(status))
     return { tone: "paused", title: "Paused after a technical problem", meta: ["The work so far is kept", steps] }
   if (step?.key === "gate") {

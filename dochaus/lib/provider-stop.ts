@@ -1,12 +1,13 @@
 /** Provider and setup failures that no retry can fix: the lawyer has to change
- * something in Settings first. The lean runner stops on them with one of these
- * messages; the web shows the same words. */
-export type ProviderStopKind = "auth" | "setup" | "model"
+ * something first, in Settings or (for credit) with the provider. The lean
+ * runner stops on them with one of these messages; the web shows the same words. */
+export type ProviderStopKind = "auth" | "setup" | "model" | "credit"
 
 export const PROVIDER_STOP_MESSAGES: Record<ProviderStopKind, string> = {
   auth: "The model provider did not accept the saved sign-in. Reconnect the provider in Settings, then Continue resumes drafting.",
   setup: "Model setup is not finished. Complete setup in Settings, then Continue resumes drafting.",
   model: "The model this draft uses is not available from its provider. Reconnect the provider or enable the model in Settings, then Continue resumes drafting.",
+  credit: "The AI account has run out of credit or reached its usage limit. Add credit with your provider, then Continue resumes drafting.",
 }
 
 /** The stop an engine failure calls for, read only from typed fields carried as
@@ -19,4 +20,5 @@ export function providerStopKind(error: unknown): ProviderStopKind | undefined {
   if (code === "setup_required") return "setup"
   if (type === "provider.auth") return "auth"
   if (type === "provider.no-route") return "model"
+  if (type === "provider.quota") return "credit"
 }

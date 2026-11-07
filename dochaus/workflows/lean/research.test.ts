@@ -4,7 +4,7 @@ import path from "node:path"
 import { createHash } from "node:crypto"
 import { preserveResearchSourceSnapshot } from "../../lib/research-source-snapshot"
 import { citationRowsForLeanText, citationRowsForText } from "../../lib/citation-extraction"
-import { acceptResearchReply, approvedResearch, checkResearch, researchHandoff, researchPermissions, researchPrompt, researchContextLocators } from "./research"
+import { acceptResearchReply, approvedResearch, checkResearch, researchHandoff, researchPermissions, researchPrompt, researchContextLocators, researchStatus } from "./research"
 import { checkDraftingNotes } from "./checks"
 import { finalGate } from "./gate"
 import { quoteFound } from "./quotes"
@@ -66,8 +66,11 @@ test("retrieved text verifies exact quotations, while URLs, fabricated quotes an
   expect(checkResearch(directory, { ...research, findings: [{ ...research.findings[0], url: "https://example.gov/other" }] })).not.toEqual([])
   expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])
   expect(approvedResearch(directory)).toEqual([])
+  expect(researchStatus(directory)?.checked_sources).toBe(0)
   expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: ["Currency unconfirmed"], gaps: [] })).issues).toEqual([])
   expect(approvedResearch(directory)).toHaveLength(1)
+  // A limitation keeps research limited, but the count of checked sources goes with it.
+  expect(researchStatus(directory)).toMatchObject({ status: "limited", checked_sources: 1 })
   expect(quoteFound(directory, { source_id: research.findings[0]!.url, quote: research.findings[0]!.quote })).toBe(true)
   expect(quoteFound(directory, { source_id: research.findings[0]!.url, quote: "Invented text" })).toBe(false)
   expect(quoteFound(directory, { source_id: research.findings[0]!.url, quote: "[a] party must give written notice" })).toBe(true)

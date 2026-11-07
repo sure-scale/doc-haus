@@ -61,6 +61,12 @@ function prefill(provider: Provider | undefined, integration: IntegrationInfo | 
   return { ...emptyDraft(), options, choice: choice?.value ?? "", answer: methodDefaults(choice?.method) }
 }
 
+// Saving clears the candidate session, so a saved setup keeps its connection
+// step done until the lawyer edits it again (edits reset `saved`).
+export function setupProgress({ configured, ...rest }: Omit<AISetupProgress, "connection"> & { configured: boolean }): AISetupProgress {
+  return { ...rest, connection: configured || Boolean(rest.saved) }
+}
+
 export default function AISetup({ mode = "settings", reconnectProvider, phase = "provider", onPhaseChange, onProgress, onSaved, extraDirty = false, extraBusy = false, capacityTested = false, onSaveExtra }: {
   mode?: "settings" | "onboarding"
   reconnectProvider?: string
@@ -125,7 +131,7 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   const passed = Boolean(sessionID && choiceValid && verified === fingerprint)
   const configured = Boolean(sessionID && modelReady)
   const cloudProviderCount = providers.filter(item => item.activation !== "disabled" && !config.disabled_providers?.includes(item.id) && !["ollama", "lmstudio", "qvac"].includes(item.id) && !item.id.startsWith("local-")).length
-  const progress = { cloudProviderCount, saved, provider: Boolean(provider), connection: configured, models: choiceValid, test: passed, loading, busy, saving }
+  const progress = setupProgress({ cloudProviderCount, saved, provider: Boolean(provider), configured, models: choiceValid, test: passed, loading, busy, saving })
   useEffect(() => { callbacks.current.onProgress?.(progress) }, [provider, configured, choiceValid, passed, loading, busy, saving, saved, cloudProviderCount])
 
   function clearTest() { revision.current++; setResults([]); setVerified(""); setSaved(false); setError(""); setContinuePending(false) }

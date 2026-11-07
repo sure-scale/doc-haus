@@ -71,8 +71,9 @@ export function engineSessionPort(options: { engineURL?: string; fetch?: typeof 
           message.info.parentID === messageID)
         // A turn that failed before any reply has its error on the idle record only.
         const error = record(last) && record(last.info) && last.info.error ? last.info.error : outcome === "failed" ? idle.error : undefined
+        // The native error's own message, not its payload; its typed fields stay in the cause.
         if (outcome !== "succeeded" || error)
-          throw new Error(`The ${input.agent} session ended ${outcome}${error ? `: ${JSON.stringify(error)}` : ""}.`, { cause: error })
+          throw new Error(`The ${input.agent} session ended ${outcome}${error ? `: ${errorDetail(error)}` : ""}.`, { cause: error })
         return nativeStageResult(messages, messageID, input.agent)
       }
       throw new Error(`The ${input.agent} session did not finish within ${Math.round(timeoutMs / 60_000)} minutes.`)
@@ -109,6 +110,10 @@ function ascendingMessageID() {
   return `msg_${time}${[...randomBytes(14)].map(byte => alphabet[byte % alphabet.length]).join("")}`
 }
 
+function errorDetail(error: unknown) {
+  const text = record(error) && typeof error.message === "string" ? error.message.trim().replace(/\.+$/, "") : ""
+  return text || JSON.stringify(error)
+}
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
