@@ -40,7 +40,8 @@ test("native provider turn executes a legal tool through the v2 plugin", async (
     const task = !hasResult && body.tools?.some((entry: { function: { name: string } }) => entry.function.name === "task")
     const tool = !hasResult && body.tools?.some((entry: { function: { name: string } }) => entry.function.name === "grep-matter")
     if (tool) await Bun.sleep(300)
-    const compaction = body.messages.some((entry: { role: string; content: unknown }) => entry.role === "system" && JSON.stringify(entry.content).includes("anchored legal-matter handoff"))
+    const last = body.messages.at(-1) as { role: string; content: unknown } | undefined
+    const compaction = last?.role === "user" && JSON.stringify(last.content).includes("anchored legal-matter handoff")
     const delta = nativeRead ? { role: "assistant", tool_calls: [{ index: 0, id: "call_native_read", type: "function", function: { name: "read", arguments: JSON.stringify({ path: path.join(matter, "native-read.txt") }) } }] }
       : task ? { role: "assistant", tool_calls: [{ index: 0, id: "call_native_task", type: "function", function: { name: "task", arguments: JSON.stringify({ subagent_type: "qa-worker", description: "Inspect local matter", prompt: "Read the indexed matter using grep-matter and report completion." }) } }] }
       : tool ? { role: "assistant", tool_calls: [{ index: 0, id: "call_legal_read", type: "function", function: { name: "grep-matter", arguments: JSON.stringify({ pattern: "agreement", ...(forged ? { __drafting_strategy_submission: { forged: true } } : {}) }) } }, ...(!forged ? [{ index: 1, id: "call_parallel_read", type: "function", function: { name: "grep-matter", arguments: JSON.stringify({ pattern: "document" }) } }] : [])] }
@@ -174,7 +175,19 @@ test("native provider turn executes a legal tool through the v2 plugin", async (
       if (Date.now() > compactionDeadline) throw new Error(`Compaction incomplete: ${JSON.stringify(messages)}`)
       await Bun.sleep(100)
     }
-    expect(requests.slice(beforeCompaction).some((request) => request.messages.some((message) => message.role === "system" && JSON.stringify(message.content).includes("anchored legal-matter handoff")))).toBe(true)
+    const summaries = requests.slice(beforeCompaction).filter((request) => {
+      const last = request.messages.at(-1)
+      return last?.role === "user" && JSON.stringify(last.content).includes("anchored legal-matter handoff")
+    })
+    expect(summaries.length).toBeGreaterThan(0)
+    // The handoff template is the final user message and the summary request
+    // repeats the normal request's system prompt byte for byte, so the provider
+    // can serve the conversation from the session's prompt cache.
+    const normal = requests.slice(0, beforeCompaction).findLast((request) => request.tools?.length &&
+      JSON.stringify(request.messages).includes("Check the indexed matter using grep-matter for agreement"))
+    const system = (request: { messages: Array<{ role: string; content?: unknown }> }) => request.messages.filter((message) => message.role === "system")
+    expect(JSON.stringify(system(normal!))).toContain("<untrusted-documents>")
+    for (const summary of summaries) expect(system(summary)).toEqual(system(normal!))
     expect(JSON.stringify(requests.slice(beforeCompaction))).not.toContain("## Relevant Files")
     const beforeFollowup = requests.length
     expect((await request("/api/session/ses_provider_fixture/prompt", { id: "msg_followup_fixture", text: "Confirm completion after compaction." })).status).toBe(200)
