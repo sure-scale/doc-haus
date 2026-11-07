@@ -151,6 +151,10 @@ export type Question = {
   pid?: string
   /** The document of that paragraph: the latest step that asked the question. */
   document?: DocID
+  /** For a question code asks when answers cannot all be followed
+   * (answer-reconcile.ts), the ids of the answered questions its answer
+   * settles the point in place of. */
+  replaces?: string[]
   status: "open" | "answered"
   answer?: string
   /** How the lawyer gave the answer, when not in their own words: by picking
