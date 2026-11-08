@@ -157,6 +157,19 @@ test("coverage distinguishes the owned change explanation from a dependency's se
   expect(open).toContain("An open-item owner must explain the actual uncertainty, its practical consequence and the required human action")
 })
 
+test("coverage source contract distinguishes recorded verification status from current wording without hiding contradictions or duties", () => {
+  const input = { ...assignment, text: "<unresolved_record>Verification of the release condition remains incomplete; the custodian must supply the missing inspection date.</unresolved_record>\n<current_accepted_evidence>The custodian may release the container only after inspection.</current_accepted_evidence>" }
+  const prose = "The verification record leaves the inspection date unknown. Obtain the date before deciding whether the release condition is met."
+  const prompt = notesCoveragePrompt(input, prose)
+  expect(prompt).toContain(prose)
+  expect(prompt).toContain("historical research or human-approval status needs its own research, decision or approval record")
+  expect(prompt).toContain("precise attribution to a supplied unresolved record")
+  expect(prompt).toContain("Current clauses do not establish what research was completed or whether human approval occurred")
+  expect(prompt).toContain("not inferred legal validity, invalidity or approval")
+  expect(prompt).toContain("Preserve the original assigned duty, practical consequence and required action")
+  expect(prompt).toContain("cannot hide a material contradiction or drop an essential exhaustive requirement")
+})
+
 test("an inexact dependency claim is corrected inside the same verifier before returning needs-evidence", async () => {
   const directory = plannedMatter()
   const request = { document: "d1" as const, claim: "The seal design remains unknown", question: "What current qualification applies to the seal design?" }

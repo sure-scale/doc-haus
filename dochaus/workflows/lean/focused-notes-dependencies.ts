@@ -1,16 +1,39 @@
 import { escapeTagOpeners } from "../../lib/untrusted"
 import { parseJsonObject } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
-import { checkNotesTargets, notesCurrentEvidence, type NotesBody, type NotesContext } from "./focused-notes-evidence"
+import { checkNotesTargets, notesCurrentEvidence, type NotesBody, type NotesContext, type NotesTarget } from "./focused-notes-evidence"
 import type { DocID } from "./plan"
 import { tagged } from "./prompts"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, stepSessionTitle, type LeanDeps } from "./stages"
 import type { LeanStageState, LeanState } from "./state"
 
 export type NotesEvidenceRequest = { document: DocID; claim: string; question: string }
+export type NotesDependencyObservation = { request: NotesEvidenceRequest; targets: NotesTarget[]; limitation: string }
 export type NotesDependencyResult =
-  | { status: "resolved"; evidence: NotesContext[]; limitation: string }
+  | { status: "resolved"; evidence: NotesContext[]; limitation: string; observation: NotesDependencyObservation }
   | { status: "failed"; reason: string }
+
+/** Transient claim-specific observations share canonical passages. They never
+ * turn selected PIDs, an empty limitation or EOF into a global negative. */
+export function notesDependencyEvidence(observations: NotesDependencyObservation[], bodies: NotesBody[]): NotesContext[] {
+  if (!observations.length) return []
+  const targets = new Map<DocID, Set<string>>()
+  for (const observation of observations) for (const target of observation.targets) {
+    const pids = targets.get(target.document) ?? new Set<string>()
+    for (const pid of target.pids) pids.add(pid)
+    targets.set(target.document, pids)
+  }
+  const context = [...targets].flatMap(([document, pids]) => {
+    const body = bodies.find(body => body.document === document)
+    return body ? notesCurrentEvidence(body, [...pids]) : []
+  })
+  const unique = [...new Map(context.map(row => [`${row.name}\0${row.text}`, row])).values()]
+  return [{ name: "dependency_evidence", text: JSON.stringify({
+    role: "Evidence for checking the original prose owner, not an additional explanation owner. Initial evidence is historical; current accepted evidence controls present-body claims. Every original claim, question and actual inspection limitation remains separate. The unchanged or scoped rewritten prose must still pass its ordinary checker.",
+    scope: "Selected canonical passages and their material nearby qualifications only. A selection, empty limitation or EOF alone never establishes document-wide absence, an exact global count, resolution or approval. An observation's limitation is not a finding that its claim is false.",
+    observations, context: unique,
+  }) }]
+}
 
 /** Missing packet evidence is not a false claim. Bind each lookup to one
  * actual prose claim and a planned document, without deciding its truth. */
@@ -29,7 +52,7 @@ export function checkNotesEvidenceRequest(value: unknown, bodies: Pick<NotesBody
  * "resolved" means the lookup answered, never that the claim passed. */
 export async function resolveFocusedNotesDependency(directory: string, state: LeanState, deps: LeanDeps,
   input: { id: string; text: string }, prose: string, request: NotesEvidenceRequest, bodies: NotesBody[],
-  progress: (patch: Partial<LeanStageState>) => void): Promise<NotesDependencyResult> {
+  progress: (patch: Partial<LeanStageState>) => void, observations: NotesDependencyObservation[] = []): Promise<NotesDependencyResult> {
   const validated = checkNotesEvidenceRequest(request, bodies, prose)
   if (!validated.request) return { status: "failed", reason: validated.issues.join(" ") }
   const body = bodies.find(body => body.document === request.document)!
@@ -43,11 +66,13 @@ export async function resolveFocusedNotesDependency(directory: string, state: Le
     paragraphs: body.current.map(({ pid, label, draft_part, draft_heading, text }) => ({ pid, label, part: draft_part, ...(draft_heading ? { heading: text } : {}) })),
   }
   const index = JSON.stringify(navigation)
+  const prior = observations.filter(observation => observation.request.document === request.document)
   const prompt = [
     tagged("current_target_lookup", "Locate current accepted evidence for this one disputed prose claim, including material conditions, definitions and qualifications. Select evidence whether it supports or contradicts the claim. This is evidence selection only: do not judge legal correctness, draft prose, resolve a fact or grant approval. Missing inspection never establishes missing content."),
     tagged("evidence_request", escapeTagOpeners(JSON.stringify(request))),
+    ...(prior.length ? [tagged("prior_dependency_inspections", escapeTagOpeners(JSON.stringify(prior)))] : []),
     tagged("current_navigation", escapeTagOpeners(index.length <= 6_000 ? index : JSON.stringify({ document: navigation.document, record: navigation.record }))),
-    tagged("retrieval_scope", "Use read-record or read-document view=current_body for the requested planned document. Inspect only passages material to the requested claim and their qualifications. Return existing current paragraph PIDs, not quotations or inferred text. Do not write files."),
+    tagged("retrieval_scope", "Use read-record or read-document view=current_body for the requested planned document. Prior claim-specific selections and limitations are navigation, not proof of completeness or a verdict about the current prose. Use them to inspect the still-missing dependency rather than blindly restarting already read ranges; reread when a material qualification requires it. Inspect only passages material to the requested claim and their qualifications. Return existing current paragraph PIDs, not quotations or inferred text. Do not write files."),
     tagged("output_contract", 'Reply only {"targets":[{"document":"requested planned id","pids":["current paragraph pid"]}],"limitation":"remaining inspection limit, or empty"}. If no current passage can be located or inspected, return no targets with the actual limitation. A selected passage does not establish document-wide absence; identify any unavailable material dependency.'),
   ].join("\n\n")
   let issues: string[] = []
@@ -66,7 +91,8 @@ export async function resolveFocusedNotesDependency(directory: string, state: Le
     if (!checked.targets) continue
     const context = checked.targets.flatMap(target => notesCurrentEvidence(body, target.pids))
     const limitation = checked.limitation || "Only selected current passages and their nearby qualifications were inspected; this does not establish document-wide absence."
-    return { status: "resolved", limitation, evidence: [{ name: "dependency_evidence", text: JSON.stringify({
+    const observation = { request: validated.request, targets: checked.targets, limitation: checked.limitation ?? "" }
+    return { status: "resolved", limitation, observation, evidence: [{ name: "dependency_evidence", text: JSON.stringify({
       document: body.document, claim: request.claim, question: request.question,
       role: "Evidence for checking this claim only, not an additional explanation owner. Generated initial evidence is historical; current accepted evidence controls. The unchanged prose must still pass its ordinary checker.",
       context, limitation,

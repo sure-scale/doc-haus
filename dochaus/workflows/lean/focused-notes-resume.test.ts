@@ -100,16 +100,87 @@ for (const mode of ["supports", "contradicts"] as const) test(`dependency inspec
   expect(scripted.writes.length + scripted.checks.length + scripted.lookups.length).toBe(calls)
 })
 
-test("an unanswered evidence request never falls through to acceptance or consumes a writer retry", async () => {
+test("an unanswered evidence request never falls through to acceptance within bounded writer recovery", async () => {
   const directory = fixture("Acceptance requires inspection.")
   const scripted = model("unanswered")
   expect((await runFocusedNotes(directory, readLeanState(directory)!, { sessions: scripted.port }, () => {})).status).toBe("failed")
-  expect(scripted.ownerWrites).toBe(1)
-  expect(scripted.lookups).toHaveLength(LEAN_MAX_RETRIES)
+  expect(scripted.ownerWrites).toBe(LEAN_MAX_RETRIES + 1)
+  expect(scripted.lookups).toHaveLength(LEAN_MAX_RETRIES * (LEAN_MAX_RETRIES + 1))
   expect(readLeanText(directory, "drafting-notes.md")).toBeUndefined()
   const saved = readdirSync(leanFile(directory, "notes-sections")).map(file => readLeanText(directory, `notes-sections/${file}`))
   expect(saved.length).toBeGreaterThan(0)
   expect(saved).not.toContain(`${original}\n`)
+})
+
+const globalClaim = "The handover contains no acceptance condition anywhere."
+const unsupportedScope = `${globalClaim} ${point.detail}`
+const scoped = `The inspected paragraph does not establish the handover's acceptance condition. ${point.detail} Until supplied, the seal cannot be finalized.`
+
+function scopedModel(mode: "scoped" | "essential" | "contradiction") {
+  const initial = new Map<string, string>()
+  const writes: string[] = [], checks: string[] = []
+  let ownerWrites = 0, lookups = 0, sessionCount = 0
+  const port: StageSessionPort = {
+    async createSession() { return `scope-session-${++sessionCount}` },
+    async prompt(input) {
+      if (!initial.has(input.sessionID)) initial.set(input.sessionID, input.text)
+      const first = initial.get(input.sessionID)!
+      if (input.agent === NOTES_COVERAGE_AGENT) {
+        if (!first.includes(point.detail)) return JSON.stringify({ status: "pass", reason: "The separate section explains its own duty." })
+        checks.push(input.text)
+        if (first.includes(`<proposed_prose>\n${unsupportedScope}`)) return JSON.stringify({ status: "needs-evidence", reason: "The selected paragraph cannot establish a document-wide negative.",
+          request: { document: "d1", claim: globalClaim, question: "What current evidence supports this document-wide absence claim?" } })
+        if (mode === "essential") {
+          expect(first).toContain("Explain every governing acceptance condition.")
+          return JSON.stringify({ status: "rewrite", reason: "The original duty requires every acceptance condition; a limited inspection cannot replace that essential explanation." })
+        }
+        if (mode === "contradiction") return JSON.stringify({ status: "rewrite", reason: "The supplied current text expressly requires inspection. An unverified caveat cannot hide that contradiction." })
+        expect(first).toContain(scoped)
+        expect(first).toContain("Only the labelled paragraph was inspected")
+        return JSON.stringify({ status: "pass", reason: "The narrowed claim matches its actual inspection limit and preserves the unknown design, consequence and required action." })
+      }
+      if (first.includes("<current_target_lookup>")) {
+        lookups++
+        return JSON.stringify({ targets: [{ document: "d1", pids: ["p111111111111"] }], limitation: "Only the labelled paragraph was inspected; other current passages were not inspected." })
+      }
+      if (first.includes(point.detail)) {
+        writes.push(input.text)
+        ownerWrites++
+        if (ownerWrites === 1) return unsupportedScope
+        expect(input.text).toContain(globalClaim)
+        if (ownerWrites === 2) expect(input.text).toContain("unsupported at this inspection scope")
+        expect(input.text).toContain("Only the labelled paragraph was inspected")
+        return mode === "contradiction" ? `Whether acceptance requires inspection remains unverified. ${point.detail}` : scoped
+      }
+      return "The separate section preserves the container label instruction."
+    },
+  }
+  return { port, writes, checks, get ownerWrites() { return ownerWrites }, get lookups() { return lookups } }
+}
+
+for (const mode of ["scoped", "essential", "contradiction"] as const) test(`completed bounded inspections use checked writer scope recovery (${mode})`, async () => {
+  const directory = fixture(mode === "contradiction" ? "Acceptance requires inspection." : "Keep the archive label visible.")
+  if (mode === "essential") writeOpenItems(directory, [{ ...point, detail: `${point.detail} Explain every governing acceptance condition.` }])
+  const scripted = scopedModel(mode)
+  const result = await runFocusedNotes(directory, readLeanState(directory)!, { sessions: scripted.port }, () => {})
+  expect(result.status).toBe(mode === "scoped" ? "done" : "failed")
+  expect(scripted.lookups).toBe(LEAN_MAX_RETRIES)
+  expect(scripted.ownerWrites).toBe(mode === "scoped" ? 2 : LEAN_MAX_RETRIES + 1)
+  expect(scripted.checks.slice(0, LEAN_MAX_RETRIES + 1).every(text => text.includes(`<proposed_prose>\n${unsupportedScope}`))).toBe(true)
+  const inspected = scripted.checks.slice(1, LEAN_MAX_RETRIES + 1)
+  const evidenceText = mode === "contradiction" ? "Acceptance requires inspection." : "Keep the archive label visible."
+  expect(inspected.map(text => text.split(evidenceText).length)).toEqual(Array(LEAN_MAX_RETRIES).fill(inspected[0]!.split(evidenceText).length))
+  if (mode !== "scoped") {
+    expect(readLeanText(directory, "drafting-notes.md")).toBeUndefined()
+    return
+  }
+  const notes = readLeanText(directory, "drafting-notes.md")!
+  expect(notes).toContain(scoped)
+  expect(notes).not.toContain(globalClaim)
+  expect(notes.split(`[ref: ${point.id}]`)).toHaveLength(2)
+  const before = scripted.ownerWrites
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, { sessions: scripted.port }, () => {})).status).toBe("done")
+  expect(scripted.ownerWrites).toBe(before)
 })
 
 test("legacy assembled passage prose is not a checked answer to its original question, while accepted neighbors are reused", async () => {

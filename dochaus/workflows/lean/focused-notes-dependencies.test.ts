@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs"
 import type { ParagraphRow } from "./checks"
 import { readLeanEvents } from "./events"
 import { checkNotesEvidenceRequest, resolveFocusedNotesDependency, type NotesEvidenceRequest } from "./focused-notes-dependencies"
+import * as dependencyNotes from "./focused-notes-dependencies"
 import type { NotesBody } from "./focused-notes-evidence"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, type StageSessionPort } from "./stages"
 import { readLeanState } from "./state"
@@ -18,7 +19,7 @@ const claim = "The acceptance remains conditional."
 const prose = `The memo explains the handover. ${claim}`
 const request: NotesEvidenceRequest = { document: "d1", claim, question: "What condition governs acceptance in the current handover?" }
 const input = { id: "change:d2:synthetic", text: "Explain the memo revision, using the handover only as dependency evidence." }
-const selected = { targets: [{ document: "d1", pids: ["p222222222222"] }], limitation: "" }
+const selected = { targets: [{ document: "d1" as const, pids: ["p222222222222"] }], limitation: "" }
 
 function locator(replies: unknown[]) {
   const sessions: Parameters<StageSessionPort["createSession"]>[0][] = []
@@ -120,4 +121,52 @@ test("invented, historical or wrong-document targets cannot supply trusted depen
     expect((await resolveFocusedNotesDependency(directory, readLeanState(directory)!, { sessions: unused.port }, input, prose, invalid, [body], () => {})).status).toBe("failed")
   expect(unused.sessions).toHaveLength(0)
   expect(readLeanEvents(directory).filter(event => event.event === "checker").every(event => !JSON.stringify(event).includes(claim))).toBe(true)
+})
+
+test("a resolved lookup retains its actual claim-specific selection and limitation as an observation", async () => {
+  const directory = matter()
+  const model = locator([selected])
+  const result = await resolveFocusedNotesDependency(directory, readLeanState(directory)!, { sessions: model.port }, input, prose, request, [body], () => {})
+  if (result.status !== "resolved") throw new Error(result.reason)
+  expect(result.observation).toEqual({ request, targets: selected.targets, limitation: "" })
+  expect(result.limitation).toContain("does not establish document-wide absence")
+})
+
+test("a subsequent lookup receives relevant prior selection and limits without repeating canonical paragraphs", async () => {
+  const directory = matter()
+  const prior = [{ request: { ...request, question: "Which earlier condition applies?" }, targets: selected.targets, limitation: "The later inspection exception remains uninspected." },
+    { request: { ...request, document: "d2" as const, claim: "An unrelated carrier condition." }, targets: [], limitation: "Unrelated record limitation." }]
+  const model = locator([selected])
+  await resolveFocusedNotesDependency(directory, readLeanState(directory)!, { sessions: model.port }, input, prose, request, [body], () => {}, prior)
+  const prompt = model.prompts[0]!.text
+  expect(prompt).toContain("<prior_dependency_inspections>")
+  expect(prompt).toContain(prior[0]!.limitation)
+  expect(prompt).toContain(prior[0]!.request.question)
+  expect(prompt).toContain("p222222222222")
+  expect(prompt).not.toContain(prior[1]!.limitation)
+  for (const paragraph of [...body.initial, ...body.current]) expect(prompt).not.toContain(paragraph.text)
+})
+
+test("overlapping dependency observations share canonical nodes while retaining every question and actual limitation", () => {
+  const observations = [
+    { request, targets: selected.targets, limitation: "The remaining term was not inspected." },
+    { request: { ...request, claim: "A different claim remains conditional.", question: "What later condition applies?" }, targets: [{ document: "d1" as const, pids: ["p222222222222", "p333333333333"] }], limitation: "" },
+    { request: { ...request, claim: "A missing exception remains unknown.", question: "Is an exception available?" }, targets: [], limitation: "The exception could not be inspected." },
+  ]
+  const evidence = dependencyNotes.notesDependencyEvidence(observations, [body])
+  expect(evidence.map(row => row.name)).toEqual(["dependency_evidence"])
+  const packet = JSON.parse(evidence[0]!.text)
+  expect(packet.observations).toEqual(observations)
+  const current = packet.context.filter((row: { name: string }) => row.name === "current_accepted_evidence").map((row: { text: string }) => JSON.parse(row.text))
+  const initial = packet.context.filter((row: { name: string }) => row.name === "generated_initial_evidence").map((row: { text: string }) => JSON.parse(row.text))
+  expect(current).toHaveLength(1)
+  expect(current[0].paragraphs.map((row: { pid: string }) => row.pid)).toEqual(["p222222222222", "p333333333333"])
+  expect(current[0].paragraphs.map((row: { text: string }) => row.text)).toEqual(body.current.map(row => row.text))
+  expect(initial).toHaveLength(1)
+  expect(initial[0].paragraphs.map((row: { text: string }) => row.text)).toEqual(body.initial.map(row => row.text))
+  expect(current[0].baseline_pairs).toEqual([{ initial: "p111111111111", current: ["p222222222222", "p333333333333"] }])
+  expect(current[0].applied_outcomes).toEqual([{ id: "a1", pid: "p111111111111", mode: "code", result_pids: ["p222222222222", "p333333333333"] }])
+  expect(packet.role).toContain("not an additional explanation owner")
+  expect(packet.scope).toContain("never establishes document-wide absence")
+  expect(dependencyNotes.notesDependencyEvidence([], [body])).toEqual([])
 })

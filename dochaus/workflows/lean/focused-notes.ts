@@ -5,7 +5,7 @@ import { comparisonDescription } from "./comparison"
 import { deliveryArtifactEvidence, requestedMemo } from "./deliverables"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { checkFocusedNotesCoverage } from "./focused-notes-coverage"
-import { resolveFocusedNotesDependency } from "./focused-notes-dependencies"
+import { notesDependencyEvidence, resolveFocusedNotesDependency, type NotesDependencyObservation } from "./focused-notes-dependencies"
 import { assembleNotesOwnerEvidence, checkNotesInspection, checkNotesTargets, currentNotesPids, notesCurrentEvidence, notesEvidencePlan, NOTES_CURRENT_EVIDENCE_VERSION, NOTES_INSPECTION_OUTPUT_CONTRACT, type NotesBody } from "./focused-notes-evidence"
 import { raisedFindings } from "./review-findings"
 import { matterDatesBlock } from "./intake"
@@ -455,7 +455,8 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
         sessions.push(sessionID)
         progress({ session_id: sessions[0], session_ids: [...sessions] })
         let feedback: string[] = []
-        const dependencies: string[] = []
+        const dependencies: NotesDependencyObservation[] = []
+        const dependencyContext = () => notesDependencyEvidence(dependencies, bodies).map(row => tagged(row.name, escapeTagOpeners(row.text)))
         for (let attempt = 0; attempt <= LEAN_MAX_RETRIES; attempt++) {
           appendLeanEvent(directory, { stage: "finalize", step: input.id, event: attempt ? "retry" : "model_call", attempt, session_id: sessionID })
           const asked = performance.now()
@@ -471,7 +472,10 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
           await new Promise<void>(resolve => setImmediate(resolve))
           if (!feedback.length) {
             const documents = readLeanPlan(directory)?.documents ?? []
-            let checking = { ...writing, text: [writing.text, tagged("planned_dependency_documents", escapeTagOpeners(json(documents.map(({ id, title }) => ({ id, title }))))), ...dependencies].join("\n\n") }
+            const checking = () => ({ ...writing, text: [writing.text,
+              tagged("planned_dependency_documents", escapeTagOpeners(json(documents.map(({ id, title }) => ({ id, title }))))),
+              ...dependencyContext(),
+            ].join("\n\n") })
             // Evidence selection is separate from rewriting: inspect one actual
             // claim, then check the same prose with trusted current passages.
             // A request or an unanswered inspection is never an accepting verdict.
@@ -483,25 +487,29 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
                 calls.attempts = Math.max(calls.attempts, patch.attempts ?? 0)
                 progress({ ...patch, calls: calls.count, attempts: calls.attempts, session_id: sessions[0], session_ids: [...sessions] })
               }
-              const coverage = await checkFocusedNotesCoverage(directory, state, deps, checking, reply, observe)
+              const coverage = await checkFocusedNotesCoverage(directory, state, deps, checking(), reply, observe)
               if (coverage.status === "failed") { failures.push(coverage.reason); return }
               if (coverage.status === "pass") break
               if (coverage.status === "rewrite") {
-                feedback = [`This prose does not substantively explain its assigned point: ${coverage.reason} Return the complete substantive section; earlier or interrupted text cannot supply missing content.`, ...dependencies]
+                feedback = [`This prose does not substantively explain its assigned point: ${coverage.reason} Return the complete substantive section; earlier or interrupted text cannot supply missing content.`, ...dependencyContext()]
                 progress({ feedback })
                 break
               }
               if (round >= LEAN_MAX_RETRIES) {
-                failures.push(`${input.id}: explanation check still needs current evidence after ${LEAN_MAX_RETRIES} focused inspections: ${coverage.reason}`)
-                return
+                feedback = [
+                  tagged("scope_rewrite", escapeTagOpeners(json({ claim: coverage.request.claim, question: coverage.request.question, reason: coverage.reason }))),
+                  "This exact claim remains unsupported at this inspection scope; that does not establish that it is false. Reconsider its scope against the actual accepted evidence and recorded inspection limits below. Return the complete original section, preserving its supported explanation, uncertainty, practical consequence and required action. Narrow or omit an optional unsupported assertion instead of claiming global absence, a complete count or completed approval from a subset.",
+                  "The original assignment remains controlling. An essential exhaustive duty must still be fulfilled, not silently dropped or replaced by a limited-inspection caveat. Correct any known contradiction directly; do not hide it behind unverified wording. Current body evidence does not establish historical research or human approval. The complete revised prose must pass the ordinary independent explanation, quotation and citation checks; this feedback grants no acceptance, fact or human release.",
+                  ...dependencyContext(),
+                ]
+                progress({ feedback })
+                break
               }
               observedCalls = 0
               const dependency = await resolveFocusedNotesDependency(directory, state, deps, writing, reply, coverage.request,
-                bodies, observe)
+                bodies, observe, dependencies)
               if (dependency.status === "failed") { failures.push(`${input.id}: ${dependency.reason}`); return }
-              const evidence = dependency.evidence.map(row => tagged(row.name, escapeTagOpeners(row.text))).join("\n\n")
-              dependencies.push(evidence)
-              checking = { ...checking, text: `${checking.text}\n\n${evidence}` }
+              dependencies.push(dependency.observation)
             }
           }
           if (!feedback.length) {
