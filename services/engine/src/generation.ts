@@ -91,6 +91,23 @@ export const generateMatterText = Effect.fn("dochaus.generateMatterText")(functi
 })
 
 function generationUsage(usage: Parameters<typeof SessionUsage.record>[0], costs: Parameters<typeof SessionUsage.record>[1]): GenerationUsage {
-  const recorded = SessionUsage.record(usage, costs)
-  return { tokens: recorded.tokens, cost: usage ? recorded.cost : null }
+  const tokens = SessionUsage.tokens(usage)
+  const count = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0
+  if (!usage) return { tokens, cost: null }
+  // A reported charge (including an authoritative zero) needs no token estimate.
+  if (usage.cost !== undefined) return { tokens, cost: count(usage.cost) ? usage.cost : null }
+  // Usage is an optional-counter object. Presence alone does not mean that the
+  // native normalizer's zero defaults are a complete billable token report.
+  const counters = [usage.cacheReadInputTokens, usage.cacheWriteInputTokens, usage.reasoningTokens]
+  if (!count(usage.inputTokens) || !count(usage.outputTokens) || !count(usage.nonCachedInputTokens) ||
+      counters.some(value => value !== undefined && !count(value)) ||
+      usage.nonCachedInputTokens + (usage.cacheReadInputTokens ?? 0) + (usage.cacheWriteInputTokens ?? 0) !== usage.inputTokens ||
+      (usage.reasoningTokens ?? 0) > usage.outputTokens)
+    return { tokens, cost: null }
+  // Match native catalog tier selection before using its price calculator; an
+  // absent/unknown rate is not evidence of a zero-price model request either.
+  const rate = costs.filter(cost => cost.tier?.type === "context" && usage.inputTokens! > cost.tier.size)
+    .toSorted((a, b) => (b.tier?.size ?? 0) - (a.tier?.size ?? 0))[0] ?? costs.find(cost => cost.tier === undefined)
+  if (!rate || ![rate.input, rate.output, rate.cache.read, rate.cache.write].every(count)) return { tokens, cost: null }
+  return { tokens, cost: SessionUsage.record(usage, costs).cost }
 }

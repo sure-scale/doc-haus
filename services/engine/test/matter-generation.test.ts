@@ -39,21 +39,27 @@ test("cold native matter generation uses the selected model/variant and refuses 
     if (fixture.healthStatus) return Response.json({ error: { message: fixture.healthStatus === 401
       ? "Synthetic API key has expired: synthetic-private-value" : "Account credits expired; authentication allowance exceeded" } }, { status: fixture.healthStatus })
     if (fixture.fail) return Response.json({ error: { message: "Synthetic model refusal", type: "invalid_request_error", code: "model_unavailable" } }, { status: 400 })
+    const fixtureUsage = fixture.structured.endsWith("empty-usage") ? {} :
+      fixture.structured.endsWith("input-usage") ? { prompt_tokens: 12 } :
+      fixture.structured.endsWith("output-usage") ? { completion_tokens: 8 } :
+      fixture.structured.endsWith("zero-cost") ? { cost: 0 } :
+      fixture.structured.endsWith("positive-cost") ? { cost: 0.25 } :
+      { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 }
     if (body.tools && !fixture.structured.startsWith("no-call")) {
       const value = { amendments: [{ before_quote: "30 days", replacement: "45 days", target_context: "Delivery paragraph", reason: "Requested wording." }],
         ...(fixture.structured === "missing" ? {} : { open_items: [] }) }
       return new Response(`data: ${JSON.stringify({ id: "chatcmpl_legal_fixture", object: "chat.completion.chunk", created: 1, model: body.model,
         choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "call_legal", type: "function", function: { name: "generate_object", arguments: JSON.stringify(value) } }] }, finish_reason: "tool_calls" }] })}\n\ndata: ${JSON.stringify({ id: "chatcmpl_legal_fixture", object: "chat.completion.chunk", created: 1, model: body.model,
-        choices: [], ...(fixture.structured === "no-call-no-usage" ? {} : { usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 } }) })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } })
+        choices: [], ...(fixture.structured === "no-call-no-usage" ? {} : { usage: fixtureUsage }) })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } })
     }
     // Generate.text returns one string, but native LLM.generate collects a
     // provider stream. Support both protocol modes without changing the engine.
     if (body.stream) return new Response(`data: ${JSON.stringify({ id: "chatcmpl_generation_fixture", object: "chat.completion.chunk", created: 1, model: body.model,
       choices: [{ index: 0, delta: { role: "assistant", content: "The independent working-note check completed." }, finish_reason: "stop" }] })}\n\ndata: ${JSON.stringify({ id: "chatcmpl_generation_fixture", object: "chat.completion.chunk", created: 1, model: body.model,
-      choices: [], ...(fixture.structured === "no-call-no-usage" ? {} : { usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 } }) })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } })
+      choices: [], ...(fixture.structured === "no-call-no-usage" ? {} : { usage: fixtureUsage }) })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } })
     return Response.json({ id: "chatcmpl_generation_fixture", object: "chat.completion", created: 1, model: body.model,
       choices: [{ index: 0, message: { role: "assistant", content: "The independent working-note check completed." }, finish_reason: "stop" }],
-      usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 } })
+      usage: fixtureUsage })
   } })
   const config = JSON.parse(await readFile(path.join(original, "dochaus", "opencode.json"), "utf8"))
   config.mcp = {}; config.provider = {}
@@ -186,7 +192,7 @@ test("cold native matter generation uses the selected model/variant and refuses 
     const previous = { url: process.env.OPENCODE_URL, password: process.env.OPENCODE_SERVER_PASSWORD }
     process.env.OPENCODE_URL = base; process.env.OPENCODE_SERVER_PASSWORD = "synthetic-engine-password"
     try {
-      for (const mode of ["missing", "no-call", "no-call-no-usage"]) {
+      for (const mode of ["missing", "no-call", "no-call-no-usage", "no-call-empty-usage", "no-call-input-usage", "no-call-output-usage", "no-call-zero-cost", "no-call-positive-cost"]) {
         fixture.structured = mode
         const before = requests.length
         let refusal: unknown
@@ -203,9 +209,13 @@ test("cold native matter generation uses the selected model/variant and refuses 
     const usageDb = new Database(path.join(matter, ".dochaus", "telemetry.db"), { readonly: true })
     try {
       const failed = usageDb.query("SELECT agent,model,cost_usd,input_tokens,output_tokens FROM generations ORDER BY id").all()
-      expect(failed).toHaveLength(3)
+      expect(failed).toHaveLength(8)
       for (const row of failed.slice(0, 2)) expect(row).toMatchObject({ agent: "prepare-changes", model: "generation-fixture/configured-note", input_tokens: 12, output_tokens: 8, cost_usd: (12 * 2 + 8 * 10) / 1_000_000 })
-      expect(failed[2]).toMatchObject({ cost_usd: null, input_tokens: 0, output_tokens: 0 })
+      for (const row of failed.slice(2, 6)) expect(row).toMatchObject({ cost_usd: null })
+      expect(failed[4]).toMatchObject({ input_tokens: 12, output_tokens: 0 })
+      expect(failed[5]).toMatchObject({ input_tokens: 0, output_tokens: 8 })
+      expect(failed[6]).toMatchObject({ cost_usd: 0 })
+      expect(failed[7]).toMatchObject({ cost_usd: 0.25 })
     } finally { usageDb.close() }
     fixture.structured = "valid"
     fixture.fail = true
