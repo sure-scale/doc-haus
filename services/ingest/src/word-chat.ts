@@ -152,7 +152,7 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
     if (current && turn.status !== "error") {
       if (meta.answerFormat === "segments-v1") {
         turn.answerFormat = "segments-v1"
-        if (turn.status !== "complete") { turn.answer = ""; delete turn.answerParts; turn.sources = [] }
+        if (turn.status !== "complete") { turn.answer = ""; delete turn.answerParts; delete turn.disposition; turn.sources = [] }
         else if (turn.error || turn.answerParts?.filter(part => part.type === "text").map(part => part.text).join("") !== turn.answer) {
           turn.answerParts = turn.answer ? [{type:"text",text:turn.answer}] : []
           turn.sources = []
@@ -161,7 +161,7 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
       return turn
     }
     const stale = { ...turn, status: "error" as const, answer: "", sources: [], ...(!current ? { error: "Supporting material changed. Refresh context and send a new request." } : {}) }
-    delete stale.proposal; delete stale.rowProposal; delete stale.suggestions; delete stale.answerParts
+    delete stale.proposal; delete stale.rowProposal; delete stale.suggestions; delete stale.answerParts; delete stale.disposition
     return stale
   }
   async function readTurn(auth: WordChatAuth, root: string, child: NativeSession): Promise<WordChatTurn> {
@@ -228,7 +228,8 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
             if (second.state === "running") { turn = revised; reviewPending(turn) }
             else if (second.state === "approved") turn = revised
             else { turn = revised; reviewRejected(turn, second.issues) }
-          } else reviewRejected(turn, first.issues, revised.answer)
+          } else if (revised.status === "complete" && revised.disposition === "unsupported") turn = revised
+          else reviewRejected(turn, first.issues, revised.answer)
         }
       } else if (first.state === "rejected") reviewRejected(turn, first.issues)
     }
@@ -310,6 +311,16 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
     }
     if (completed && (!output || !structured && typeof output.answer !== "string" || (meta.suppliedContext ? outcome !== "succeeded" : outcome === "failed" || outcome === "interrupted"))) {
       turn.status = "error"; turn.answer = ""; turn.error = "Chat could not finish this response. Try a new request."; return turn
+    }
+    // A typed limitation is a completed answer, never a proposed mutation.
+    // Bare/legacy no-proposal prose still cannot make completion claims visible.
+    if (output && Object.hasOwn(output, "disposition")) {
+      if (!structured || !completed || !["amendment", "formatting"].includes(meta.kind) || output.disposition !== "unsupported" ||
+        !Object.keys(output).every(key => ["answerParts", "disposition"].includes(key)) || !turn.answer.trim()) {
+        turn.status = "error"; turn.answer = ""; turn.error = "The amendment result could not be verified. Ask again with the requested change."; return turn
+      }
+      turn.disposition = output.disposition
+      return turn
     }
     if ((meta.kind === "amendment" || meta.kind === "formatting") && output?.rowProposal !== undefined) {
       const row = output.rowProposal

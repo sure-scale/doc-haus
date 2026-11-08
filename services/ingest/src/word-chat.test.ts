@@ -808,6 +808,114 @@ test("a completion claim without a proposal is not shown as an applied change", 
   } finally { routerAgent = "qa"; modelRawOutput = undefined }
 })
 
+test("an explicit unsupported amendment preserves verified limitation parts across poll and reload without Apply", async () => {
+  const id = await newConversation()
+  const parts = [{type:"text" as const,text:"This operation is unsupported here. The current wording remains "},
+    {type:"reference" as const,sourceId:"word",quote:context.text},
+    {type:"text" as const,text:". Add the column directly in Word; no change was applied."}]
+  modelStructuredRawOutput = JSON.stringify({disposition:"unsupported",answerParts:parts})
+  try {
+    const result = (await (await post("send",{conversationId:id,scope:"document",text:"Add a table column",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context})).json() as {turn:WordChatTurn}).turn
+    expect(result.status).toBe("complete"); expect(result.error).toBeUndefined()
+    expect(result.disposition).toBe("unsupported"); expect(result.answerParts).toEqual(parts)
+    expect(result.sources.map(source => source.quote)).toEqual([context.text])
+    expect(result.proposal).toBeUndefined(); expect(result.rowProposal).toBeUndefined()
+    expect(reviewSessions(result.id)).toHaveLength(0)
+    expect(JSON.parse(sessionContext(result.id).split("\n").at(-2)!).responseContract).toContain('"disposition":"unsupported"')
+    const polled = (await (await post("poll",{conversationId:id,turnId:result.id})).json() as {turn:WordChatTurn}).turn
+    const reloaded = (await (await post("conversation",{conversationId:id})).json() as {turns:WordChatTurn[]}).turns.find(turn => turn.id === result.id)!
+    for (const turn of [polled,reloaded]) {
+      expect(turn.status).toBe("complete"); expect(turn.error).toBeUndefined()
+      expect(turn.disposition).toBe("unsupported"); expect(turn.answerParts).toEqual(parts)
+      expect(turn.sources).toEqual(result.sources)
+      expect(turn.proposal).toBeUndefined(); expect(turn.rowProposal).toBeUndefined()
+    }
+    expect((await post("prepare",{conversationId:id,turnId:result.id})).status).toBe(409)
+  } finally { modelStructuredRawOutput = undefined }
+})
+
+test("unsupported dispositions reject malformed or conflicting outputs and still verify every reference", async () => {
+  const id = await newConversation(), text = {type:"text",text:"This operation is unsupported; no change was applied."}
+  const request = () => post("send",{conversationId:id,scope:"document",text:"Add a table column",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context})
+  try {
+    for (const output of [
+      {disposition:"completed"}, {disposition:null}, {disposition:{kind:"unsupported"}},
+      {disposition:"unsupported",proposal:{before:context.text,after:context.text.replace("Tuesday","Wednesday"),explanation:"Change",openItems:[]}},
+      {disposition:"unsupported",proposal:null}, {disposition:"unsupported",rowProposal:null},
+      {disposition:"unsupported",formatting:[]}, {disposition:"unsupported",clarificationQuestions:["Which column?"]},
+      {disposition:"unsupported",answerParts:[text,{type:"reference",sourceId:"unknown",quote:context.text}]},
+      {disposition:"unsupported",answerParts:[text,{type:"reference",sourceId:"word",quote:"Invented source words"}]},
+      {disposition:"unsupported",answerParts:[{type:"reference",sourceId:"word",quote:context.text}]},
+    ]) {
+      modelStructuredRawOutput = JSON.stringify({answerParts:[text],...output})
+      const turn = (await (await request()).json() as {turn:WordChatTurn}).turn
+      expect(turn.status).toBe("error"); expect(turn.answer).toBe("")
+      expect(turn.answerParts).toBeUndefined(); expect(turn.sources).toEqual([])
+      expect(turn.disposition).toBeUndefined(); expect(turn.proposal).toBeUndefined(); expect(turn.rowProposal).toBeUndefined()
+    }
+  } finally { modelStructuredRawOutput = undefined }
+})
+
+test("legacy unprepared amendments keep suppressing false completion claims", async () => {
+  const id = await newConversation()
+  modelStructuredRawOutput = JSON.stringify({answerParts:[{type:"text",text:"Added the requested section."}]})
+  try {
+    const result = (await (await post("send",{conversationId:id,scope:"document",text:"Add a section",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context})).json() as {turn:WordChatTurn}).turn
+    const child = sessions.get(result.id)!
+    delete child.metadata.answerFormat
+    const assistant = messages.get(result.id)!.find(message => message.type === "assistant")!
+    for (const extra of [{}, {disposition:"unsupported"}]) {
+      assistant.content = [{type:"text",text:JSON.stringify({answer:"Added the requested section.",citations:[],...extra})}]
+      const turn = (await (await post("poll",{conversationId:id,turnId:result.id})).json() as {turn:WordChatTurn}).turn
+      expect(turn.answer).toBe(""); expect(turn.error).toBeTruthy()
+      expect(turn.proposal).toBeUndefined(); expect(turn.disposition).toBeUndefined()
+    }
+  } finally { modelStructuredRawOutput = undefined }
+})
+
+test("unsupported amendments remain withheld until a successful native terminal", async () => {
+  const id = await newConversation(), output = {disposition:"unsupported",answerParts:[{type:"text" as const,text:"This operation is unsupported; no change was applied."}]}
+  const request = () => post("send",{conversationId:id,scope:"document",text:"Add a table column",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context})
+  modelStructuredRawOutput = JSON.stringify(output)
+  try {
+    for (const outcome of ["failed","interrupted"] as const) {
+      mainOutcome = outcome
+      const turn = (await (await request()).json() as {turn:WordChatTurn}).turn
+      expect(turn.status).toBe("error"); expect(turn.answer).toBe("")
+      expect(turn.answerParts).toBeUndefined(); expect(turn.disposition).toBeUndefined()
+    }
+    mainOutcome = "succeeded"; hold = true
+    const pending = (await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(pending.status).toBe("running"); expect(pending.answerParts).toBeUndefined(); expect(pending.disposition).toBeUndefined()
+    const child = sessions.get(pending.id)!, finished = new Date(Date.now() + 5).toISOString()
+    messages.get(child.id)!.push({id:`msg_unsupported_${next++}`,type:"assistant",content:[{type:"text",text:JSON.stringify(output)}],time:{created:finished,completed:finished}})
+    child.time.idle = finished; child.outcome = "succeeded"
+    const done = (await (await post("poll",{conversationId:id,turnId:pending.id})).json() as {turn:WordChatTurn}).turn
+    expect(done.status).toBe("complete"); expect(done.disposition).toBe("unsupported")
+    expect(done.answerParts).toEqual(output.answerParts); expect(done.proposal).toBeUndefined()
+  } finally { hold = false; mainOutcome = "succeeded"; modelStructuredRawOutput = undefined }
+})
+
+test("a reviewed proposal can be withdrawn into an explicit unsupported result without another Apply candidate", async () => {
+  const id = await newConversation(), parts = [{type:"text" as const,text:"This change cannot be prepared safely within the supported target. No change was applied."}]
+  modelStructuredRawOutput = JSON.stringify({answerParts:[{type:"text",text:"Prepared."}],proposal:{before:context.text,after:context.text.replace("Tuesday","Wednesday"),explanation:"Change",openItems:[]}})
+  engineHook = async (session, tail, method, payload) => {
+    if (tail !== "/prompt" || method !== "POST") return
+    if (session.metadata.type === "word-chat-review") reviewerRawOutput = JSON.stringify({approved:false,issues:["The request requires an unsupported operation."]})
+    else if (String(payload.id).startsWith("msg_word_revision_")) modelStructuredRawOutput = JSON.stringify({disposition:"unsupported",answerParts:parts})
+  }
+  try {
+    const turn = (await (await post("send",{conversationId:id,scope:"document",text:"Make the requested change",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context})).json() as {turn:WordChatTurn}).turn
+    expect(turn.status).toBe("complete"); expect(turn.error).toBeUndefined()
+    expect(turn.disposition).toBe("unsupported"); expect(turn.answerParts).toEqual(parts)
+    expect(turn.proposal).toBeUndefined(); expect(turn.rowProposal).toBeUndefined()
+    expect(reviewSessions(turn.id)).toHaveLength(1); expect(revisionAdmissions(turn.id)).toHaveLength(1)
+    const polled = (await (await post("poll",{conversationId:id,turnId:turn.id})).json() as {turn:WordChatTurn}).turn
+    expect(polled.disposition).toBe("unsupported"); expect(polled.answerParts).toEqual(parts)
+    expect(reviewSessions(turn.id)).toHaveLength(1); expect(revisionAdmissions(turn.id)).toHaveLength(1)
+  } finally { engineHook = undefined; reviewerRawOutput = undefined; modelStructuredRawOutput = undefined }
+})
+
 test("an unprepared amendment can ask a necessary clarification without claiming an edit", async () => {
   const id = await newConversation()
   routerAgent = "redliner"

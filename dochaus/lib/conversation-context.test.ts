@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test"
 import { AMENDMENT_FORMATTING_GUIDANCE, conversationResponseContract, suppliedConversationContext } from "./conversation-context"
 
+test("typed unsupported results are offered only to the structured amendment consumer", () => {
+  expect(conversationResponseContract("amendment", "segments-v1")).toContain('"disposition":"unsupported"')
+  expect(conversationResponseContract("amendment")).not.toContain('"disposition"')
+  for (const kind of ["answer", "review", "suggestions"] as const)
+    expect(conversationResponseContract(kind, "segments-v1")).not.toContain('"disposition"')
+})
+
 function payload(value: string) {
   return JSON.parse(value.split("\n").at(-2)!)
 }
