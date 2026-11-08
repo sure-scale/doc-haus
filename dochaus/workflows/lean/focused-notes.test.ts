@@ -55,9 +55,11 @@ function noteMatter(items: OpenItem[] = []) {
 
 function scriptedSections(answer: (input: { text: string; sessionID: string; initial: string; attempt: number }) => string | Promise<string>,
   coverage: (text: string, initial: string) => string = () => JSON.stringify({ status: "pass", reason: "The synthetic section substantively explains its assigned point." }),
-  lookup: (text: string) => string = () => JSON.stringify({ targets: [], limitation: "This fixture supplies no inspected current target for the point." })) {
+  lookup: (text: string) => string = () => JSON.stringify({ targets: [], limitation: "This fixture supplies no inspected current target for the point." }),
+  inspect: (text: string) => string = () => JSON.stringify({ targets: [], limitation: "This fixture range supplies no additional material evidence." })) {
   const prompts: { text: string; sessionID: string; initial: string; attempt: number }[] = []
   const lookups: string[] = []
+  const inspections: string[] = []
   const sessions: Parameters<StageSessionPort["createSession"]>[0][] = []
   const verifications: string[] = []
   const first = new Map<string, string>()
@@ -67,12 +69,13 @@ function scriptedSections(answer: (input: { text: string; sessionID: string; ini
       if (!first.has(input.sessionID)) first.set(input.sessionID, input.text)
       if (input.agent === NOTES_COVERAGE_AGENT) { verifications.push(input.text); return coverage(input.text, first.get(input.sessionID)!) }
       if (first.get(input.sessionID)!.includes("<current_target_lookup>")) { lookups.push(input.text); return lookup(input.text) }
+      if (first.get(input.sessionID)!.includes("<notes_evidence_inspection>")) { inspections.push(input.text); return inspect(input.text) }
       const call = { text: input.text, sessionID: input.sessionID, initial: first.get(input.sessionID)!, attempt: prompts.filter(row => row.sessionID === input.sessionID).length }
       prompts.push(call)
       return answer(call)
     },
   }
-  return { deps: { sessions: port } as LeanDeps, prompts, lookups, sessions, verifications }
+  return { deps: { sessions: port } as LeanDeps, prompts, lookups, inspections, sessions, verifications }
 }
 
 test("code attaches each full input reference once while prose jobs receive no reference-copying task", () => {
@@ -429,7 +432,7 @@ test("the shipped notes role explicitly permits only the target-link JSON except
   expect(system).toContain("The prose output rules below apply to section-writing jobs")
 })
 
-test("a far-end condition changes the verifier verdict for every early comparison unit, with one reference and reusable parent prose", async () => {
+test("a far-end condition reaches bounded passage writers and the original open-point owner, with one reference and reusable prose", async () => {
   const item: OpenItem = { id: "apply:omission:seal-condition", stage: "apply", kind: "omission", status: "open",
     detail: "Explain the outstanding seal inspection before acceptance.", ref: { document: "d1", pid: "p111111111111" } }
   const directory = noteMatter([item])
@@ -439,13 +442,18 @@ test("a far-end condition changes the verifier verdict for every early compariso
   writeLeanText(directory, "d1/paragraphs.json", JSON.stringify([before]))
   writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([current]))
   const stale = "Acceptance is unconditional."
-  const model = scriptedSections(input => (input.initial.includes("<evidence_unit_scope>") || input.initial.includes("<final_passage>")) && input.attempt === 0
+  const model = scriptedSections(input => (input.initial.includes("<section_kind>\nopen-item\n") || input.initial.includes("<final_passage>")) && input.attempt === 0
     ? stale : "Acceptance remains conditional; the custodian must inspect the seal. The earlier immediate proposal is history, not the current effect.",
     text => JSON.stringify(text.includes(`<proposed_prose>\n${stale}`) && text.includes(condition)
       ? { status: "rewrite", reason: "The complete owning paragraph retains an inspection condition beyond the early focus range." }
-      : { status: "pass", reason: "Current effect and the earlier baseline remain distinct and qualified." }))
+      : { status: "pass", reason: "Current effect and the earlier baseline remain distinct and qualified." }), undefined, text => {
+      const available = JSON.parse(/<available_evidence>\n([\s\S]*?)\n<\/available_evidence>/.exec(text)![1]!) as { document: string; pid: string; baseline: string; start: number; end: number; text: string }[]
+      const excerpts = available.flatMap(span => span.baseline === "initial" ? [{ ...span, role: "target" }] : span.text.includes(condition)
+        ? [{ ...span, start: span.start + span.text.indexOf(condition), end: span.start + span.text.indexOf(condition) + condition.length, role: "qualification" }] : [])
+      return JSON.stringify({ targets: [], excerpts, limitation: excerpts.length ? "" : "This range contains no material inspection condition." })
+    })
   expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
-  const units = model.prompts.filter(input => input.initial.includes("<evidence_unit_scope>") || input.initial.includes("<final_passage>"))
+  const units = model.prompts.filter(input => input.initial.includes("<section_kind>\nopen-item\n") || input.initial.includes("<final_passage>"))
   expect(units.length).toBeGreaterThan(2)
   for (const unit of units) {
     expect(unit.initial).toContain(condition)
@@ -454,6 +462,11 @@ test("a far-end condition changes the verifier verdict for every early compariso
   const negative = model.verifications.filter(text => text.includes(`<proposed_prose>\n${stale}`))
   expect(negative.length).toBeGreaterThan(1)
   expect(negative.every(text => text.includes(condition) && text.includes(before.text))).toBe(true)
+  expect(model.inspections.length).toBeGreaterThan(2)
+  expect(model.inspections.every(text => !text.includes("<assignment>") && !text.includes("Explain this range"))).toBe(true)
+  const owner = model.prompts.filter(input => input.initial.includes("<section_kind>\nopen-item\n"))
+  expect(owner).toHaveLength(2)
+  expect(new Set(owner.map(input => input.sessionID)).size).toBe(1)
   const notes = readLeanText(directory, "drafting-notes.md")!
   expect(notes).not.toContain(stale)
   expect(notes.split(`[ref: ${item.id}]`)).toHaveLength(2)

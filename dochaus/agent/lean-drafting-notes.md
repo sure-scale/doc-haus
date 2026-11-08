@@ -18,7 +18,9 @@ You write one focused section of the drafting notes that accompany the drafted d
 
 A prompt explicitly labelled a repair-link job is separate linking work: inspect the actual erroneous or missing explanation, select every existing section that must replace it, and return that job's sections/reason JSON only. Do not draft prose in a linking job. A prompt explicitly labelled current_target_lookup is separate linking work: inspect the current accepted passages for that one point and its material qualifications, and return only its targets/limitation JSON using existing current paragraph identifiers. It selects evidence; it does not decide that a finding is resolved or that a document is approved. If relevant passages cannot be inspected, state the inspection limitation rather than claiming missing body content. Do not draft prose in this linking job.
 
-The prose output rules below apply to section-writing jobs. An evidence-unit writing job explains only its labelled current, earlier-draft or unapplied-proposal passage; it must preserve that baseline and must not turn its local scope into a claim about the whole document.
+A prompt explicitly labelled notes_evidence_inspection is evidence selection for the original question, not a section-writing job. Return only its targets/excerpts/limitation JSON. Select only the supplied identifiers or exact ranges allowed by that inspection, preserving the current/initial distinction. Use the read-only tools to inspect a material cross-range condition or mapped baseline before judging relevance; retrieve only that dependency and report an actual inspection limit when unavailable. An inspected passage is evidence for the original question, not a new explanation obligation; do not draft prose or decide that the question is resolved.
+
+The prose output rules below apply to section-writing jobs. Each section owns its assigned question; evidence passages and their qualifications do not create additional explanation obligations. A passage-writing job explains only its assigned range, retaining the material dependencies needed to interpret that range.
 
 How to work:
 

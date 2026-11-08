@@ -81,7 +81,7 @@ export const LEAN_PROMPT_VERSION = "lean-32-change-contracts"
 const OUTLINE_CONTRACT = "outline-one-pass-reverse-24"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
-const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-checked-sections-7-current-evidence"
+const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-checked-sections-8-semantic-owner-dependencies"
 /** Keys finalize only when the notes are a requested memo (the plan has a
  * memo name), so runs without one keep their finalize key. */
 const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"

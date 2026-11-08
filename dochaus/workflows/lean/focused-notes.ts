@@ -5,7 +5,8 @@ import { comparisonDescription } from "./comparison"
 import { deliveryArtifactEvidence, requestedMemo } from "./deliverables"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { checkFocusedNotesCoverage } from "./focused-notes-coverage"
-import { checkNotesTargets, currentNotesPids, notesCurrentEvidence, notesEvidenceUnits, NOTES_CURRENT_EVIDENCE_VERSION, type NotesBody } from "./focused-notes-evidence"
+import { resolveFocusedNotesDependency } from "./focused-notes-dependencies"
+import { assembleNotesOwnerEvidence, checkNotesInspection, checkNotesTargets, currentNotesPids, notesCurrentEvidence, notesEvidencePlan, NOTES_CURRENT_EVIDENCE_VERSION, type NotesBody } from "./focused-notes-evidence"
 import { raisedFindings } from "./review-findings"
 import { matterDatesBlock } from "./intake"
 import { readLeanPlan, type DocID } from "./plan"
@@ -21,6 +22,7 @@ import { answeredQuestionsText, delegatedQuestions, hashStageInputs, readLeanJso
 // Actual prose outputs are saved under their content keys. They are the
 // accepted sections themselves, not a second progress or coverage record.
 const NOTES_SECTIONS_CONTRACT = "focused-notes-sections-2-checked-explanation"
+const NOTES_OWNER_CONTRACT = "one-semantic-owner-1-inspected-dependencies"
 const PASSAGE_CHARS = 4_000
 
 export type FocusedNotesInput = {
@@ -294,7 +296,8 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
   const calls = { count: 0, attempts: 0 }
   const stopped: { error?: { cause: unknown } } = {}
   const throwIfStopped = () => { if (stopped.error) throw stopped.error.cause }
-  const sectionFile = (input: FocusedNotesInput) => `notes-sections/${hashStageInputs("finalize", NOTES_SECTIONS_CONTRACT, [...common, { name: "assignment", bytes: json(input) }])}.md`
+  const sectionFile = (input: FocusedNotesInput, owner = false) => `notes-sections/${hashStageInputs("finalize", NOTES_SECTIONS_CONTRACT, [...common,
+    ...(owner ? [{ name: "owner-contract", bytes: NOTES_OWNER_CONTRACT }] : []), { name: "assignment", bytes: json(input) }])}.md`
   // Locate only an unowned current target. The accepted prose remains keyed
   // on its unchanged assignment and the existing complete dependency basis,
   // so recovery can reuse it without repeating this transient lookup.
@@ -392,8 +395,20 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
   await parallel(inputs, async input => {
     if (stopped.error) return
     try {
-      const file = sectionFile(input)
-      const saved = readLeanText(directory, file)
+      const ownerFile = sectionFile(input, true)
+      const legacyFile = sectionFile(input)
+      const legacy = readLeanText(directory, legacyFile)
+      // Old split parents were assembled from passage-writing children without
+      // checking the original question. They are evidence of progress, not a
+      // checked answer to that question. Preserve them, but use the scoped new
+      // content key. Already checked unsplit owners remain reusable unchanged.
+      const legacySplit = input.kind !== "passage" && Boolean(legacy && /^### (?:Current target|Deleted initial) passage/m.test(legacy))
+      let file = ownerFile
+      let saved = readLeanText(directory, file)
+      if (!saved && !legacySplit && !notesEvidencePlan(input.text, { ownership: input.kind === "passage" ? "passage" : "one-point" }).changedScope) {
+        file = legacyFile
+        saved = legacy
+      }
       if (saved && !checkFocusedNotesSection(directory, input, saved, true).length) {
         sections.set(input.id, saved)
         files.push(file)
@@ -401,6 +416,36 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
       }
       const located = await locateCurrentInput(input)
       if (!located) return
+      const evidencePlan = notesEvidencePlan(located.text, { ownership: located.kind === "passage" ? "passage" : "one-point" })
+      const selections: NonNullable<ReturnType<typeof checkNotesInspection>["value"]>[] = []
+      for (const inspection of evidencePlan.inspections) {
+        const step = `${input.id}:inspect:${inspection.id}`
+        const agent = LEAN_STAGE_AGENTS.finalize
+        const sessionID = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent,
+          title: stepSessionTitle(directory, "finalize", step), model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
+        sessions.push(sessionID)
+        progress({ session_id: sessions[0], session_ids: [...sessions] })
+        let issues: string[] = []
+        let selected = false
+        for (let attempt = 0; attempt <= LEAN_MAX_RETRIES; attempt++) {
+          appendLeanEvent(directory, { stage: "finalize", step, event: attempt ? "retry" : "model_call", attempt, session_id: sessionID })
+          const asked = performance.now()
+          const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: attempt
+            ? `Correct only this evidence-selection reply. Keep the original relevance question and return targets/excerpts/limitation JSON, selecting exact available ranges where a complete PID is unavailable.\n${issues.join("\n")}` : inspection.text })
+          const answered = performance.now()
+          const checked = checkNotesInspection(reply, inspection)
+          issues = checked.issues
+          calls.count++
+          calls.attempts = Math.max(calls.attempts, attempt + 1)
+          progress({ calls: calls.count, attempts: calls.attempts, feedback: issues })
+          appendLeanEvent(directory, { stage: "finalize", step, event: "checker", attempt, issues,
+            wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
+          if (checked.value) { selections.push(checked.value); selected = true; break }
+        }
+        if (!selected) { failures.push(`${step}: evidence selection supplied no valid answer: ${issues.join(" ")}`); return }
+      }
+      const writing = evidencePlan.changedScope ? { ...located, text: assembleNotesOwnerEvidence(evidencePlan, selections) } : located
+      if (evidencePlan.changedScope || legacySplit) file = ownerFile
       const writeUnit = async (writing: FocusedNotesInput, unitFile: string): Promise<string | undefined> => {
         const input = writing
         const kept = readLeanText(directory, unitFile)
@@ -410,6 +455,7 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
         sessions.push(sessionID)
         progress({ session_id: sessions[0], session_ids: [...sessions] })
         let feedback: string[] = []
+        const dependencies: string[] = []
         for (let attempt = 0; attempt <= LEAN_MAX_RETRIES; attempt++) {
           appendLeanEvent(directory, { stage: "finalize", step: input.id, event: attempt ? "retry" : "model_call", attempt, session_id: sessionID })
           const asked = performance.now()
@@ -424,17 +470,38 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
           // checks through microtasks and starve native HTTP/timer callbacks.
           await new Promise<void>(resolve => setImmediate(resolve))
           if (!feedback.length) {
-            let verifierCalls = 0
-            const coverage = await checkFocusedNotesCoverage(directory, state, deps, writing, reply, patch => {
-              for (const id of patch.session_ids ?? []) if (!sessions.includes(id)) sessions.push(id)
-              if (patch.calls !== undefined) { calls.count += patch.calls - verifierCalls; verifierCalls = patch.calls }
-              calls.attempts = Math.max(calls.attempts, patch.attempts ?? 0)
-              progress({ ...patch, calls: calls.count, attempts: calls.attempts, session_id: sessions[0], session_ids: [...sessions] })
-            })
-            if (coverage.status === "failed") { failures.push(coverage.reason); return }
-            if (coverage.status === "rewrite") {
-              feedback = [`This prose does not substantively explain its assigned point: ${coverage.reason} Return the complete substantive section; earlier or interrupted text cannot supply missing content.`]
-              progress({ feedback })
+            const documents = readLeanPlan(directory)?.documents ?? []
+            let checking = { ...writing, text: [writing.text, tagged("planned_dependency_documents", escapeTagOpeners(json(documents.map(({ id, title }) => ({ id, title }))))), ...dependencies].join("\n\n") }
+            // Evidence selection is separate from rewriting: inspect one actual
+            // claim, then check the same prose with trusted current passages.
+            // A request or an unanswered inspection is never an accepting verdict.
+            for (let round = 0; ; round++) {
+              let observedCalls = 0
+              const observe = (patch: Partial<LeanStageState>) => {
+                for (const id of patch.session_ids ?? []) if (!sessions.includes(id)) sessions.push(id)
+                if (patch.calls !== undefined) { calls.count += patch.calls - observedCalls; observedCalls = patch.calls }
+                calls.attempts = Math.max(calls.attempts, patch.attempts ?? 0)
+                progress({ ...patch, calls: calls.count, attempts: calls.attempts, session_id: sessions[0], session_ids: [...sessions] })
+              }
+              const coverage = await checkFocusedNotesCoverage(directory, state, deps, checking, reply, observe)
+              if (coverage.status === "failed") { failures.push(coverage.reason); return }
+              if (coverage.status === "pass") break
+              if (coverage.status === "rewrite") {
+                feedback = [`This prose does not substantively explain its assigned point: ${coverage.reason} Return the complete substantive section; earlier or interrupted text cannot supply missing content.`, ...dependencies]
+                progress({ feedback })
+                break
+              }
+              if (round >= LEAN_MAX_RETRIES) {
+                failures.push(`${input.id}: explanation check still needs current evidence after ${LEAN_MAX_RETRIES} focused inspections: ${coverage.reason}`)
+                return
+              }
+              observedCalls = 0
+              const dependency = await resolveFocusedNotesDependency(directory, state, deps, writing, reply, coverage.request,
+                documents.map(document => notesBody(directory, document.id)), observe)
+              if (dependency.status === "failed") { failures.push(`${input.id}: ${dependency.reason}`); return }
+              const evidence = dependency.evidence.map(row => tagged(row.name, escapeTagOpeners(row.text))).join("\n\n")
+              dependencies.push(evidence)
+              checking = { ...checking, text: `${checking.text}\n\n${evidence}` }
             }
           }
           if (!feedback.length) {
@@ -449,17 +516,11 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
         }
         failures.push(`${input.id}: ${feedback.join(" ")}`)
       }
-      // Passage questions already own one bounded range. Full owning-paragraph
-      // evidence interprets that range; splitting it again would reassign it.
-      const units = located.kind === "passage" ? [{ text: located.text, label: "" }] : notesEvidenceUnits(located.text)
-      const accepted: string[] = []
-      for (const [index, unit] of units.entries()) {
-        const writing = units.length === 1 ? located : { ...located, id: `${input.id}:evidence:${index}`, refs: [], items: [], delegatedIDs: [], text: unit.text }
-        const prose = await writeUnit(writing, units.length === 1 ? file : sectionFile(writing))
-        if (prose === undefined) return
-        accepted.push(unit.label ? `### ${unit.label}\n\n${prose}` : prose)
-      }
-      const prose = accepted.join("\n\n")
+      // Inspection children select evidence only. The original point remains
+      // one prose owner and must pass its own substantive coverage check before
+      // it can be cached or receive its once-only reference.
+      const prose = await writeUnit(writing, file)
+      if (prose === undefined) return
       const issues = checkFocusedNotesSection(directory, input, prose, true)
       if (issues.length) { failures.push(`${input.id}: ${issues.join(" ")}`); return }
       if (stageKey() === initial) {

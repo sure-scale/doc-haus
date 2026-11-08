@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { readLeanEvents } from "./events"
-import { checkFocusedNotesCoverage, checkNotesCoverageReply, notesCoveragePrompt, NOTES_CHECK_PERMISSIONS, NOTES_COVERAGE_AGENT } from "./focused-notes-coverage"
+import { checkFocusedNotesCoverage, checkNotesCoverageReply, notesCoveragePrompt, NOTES_CHECK_PERMISSIONS, NOTES_COVERAGE_AGENT, type NotesCoverageVerdict } from "./focused-notes-coverage"
 import { LEAN_MAX_RETRIES, type StageSessionPort } from "./stages"
 import { readLeanState } from "./state"
 import { cleanupMatters, matter } from "./test-support"
@@ -103,4 +103,34 @@ test("verification separates current accepted effects from legitimate initial hi
   expect(prompt).toContain("stale deferred record alone cannot establish")
   expect(prompt).toContain("unavailable current inspection cannot establish document-wide absence")
   expect(prompt).toContain("Citation presence does not establish legal correctness or human approval")
+})
+
+test("a missing current dependency packet requests one bounded inspection rather than a prose rewrite", async () => {
+  const directory = matter()
+  const prose = "The covering note remains subject to the inspection condition in the attached certificate."
+  const request = { document: "d2" as const, claim: "the inspection condition in the attached certificate", question: "What current certificate wording qualifies the inspection condition?" }
+  const needed: NotesCoverageVerdict = { status: "needs-evidence", reason: "The assigned packet does not include the certificate's current condition.", request }
+  expect(checkNotesCoverageReply(JSON.stringify(needed))).toEqual({ value: needed, issues: [] })
+  const model = verifier([JSON.stringify(needed)])
+  expect(await checkFocusedNotesCoverage(directory, readLeanState(directory)!, { sessions: model.port }, { ...assignment, kind: "change" }, prose, () => {})).toEqual(needed)
+  expect(model.prompts).toHaveLength(1)
+  expect(model.sessions[0]!.permissions).toEqual(NOTES_CHECK_PERMISSIONS)
+  expect(model.prompts[0]!.text).toContain(prose)
+})
+
+test("an inspection verdict must name one document and one concrete claim and question", () => {
+  const request = { document: "d2", claim: "the inspection condition", question: "What current wording qualifies this condition?" }
+  for (const broken of [undefined, [], [request], { ...request, document: "../../other" }, { ...request, document: "d0" }, { ...request, claim: " " }, { ...request, question: "" }]) {
+    expect(checkNotesCoverageReply(JSON.stringify({ status: "needs-evidence", reason: "Need the current condition.", request: broken })).value).toBeUndefined()
+  }
+})
+
+test("coverage distinguishes the owned change explanation from a dependency's separately owned human action", () => {
+  const input = { kind: "change" as const, text: "Explain the accepted seal clause change. The separate open-item section owns the custodian's action to supply the missing design; retain its unresolved qualification here." }
+  const prompt = notesCoveragePrompt(input, "The revised seal clause is conditional on the design remaining subject to confirmation.")
+  expect(prompt).toContain("A change explanation owns the change's actual effect")
+  expect(prompt).toContain("Do not duplicate a separately owned human action")
+  expect(prompt).toContain("never treat a missing dependency packet as evidence that the prose is false")
+  const open = notesCoveragePrompt(assignment, proposed)
+  expect(open).toContain("An open-item owner must explain the actual uncertainty, its practical consequence and the required human action")
 })

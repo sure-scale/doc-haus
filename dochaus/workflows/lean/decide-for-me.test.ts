@@ -255,7 +255,7 @@ const INPUTS: Record<string, string> = {
   "d1.changes": "d30eb5ee0a14f6b80c046c34469197ec62e228c858f4c4348010af0a6e410beb",
   "d1.change-review": "3ce900d5fe48a19dbbc77a918877a1791f360120a7631e3c9a219addc9e98e96",
   "d1.apply": "56d08255bf3abd89af535d2ed8d9fab99e55eedaad6e2a14ce5bf2d0dbba69bb",
-  "finalize": "e02f607f81f2e7ce402f16842abb37aeadba20d09fd6d163aea1d07421ca998a",
+  "finalize": "026e7b8730229e661f3493e9268a4b031d2b0af4f71b0199356fff3965c093e7",
   "checklist-check": "8276d20b72411334f034803a1d707e5b5bad9438c545a40143af0fb4efd27560",
   "package-review": "33324cc0d053a0e8393aa94207d8febf58596647ef9c94c8166131e668dceaca",
   "gate": "faff4cf1cb3e89b70403b322dbab69843a7c720003ec46a82a2538608c2f2e2c",
