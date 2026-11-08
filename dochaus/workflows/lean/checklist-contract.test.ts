@@ -1,6 +1,14 @@
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
 import { checklistFindingRecovery, checklistTextMeasuresMeaning, type ChecklistFinding, buildChecklistReinspectionPrompt, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, buildChecklistRefinementPrompt, CHECKLIST_ITEM_SHAPE, parseChecklistCheckerInput, parseChecklistExtraction, parseChecklistFinding, parseChecklistItem, type ChecklistItem } from "./checklist-contract"
 import { markerVerificationIssues, type ChecklistCheckerInput } from "./checklist-contract"
+import { withFactOptions } from "./fact-answers"
+import { writeLeanPlan } from "./plan"
+import { PROVISIONAL_FACT_MARKER_CONTRACT, provisionalFactMarkerItems } from "./provisional-fact-markers"
+import { readQuestions, writeQuestions, type Question } from "./state"
+import { cleanupMatters, matter } from "./test-support"
+
+afterEach(cleanupMatters)
 
 const item: ChecklistItem = {
   check: "Check the proposed notice arrangement remains subject to confirmation.",
@@ -16,6 +24,42 @@ const markerPacket: ChecklistCheckerInput = { ...packet, verification: "provisio
   check: "Verify visible handling of the missing complete storage specification and unknown prior inspection.", basis: "open_question", required_action: "flag",
   source_refs: [{ document: "request", locator: "questions.json answer (q-storage)", question: "Is the complete specification supplied, and was the container inspected?", quote: "No more information is available. Prepare a review draft and disclose what remains unresolved." }],
 } }
+
+test("marker-only dependency means semantic reliance rather than topic overlap, with substantive effects still covered", () => {
+  const prompt = buildChecklistCheckerPrompt(markerPacket)
+  expect(prompt).toContain("Dependency means semantic reliance")
+  expect(prompt).toContain("truth of an assertion")
+  expect(prompt).toContain("operative effect, permission or sufficiency")
+  expect(prompt).toContain("to the reader")
+  expect(prompt).toContain("Mere topic overlap")
+  expect(prompt).toContain("Descriptions, summaries and cross-references have no exemption")
+  expect(prompt).toContain("necessary conditions are exhaustive or sufficient")
+  expect(prompt).toContain("each unresolved component actually relied upon")
+  expect(prompt).toContain("identify the actual dependent assertion or effect and its missing qualification")
+  expect(prompt).toContain("uncertain dependency or inspection scope remains indeterminate")
+  const ordinary = buildChecklistCheckerPrompt(packet)
+  expect(ordinary).not.toContain("Dependency means semantic reliance")
+  const role = readFileSync(new URL("../../agent/lean-checklist-check.md", import.meta.url), "utf8")
+  expect(role).toContain("semantic reliance")
+  expect(role).toContain("topic overlap alone")
+})
+
+test("the current canonical marker item preserves permission and unknowns while defining semantic dependency", () => {
+  const directory = matter("The complete container specification is unavailable.", "Prepare a storage notice.")
+  writeLeanPlan(directory, [{ title: "Storage notice", purpose: "Describe storage handling.", parts: [{ heading: "Storage", scope: "Container identification." }] }])
+  const offered = withFactOptions({ id: "q-container", stage: "intake", kind: "fact", status: "open", question: "Is the complete specification available, and was the container inspected?", context: "The complete specification and prior inspection are unknown." })
+  const question: Question = { ...offered, status: "answered", answer_kind: "option", option_id: "o1", answer: offered.options![0]!.text, fact_status: "provisional" }
+  writeQuestions(directory, [question])
+  const current = provisionalFactMarkerItems(directory)[0]!
+  const qualifications = current.item.qualifications.join("\n")
+  expect(qualifications).toContain("semantic reliance")
+  expect(qualifications).toContain("topic overlap")
+  expect(qualifications).toContain("dependent assertion or effect")
+  expect(current.item.source_refs[0]!.quote).toBe(question.answer!)
+  expect(current.item.source_refs[0]!.question).toBe(question.question)
+  expect(readQuestions(directory)).toEqual([question])
+  expect(PROVISIONAL_FACT_MARKER_CONTRACT).toBe("question-specific-provisional-markers-3-semantic-dependency")
+})
 
 test("product marker verification has a distinct contract without promoting human provenance to a source duty", () => {
   const before = JSON.stringify(markerPacket)

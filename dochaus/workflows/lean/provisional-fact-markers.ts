@@ -3,7 +3,7 @@ import { currentFactDisposition } from "./fact-answers"
 import { readLeanPlan } from "./plan"
 import { readLeanText, readQuestions } from "./state"
 
-export const PROVISIONAL_FACT_MARKER_CONTRACT = "question-specific-provisional-markers-2-product-verification"
+export const PROVISIONAL_FACT_MARKER_CONTRACT = "question-specific-provisional-markers-3-semantic-dependency"
 
 /** The producer cannot opt into a product task by naming a reserved prefix or
  * copying its wording. Reconstruct its current permission, provenance and scope. */
@@ -39,6 +39,7 @@ export function provisionalFactMarkerItems(directory: string, questionID?: strin
           "Current provisional permission allows preparation only. The fact remains unknown; do not answer it, assume its truth, or infer sending, signature or release approval.",
           "This marker requirement is the product's handling rule, not a quotation of a human instruction. The quoted answer and any checked later permission retain their own provenance.",
           "Assess only this question and this document. Inspect all passages that depend on the fact, including conditions and references. A marker for another unknown does not satisfy this check.",
+          "Dependency requires semantic reliance of an assertion or stated/implied effect on the unknown, not topic overlap alone. Summaries, conditions and cross-references remain covered when they rely on it. An adverse omission must identify the dependent assertion or effect and its missing qualification.",
           "Return satisfied with action_status fulfilled, no open marker decisions, and exact visibly marked current body evidence only when every dependent passage is marked. The underlying factual uncertainty is not an open marker decision.",
           "Return not_applicable with action_status not_applicable and no open marker decisions only after inspecting the current document and establishing it contains no passage dependent on this fact. Missing inspection, body evidence or uncertain applicability is indeterminate, not not_applicable.",
         ],
