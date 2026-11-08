@@ -16,13 +16,16 @@ test("drafting start without a profile runs lean; a legacy profile is refused; a
   await mkdir(workspace)
   await mkdir(config)
   await writeFile(path.join(config, "opencode.json"), "{}\n")
-  const sessionCreates: Array<{ directory: string | null; body: { title?: string; metadata?: { dochaus_role?: string } } }> = []
+  const sessionCreates: Array<{ directory: string | null; body: { id: string; title?: string; metadata?: { dochaus_role?: string } } }> = []
   const engine = Bun.serve({ port: 0, async fetch(request) {
     const url = new URL(request.url)
     if (request.method === "POST" && ["/api/session", "/api/dochaus/session"].includes(url.pathname)) {
       const directory = request.headers.get("x-opencode-directory")
-      sessionCreates.push({ directory, body: await request.json() })
-      return Response.json({ data: { id: `ses_stand_in_${sessionCreates.length}`, location: { directory } } })
+      const body = await request.json() as typeof sessionCreates[number]["body"]
+      sessionCreates.push({ directory, body })
+      // The native API preserves the client-minted identity and requested
+      // selection inside its data envelope, before the workflow projection.
+      return Response.json({ data: { ...body, location: { directory } } })
     }
     return new Response("stand-in engine", { status: 503 })
   } })
@@ -52,11 +55,13 @@ test("drafting start without a profile runs lean; a legacy profile is refused; a
     const started = await request(`/matters/${lean.id}/drafting-runs/start`, json(start))
     expect(started.status).toBe(200)
     const body = await started.json() as { profile: string; mode: string; ownerSessionID: string; status: { schema: string; profile: string } }
-    expect(body).toMatchObject({ profile: "lean", mode: "started", ownerSessionID: "ses_stand_in_1", status: { schema: "dochaus.lean.state/2", profile: "lean" } })
+    const ownerSessionID = sessionCreates[0]!.body.id
+    expect(ownerSessionID).toEqual(expect.any(String))
+    expect(body).toMatchObject({ profile: "lean", mode: "started", ownerSessionID, status: { schema: "dochaus.lean.state/2", profile: "lean" } })
     expect(sessionCreates[0]).toMatchObject({ directory: lean.dir, body: { metadata: { dochaus_role: "lean-drafting-owner" } } })
     expect(existsSync(path.join(lean.dir, ".dochaus", "lean", "state.json"))).toBe(true)
     expect(existsSync(path.join(lean.dir, ".dochaus", "lean", "working-draft.md"))).toBe(false)
-    expect(await (await request(`/matters/${lean.id}/drafting-status`)).json()).toMatchObject({ profile: "lean", owner_session_id: "ses_stand_in_1" })
+    expect(await (await request(`/matters/${lean.id}/drafting-status`)).json()).toMatchObject({ profile: "lean", owner_session_id: ownerSessionID })
 
     const other = await createMatter("Named profiles")
     expect(await (await request(`/matters/${other.id}/drafting-status`)).json()).toBeNull()
