@@ -39,7 +39,7 @@ test("a lean matter copied to another folder restores and resumes there and reco
   const resume = scriptedLeanModel({ [LEAN_STAGE_AGENTS.finalize]: happyLeanReplies()[LEAN_STAGE_AGENTS.finalize] })
   const resumed = await runLean(copy, { sessions: resume.port })
   expect(resumed.status).toBe("completed")
-  expect(resume.agents()).toEqual(["lean-checklist-extract", LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS.finalize, LEAN_STAGE_AGENTS["package-review"]])
+  expect(resume.agents()).toEqual([LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS.finalize, LEAN_STAGE_AGENTS["package-review"]])
   expect(readLeanState(copy)?.stages.gate?.status).toBe("done")
   expect(readLeanDocuments(copy)?.status).toBe("completed")
 
