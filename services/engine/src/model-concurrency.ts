@@ -113,7 +113,7 @@ function requestScope(request: LLMRequest) {
 /** Wrap exactly once. In particular the separately built health/test client
  * must be wrapped from its raw instance, not from another wrapped client. */
 export function limitModelClient(client: Context.Service.Shape<typeof LLMClient.Service>, observer?: ModelAdmissionObserver, admission = modelAdmission): Context.Service.Shape<typeof LLMClient.Service> {
-  const observe = (scope: string | undefined) => (error: unknown) => Effect.sync(() => { admission.capacity(scope, error) })
+  const observe = (scope: string | undefined) => (error: AIError) => Effect.sync(() => { admission.capacity(scope, error) })
   const compact: typeof client.compact = ((request: never, options: never) =>
     Effect.scoped(Effect.flatMap(admission.permit(observer, requestScope(request)), () => client.compact(request, options).pipe(Effect.tapError(observe(requestScope(request))))))) as typeof client.compact
   return {
