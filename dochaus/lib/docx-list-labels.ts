@@ -33,7 +33,7 @@ const XML = "http://www.w3.org/XML/1998/namespace"
 const BODY = "word/document.xml"
 const NUMBERING = "word/numbering.xml"
 const STYLES = "word/styles.xml"
-const NUM_PR = /<(?:[\w.-]+:)?numPr[\s/>]/
+const NUM_PR = /<(?:[^\s<>/:]+:)?numPr[\s/>]/
 // Paragraph anchors in the projection (plain, list item, heading); the others
 // are containers (tables, rows, cells, columns, content controls, sections).
 const PARAGRAPHS = new Set(["p", "li", "h"])
@@ -107,20 +107,24 @@ async function bodyParagraphs(buffer: Buffer, bullets: Set<string>) {
 /** A body paragraph carries list numbering directly or through its paragraph
  * style (the default one included) or a style that style is based on. Most
  * Word files ship list styles nobody uses, and the house seed's Subtitle style
- * names a list level without a list. styles.xml runs to hundreds of kilobytes
- * of latent styles, so it is scanned, not parsed: a parse would cost about as
- * much as mammoth's whole read. */
+ * names a list level without a list. Only files with a candidate numPr pay for
+ * XML parsing; the candidate scan never interprets attributes or namespaces. */
 function usesNumbering(body: string, stylesPart?: Uint8Array) {
-  if (NUM_PR.test(body)) return true
   const styles = stylesPart && strFromU8(stylesPart)
+  if (!NUM_PR.test(body) && (!styles || !NUM_PR.test(styles))) return false
+  const paragraphs = Array.from(parse(body).getElementsByTagNameNS(W, "p"))
+  if (paragraphs.some(paragraph => child(child(paragraph, "pPr"), "numPr"))) return true
   if (!styles || !NUM_PR.test(styles)) return false
   const paragraphStyles = new Map<string, { list?: string; basedOn?: string }>()
   let fallback: string | undefined
-  for (const [, , tag = "", content = ""] of styles.matchAll(/<([\w.-]+:)?style\b([^>]*)>([\s\S]*?)<\/\1style>/g)) {
-    const id = attribute(tag, "styleId")
-    if (!id || attribute(tag, "type") !== "paragraph") continue
-    paragraphStyles.set(id, { list: childValue(content, "numId"), basedOn: childValue(content, "basedOn") })
-    if (["1", "true", "on"].includes(attribute(tag, "default") ?? "")) fallback = id
+  for (const style of Array.from(parse(styles).getElementsByTagNameNS(W, "style"))) {
+    const id = style.getAttributeNS(W, "styleId")
+    if (!id || style.getAttributeNS(W, "type") !== "paragraph") continue
+    paragraphStyles.set(id, {
+      list: child(child(child(style, "pPr"), "numPr"), "numId")?.getAttributeNS(W, "val") ?? undefined,
+      basedOn: child(style, "basedOn")?.getAttributeNS(W, "val") ?? undefined,
+    })
+    if (["1", "true", "on"].includes(style.getAttributeNS(W, "default") ?? "")) fallback = id
   }
   const numbered = (id: string | undefined, seen = new Set<string>()): boolean => {
     const style = id === undefined || seen.has(id) ? undefined : paragraphStyles.get(id)
@@ -128,18 +132,15 @@ function usesNumbering(body: string, stylesPart?: Uint8Array) {
     seen.add(id!)
     return style.list ? style.list !== "0" : numbered(style.basedOn, seen)
   }
-  const used = [...body.matchAll(/<(?:[\w.-]+:)?pStyle\b([^>]*)/g)].map(([, tag = ""]) => attribute(tag, "val"))
-  return [...new Set([...used, fallback])].some(id => numbered(id))
+  const used = paragraphs.map(paragraph => child(child(paragraph, "pPr"), "pStyle")?.getAttributeNS(W, "val") || fallback)
+  return [...new Set(used)].some(id => numbered(id))
 }
 
-function attribute(tag: string, name: string) {
-  return new RegExp(`(?:^|\\s)(?:[\\w.-]+:)?${name}="([^"]*)"`).exec(tag)?.[1]
-}
-
-/** The w:val of the first `name` element in `xml`. */
-function childValue(xml: string, name: string) {
-  const tag = new RegExp(`<(?:[\\w.-]+:)?${name}\\b([^>]*)`).exec(xml)?.[1]
-  return tag === undefined ? undefined : attribute(tag, "val")
+/** Only current direct properties, never similarly named foreign elements or
+ * historical properties inside a tracked pPrChange. */
+function child(node: Element | undefined, name: string): Element | undefined {
+  return node && Array.from(node.childNodes).find((value): value is Element =>
+    value.nodeType === 1 && (value as Element).namespaceURI === W && (value as Element).localName === name)
 }
 
 /** Whether some list level numbers rather than bullets (a level without a
@@ -192,5 +193,5 @@ function labelRun(doc: Document, like: Element, label: string) {
 
 function parse(xml: string) {
   const fail = (message: string) => { throw new Error(`invalid_docx_xml:${message}`) }
-  return new DOMParser({ errorHandler: { warning: () => {}, error: () => {}, fatalError: fail } }).parseFromString(xml, "application/xml")
+  return new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(xml, "application/xml")
 }

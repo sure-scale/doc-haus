@@ -84,6 +84,64 @@ test("clauses of the same text keep their own numbers", async () => {
   expect(await labelled(reserved)).toBe("1. Reserved\n\n2. Reserved\n\nRate\n\n2.1 Reserved\n\n2.2 Reserved\n\n3. Fees\n\n")
 })
 
+test("style numbering uses XML quoting, namespace identity and inherited style values", async () => {
+  const styles = `<w:style w:type="paragraph" w:styleId="Clause"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>`
+    + `<w:style w:type="paragraph" w:styleId="Child"><w:basedOn w:val="Clause"/></w:style>`
+  const control = docx(para("Delivery", undefined, "Child"), NUMBERING, styles)
+  expect(await labelled(control)).toBe("1. Delivery\n\n")
+  for (const [part, rewrite] of [
+    ["word/styles.xml", (xml: string) => xml.replaceAll('"', "'")],
+    ["word/styles.xml", (xml: string) => xml.replaceAll("w:", "s:").replace("xmlns:w", "xmlns:s")],
+    ["word/styles.xml", (xml: string) => xml.replaceAll("<w:", "<").replaceAll("</w:", "</").replace("<styles ", `<styles xmlns="http://schemas.openxmlformats.org/wordprocessingml/2006/main" `)],
+    ["word/document.xml", (xml: string) => xml.replace('w:val="Child"', "w:val='Ch&#105;ld'")],
+  ] as const) {
+    const parts = unzipSync(control)
+    parts[part] = strToU8(rewrite(new TextDecoder().decode(parts[part])))
+    expect(await labelled(Buffer.from(zipSync(parts)))).toBe("1. Delivery\n\n")
+  }
+})
+
+test("unused, foreign and historical style numbering does not number ordinary paragraphs", async () => {
+  const styles = `<w:style w:type="paragraph" w:styleId="Unused"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>`
+    + `<w:style w:type="paragraph" w:styleId="Plain"><w:pPr><w:pPrChange><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:pPrChange></w:pPr></w:style>`
+    + `<w:style xmlns:x="urn:foreign" w:type="paragraph" w:styleId="Foreign"><w:pPr><x:numPr><x:numId x:val="1"/></x:numPr></w:pPr></w:style>`
+  for (const style of [undefined, "Plain", "Foreign"]) {
+    const source = docx(para("Delivery", undefined, style), NUMBERING, styles)
+    expect(await writeListLabels(source)).toBe(source)
+  }
+})
+
+test("default paragraph style numbering is inherited, explicit suppression and cycles stay unnumbered", async () => {
+  const source = docx(para("Delivery"), NUMBERING)
+  const parts = unzipSync(source)
+  parts["word/styles.xml"] = strToU8(new TextDecoder().decode(parts["word/styles.xml"])
+    .replace("</w:style>", '<w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>'))
+  expect(await labelled(Buffer.from(zipSync(parts)))).toBe("1. Delivery\n\n")
+  const styles = `<w:style w:type="paragraph" w:styleId="Clause"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>`
+    + `<w:style w:type="paragraph" w:styleId="Plain"><w:basedOn w:val="Clause"/><w:pPr><w:numPr><w:numId w:val="0"/></w:numPr></w:pPr></w:style>`
+    + `<w:style w:type="paragraph" w:styleId="Cycle"><w:basedOn w:val="Cycle"/></w:style>`
+  for (const style of ["Plain", "Cycle"]) {
+    const unnumbered = docx(para("Delivery", undefined, style), NUMBERING, styles)
+    expect(await writeListLabels(unnumbered)).toBe(unnumbered)
+  }
+})
+
+test("malformed candidate styles notify the complete reader instead of silently omitting numbering", async () => {
+  const source = docx(para("Delivery", undefined, "Clause"), NUMBERING,
+    `<w:style w:type="paragraph" w:styleId="Clause"><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>`)
+  const parts = unzipSync(source)
+  parts["word/styles.xml"] = strToU8(new TextDecoder().decode(parts["word/styles.xml"]).replace('w:val="1"', "w:val=1"))
+  const malformed = Buffer.from(zipSync(parts))
+  const warn = spyOn(console, "warn").mockImplementation(() => {})
+  try {
+    let unread = false
+    expect(await writeListLabels(malformed, () => { unread = true }, { complete: true })).toBe(malformed)
+    expect(unread).toBe(true)
+  } finally {
+    warn.mockRestore()
+  }
+})
+
 test("a document without numbered lists is passed through as the same bytes", async () => {
   const plain = docx(para("The Supplier shall deliver the cartons.") + para("The Customer shall pay each invoice."))
   expect(await writeListLabels(plain)).toBe(plain)
