@@ -1,5 +1,7 @@
 import { z } from "zod"
 import { normalize } from "../../lib/quote-verify"
+import { hasOpenItemMarker } from "../../lib/open-items"
+import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 
 const text = z.string().refine(value => value.trim().length > 0, "Expected nonempty text")
 
@@ -100,6 +102,11 @@ export function markerVerificationIssues(input: ChecklistCheckerInput, finding: 
     ...(finding.action_status !== expected ? [`For this product-owned marker task, ${finding.status} must have action_status ${expected}. Assess current marker coverage, not whether a human separately instructed the product's handling rule; an actual missing marker remains unsatisfied.`] : []),
     ...(finding.open_decisions === undefined || finding.open_decisions.length ? ["An affirmative marker verdict requires explicit empty open_decisions. The underlying fact remains unknown and belongs in limitation, not an open marker decision. Preserve any actual unresolved marker or inspection issue with an adverse verdict instead of claiming success or inapplicability."] : []),
     ...(finding.status === "satisfied" && !finding.evidence.some(row => row.kind === "body") ? ["A satisfied marker verdict requires exact visibly marked current body evidence for this question. Notes, comments, prior text and missing inspection cannot establish current marker coverage."] : []),
+    ...(finding.status === "satisfied" ? finding.evidence.flatMap((row, index) => {
+      if (row.kind !== "body") return []
+      const text = normalize(row.text)
+      return hasOpenItemMarker(text) || draftingPlaceholders(text).length ? [] : [`evidence[${index}] at ${JSON.stringify(row.locator)} is unmarked. Each positive body evidence row must be a visibly marked dependent paragraph. Explain inspected nondependent context in reason or inspection_scope; a genuinely unmarked dependent passage remains adverse, never hidden by omitting its quote.`]
+    }) : []),
   ]
 }
 
@@ -231,7 +238,7 @@ function buildProvisionalMarkerCheckerPrompt(input: ChecklistCheckerInput): stri
     "Inspect every current passage in this target that depends on this question's unknown facts, including operative conditions, dependencies and references. For a compound question, retain each unresolved component actually relied upon, without requiring unrelated components. Descriptive or paraphrased markers may identify the same unknown without repeating the full question literally. A marker for a different fact, a notes-only disclosure, a comment or earlier wording does not mark the current body.",
     "Dependency means semantic reliance: the truth of an assertion, or an operative effect, permission or sufficiency it states or implies to the reader, relies on the unknown. Mere topic overlap or an accurate description of another document's existence or conditional content does not alone establish reliance. Descriptions, summaries and cross-references have no exemption when they convey a substantive assertion or effect that relies on the unknown.",
     "Do not infer that stated necessary conditions are exhaustive or sufficient; assess the actual claim. Conditional wording alone creates no exemption. For an adverse missing-marker finding, use reason to identify the actual dependent assertion or effect and its missing qualification; uncertain dependency or inspection scope remains indeterminate.",
-    "Return satisfied with action_status fulfilled and open_decisions [] only when every dependent passage visibly preserves the actual uncertainty. Cite complete exact current marked paragraphs as body evidence. Conditional drafting and open-item text supply no missing fact or approval; an unsupported assertion that the fact is settled cannot be excused by a marker elsewhere. Keep genuine factual uncertainty in limitation; the unknown factual answer is not an unresolved marker decision.",
+    "Return satisfied with action_status fulfilled and open_decisions [] only when every dependent passage visibly preserves the actual uncertainty. Cite complete exact current marked paragraphs as body evidence: each separate body evidence row must itself be visibly marked. Do not concatenate paragraphs or quote only a marked fragment. Explain inspected nondependent context in reason or inspection_scope; a genuinely unmarked dependent passage remains adverse, never hidden by omitting its quote. Conditional drafting and open-item text supply no missing fact or approval; an unsupported assertion that the fact is settled cannot be excused by a marker elsewhere. Keep genuine factual uncertainty in limitation; the unknown factual answer is not an unresolved marker decision.",
     "Return not_applicable with action_status not_applicable and open_decisions [] only after inspecting this current target and establishing that it contains no passage dependent on this question. The fact's unresolved status and the lack of a human per-passage command do not establish inapplicability. Missing inspection or uncertain dependency coverage is indeterminate with the actual gap, never not_applicable. An applicable unmarked dependent passage is unsatisfied with action_status not_fulfilled. An actual unresolved marker decision remains adverse; do not force a pass.",
     "This task verifies the product's handling of the unknown, not substantive source fidelity, legal correctness or a human release decision. Those independent checks remain in force. Preserve the exact question/answer provenance, current body identity and inspection limits; no selected excerpt establishes whole-document coverage by itself.",
     retrieval,

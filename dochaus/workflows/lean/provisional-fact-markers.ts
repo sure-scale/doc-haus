@@ -3,7 +3,7 @@ import { currentFactDisposition } from "./fact-answers"
 import { readLeanPlan } from "./plan"
 import { readLeanText, readQuestions } from "./state"
 
-export const PROVISIONAL_FACT_MARKER_CONTRACT = "question-specific-provisional-markers-3-semantic-dependency"
+export const PROVISIONAL_FACT_MARKER_CONTRACT = "question-specific-provisional-markers-4-positive-evidence"
 
 /** The producer cannot opt into a product task by naming a reserved prefix or
  * copying its wording. Reconstruct its current permission, provenance and scope. */

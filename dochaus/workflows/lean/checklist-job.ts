@@ -51,7 +51,7 @@ export function runChecklistCheckJob(directory: string, deps: ChecklistJobDeps, 
   return runChecklistJob(directory, deps, CHECKLIST_JOB_AGENTS.check, previous ? buildChecklistReinspectionPrompt(input, previous, counterevidence) : buildChecklistCheckerPrompt(input), parseChecklistFinding, value => [
     ...markerVerificationIssues(input, value),
     ...sourceReferenceIssues(directory, value.source_refs, input.settled_instructions, "source_refs"),
-    ...currentEvidenceIssues(directory, value.evidence, input),
+    ...currentEvidenceIssues(directory, value.evidence, input, "evidence", input.verification === "provisional_fact_marker" && value.status === "satisfied"),
     ...(input.item.required_action && (!value.action_status || !value.open_decisions) ? ["Refined-item findings must include action_status and open_decisions, separately from overall status and source applicability."] : []),
     ...(value.item_id !== input.item_id ? [`item_id must equal the supplied ${JSON.stringify(input.item_id)}; do not replace the item identity.`] : []),
     ...(value.deferred_to && input.assignment?.kind !== "target_body" && input.assignment?.kind !== "process_records" ? ["deferred_to is only for a range or process-records assignment that leaves a document-wide property to the document-properties assignment; omit it here."] : []),
@@ -131,8 +131,8 @@ function sourceReferenceIssues(directory: string, refs: ChecklistSourceReference
 /** Output quotations never establish their own authority. Initial caller-owned
  * hints and freshly read native Word records are independent evidence pools;
  * annotations cannot establish operative body wording. */
-function currentEvidenceIssues(directory: string, refs: ChecklistCurrentEvidence[], input: ChecklistCheckerInput, where = "evidence"): string[] {
-  const supplied = (ref: ChecklistCurrentEvidence) => input.current_evidence.some(evidence => suppliedEvidenceContains(evidence, ref))
+function currentEvidenceIssues(directory: string, refs: ChecklistCurrentEvidence[], input: ChecklistCheckerInput, where = "evidence", markerPositive = false): string[] {
+  const supplied = (ref: ChecklistCurrentEvidence) => !(markerPositive && ref.kind === "body") && input.current_evidence.some(evidence => suppliedEvidenceContains(evidence, ref))
   const unresolved = refs.filter(ref => !supplied(ref))
   if (!unresolved.length) return []
   const current = buildChecklistDocumentContext(directory, { item_id: input.item_id, item: input.item }).artifacts.map(artifact => artifact.value)
@@ -147,6 +147,8 @@ function currentEvidenceIssues(directory: string, refs: ChecklistCurrentEvidence
     let texts: string[] = []
     if (records.length === 1) {
       const record = records[0]!
+      if (markerPositive && ref.kind === "body") return needle && record.aliases.includes(input.item.target.document) && record.aliases.includes(ref.document) &&
+        record.paragraphs.some(paragraph => normalize(paragraph.paragraph_text) === needle) ? [] : [`${where}[${index}] must quote one complete normalized current target paragraph, using its planned document identity. Supplied hints, partial quotes and concatenated paragraphs do not establish this positive marker evidence. Retrieve the complete current paragraph; a genuinely unmarked dependent passage remains adverse, never hidden by omitting its quote.`]
       const bodyIdentity = [...record.aliases, record.artifact].includes(ref.document)
       const annotations = (record.annotations ?? []).filter(annotation => record.aliases.includes(ref.document) || annotation.artifact === ref.document)
       if (ref.kind === "body" && bodyIdentity) texts = [record.paragraphs.map(paragraph => paragraph.paragraph_text).join("\n")]

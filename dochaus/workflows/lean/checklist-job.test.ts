@@ -93,6 +93,70 @@ test("contradictory marker verdicts receive bounded correction without being rew
   expect(exhausted.prompts).toHaveLength(LEAN_MAX_RETRIES + 1)
 })
 
+test("unmarked context in a positive marker finding is corrected in the same bounded session, never filtered or auto-passed", async () => {
+  const directory = matter(source.quote)
+  const heading = { document: "draft.docx", locator: "p-heading", text: "Storage attachment", kind: "body" as const }
+  const marked = { ...heading, locator: "p-specification", text: "The specification remains unknown [open item: obtain the specification]." }
+  writeLeanPlan(directory, [{ title: "Arrangement", purpose: "Record arrangement", file: "draft.docx", parts: [{ heading: "Terms", scope: "Terms" }] }])
+  writeLeanBytes(directory, "d1/body-applied.docx", (await renderMarkdownToDocx(`${heading.text}\n\n${marked.text}`)).bytes)
+  acceptApplyForTest(directory)
+  const input: ChecklistCheckerInput = { ...checker, verification: "provisional_fact_marker", item: { ...checker.item, required_action: "flag" }, current_evidence: [heading, marked] }
+  const invalid: ChecklistFinding = { ...finding, status: "satisfied", action_status: "fulfilled", evidence: [heading, marked], open_decisions: [] }
+  const corrected: ChecklistFinding = { ...invalid, evidence: [marked], reason: "The heading was inspected as nondependent context; the dependent paragraph remains visibly marked." }
+  const original = JSON.stringify(invalid)
+  const port = sessionPort([JSON.stringify(invalid), JSON.stringify(corrected)])
+  const result = await runChecklistCheckJob(directory, { sessions: port.sessions, model: null }, input)
+  expect(result.status).toBe("succeeded")
+  expect(result.attempts).toBe(2)
+  expect(port.created).toHaveLength(1)
+  expect(port.prompts[1]!.text).toContain("evidence[0]")
+  expect(port.prompts[1]!.text).toContain("genuinely unmarked dependent passage remains adverse")
+  if (result.status === "succeeded") expect(result.value).toEqual(corrected)
+  expect(JSON.stringify(invalid)).toBe(original)
+  const stubborn = sessionPort(Array.from({ length: LEAN_MAX_RETRIES + 1 }, () => JSON.stringify(invalid)))
+  expect((await runChecklistCheckJob(directory, { sessions: stubborn.sessions, model: null }, input)).status).toBe("failed")
+  expect(stubborn.prompts).toHaveLength(LEAN_MAX_RETRIES + 1)
+  const adverse: ChecklistFinding = { ...invalid, status: "unsatisfied", action_status: "not_fulfilled", reason: "An actual dependent passage remains unmarked." }
+  const negative = sessionPort([JSON.stringify(invalid), JSON.stringify(adverse)])
+  const checked = await runChecklistCheckJob(directory, { sessions: negative.sessions, model: null }, input)
+  expect(checked.status).toBe("succeeded")
+  if (checked.status === "succeeded") expect(checked.value).toEqual(adverse)
+})
+
+test("positive marker evidence requires separate complete current target paragraphs, even when supplied hints repeat a partial or merged quote", async () => {
+  const directory = matter(source.quote)
+  const heading = "Storage attachment"
+  const text = "The specification remains unknown [open item: obtain the specification]."
+  writeLeanPlan(directory, [{ title: "Arrangement", purpose: "Record arrangement", file: "draft.docx", parts: [{ heading: "Terms", scope: "Terms" }] }])
+  writeLeanBytes(directory, "d1/body-applied.docx", (await renderMarkdownToDocx(`${heading}\n\n${text}`)).bytes)
+  acceptApplyForTest(directory)
+  const evidence = { document: "draft.docx", locator: "p-specification", text, kind: "body" as const }
+  const positive: ChecklistFinding = { ...finding, status: "satisfied", action_status: "fulfilled", evidence: [evidence], open_decisions: [] }
+  for (const bad of ["[open item: obtain the specification]", `${heading}\n${text}`]) {
+    const invalid: ChecklistFinding = { ...positive, evidence: [{ ...evidence, text: bad }] }
+    const input: ChecklistCheckerInput = { ...checker, verification: "provisional_fact_marker", item: { ...checker.item, required_action: "flag" }, current_evidence: invalid.evidence }
+    const port = sessionPort([JSON.stringify(invalid), JSON.stringify(positive)])
+    const result = await runChecklistCheckJob(directory, { sessions: port.sessions, model: null }, input)
+    expect(result.status).toBe("succeeded")
+    expect(result.attempts).toBe(2)
+    expect(port.created).toHaveLength(1)
+    expect(port.prompts[1]!.text).toContain("complete normalized current target paragraph")
+    if (result.status === "succeeded") expect(result.value).toEqual(positive)
+    for (const [verification, status, action_status] of [
+      [undefined, "satisfied", "fulfilled"],
+      ["provisional_fact_marker", "not_applicable", "not_applicable"],
+      ["provisional_fact_marker", "unsatisfied", "not_fulfilled"],
+    ] as const) {
+      const unchanged = await runChecklistCheckJob(directory, { sessions: sessionPort([JSON.stringify({ ...invalid, status, action_status })]).sessions, model: null }, { ...input, verification })
+      expect(unchanged.status).toBe("succeeded")
+      expect(unchanged.attempts).toBe(1)
+    }
+  }
+  const input: ChecklistCheckerInput = { ...checker, verification: "provisional_fact_marker", item: { ...checker.item, required_action: "flag" } }
+  const equivalent: ChecklistFinding = { ...positive, evidence: [{ ...evidence, document: "d1", text: text.replaceAll(" ", "\u00a0") }] }
+  expect((await runChecklistCheckJob(directory, { sessions: sessionPort([JSON.stringify(equivalent)]).sessions, model: null }, input)).attempts).toBe(1)
+})
+
 test("a deferral marker is accepted only from range or process-records assignments", async () => {
   const directory = matter(source.quote)
   const marked = JSON.stringify({ ...finding, status: "not_applicable", deferred_to: "document_properties" })

@@ -7,6 +7,7 @@ import { writeLeanPlan } from "./plan"
 import { PROVISIONAL_FACT_MARKER_CONTRACT, provisionalFactMarkerItems } from "./provisional-fact-markers"
 import { readQuestions, writeQuestions, type Question } from "./state"
 import { cleanupMatters, matter } from "./test-support"
+import { paragraphShowsOpenItem } from "./gate"
 
 afterEach(cleanupMatters)
 
@@ -58,7 +59,7 @@ test("the current canonical marker item preserves permission and unknowns while 
   expect(current.item.source_refs[0]!.quote).toBe(question.answer!)
   expect(current.item.source_refs[0]!.question).toBe(question.question)
   expect(readQuestions(directory)).toEqual([question])
-  expect(PROVISIONAL_FACT_MARKER_CONTRACT).toBe("question-specific-provisional-markers-3-semantic-dependency")
+  expect(PROVISIONAL_FACT_MARKER_CONTRACT).toBe("question-specific-provisional-markers-4-positive-evidence")
 })
 
 test("product marker verification has a distinct contract without promoting human provenance to a source duty", () => {
@@ -113,6 +114,33 @@ test("marker contract correction rejects affirmative contradictions while preser
   expect(markerVerificationIssues(markerPacket, adverse)).toEqual([])
   expect(JSON.stringify(adverse)).toBe(before)
   expect(markerVerificationIssues(packet, { ...positive, status: "not_applicable", action_status: "not_applicable", open_decisions: ["Whether the proposal should be adopted."] })).toEqual([])
+})
+
+test("every positive marker body evidence row uses the gate's visible marker predicate", () => {
+  const positive: ChecklistFinding = { item_id: markerPacket.item_id, status: "satisfied", action_status: "fulfilled", reason: "The dependent paragraph retains the unknown.", evidence, source_refs: markerPacket.item.source_refs, inspection_scope: "The current relevant passages.", limitation: "The specification remains unknown.", open_decisions: [] }
+  const heading = { ...evidence[0]!, locator: "p-heading", text: "Storage attachment" }
+  const mixed = { ...positive, evidence: [heading, ...evidence] }
+  const before = JSON.stringify(mixed)
+  const issues = markerVerificationIssues(markerPacket, mixed)
+  expect(issues.length).toBeGreaterThan(0)
+  expect(issues.join("\n")).toContain("evidence[0]")
+  expect(issues.join("\n")).toContain("p-heading")
+  expect(JSON.stringify(mixed)).toBe(before)
+  for (const text of [
+    "[open item: obtain specification]", "[OPEN\u00a0ITEM: obtain specification]", "[open\nitem: obtain specification]",
+    "Specification [TBC]", "Specification [insert complete text]", "Specification ___", "Storage attachment", "The specification is unknown.",
+  ]) {
+    const checked = markerVerificationIssues(markerPacket, { ...positive, evidence: [{ ...evidence[0]!, text }] })
+    expect(checked.length === 0).toBe(paragraphShowsOpenItem(text))
+  }
+  expect(markerVerificationIssues(markerPacket, { ...mixed, status: "not_applicable", action_status: "not_applicable" })).toEqual([])
+  expect(markerVerificationIssues(markerPacket, { ...mixed, status: "unsatisfied", action_status: "not_fulfilled" })).toEqual([])
+  expect(markerVerificationIssues(packet, mixed)).toEqual([])
+  const prompt = buildChecklistCheckerPrompt(markerPacket)
+  expect(prompt).toContain("each separate body evidence row")
+  expect(prompt).toContain("reason or inspection_scope")
+  expect(prompt).toContain("genuinely unmarked dependent passage remains adverse")
+  expect(prompt).toContain("Do not concatenate")
 })
 
 test("producer to consumer preserves exact canonical source meaning", () => {
