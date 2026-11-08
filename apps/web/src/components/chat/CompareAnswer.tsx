@@ -1,5 +1,7 @@
 import { Fragment, useMemo, type ReactNode } from "react"
 import ReactMarkdown from "react-markdown"
+import { unified } from "unified"
+import remarkParse from "remark-parse"
 import type { CompareParams } from "../../api/ingest/compare"
 import { OUTCOME_TAG, hunkPieces } from "../BlacklineViewer"
 import { Redline } from "../redline"
@@ -26,27 +28,58 @@ type Segment = { markdown: string } | { ids: string[]; note: string; source: str
 // own tracked changes.
 const ENTRY = /^ {0,3}(?:[-*+]\s+|\d+[.)]\s+)?(\*\*\s*[CUP]\d+\b[^*]*\*\*.*)$/
 const BLOCK = /^\s*(?:[-*+]\s|\d+[.)]\s|#|\||>)/
+const markdownParser = unified().use(remarkParse)
+type MarkdownBlock = ReturnType<typeof markdownParser.parse>["children"][number]
+
+// Markdown owns the context: only actual bold labels in ordinary paragraphs
+// or top-level list entries can name changes. Code and quoted examples stay
+// on the original Markdown path, with their complete source intact.
+function entryLines(text: string, lines: string[]) {
+  const entries = new Map<number, number>()
+  const paragraph = (node: Extract<MarkdownBlock, { type: "paragraph" }>) => {
+    if (!node.position) return
+    for (const child of node.children) {
+      if (child.type !== "strong" || child.children.some(part => part.type !== "text")) continue
+      const position = child.position
+      if (!position || position.start.line !== position.end.line) continue
+      const line = lines[position.start.line - 1]!, entry = ENTRY.exec(line)
+      if (!entry || line.indexOf(entry[1]!) !== position.start.column - 1) continue
+      entries.set(position.start.line - 1, node.position.end.line - 1)
+    }
+  }
+  for (const node of markdownParser.parse(text).children) {
+    if (node.type === "paragraph") paragraph(node)
+    else if (node.type === "list") for (const item of node.children) {
+      const first = item.children[0]
+      if (first?.type === "paragraph") paragraph(first)
+    }
+  }
+  return entries
+}
 
 export function answerSegments(text: string): Segment[] {
   const out: Segment[] = []
   let markdown: string[] = []
   let entry: string[] | undefined
+  let source: string[] = [], paragraphEnd = -1
+  const lines = text.split("\n"), entries = entryLines(text, lines)
   const close = () => {
     if (entry) {
       const [, bold = "", after = ""] = /^\*\*([^*]*)\*\*(.*)$/.exec(entry[0]!) ?? []
       const note = [after.replace(/^\s*[·:—–-]\s*/, ""), ...entry.slice(1)].join(" ").trim()
-      out.push({ ids: [...new Set(bold.match(/\b[CUP]\d+\b/g))], note, source: entry.join("\n") })
+      out.push({ ids: [...new Set(bold.match(/\b[CUP]\d+\b/g))], note, source: source.join("\n") })
     }
     entry = undefined
   }
-  for (const line of text.split("\n")) {
-    const opens = ENTRY.exec(line)
-    if (opens) {
+  for (const [index, line] of lines.entries()) {
+    const end = entries.get(index), opens = end === undefined ? undefined : ENTRY.exec(line)
+    if (opens && end !== undefined) {
       close()
       if (markdown.length) out.push({ markdown: markdown.join("\n") })
       markdown = []
       entry = [opens[1]!]
-    } else if (entry && line.trim() && !BLOCK.test(line)) entry.push(line.trim())
+      source = [line]; paragraphEnd = end
+    } else if (entry && index <= paragraphEnd && line.trim() && !BLOCK.test(line)) { entry.push(line.trim()); source.push(line) }
     else {
       close()
       markdown.push(line)
