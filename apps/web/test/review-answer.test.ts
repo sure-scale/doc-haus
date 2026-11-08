@@ -62,7 +62,6 @@ test("a clause-sentence heading is cut at a word and keeps its number", () => {
 
 test("literal terminal Source lines cannot acquire retrieved evidence", () => {
   const citation: Citation = { documentName: "Agreement", docPath: "/matter/Agreement", section: "12", excerpt: "Actual clause twelve.", charStart: 0, charEnd: 20 }
-  const searched = { parts: [{ type: "tool", tool: "search-document", state: { status: "completed", metadata: { citations: [citation] } } }] as Part[] }
   for (const raw of [
     "Literal example:\n\n```text\nSource: §12",
     "Literal example:\n\n    Source: §12",
@@ -70,7 +69,7 @@ test("literal terminal Source lines cannot acquire retrieved evidence", () => {
     "- Literal list item\nSource: §12",
     "<div>\nSource: §12",
   ]) {
-    const history = [searched, { parts: [{ type: "text", text: raw }] as Part[] }]
+    const history = [searched(citation), { parts: [{ type: "text", text: raw }] as Part[] }]
     expect(readReviewAnswer(history, { name: "Agreement" })).toEqual({ text: raw, citation: undefined })
     expect(readReviewAnswer(JSON.parse(JSON.stringify(history)), { name: "Agreement" })).toEqual({ text: raw, citation: undefined })
   }
