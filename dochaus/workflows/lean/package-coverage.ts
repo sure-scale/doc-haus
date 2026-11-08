@@ -195,7 +195,7 @@ export function parseCoveragePlacement(reply: string, directory: string, documen
  * job's are verified (listedActIssues), the document a planned id or null, and
  * any excluded_by, with no document, as whole sentences of the
  * lawyer's own words (lawyerSentences) other than the words that direct the
- * act; words that are not are shown the whole sentences of the lawyer's text
+ * act or words that only list file names (onlyFileNames); words that are not are shown the whole sentences of the lawyer's text
  * that contain them (sentencesAround). excluded_by is the only evidence that the
  * package may leave an act's document out, so the same act for the same parties
  * placed both with and without it is retried, never kept twice. A planned
@@ -241,6 +241,9 @@ export function parseCoverage(reply: string, directory: string, documents: Plann
       : overlaps(act.excluded_by, act.quote) ? `${where} gives "excluded_by": "${excerpt(act.excluded_by)}", which overlaps the words that direct this act ("${excerpt(act.quote)}"). ` +
         "\"excluded_by\" cannot be the words that direct the act or a sentence containing them: copy verbatim another whole sentence of the request, one update or one answer " +
         "that leaves this act's document out of this package, or leave \"excluded_by\" out."
+      : onlyFileNames(act.excluded_by) ? `${where} gives "excluded_by": "${excerpt(act.excluded_by)}", which only names files. ` +
+        "A list of files names what is delivered; it does not say that this act's document is not prepared in this package. " +
+        "Copy verbatim the whole sentence of the request, one update or one answer that says so, or leave \"excluded_by\" out."
       : undefined
     if (refused && final) delete act.excluded_by
     else if (refused) issues.push(refused)
@@ -542,6 +545,23 @@ function sentencesAround(directory: string, words: string) {
     return `${there}${listed.slice(0, -1).join(", ")} and ${listed.at(-1)}. `
   }
   return "No one text of the request, the lawyer's updates or answers contains those words exactly as written, capitals included. "
+}
+
+// A file name: a run with no space, quotation mark or bracket ending in "." and
+// an extension of two to five letters or digits, the first a letter.
+const FILE_NAME = /[^\s`'"“”‘’()[\]<>,;:*]+\.\p{L}[\p{L}\p{N}]{1,4}(?![\p{L}\p{N}])/gu
+// Between file names: punctuation, symbols and numbering, with at most one word ("and", "or").
+const LIST_GAP = /^[\s\p{P}\p{S}\p{N}]*(?:\p{L}+[\s\p{P}\p{S}\p{N}]*)?$/u
+const NO_WORD = /^[\s\p{P}\p{S}\p{N}]*$/u
+
+/** Whether `words` only list file names: after any label up to a ":" and
+ * without code or emphasis marks, one or more FILE_NAMEs with no word before
+ * the first or after the last and at most one word between two. Such words
+ * name what is delivered ("Output: `a.docx` and `b.docx`."); they never say
+ * that an act's document is left out of the package. */
+function onlyFileNames(words: string) {
+  const parts = words.replace(/[`*_]/g, "").replace(/^[^:]*:/, "").split(FILE_NAME)
+  return parts.length > 1 && NO_WORD.test(parts[0]!) && NO_WORD.test(parts.at(-1)!) && parts.slice(1, -1).every(gap => LIST_GAP.test(gap))
 }
 
 /** Whether one text contains the other, after the quote checks' normalisation
