@@ -420,7 +420,7 @@ async function commitIngestedDocument(
           flagged: chunk.flagged,
         }),
       )
-      db.run("UPDATE documents SET structure_mask = ? WHERE id = ?", [input.structureMask?.length ? JSON.stringify(input.structureMask) : null, documentId])
+      db.run("UPDATE documents SET structure_mask = ? WHERE id = ?", [JSON.stringify(input.structureMask ?? []), documentId])
       recordSections(db, input.docPath, input.fileName)
       extractStructure(db, input.docPath, input.fileName, input.text, input.structureMask)
       input.updateRegistry?.(db)
@@ -488,7 +488,7 @@ export type ExtractedSourceText = { structureMask?: StructuralMask; text: string
 // text's quality, as ingest indexes it.
 export async function extractSourceText(fileName: string, buffer: Buffer): Promise<ExtractedSourceText> {
   const raw = await extractRawText(fileName, buffer, true)
-  return { ...extractedText(raw.text, raw.facts), ...(raw.mask?.length ? { structureMask: raw.mask } : {}) }
+  return { ...extractedText(raw.text, raw.facts), ...(raw.mask ? { structureMask: raw.mask } : {}) }
 }
 
 // The same for an email already parsed, so one parse serves its text and its
