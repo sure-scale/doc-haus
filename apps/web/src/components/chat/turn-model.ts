@@ -326,7 +326,7 @@ function activityOf(work: Part[], matter: string) {
 // whole reasoning timeline instead of showing only the final answer bubble.
 export function toTurns(
   msgs: {
-    info: { id: string; role: "user" | "assistant"; agent?: string; error?: MessageError; stopped?: boolean }
+    info: { id: string; sessionID?: string; role: "user" | "assistant"; agent?: string; error?: MessageError; stopped?: boolean }
     parts: Part[]
   }[],
   matter: string,

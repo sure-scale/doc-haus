@@ -59,3 +59,27 @@ test("a clause-sentence heading is cut at a word and keeps its number", () => {
   expect(shown).toBe("§5 The Supplier shall deliver the Goods to the…")
   expect(heading.startsWith(shown.slice(0, -1))).toBe(true)
 })
+
+test("literal terminal Source lines cannot acquire retrieved evidence", () => {
+  const citation: Citation = { documentName: "Agreement", docPath: "/matter/Agreement", section: "12", excerpt: "Actual clause twelve.", charStart: 0, charEnd: 20 }
+  const searched = { parts: [{ type: "tool", tool: "search-document", state: { status: "completed", metadata: { citations: [citation] } } }] as Part[] }
+  for (const raw of [
+    "Literal example:\n\n```text\nSource: §12",
+    "Literal example:\n\n    Source: §12",
+    "> Literal quotation\nSource: §12",
+    "- Literal list item\nSource: §12",
+    "<div>\nSource: §12",
+  ]) {
+    const history = [searched, { parts: [{ type: "text", text: raw }] as Part[] }]
+    expect(readReviewAnswer(history, { name: "Agreement" })).toEqual({ text: raw, citation: undefined })
+    expect(readReviewAnswer(JSON.parse(JSON.stringify(history)), { name: "Agreement" })).toEqual({ text: raw, citation: undefined })
+  }
+})
+
+test("a contract source line outside quoted code retains the exact existing citation", () => {
+  const cited = termination("MSA.docx")
+  const raw = "The draft uses `Source: §5` as literal text.\n\n```text\nSource: §12\n```\n\nSource: §Termination"
+  expect(readReviewAnswer([searched(cited), { parts: [{ type: "text", text: raw }] as Part[] }], msa)).toEqual({
+    text: raw.slice(0, raw.lastIndexOf("\nSource:")).trim(), citation: cited,
+  })
+})

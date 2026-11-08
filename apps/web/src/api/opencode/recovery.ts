@@ -1,3 +1,4 @@
+import { isChatRecoveryMessage } from "../../../../../dochaus/lib/chat-recovery-message"
 import { dispatchMatterContinuation } from "../ingest/drafting-run"
 import type { Part } from "../session-view"
 import { boundedRequest, matterClient, type Client } from "./client"
@@ -218,7 +219,9 @@ async function withBrowserLock<T>(name: string, run: () => Promise<T>) {
 
 function markerState(messages: Awaited<ReturnType<typeof getMessages>>, marker: string) {
   const admissions = messages.flatMap((message, index) =>
-    message.info.role === "user" && message.parts.some((part) => part.type === "text" && part.text.includes(marker))
+    message.info.role === "user" && message.parts.some(part => part.type === "text" &&
+      isChatRecoveryMessage({ id: message.info.id, sessionID: message.info.sessionID, text: part.text }) &&
+      part.text.startsWith(marker))
       ? [index]
       : [],
   )
