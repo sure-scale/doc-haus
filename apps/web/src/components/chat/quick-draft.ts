@@ -3,6 +3,8 @@ import type { DraftScope } from "../../api/opencode/routing"
 import { readBrowserValue, writeBrowserValue } from "../../browser-storage"
 import { QUICK_DRAFT } from "../../agents"
 import type { Turn } from "./turn-model"
+import { unified } from "unified"
+import remarkParse from "remark-parse"
 
 // The quick-draft offer (#282): when Auto routes a short drafting request that
 // a quick draft can serve, the lawyer chooses in a native session form. The
@@ -96,8 +98,34 @@ export function withMatterSources(scope: DraftScope | undefined, sources: number
 
 // The quick-draft answer contract (dochaus/agent/quick-draft.md): a "Form:"
 // line, the draft, then "Sources" and "Open items".
-const FORM_LINE = /^[ \t]*[*_]*form[ \t]*:[ \t]*[*_]*[ \t]*(advice letter|advice|letter|agreement|other)[ \t]*[*_]*[ \t]*\.?[ \t]*$/im
-const SOURCES_LINE = /^[ \t]*(?:#{1,6}[ \t]+)?[*_]*sources[*_]*[ \t]*(?::|$)/im
+const FORM_LINE = /^(?:[ \t]*\r?\n)* {0,3}[*_]*form[ \t]*:[ \t]*[*_]*[ \t]*(advice letter|advice|letter|agreement|other)[ \t]*[*_]*[ \t]*\.?[ \t]*(?=\r?\n|$)/i
+const SOURCES_LINE = /^[ \t]*(?:#{1,6}[ \t]+)?[*_]*sources[*_]*[ \t]*(?::|$)/i
+const markdownParser = unified().use(remarkParse)
+type MarkdownTree = ReturnType<typeof markdownParser.parse>
+
+// Contract headings are top-level Markdown blocks. Code examples, quoted
+// source passages and nested lists cannot supply answer metadata.
+function contractLines(text: string, tree: MarkdownTree, pattern: RegExp) {
+  return tree.children.flatMap(node => {
+    const start = node.position?.start.offset
+    if (start === undefined || !["paragraph", "heading"].includes(node.type)) return []
+    const match = pattern.exec(text.slice(start, node.position?.end.offset))
+    return match ? [{ index: start + match.index, length: match[0].length }] : []
+  })
+}
+
+function literalRanges(tree: MarkdownTree) {
+  const ranges: [number, number][] = []
+  const visit = (node: MarkdownTree | MarkdownTree["children"][number]) => {
+    if ((node.type === "code" || node.type === "inlineCode" || node.type === "html") && node.position?.start.offset !== undefined && node.position.end.offset !== undefined)
+      ranges.push([node.position.start.offset, node.position.end.offset])
+    else if ("children" in node) for (const child of node.children) visit(child)
+  }
+  visit(tree)
+  return ranges
+}
+
+const trimBlankLines = (text: string) => text.replace(/^(?:[ \t]*\r?\n)+/, "").replace(/(?:\r?\n[ \t]*)+$/, "")
 // Square brackets in a draft mark something still to fill or confirm; a
 // citation ("[<Document> § <section>]"), a Markdown link and an email address
 // ("Name [name@firm.example]") are not.
@@ -109,28 +137,30 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
  * placeholders left in the draft before its sources, each an open item. */
 export function quickDraftAnswer(answer: string) {
   const match = FORM_LINE.exec(answer)
-  const text = match
-    ? `${answer.slice(0, match.index)}${answer.slice(match.index + match[0].length).replace(/^\s*\n/, "")}`.trim()
-    : answer.trim()
-  const sources = SOURCES_LINE.exec(text)?.index
+  const text = trimBlankLines(match ? answer.slice(match[0].length) : answer)
+  const tree = markdownParser.parse(text)
+  const sources = contractLines(text, tree, SOURCES_LINE)[0]?.index
   const draft = text.slice(0, sources ?? text.length)
+  const literals = literalRanges(tree)
   const placeholders = [
     ...new Set(
       [...draft.matchAll(BRACKETED)]
+        .filter(bracket => !literals.some(([from, to]) => bracket.index >= from && bracket.index < to))
         .filter((bracket) => /[\p{L}_●•]/u.test(bracket[1]!) && !bracket[1]!.includes("§") && !EMAIL.test(bracket[1]!.trim()))
         .map((bracket) => bracket[0]),
     ),
   ]
   // Whether the answer has its own "Open items" list, which then carries the
   // placeholders itself and the chat need not list them again.
-  const listed = [...text.slice(sources ?? 0).matchAll(OPEN_ITEMS_LINE)].length > 0
-  return { form: match?.[1]?.toLowerCase(), text: withOpenItems(text, sources ?? 0, placeholders), placeholders, listed }
+  const heading = contractLines(text, tree, OPEN_ITEMS_LINE).filter(line => line.index >= (sources ?? 0)).at(-1)
+  const listed = Boolean(heading)
+  return { form: match?.[1]?.toLowerCase(), text: withOpenItems(text, heading, placeholders), placeholders, listed }
 }
 
 // The "Open items" heading (after the sources, when the answer has them) and
 // any text on its own line.
-const OPEN_ITEMS_LINE = /^[ \t]*(?:#{1,6}[ \t]+)?[*_]*open items[*_]*[ \t]*:?[*_]*[ \t]*/gim
-const NONE = /^[\s*_-]*(?:none|nil|n\/a|no open items)\b/i
+const OPEN_ITEMS_LINE = /^[ \t]*(?:#{1,6}[ \t]+)?[*_]*open items[*_]*[ \t]*:?[*_]*[ \t]*/i
+const NONE = /^[\s*_-]*(?:none|nil|n\/a|no open items)\b[ \t*_-]*[.!]?(?=[ \t]*(?:\r?\n|$))/i
 
 // The answer's own "Open items" list must agree with the draft: every
 // placeholder left in the draft is listed, and a list that says there are none
@@ -138,17 +168,16 @@ const NONE = /^[\s*_-]*(?:none|nil|n\/a|no open items)\b/i
 // than trusting the model's. An answer with no placeholders, or no list yet (it
 // may still be streaming), is left as written; the chat lists the draft's
 // placeholders itself once the answer settles.
-function withOpenItems(text: string, from: number, placeholders: string[]) {
+function withOpenItems(text: string, heading: { index: number; length: number } | undefined, placeholders: string[]) {
   if (!placeholders.length) return text
-  const heading = [...text.slice(from).matchAll(OPEN_ITEMS_LINE)].at(-1)
   if (!heading) return text
-  const at = from + heading.index + heading[0].length
+  const at = heading.index + heading.length
   const listed = text.slice(at)
-  const none = NONE.test(listed)
+  const none = NONE.exec(listed)
   const missing = none ? placeholders : placeholders.filter((item) => !listed.toLowerCase().includes(item.toLowerCase()))
   if (!missing.length) return text
   const items = missing.map((item) => `- ${item}`).join("\n")
-  const kept = none ? "" : listed.trim()
+  const kept = (none ? listed.slice(none[0].length) : listed).trim()
   return `${text.slice(0, at).trimEnd()}\n${kept ? `${kept}\n` : ""}${items}`
 }
 

@@ -241,6 +241,39 @@ describe("upgrade", () => {
 describe("quick answer", () => {
   const LEGENDS = { agreementLegend: "Subject to contract", adviceLegend: "Privileged & confidential" }
 
+  test("form metadata is only the opening contract line, never a quoted code example", () => {
+    for (const block of ["```text\nForm: advice\n```", "    Form: advice", "> Form: advice"]) {
+      const text = `Explain this literal example:\n\n${block}\n\nThe form above is sample text.`
+      expect(quickDraftAnswer(text).form).toBeUndefined()
+      expect(quickDraftAnswer(text).text).toBe(text)
+    }
+  })
+
+  test("correcting a None declaration preserves later material qualifications", () => {
+    const draft = "Dear [Recipient],\n\nDraft text.\n\nSources:\n- Supplied terms.\n\nOpen items: None.\n\nDo not send until the missing exhibit is checked."
+    const result = quickDraftAnswer(draft)
+    expect(result.text).toContain("Do not send until the missing exhibit is checked.")
+    expect(result.text).toContain("- [Recipient]")
+    expect(result.text).not.toContain("Open items: None")
+    expect(quickDraftAnswer(draft.replace("None.", "None — do not send before checking the exhibit.")).text)
+      .toContain("do not send before checking the exhibit.")
+  })
+
+  test("literal source and open-item headings in code cannot alter the draft contract", () => {
+    const text = "Dear [Recipient],\n\n```text\nSources:\nOpen items: None.\n```\n\nPlease check [Exhibit]."
+    const result = quickDraftAnswer(text)
+    expect(result.text).toBe(text)
+    expect(result.placeholders).toEqual(["[Recipient]", "[Exhibit]"])
+    expect(result.listed).toBe(false)
+  })
+
+  test("brackets in code are literal text, not draft placeholders", () => {
+    const result = quickDraftAnswer("Dear [Recipient],\n\n`[code]`\n\n```text\n[Example]\n```\n\nSources:\n- Supplied terms.\n\nOpen items: None.")
+    expect(result.placeholders).toEqual(["[Recipient]"])
+    expect(result.text).toContain("`[code]`")
+    expect(result.text).toContain("[Example]")
+  })
+
   test("its form line picks the firm's legend, as a rendered document's form does; the line is not draft text", () => {
     for (const line of ["Form: advice letter", "**Form:** advice letter", "**Form: Advice letter**"]) {
       const answer = quickDraftAnswer(`${line}\n\nDear client,\n\nBoth invoices remain unpaid.`)
