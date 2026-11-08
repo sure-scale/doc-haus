@@ -6,6 +6,7 @@ import { canonicalArtifactIdentity } from "../../capabilities/artifacts/mutation
 import { buildCombinedFile } from "../../lib/combined-docx"
 import { readDocxCommentParagraphs, readDocxRevisionProperties } from "../../lib/docx-comments"
 import { withParagraphPointers } from "../../lib/drafting-amendment"
+import { citationSources, readerCitationsInDocx, type CitedSource } from "./reader-citations"
 import { sha256File } from "../../lib/lineage"
 import { safeFileName } from "../../lib/safe-file-name"
 import { ownedDeliverable, readSystemDocx, replaceableDeliverable } from "../../lib/system-docx"
@@ -207,14 +208,20 @@ export async function recordLeanDocuments(directory: string, deps: LeanDeps, reg
     const kept = register && item.kind === "body" && item.document && item.name !== null ? acceptedRevisionName(directory, item.name, priorRow(item)) : undefined
     return kept ? [[item.document!, kept] as const] : []
   }))
+  let sources: CitedSource | undefined
+  const cited = () => sources ??= citationSources(directory)
   for (const item of items) {
     const source = readFileSync(leanFile(directory, item.file))
     const clean = item.document ? leanFile(directory, `${item.document}/body-applied.docx`) : undefined
     // Normalize legacy generated copies before their delivery identity is read.
     // Publication must not silently give the registry different bytes/hash.
-    const bytes = register && item.name !== null ? withParagraphPointers(source,
+    const normal = register && item.name !== null ? withParagraphPointers(source,
       item.kind === "redline" && clean && existsSync(clean) ? readFileSync(clean) : undefined) : source
-    if (bytes !== source) writeLeanBytes(directory, item.file, bytes)
+    if (normal !== source) writeLeanBytes(directory, item.file, normal)
+    // The delivered copy cites its sources in reader form (readerCitationsInDocx).
+    // The run's copy keeps the markers the checks read and the later stages
+    // hash, so a resume after delivery finds every input unchanged.
+    const bytes = register && item.name !== null ? readerCitationsInDocx(normal, cited()) : normal
     const sha256 = createHash("sha256").update(bytes).digest("hex")
     const prior = priorRow(item)
     const body = item.kind === "redline" && item.document ? keptBodies.get(item.document) : undefined

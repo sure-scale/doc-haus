@@ -419,10 +419,7 @@ export async function runDraftStage(
     drafted.push(value)
     writeLeanText(directory, `${document}/draft-in-progress.md`, assembleDraft(plan, drafted, false))
   }
-  const letter = isLetter(plan.form)
-  const presentation = letter || plan.parts.some(part => part.display_heading !== undefined || part.instrument)
-    ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: printedDisplayHeading(plan, part, text), part })), ...(letter ? { title: false as const } : {}) }
-    : undefined
+  const presentation = draftPresentation(plan, drafted)
   const accepted = await acceptStageReply(directory, step, assembleDraft(plan, drafted), { presentation })
   if (accepted.issues.length) return failed("assembled document", accepted.issues)
   // A part label the Word body could not place (presentDraft) leaves the part
@@ -601,6 +598,16 @@ function printedDisplayHeading(outline: DraftOutline, index: number, text: strin
 function titleAbove(outline: DraftOutline, index: number) {
   const instrument = outline.parts[index]?.instrument
   return instrument ? instrument.title : index === 0 && !isLetter(outline.form) ? outline.title : undefined
+}
+
+/** How the draft stage presents the drafted parts in the Word body, when any
+ * part prints other than its label: each part's label and the heading it
+ * prints in its place (printedDisplayHeading). */
+export function draftPresentation(plan: DraftOutline, drafted: string[]) {
+  const letter = isLetter(plan.form)
+  return letter || plan.parts.some(part => part.display_heading !== undefined || part.instrument)
+    ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: printedDisplayHeading(plan, part, text), part })), ...(letter ? { title: false as const } : {}) }
+    : undefined
 }
 
 /** The draft from its parts. With `presentation`, each part label gives way to
