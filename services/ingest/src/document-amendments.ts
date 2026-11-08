@@ -1,3 +1,4 @@
+import { DOCUMENT_AMENDMENT_LEGAL_OUTPUT, decodeDocumentAmendmentLegal } from "../../../dochaus/lib/document-amendment-legal-contract"
 import { Hono } from "hono"
 import path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
@@ -33,7 +34,7 @@ import { firmPracticeAreaContext } from "../../../dochaus/lib/practice-areas"
 import { workspaceRoot } from "./matter"
 
 // Each stateless call records its usage in the matter's ledger.
-const generate = (directory: string, prompt: string, signal?: AbortSignal) => generateFor(PREPARE_CHANGES_AGENT, directory, prompt, signal)
+const generate = (directory: string, prompt: string, signal?: AbortSignal, outputContract?: typeof DOCUMENT_AMENDMENT_LEGAL_OUTPUT) => generateFor(PREPARE_CHANGES_AGENT, directory, prompt, signal, outputContract)
 
 export class DocumentAmendmentConflictError extends Error {}
 
@@ -159,7 +160,7 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   const areas = firmPracticeAreaContext(workspaceRoot())
   const legalPrompt = areas ? `${firstPrompt}\n\n${areas}` : firstPrompt
   diagnostic.record("legal_generation",{first_prompt:legalPrompt})
-  const first = await generate(directory,legalPrompt)
+  const first = await generate(directory,legalPrompt,undefined,DOCUMENT_AMENDMENT_LEGAL_OUTPUT)
   diagnostic.record("legal_parse",{first_text:first.text,first_pass:pass(first)})
   const parsed = parseLegal(first.text)
   const structuralCount = parsed.table_rows.length+parsed.table_row_deletions.length+parsed.paragraph_insertions.length
@@ -749,6 +750,9 @@ function parseLegal(text:string) {
       throw new DocumentAmendmentConflictError("Provide one complete paragraph and an absolute spacing after from 0 to 48 points in twentieth-point steps.")
     return {kind:"paragraph_spacing_after",paragraph_text:row.paragraph_text,spacing_after_points:row.spacing_after_points,target_context:row.target_context,reason}
   })
+  // The shared transport schema never repairs or defaults missing fields. Keep
+  // writer-specific exact-text/eligibility checks above as the final authority.
+  try { decodeDocumentAmendmentLegal(value) } catch { throw new DocumentAmendmentConflictError("The legal pass did not return a bounded amendment list.") }
   return {amendments,open_items:value.open_items as string[],table_rows,table_row_deletions,paragraph_formats,paragraph_insertions}
 }
 function literalCells(value:unknown):value is string[] {

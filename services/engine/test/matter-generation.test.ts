@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test"
+import { Database } from "bun:sqlite"
+import { EngineGenerationError, generateFor } from "../../ingest/src/engine-generate"
+import { DOCUMENT_AMENDMENT_LEGAL_OUTPUT } from "../../../dochaus/lib/document-amendment-legal-contract"
 import { cp, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -27,8 +30,8 @@ test("cold native matter generation uses the selected model/variant and refuses 
   await symlink(path.join(original, "dochaus", "plugin", "legal-v2.ts"), path.join(repository, "dochaus", "plugin", "legal-v2.ts"))
   await symlink(path.join(original, "dochaus", "plugin", "research-mcp.ts"), path.join(repository, "dochaus", "plugin", "research-mcp.ts"))
   const requests: { model: string; stream?: boolean; messages: { role: string; content: unknown }[];
-    temperature?: number; max_tokens?: number; max_completion_tokens?: number; headers: { variant: string | null; session: string | null } }[] = []
-  const fixture = { fail: false, healthStatus: 0 }
+    temperature?: number; max_tokens?: number; max_completion_tokens?: number; tools?: Array<{ function?: { name?: string; parameters?: { required?: string[] } } }>; tool_choice?: unknown; headers: { variant: string | null; session: string | null } }[] = []
+  const fixture = { fail: false, healthStatus: 0, structured: "valid" }
   const provider = Bun.serve({ port: 0, async fetch(request) {
     if (new URL(request.url).pathname !== "/v1/chat/completions") return Response.json({ error: { message: "Unexpected fixture route" } }, { status: 404 })
     const body = await request.json()
@@ -36,11 +39,18 @@ test("cold native matter generation uses the selected model/variant and refuses 
     if (fixture.healthStatus) return Response.json({ error: { message: fixture.healthStatus === 401
       ? "Synthetic API key has expired: synthetic-private-value" : "Account credits expired; authentication allowance exceeded" } }, { status: fixture.healthStatus })
     if (fixture.fail) return Response.json({ error: { message: "Synthetic model refusal", type: "invalid_request_error", code: "model_unavailable" } }, { status: 400 })
+    if (body.tools && !fixture.structured.startsWith("no-call")) {
+      const value = { amendments: [{ before_quote: "30 days", replacement: "45 days", target_context: "Delivery paragraph", reason: "Requested wording." }],
+        ...(fixture.structured === "missing" ? {} : { open_items: [] }) }
+      return new Response(`data: ${JSON.stringify({ id: "chatcmpl_legal_fixture", object: "chat.completion.chunk", created: 1, model: body.model,
+        choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "call_legal", type: "function", function: { name: "generate_object", arguments: JSON.stringify(value) } }] }, finish_reason: "tool_calls" }] })}\n\ndata: ${JSON.stringify({ id: "chatcmpl_legal_fixture", object: "chat.completion.chunk", created: 1, model: body.model,
+        choices: [], ...(fixture.structured === "no-call-no-usage" ? {} : { usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 } }) })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } })
+    }
     // Generate.text returns one string, but native LLM.generate collects a
     // provider stream. Support both protocol modes without changing the engine.
     if (body.stream) return new Response(`data: ${JSON.stringify({ id: "chatcmpl_generation_fixture", object: "chat.completion.chunk", created: 1, model: body.model,
       choices: [{ index: 0, delta: { role: "assistant", content: "The independent working-note check completed." }, finish_reason: "stop" }] })}\n\ndata: ${JSON.stringify({ id: "chatcmpl_generation_fixture", object: "chat.completion.chunk", created: 1, model: body.model,
-      choices: [], usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 } })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } })
+      choices: [], ...(fixture.structured === "no-call-no-usage" ? {} : { usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 } }) })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } })
     return Response.json({ id: "chatcmpl_generation_fixture", object: "chat.completion", created: 1, model: body.model,
       choices: [{ index: 0, message: { role: "assistant", content: "The independent working-note check completed." }, finish_reason: "stop" }],
       usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 } })
@@ -126,6 +136,7 @@ test("cold native matter generation uses the selected model/variant and refuses 
       { name: "blank prompt", body: { prompt: " " }, status: 400 },
       { name: "oversized prompt", body: { prompt: "x".repeat(1_048_577) }, status: 400 },
       { name: "invalid prompt type", body: { prompt: 7 }, status: 400 },
+      { name: "unknown output contract", body: { prompt: "Unsupported schema", outputContract: "arbitrary-schema" }, status: 400 },
       { name: "caller model override", body: { prompt: "Do not substitute the configured model", model: { providerID: "generation-fixture", id: "alternate-note" } }, status: 400 },
     ]
     const refusals = [] as { name: string; status: number; expected: number }[]
@@ -167,6 +178,36 @@ test("cold native matter generation uses the selected model/variant and refuses 
     expect(await (await testConnection({ providerID: "generation-fixture", modelID: "unavailable-note", force: true })).json()).toMatchObject({ kind: "model" })
     expect(requests).toHaveLength(beforeUnknown)
     fixture.healthStatus = 0
+    const legal = await request({ prompt: "Prepare the focused synthetic amendment.", outputContract: DOCUMENT_AMENDMENT_LEGAL_OUTPUT })
+    expect(legal.status).toBe(200)
+    expect(JSON.parse((await legal.json()).data.text)).toEqual({ amendments: [{ before_quote: "30 days", replacement: "45 days", target_context: "Delivery paragraph", reason: "Requested wording." }], open_items: [] })
+    expect(requests.at(-1)?.tool_choice).toEqual({ type: "function", function: { name: "generate_object" } })
+    expect(requests.at(-1)?.tools?.[0]?.function?.parameters?.required).toEqual(["amendments", "open_items"])
+    const previous = { url: process.env.OPENCODE_URL, password: process.env.OPENCODE_SERVER_PASSWORD }
+    process.env.OPENCODE_URL = base; process.env.OPENCODE_SERVER_PASSWORD = "synthetic-engine-password"
+    try {
+      for (const mode of ["missing", "no-call", "no-call-no-usage"]) {
+        fixture.structured = mode
+        const before = requests.length
+        let refusal: unknown
+        try { await generateFor("prepare-changes", matter, "Prepare the focused synthetic amendment.", undefined, DOCUMENT_AMENDMENT_LEGAL_OUTPUT) }
+        catch (error) { refusal = error }
+        expect(refusal).toBeInstanceOf(EngineGenerationError)
+        expect((refusal as Error).message).toContain("HTTP 422")
+        expect(requests.length - before).toBe(1) // Schema failure is never a provider retry.
+      }
+    } finally {
+      if (previous.url === undefined) delete process.env.OPENCODE_URL; else process.env.OPENCODE_URL = previous.url
+      if (previous.password === undefined) delete process.env.OPENCODE_SERVER_PASSWORD; else process.env.OPENCODE_SERVER_PASSWORD = previous.password
+    }
+    const usageDb = new Database(path.join(matter, ".dochaus", "telemetry.db"), { readonly: true })
+    try {
+      const failed = usageDb.query("SELECT agent,model,cost_usd,input_tokens,output_tokens FROM generations ORDER BY id").all()
+      expect(failed).toHaveLength(3)
+      for (const row of failed.slice(0, 2)) expect(row).toMatchObject({ agent: "prepare-changes", model: "generation-fixture/configured-note", input_tokens: 12, output_tokens: 8, cost_usd: (12 * 2 + 8 * 10) / 1_000_000 })
+      expect(failed[2]).toMatchObject({ cost_usd: null, input_tokens: 0, output_tokens: 0 })
+    } finally { usageDb.close() }
+    fixture.structured = "valid"
     fixture.fail = true
     expect((await request({ prompt: "Exercise a configured provider refusal." })).status).toBe(503)
     expect(requests.every(request => request.model === "configured-note")).toBe(true)
