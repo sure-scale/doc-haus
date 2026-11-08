@@ -1,3 +1,5 @@
+import { unified } from "unified"
+import remarkParse from "remark-parse"
 import type { Citation } from "./opencode/parts"
 import type { Part } from "./session-view"
 
@@ -47,12 +49,24 @@ export function readReviewAnswer(messages: Array<{ parts: Part[] }>, row: Review
   return { text, citation: identities.size === 1 ? identities.values().next().value : undefined }
 }
 
-// The final answer text and its raw `Source:` label (as written, `§` kept).
+const sourceParser = unified().use(remarkParse)
+
+// The extraction contract ends with a plain Source line. Code, quoted material,
+// lists and HTML remain answer data even when their last line looks identical.
+// Keep legacy contract text intact; the caller still resolves only a unique
+// passage from this row's own document, never a model-provided location.
 export function readAnswerText(messages: Array<{ parts: Part[] }>) {
   const final = messages.findLast(message => message.parts.some(part => part.type === "text" && part.text.trim()))
   const raw = (final?.parts ?? []).filter(part => part.type === "text").map(part => part.text).join("").trim()
   const source = raw.match(/\n\s*Source:\s*(.+?)\s*$/i)
-  return { text: source ? raw.slice(0, source.index).trim() : raw, source: source?.[1]?.trim() }
+  if (!source) return { text: raw, source: undefined }
+  const start = source.index! + source[0].toLowerCase().indexOf("source:")
+  const last = sourceParser.parse(raw).children.at(-1)
+  const plain = last?.type === "paragraph" && last.children.some(child =>
+    child.type === "text" && child.position?.start.offset !== undefined && child.position.end.offset !== undefined &&
+    child.position.start.offset <= start && child.position.end.offset >= raw.length,
+  )
+  return plain ? { text: raw.slice(0, source.index).trim(), source: source[1]?.trim() } : { text: raw, source: undefined }
 }
 
 // Every passage the extraction's search-document calls returned.
