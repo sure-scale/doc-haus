@@ -39,7 +39,7 @@ describe("the matter's dates", () => {
     }
     // Every independent explanation has the controlling frozen dates, including
     // operative dates whose periods must not be computed from the system clock.
-    const notes = promptsOf(model, AGENT.finalize)
+    const notes = [...promptsOf(model, AGENT.finalize), ...promptsOf(model, AGENT.notesEvidence)]
     expect(notes.length).toBeGreaterThan(1)
     const linking = notes.filter(prompt => prompt.includes("<current_target_lookup>"))
     const prose = notes.filter(prompt => prompt.includes("<section_kind>"))

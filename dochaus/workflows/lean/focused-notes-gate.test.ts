@@ -34,15 +34,15 @@ for (const passes of [true, false]) test(`saved finalize failure uses scoped wri
   let inspections = 0
   let resumedWrites = 0
   const model = scriptedModel({ ...happyPath,
+    [AGENT.notesEvidence]: () => {
+      inspections++
+      const target = readParagraphs(directory, "d1", "paragraphs-applied.json").find(row => row.text === payment)!
+      expect(target).toBeDefined()
+      return JSON.stringify({ targets: [{ document: "d1", pids: [target.pid] }], limitation: "Only the selected payment paragraph and its nearby qualifications were inspected; this is not an exhaustive document-wide absence check." })
+    },
     [AGENT.finalize]: (text, index, sessionID) => {
       if (!first.has(sessionID!)) first.set(sessionID!, text)
       const assignment = first.get(sessionID!)!
-      if (assignment.includes("<evidence_request>")) {
-        inspections++
-        const target = readParagraphs(directory, "d1", "paragraphs-applied.json").find(row => row.text === payment)!
-        expect(target).toBeDefined()
-        return JSON.stringify({ targets: [{ document: "d1", pids: [target.pid] }], limitation: "Only the selected payment paragraph and its nearby qualifications were inspected; this is not an exhaustive document-wide absence check." })
-      }
       if (assignment.includes("<section_kind>\nchange\n")) {
         ownerWrites.push(text)
         if (phase === "initial") return "The change has been completed."

@@ -127,6 +127,8 @@ export const LEAN_STAGE_AGENTS = {
   finalize: "lean-drafting-notes",
   // One tool-denied verification job per proposed notes section, before prose is accepted and its references attached.
   notesCheck: "lean-notes-check",
+  // Read-only evidence selections are separate from the notes prose owner.
+  notesEvidence: "lean-notes-evidence",
   // A job of the outline, not a stage: it places each act the act record lists in the planned document that carries it.
   coverage: "lean-coverage",
   // A job of the outline, not a stage: one per spine entry, it says whether the entry binds some part's text or the package.

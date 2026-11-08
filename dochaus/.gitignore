@@ -42,6 +42,7 @@ agent/*.md
 !agent/lean-files.md
 !agent/lean-instructions.md
 !agent/lean-intake.md
+!agent/lean-notes-evidence.md
 !agent/lean-package-review.md
 !agent/lean-placement.md
 !agent/lean-reader-check.md

@@ -34,7 +34,7 @@ const TOOLS = [
 ]
 
 test("each lean stage agent loads as a hidden subagent whose own rules allow only the coordinator's read tools", () => {
-  expect(agents.toSorted()).toEqual(["lean-act-record", "lean-advise", "lean-answer", "lean-answer-reconcile", "lean-change-plan", "lean-change-prepare", "lean-change-review", "lean-changes", "lean-coverage", "lean-discrepancy", "lean-draft", "lean-drafting-notes", "lean-files", "lean-instructions", "lean-intake", "lean-package-review", "lean-placement", "lean-research-review", "lean-review", "lean-review-client-disadvantage", "lean-review-independent", "lean-review-playbook", "lean-review-wording", "lean-spine", "lean-spine-absence-verify", "lean-spine-level"])
+  expect(agents.toSorted()).toEqual(["lean-act-record", "lean-advise", "lean-answer", "lean-answer-reconcile", "lean-change-plan", "lean-change-prepare", "lean-change-review", "lean-changes", "lean-coverage", "lean-discrepancy", "lean-draft", "lean-drafting-notes", "lean-files", "lean-instructions", "lean-intake", "lean-notes-evidence", "lean-package-review", "lean-placement", "lean-research-review", "lean-review", "lean-review-client-disadvantage", "lean-review-independent", "lean-review-playbook", "lean-review-wording", "lean-spine", "lean-spine-absence-verify", "lean-spine-level"])
   // The act-record step's agent is the one its jobs run as.
   expect(LEAN_STAGE_AGENTS.acts).toBe(ACT_RECORD_AGENT)
   for (const id of agents) {
@@ -50,6 +50,15 @@ test("each lean stage agent loads as a hidden subagent whose own rules allow onl
     expect(TOOLS.filter(action => Permission.evaluate(action, "*", session).effect === "allow").toSorted())
       .toEqual(LEAN_READ_TOOLS.filter(tool => TOOLS.includes(tool)).toSorted())
   }
+})
+
+test("notes evidence selector has only selection duties and inherits its session model", () => {
+  const agent = loadAgent(LEAN_STAGE_AGENTS.notesEvidence)
+  expect(agent.system).toContain("not the section's writer or its acceptance checker")
+  expect(agent.system).toContain("notes_evidence_inspection")
+  expect(agent.system).toContain("current_target_lookup")
+  expect(agent.system).toContain("Do not draft notes")
+  expect(agent.model).toBeUndefined()
 })
 
 // A spine split job, a spine absence classifier and a part's reader check read

@@ -89,6 +89,7 @@ const DRAFTING_TASK: Record<string, string> = {
   "lean-checklist-check": "Checks",
   "lean-reader-check": "Checks",
   "lean-notes-check": "Checks",
+  "lean-notes-evidence": "Checks",
 }
 
 // Usage under a name with no plain label: never shown as its internal id.

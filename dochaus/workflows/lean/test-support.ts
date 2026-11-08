@@ -69,6 +69,9 @@ export function scriptedModel(replies: Record<string, Reply>) {
         // Every drafted part speaks to its reader.
         [AGENT.reader]: () => JSON.stringify({ hits: [] }),
         [AGENT.notesCheck]: () => JSON.stringify({ status: "pass", reason: "The synthetic section substantively addresses its assigned point." }),
+        [AGENT.notesEvidence]: prompt => JSON.stringify(prompt.includes("<notes_evidence_inspection>")
+          ? { excerpts: [], limitation: "The scripted fixture selects no evidence for this point; it establishes neither absence nor resolution." }
+          : { targets: [], limitation: "The scripted fixture does not inspect current passages for this point; it establishes neither missing content nor resolution." }),
         [AGENT.placement]: prompt => JSON.stringify(prompt.includes("<part>\n") ? { entries: [] } : { parts: [] }),
         // The plan rejects every listed review finding: the scripted changes
         // stage amends from the findings it is shown, whatever the plan says.

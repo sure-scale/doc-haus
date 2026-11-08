@@ -56,7 +56,7 @@ export async function resolveFocusedNotesDependency(directory: string, state: Le
   const validated = checkNotesEvidenceRequest(request, bodies, prose)
   if (!validated.request) return { status: "failed", reason: validated.issues.join(" ") }
   const body = bodies.find(body => body.document === request.document)!
-  const agent = LEAN_STAGE_AGENTS.finalize
+  const agent = LEAN_STAGE_AGENTS.notesEvidence
   const step = `${input.id}:dependency-evidence`
   const sessionID = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent,
     title: stepSessionTitle(directory, "finalize", step), model: state.model, permissions: LEAN_CHILD_PERMISSIONS })

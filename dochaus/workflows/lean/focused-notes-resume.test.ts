@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
-import { readdirSync } from "node:fs"
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs"
+import path from "node:path"
 import { paragraphSha256 } from "../../lib/drafting-amendment"
 import { NOTES_COVERAGE_AGENT } from "./focused-notes-coverage"
 import { runFocusedNotes } from "./focused-notes"
@@ -201,4 +202,97 @@ test("legacy assembled passage prose is not a checked answer to its original que
   expect(notes).toContain(original)
   expect(notes).not.toContain("### Current target passage")
   expect(notes.split(`[ref: ${point.id}]`)).toHaveLength(2)
+})
+
+async function inspectionFanout(reverse: boolean, invalid = false) {
+  const directory = fixture("Keep the archive label visible.")
+  const large = Array.from({ length: 6 }, (_, index) => `Storage range ${index}. `.padEnd(4_000, ".")).join("")
+  const rows = [paragraph("p222222222222", large)]
+  writeLeanText(directory, "d2/paragraphs.json", JSON.stringify(rows))
+  writeLeanText(directory, "d2/paragraphs-applied.json", JSON.stringify(rows))
+  const sibling = { ...point, id: "apply:omission:seal-colour", detail: "The seal colour remains unknown; the custodian must supply it." }
+  writeOpenItems(directory, [point, sibling])
+  const legal = path.join(directory, "test-selector-config")
+  mkdirSync(legal)
+  writeFileSync(path.join(legal, "opencode.json"), JSON.stringify({ model_concurrency: 3 }))
+  const previousLegal = process.env.DOCHAUS_DIR, previousRuntime = process.env.DOCHAUS_RUNTIME_DIR
+  process.env.DOCHAUS_DIR = legal
+  process.env.DOCHAUS_RUNTIME_DIR = path.join(directory, "test-selector-runtime")
+  const first = new Map<string, string>()
+  const packets: string[] = [], writers: string[] = [], completed: string[] = []
+  const completedAtWrite: number[] = []
+  const pending: { id: string; finish: () => void }[] = []
+  let active = 0, peak = 0, sessionCount = 0, inspections = 0
+  const port: StageSessionPort = {
+    async createSession() { return `fanout-${++sessionCount}` },
+    async prompt(input) {
+      if (!first.has(input.sessionID)) first.set(input.sessionID, input.text)
+      const original = first.get(input.sessionID)!
+      if (input.agent === NOTES_COVERAGE_AGENT) return JSON.stringify({ status: "pass", reason: "The synthetic owner explains its unknown and required action." })
+      if (original.includes("<notes_evidence_inspection>")) {
+        inspections++
+        if (invalid && original.includes(point.detail)) return "Invalid inspection selection"
+        const available = JSON.parse(/<available_evidence>\n([\s\S]*?)\n<\/available_evidence>/.exec(original)![1]!)
+        const id = `${available[0].baseline}:${available[0].start}`
+        active++; peak = Math.max(peak, active)
+        await new Promise<void>(resolve => pending.push({ id, finish() { completed.push(id); active--; resolve() } }))
+        return JSON.stringify({ excerpts: available.map(({ document, pid, baseline, start, end }: { document: string; pid: string; baseline: string; start: number; end: number }) => ({ document, pid, baseline, start, end, role: "target" })), limitation: `Inspected ${id}.` })
+      }
+      if (original.includes("<open_point>")) {
+        const own = original.includes(point.detail) ? point : sibling
+        writers.push(own.id)
+        completedAtWrite.push(completed.length)
+        packets.push(original.match(/<(?:current_accepted_evidence|generated_initial_evidence|evidence_inspection_limits)>[\s\S]*?<\/(?:current_accepted_evidence|generated_initial_evidence|evidence_inspection_limits)>/g)!.join("\n"))
+        return own.detail
+      }
+      return "The independent section retains the storage instruction."
+    },
+  }
+  try {
+    let settled = false
+    const work = runFocusedNotes(directory, readLeanState(directory)!, { sessions: port }, () => {})
+      .finally(() => { settled = true })
+    while (!settled) {
+      await Bun.sleep(10)
+      const batch = pending.splice(0)
+      for (const pending of reverse ? batch.reverse() : batch) pending.finish()
+    }
+    const result = await work
+    const count = inspections
+    if (result.status === "done") {
+      expect((await runFocusedNotes(directory, readLeanState(directory)!, { sessions: port }, () => {})).status).toBe("done")
+      expect(inspections).toBe(count)
+      expect(writers).toHaveLength(2)
+    }
+    return { directory, result, peak, packets, writers, completed, completedAtWrite, inspections }
+  } finally {
+    if (previousLegal === undefined) delete process.env.DOCHAUS_DIR
+    else process.env.DOCHAUS_DIR = previousLegal
+    if (previousRuntime === undefined) delete process.env.DOCHAUS_RUNTIME_DIR
+    else process.env.DOCHAUS_RUNTIME_DIR = previousRuntime
+  }
+}
+
+test("independent evidence siblings share one bounded pool and reversed completion preserves owner assembly", async () => {
+  const ordinary = await inspectionFanout(false)
+  const reversed = await inspectionFanout(true)
+  expect(ordinary.result.status).toBe("done")
+  expect(reversed.result.status).toBe("done")
+  expect(ordinary.peak).toBe(3)
+  expect(reversed.peak).toBe(3)
+  expect(ordinary.inspections).toBeGreaterThan(3)
+  expect(reversed.completed).not.toEqual(ordinary.completed)
+  expect(ordinary.completedAtWrite[0]).toBeLessThan(ordinary.completed.length)
+  expect(reversed.packets.toSorted()).toEqual(ordinary.packets.toSorted())
+  expect(readLeanText(reversed.directory, "drafting-notes.md")).toBe(readLeanText(ordinary.directory, "drafting-notes.md"))
+})
+
+test("failed range inspections cannot start their owner writers or produce accepted notes", async () => {
+  const failed = await inspectionFanout(true, true)
+  expect(failed.result.status).toBe("failed")
+  expect(failed.writers).toEqual(["apply:omission:seal-colour"])
+  const cached = readdirSync(leanFile(failed.directory, "notes-sections")).map(file => readLeanText(failed.directory, `notes-sections/${file}`))
+  expect(cached).toContain("The seal colour remains unknown; the custodian must supply it.\n")
+  expect(cached).not.toContain(`${point.detail}\n`)
+  expect(readLeanText(failed.directory, "drafting-notes.md")).toBeUndefined()
 })

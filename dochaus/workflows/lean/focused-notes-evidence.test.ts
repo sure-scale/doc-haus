@@ -293,3 +293,97 @@ test("selection diagnostics name malformed fields, exact invalid identifiers and
   expect(locator.issues.join(" ")).toContain("p222222222222")
   expect(checkNotesTargets({ targets: [{ document: "d9", pids: ["p222222222222"] }], limitation: "" }, [large]).issues.join(" ")).toContain("targets[0].document")
 })
+
+test("inspectors inherit the exact original point and human qualifications without broad writing or all-answer duties", () => {
+  const large: NotesBody = { ...body, current: [row("p222222222222", "Container handling instructions. ".repeat(600)), body.current[1]!] }
+  const point = { kind: "unknown", detail: "The inspection date is unknown; preserve the retained layout choice.", location: { document: "d1", pid: "p222222222222", question_id: "q-seal" } }
+  const controls = "Retain the inspection qualification even if the layout decision is settled."
+  const decision = "The custodian adopted the narrow layout; the inspection date remains unknown."
+  const broad = "Explain every delivered file to the full audience using the preferred house style."
+  const reread = "Retrieve all relevant full instructions or answers before writing this section."
+  const extras = [
+    `<notes_role>\n${broad.repeat(30)}\n</notes_role>`,
+    `<current_request>\n${controls}\n</current_request>`,
+    `<current_answers>\n${decision}\n</current_answers>`,
+    `<current_answers_navigation>\nCurrent controlling human instructions or answers: .dochaus/lean/questions.json (canonical JSON answers record).\n\n${reread}\n\nOpening excerpt:\nThe custodian adopted the narrow layout.\n\nLatest excerpt (it may start mid-passage):\nThe inspection date remains unknown.\n</current_answers_navigation>`,
+    `<related_decision>\n${decision}\n</related_decision>`,
+    `<required_repairs>\nPreserve the missing-date action while correcting the explanation.\n</required_repairs>`,
+  ].join("\n\n")
+  const materialScope = "Compare every cancellation condition with the earlier baseline, including contrary departures."
+  const text = packet(large, ["p222222222222"]).replace(/<open_point>[\s\S]*?<\/open_point>/, `<open_point>\n${JSON.stringify(point)}\n</open_point>`)
+    .replace("Write one section explaining the unresolved inspection decision and action.", `Write one section of the lawyer's drafting notes. ${materialScope}`) + "\n\n" + extras
+  const plan = notesEvidencePlan(text, { ownership: "one-point", bodies: [large] })
+  expect(plan.ownerText).toContain(extras)
+  for (const inspection of plan.inspections) {
+    expect(inspection.text).not.toContain(broad)
+    expect(inspection.text).not.toContain(reread)
+    expect(inspection.text).not.toContain("Explain this one open point, its consequence")
+    expect(inspection.text).toContain(point.detail)
+    expect(inspection.text).toContain(materialScope)
+    expect(inspection.text).toContain(controls)
+    expect(inspection.text).toContain(decision)
+    expect(inspection.text).toContain("q-seal")
+    expect(inspection.text).toContain(".dochaus/lean/questions.json")
+    expect(inspection.text).toContain("Preserve the missing-date action")
+  }
+})
+
+test("prepared canonical links bind the exact owning range, mapped baseline and qualification without unrelated broad targets", () => {
+  const target = "Container handling instructions. ".repeat(600) + "The final condition still applies."
+  const qualification = "The container cannot be accepted before inspection."
+  const large: NotesBody = { ...body, current: [row("p222222222222", target), row("p333333333333", qualification),
+    row("p444444444444", "Unrelated route instructions.")], initial: [...body.initial, row("p555555555555", "Earlier route instructions.")] }
+  const plan = notesEvidencePlan(packet(large, ["p222222222222", "p444444444444"]), { ownership: "one-point", bodies: [large] })
+  const inspection = plan.inspections.find(row => row.id === "d1:current:p222222222222:4000")!
+  const navigation = JSON.parse(/<bound_dependency_navigation>\n([\s\S]*?)\n<\/bound_dependency_navigation>/.exec(inspection.text)![1]!)
+  expect(navigation.owning_paragraph).toMatchObject({ document: "d1", pid: "p222222222222", baseline: "current", record: ".dochaus/lean/d1/paragraphs-applied.json", pointer_hint: "/0", text_pointer_hint: "/0/text", expected_pid: "p222222222222" })
+  expect(navigation.owning_paragraph.pointer).toBeUndefined()
+  expect(navigation.owning_paragraph.verify_pid).toBe(true)
+  expect(navigation.scope).toContain("only if that PID matches")
+  expect(navigation.owning_paragraph.read_document_offset).toBeUndefined()
+  expect(navigation.mapped_baselines).toContainEqual(expect.objectContaining({ pid: "p111111111111", baseline: "initial", record: ".dochaus/lean/d1/paragraphs.json", pointer_hint: "/0", text: "Acceptance is immediate." }))
+  expect(navigation.qualifications).toContainEqual(expect.objectContaining({ pid: "p333333333333", baseline: "current", pointer_hint: "/1", text: qualification }))
+  expect(JSON.stringify(navigation)).not.toContain("p444444444444")
+  expect(inspection.available).toMatchObject([{ pid: "p222222222222", start: 4000, end: 8000 }])
+  expect(navigation.scope).toContain("not exhaustive")
+  expect(inspection.text).not.toContain(target)
+})
+
+test("one-to-many baseline mappings preserve every link within one combined dependency text budget", () => {
+  const current = Array.from({ length: 8 }, (_, index) => row(`p${String(index + 2).repeat(12)}`, `${index}: ` + "Material handling condition. ".repeat(90)))
+  const large: NotesBody = { document: "d1", initial: [row("p111111111111", "Earlier handling condition. ".repeat(90))], current,
+    applied: [{ id: "a1", pid: "p111111111111", mode: "code", result_pids: current.map(row => row.pid) }] }
+  const plan = notesEvidencePlan(packet(large, current.map(row => row.pid)), { ownership: "one-point", bodies: [large] })
+  for (const inspection of plan.inspections) {
+    const navigation = JSON.parse(/<bound_dependency_navigation>\n([\s\S]*?)\n<\/bound_dependency_navigation>/.exec(inspection.text)![1]!)
+    const dependencies = [...navigation.mapped_baselines, ...navigation.qualifications]
+    expect(dependencies.reduce((size: number, row: { text?: string }) => size + (row.text?.length ?? 0), 0)).toBeLessThanOrEqual(4_000)
+    for (const dependency of dependencies) {
+      const canonical = dependency.baseline === "initial" ? large.initial : large.current
+      const text = canonical.find(row => row.pid === dependency.pid)!.text
+      if (dependency.text !== undefined) expect(dependency.text).toBe(text)
+      else expect(dependency.text_status).toContain("complete text requires targeted retrieval")
+      expect(dependency.expected_pid).toBe(dependency.pid)
+    }
+    expect(navigation.scope).toContain("no text has been truncated")
+    const own = inspection.available[0]!
+    if (own.baseline === "initial") expect(navigation.mapped_baselines.map((row: { pid: string }) => row.pid)).toEqual(current.map(row => row.pid))
+    else expect(new Set(dependencies.map((row: { pid: string }) => row.pid))).toEqual(new Set(["p111111111111", ...current.filter(row => row.pid !== own.pid).map(row => row.pid)]))
+  }
+})
+
+test("mapped current siblings retain their qualification even when selected as separate targets; unknown indices stay explicit", () => {
+  const large: NotesBody = { ...body, current: [row("p222222222222", "Handling detail. ".repeat(1_000)), body.current[1]!] }
+  const text = packet(large, ["p222222222222", "p333333333333"])
+  for (const bodies of [[large], undefined]) {
+    const plan = notesEvidencePlan(text, { ownership: "one-point", bodies })
+    const inspection = plan.inspections.find(row => row.id === "d1:current:p222222222222:0")!
+    const navigation = JSON.parse(/<bound_dependency_navigation>\n([\s\S]*?)\n<\/bound_dependency_navigation>/.exec(inspection.text)![1]!)
+    expect(navigation.qualifications).toContainEqual(expect.objectContaining({ pid: "p333333333333", text: body.current[1]!.text }))
+    expect(navigation.mapped_baselines).toContainEqual(expect.objectContaining({ pid: "p111111111111", text: body.initial[0]!.text }))
+    if (!bodies) {
+      expect(navigation.owning_paragraph.pointer).toBeUndefined()
+      expect(navigation.owning_paragraph.limitation).toContain("Canonical record index is unavailable")
+    }
+  }
+})

@@ -77,8 +77,9 @@ test("the shipped notes role recognizes the dependency lookup and only its one c
   const oversized = `${unrelated}${prose}`
   await resolveFocusedNotesDependency(directory, readLeanState(directory)!, { sessions: model.port }, { ...input, text: unrelated }, oversized, request, [body], () => {})
   const prompt = model.prompts[0]!.text
-  const role = readFileSync(new URL("../../agent/lean-drafting-notes.md", import.meta.url), "utf8")
-  expect(role).toContain("explicitly labelled current_target_lookup")
+  const role = readFileSync(new URL("../../agent/lean-notes-evidence.md", import.meta.url), "utf8")
+  expect(role).toContain("labelled current_target_lookup")
+  expect(model.sessions[0]!.agent).toBe("lean-notes-evidence")
   expect(prompt).toStartWith("<current_target_lookup>\n")
   expect(prompt).toContain(claim)
   expect(prompt).not.toContain(unrelated)
