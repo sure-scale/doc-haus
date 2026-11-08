@@ -673,6 +673,8 @@ function nativeChat(directory: string, readWords: () => string, observed: string
             time: { created: 4 },
             text: "Internal continuation must never become lawyer instructions.",
           },
+          { id: "msg_recovery_msg_prior", type: "user", time: { created: 2 },
+            text: '<dochaus-recovery kind="malformed-tool" run-id="main-chat" progress-token="malformed:msg_prior" />\nContinue.' },
           { id: "lawyer", type: "user", time: { created: 3 }, text: readWords() },
         ],
       })
@@ -690,6 +692,13 @@ test("recent matter instructions contain only real main-chat user admissions fro
   expect(observed.some((route) => route.includes("parentID=null") && route.includes("limit=32"))).toBe(true)
   expect(observed.some((route) => route.includes("/message?type=user&limit=6"))).toBe(true)
   expect(observed.some((route) => /\/(internal|child|lean)(?:\/|$)/.test(route))).toBe(false)
+})
+
+test("literal recovery markup in a real lawyer message remains chronology context", async () => {
+  const dir = matter()
+  const words = 'Explain `<dochaus-recovery kind="malformed-tool" run-id="main-chat" progress-token="malformed:msg_prior" />` in the supplied letter.'
+  const result = await recentChronologyInstructions(dir, { fetch: nativeChat(dir, () => words) })
+  expect(result).toEqual({ available: true, instructions: [words] })
 })
 
 test("main-chat instructions inform the relevance assessment but never re-trigger it on their own", async () => {

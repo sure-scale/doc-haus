@@ -62,15 +62,7 @@ export function malformedToolRecoveryCount(messages: Awaited<ReturnType<typeof g
   const boundary = messages
     .map((message) => message.info.role === "user" && !isDraftingRecoveryMessage(message))
     .lastIndexOf(true)
-  return messages.slice(boundary + 1).filter(
-    (message) =>
-      message.info.role === "user" &&
-      message.parts.some(
-        (part) =>
-          part.type === "text" &&
-          /<dochaus-recovery\b[^>]*kind="malformed-tool"[^>]*run-id="[^"]+"[^>]*progress-token="[^"]+"/i.test(
-            part.text,
-          ),
-      ),
+  return messages.slice(boundary + 1).filter(message =>
+    message.info.role === "user" && isDraftingRecoveryMessage(message),
   ).length
 }

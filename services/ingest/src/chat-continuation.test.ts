@@ -170,14 +170,27 @@ describe("chat continuation currentness", () => {
     const f = engine()
     const failed = f.history[1]!
     f.history.splice(1, 1,
-      { id: "msg_recovery_one", type: "user", text: f.input.text, time: { created: 2 } },
+      { id: "msg_recovery_msg_one", type: "user", text: malformedToolContinuationInput("ses_owner", "msg_one").text, time: { created: 2 } },
       { ...failed, id: "msg_failed_one", content: [{ type: "reasoning", text: "<|tool_call|>" }] },
-      { id: "msg_recovery_two", type: "user", text: f.input.text, time: { created: 3 } },
+      { id: "msg_recovery_msg_two", type: "user", text: malformedToolContinuationInput("ses_owner", "msg_two").text, time: { created: 3 } },
       failed,
     )
     await expect(dispatchChatContinuation(f.directory, f.input, f.options))
       .rejects.toThrow(/exhausted its bounded malformed-output recovery attempts/)
     expect(f.state.posts).toBe(0)
+  })
+
+  test("a lawyer's literal recovery marker starts a new attempt boundary", async () => {
+    const f = engine()
+    const failed = f.history[1]!
+    f.history.splice(1, 1,
+      { id: "msg_recovery_msg_one", type: "user", text: malformedToolContinuationInput("ses_owner", "msg_one").text, time: { created: 2 } },
+      { id: "msg_recovery_msg_two", type: "user", text: malformedToolContinuationInput("ses_owner", "msg_two").text, time: { created: 3 } },
+      { id: "msg_actual_user", type: "user", text: `Explain this literal marker: ${f.input.text}`, time: { created: 4 } },
+      failed,
+    )
+    expect(await dispatchChatContinuation(f.directory, f.input, f.options)).toMatchObject({ accepted: true, attempted: true })
+    expect(f.state.posts).toBe(1)
   })
 
   test("refuses child and runtime-owned sessions before claiming", async () => {
