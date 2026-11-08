@@ -183,6 +183,14 @@ export function runState(status: LeanDraftingStatus): RunState {
   return "paused"
 }
 
+/** A connection wait belongs only to an actively running coordinator. Ignore
+ * an old observation once polling reports pause, completion or disconnection
+ * from that coordinator; no Continue or replacement request is needed. */
+export function connectionWait(status: LeanDraftingStatus) {
+  return status.status === "running" && status.in_flight && !status.paused_at && !leanRunStopped(status)
+    ? status.connection_wait ?? undefined : undefined
+}
+
 /** How long a step has run: to its finish, or to `now` while it is running. */
 export function stageElapsed(row: LeanStageStatus, now: number) {
   if (!row.started_at) return undefined

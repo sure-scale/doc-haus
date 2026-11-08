@@ -223,6 +223,10 @@ export function proseQuoteIssues(directory: string, where: string, text: string,
 }
 
 export function quoteFound(directory: string, quote: SourceQuote) {
+  return snapshotRead(`quote-found\0${JSON.stringify([directory, quote.source_id, quote.quote])}`, () => readQuoteFound(directory, quote))
+}
+
+function readQuoteFound(directory: string, quote: SourceQuote) {
   if (/^https?:\/\//.test(quote.source_id)) return approvedResearch(directory).some(row => row.url === quote.source_id &&
     quotePlaces(normalize(researchSource(directory, row.snapshot)?.text ?? ""), normalize(quote.quote), { first: true }).places.length > 0)
   if (quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)) {

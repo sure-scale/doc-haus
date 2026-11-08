@@ -137,6 +137,9 @@ export type LeanDraftingStatus = {
   stages: Record<LeanStep, LeanStageStatus>
   /** True while ingest runs this matter's coordinator. */
   in_flight: boolean
+  /** Ephemeral transport observation only, while this run reconnects. Epoch
+   * milliseconds; this neither changes stage status nor admits a new turn. */
+  connection_wait?: { last_successful_contact: number | null; next_retry: number } | null
   /** The lawyer stopped this run; derived by ingest at read time. `stop_reason` is display only. */
   stopped?: boolean
   pending_requests: number
@@ -217,6 +220,11 @@ export function isLeanDraftingStatus(value: unknown): value is LeanDraftingStatu
     typeof value.owner_session_id === "string" &&
     typeof value.updated_at === "string" &&
     typeof value.in_flight === "boolean" &&
+    (value.connection_wait == null ||
+      (record(value.connection_wait) &&
+        (value.connection_wait.last_successful_contact === null ||
+          (typeof value.connection_wait.last_successful_contact === "number" && Number.isFinite(value.connection_wait.last_successful_contact) && value.connection_wait.last_successful_contact >= 0)) &&
+        typeof value.connection_wait.next_retry === "number" && Number.isFinite(value.connection_wait.next_retry) && value.connection_wait.next_retry >= 0)) &&
     (value.stopped === undefined || typeof value.stopped === "boolean") &&
     Number.isInteger(value.pending_requests) &&
     Array.isArray(value.open_items) &&

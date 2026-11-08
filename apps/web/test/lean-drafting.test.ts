@@ -82,6 +82,27 @@ test("drafting status reads a lean run's state", async () => {
   await expect(getDraftingStatus("matter-x")).rejects.toThrow("Drafting workflow status response is invalid.")
 })
 
+test("connection waiting stays running, explains automatic recovery, and keeps Pause available", async () => {
+  const now = Date.parse(start.status.updated_at)
+  const connection_wait = { last_successful_contact: now - 10_000, next_retry: now + 5_000 }
+  const body = { ...start.status, connection_wait }
+  respond(body)
+  const status = lean(await getDraftingStatus("matter-reconnecting"))
+  expect(status).toMatchObject({ status: "running", in_flight: true, connection_wait })
+  expect(runHeadline(status, now)).toMatchObject({ tone: "running", title: "Reconnecting…", meta: expect.arrayContaining(["Progress saved — resumes automatically", "Retrying in 5s"]) })
+  const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, choose: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
+  const html = renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
+  expect(html).toContain("Reconnecting…")
+  expect(html).toContain("Progress saved — resumes automatically")
+  expect(html).toContain("Pause drafting")
+  expect(html).not.toContain("Continue drafting")
+  for (const fixture of [completed, blockedGate, failed, orphaned, pausedRun()])
+    expect(runHeadline(lean({ ...fixture, connection_wait }), now).title).not.toBe("Reconnecting…")
+  expect(runHeadline(lean({ ...body, connection_wait: null }), now).title).not.toBe("Reconnecting…")
+  for (const invalid of ["waiting", {}, { ...connection_wait, next_retry: "soon" }, { ...connection_wait, last_successful_contact: -1 }])
+    expect(isLeanDraftingStatus({ ...body, connection_wait: invalid })).toBe(false)
+})
+
 test("a review draft delivered with unresolved checklist findings is read from ingest and named apart from a clean completion", async () => {
   const finding = {
     id: "checklist-check:checklist_unresolved:item-1",

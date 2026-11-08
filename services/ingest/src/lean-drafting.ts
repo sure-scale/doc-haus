@@ -15,6 +15,7 @@ import { enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, queuedAnswerI
 import { runLean, stageInputSha, stopLeanRun } from "../../../dochaus/workflows/lean/runner"
 import { leanSteps } from "../../../dochaus/workflows/lean/plan"
 import { withSourceSnapshot } from "../../../dochaus/workflows/lean/quotes"
+import { nativeSessionWaits } from "../../../dochaus/workflows/lean/session-port"
 import { engineSessionPort, type LeanDeps } from "../../../dochaus/workflows/lean/stages"
 import { catalogModel, engineModelCatalog, type CatalogModel } from "./setup"
 import {
@@ -173,6 +174,7 @@ function readLeanDraftingStatus(directory: string) {
   return {
     ...state,
     in_flight: running.has(directory),
+    connection_wait: connectionWait(directory, state),
     // Derived, never stored: the lawyer stopped this run (the reason is display only).
     stopped: draftingRunStopped(state),
     // The later of the last state write and this process's last run event.
@@ -198,6 +200,18 @@ function readLeanDraftingStatus(directory: string) {
     // The lawyer's own request, so the chat can show it again after a reload.
     request: readLeanText(directory, "request.md")?.trim() ?? null,
   }
+}
+
+/** Transport backoff is an observation of this process, never run state.
+ * Ignore another session/owner and any observation left after the run stops. */
+function connectionWait(directory: string, state: LeanState) {
+  if (!running.has(directory) || state.status !== "running" || state.paused_at) return null
+  const sessions = new Set(Object.values(state.stages).flatMap(stage => stage?.status === "running"
+    ? [...(stage.session_ids ?? []), ...(stage.session_id ? [stage.session_id] : [])] : []))
+  const waiting = nativeSessionWaits(directory).filter(row => sessions.has(row.sessionID) ||
+    ((row.phase === "session-create" || row.phase === "session-create-readback") && row.parentID === state.owner_session_id))
+    .sort((a, b) => a.nextRetry - b.nextRetry)[0]
+  return waiting ? { last_successful_contact: waiting.lastSuccessfulContact, next_retry: waiting.nextRetry } : null
 }
 
 /** Admission is not application. Only a completed, current final check can

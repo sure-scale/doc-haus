@@ -13,6 +13,7 @@ import {
   currentStep,
   draftedGroups,
   finalCheckNote,
+  connectionWait,
   findingsTitle,
   groupOpenItems,
   leanContinueAvailable,
@@ -291,6 +292,13 @@ export function runHeadline(status: LeanDraftingStatus, now: number, resuming = 
     }
   }
   if (state === "running") {
+    const waiting = connectionWait(status)
+    if (waiting) return {
+      tone: "running",
+      title: "Reconnecting…",
+      meta: ["Progress saved — resumes automatically", steps,
+        waiting.next_retry > now ? `Retrying in ${Math.ceil((waiting.next_retry - now) / 1000)}s` : "Retrying now"],
+    }
     const key = activeStep(status) ?? step?.key
     const row = key ? status.stages[key] : undefined
     const time = row ? stageElapsed(row, now) : undefined

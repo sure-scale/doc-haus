@@ -165,6 +165,7 @@ export const LEAN_CHILD_PERMISSIONS: PermissionRule[] = [
 export type StageSessionPort = {
   createSession(input: {
     directory: string
+    signal?: AbortSignal
     parentID?: string
     agent: string
     title: string

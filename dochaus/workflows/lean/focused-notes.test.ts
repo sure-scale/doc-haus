@@ -505,3 +505,23 @@ test("an early ordinary passage carries its complete owning condition to the sam
   expect(input.text).toContain(before.text)
   expect(input.text).toContain("dependency context for this assigned range")
 })
+
+test("ready writer replies return to the event loop before submitting another check or retry", async () => {
+  const directory = noteMatter()
+  let callbackRan = false
+  let scheduled = false
+  const retryObserved: boolean[] = []
+  const model = scriptedSections(input => {
+    if (!scheduled) {
+      scheduled = true
+      setImmediate(() => { callbackRan = true })
+    }
+    if (input.attempt === 0) return `The instruction is "Remove the archive label." [source: ${SOURCE}].`
+    retryObserved.push(callbackRan)
+    return "The custodian keeps the archive label on the container."
+  })
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  await new Promise<void>(resolve => setImmediate(resolve))
+  expect(retryObserved.length).toBeGreaterThan(1)
+  expect(retryObserved.every(Boolean)).toBe(true)
+})

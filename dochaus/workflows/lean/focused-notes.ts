@@ -420,6 +420,9 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
           calls.attempts = Math.max(calls.attempts, attempt + 1)
           progress({ attempts: calls.attempts, calls: calls.count, feedback })
           appendLeanEvent(directory, { stage: "finalize", step: input.id, event: "checker", attempt, issues: feedback, wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
+          // Several already-ready replies can otherwise chain synchronous
+          // checks through microtasks and starve native HTTP/timer callbacks.
+          await new Promise<void>(resolve => setImmediate(resolve))
           if (!feedback.length) {
             let verifierCalls = 0
             const coverage = await checkFocusedNotesCoverage(directory, state, deps, writing, reply, patch => {

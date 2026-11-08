@@ -36,23 +36,25 @@ function scriptedEngine(reply: { text: string; outcome: string; interrupted?: bo
     const url = new URL(typeof target === "string" || target instanceof URL ? target : target.url)
     const method = init?.method ?? "GET"
     if (url.pathname === "/api/dochaus/session" && method === "POST") {
-      created.push(JSON.parse(String(init?.body)))
+      const input = JSON.parse(String(init?.body))
+      created.push(input)
+      Object.assign(session, { ...input, location: { directory: DIRECTORY } })
       return Response.json({ data: session })
     }
-    if (url.pathname === "/api/session/ses_child" && method === "GET") return Response.json({ data: session })
-    if (url.pathname === "/api/session/ses_child/prompt" && method === "POST") {
+    if (url.pathname === `/api/session/${session.id}` && method === "GET") return Response.json({ data: session })
+    if (url.pathname === `/api/session/${session.id}/prompt` && method === "POST") {
       if (reply.refusal) return Response.json(reply.refusal.body, { status: reply.refusal.status })
       const body = JSON.parse(String(init?.body)) as { id: string; text: string; delivery: string }
       admitted.push(body)
       queued.push(body)
-      return Response.json({ data: { id: body.id, sessionID: "ses_child", type: "user", payload: { text: body.text }, delivery: body.delivery, time: { created: 5 } } })
+      return Response.json({ data: { id: body.id, sessionID: session.id, type: "user", payload: { text: body.text }, delivery: body.delivery, time: { created: 5 } } })
     }
-    if (url.pathname === "/api/session/ses_child/interrupt" && method === "POST") {
+    if (url.pathname === `/api/session/${session.id}/interrupt` && method === "POST") {
       interrupts.push(url.pathname)
       // The native interrupt answers without the v2 data envelope.
       return Response.json({ interrupted: true })
     }
-    if (url.pathname === "/api/session/ses_child/message" && method === "GET") {
+    if (url.pathname === `/api/session/${session.id}/message` && method === "GET") {
       if (url.searchParams.get("limit") === "1") reply.onIdlePoll?.()
       // The first idle poll still sees the earlier turn's idle record; the
       // queued prompt is promoted and answered before the second.
@@ -86,7 +88,7 @@ describe("lean engine session port", () => {
     })
     const reply = await port.prompt({ directory: DIRECTORY, sessionID, agent: "expander", text: "Draft it." })
 
-    expect(sessionID).toBe("ses_child")
+    expect(sessionID).toBe(engine.created[0]!.id as string)
     expect(engine.created[0]).toMatchObject({
       parentID: "ses_owner", agent: "expander", model: { providerID: "test", id: "scripted" },
       permissions: LEAN_CHILD_PERMISSIONS, metadata: { dochaus_role: "lean-drafting" },

@@ -10,6 +10,7 @@ import { readLeanEvents } from "../../../dochaus/workflows/lean/events"
 import { openItem } from "../../../dochaus/workflows/lean/quotes"
 import { drainLeanRequests, enqueueLeanRequest, pendingLeanRequests } from "../../../dochaus/workflows/lean/requests"
 import { runLean } from "../../../dochaus/workflows/lean/runner"
+import * as nativeSessionPort from "../../../dochaus/workflows/lean/session-port"
 import { LEAN_STAGE_AGENTS, type LeanDeps, type StageSessionPort } from "../../../dochaus/workflows/lean/stages"
 import {
   initLeanState,
@@ -81,6 +82,43 @@ function heldModel() {
 }
 
 const MODEL = { providerID: "test", modelID: "scripted" }
+
+test("connection waits are ephemeral and belong only to this active run's sessions", async () => {
+  const directory = matter()
+  const model = heldModel()
+  const now = Date.now()
+  let rows: nativeSessionPort.NativeSessionWait[] = []
+  const waiting = spyOn(nativeSessionPort, "nativeSessionWaits").mockImplementation(() => rows)
+  try {
+    await startLeanDraftingRun(directory, { request: "Draft the container handover.", agent: "draft", model: MODEL }, model.deps)
+    await model.waiting
+    const state = readLeanState(directory)!
+    const active = Object.values(state.stages).find(row => row?.status === "running")!
+    const sessionID = active.session_id!
+    const before = readLeanText(directory, "state.json")
+    const observation = { sessionID, phase: "completion-message-read", lastSuccessfulContact: now - 10_000, nextRetry: now + 5_000 }
+    rows = [observation]
+    expect(leanDraftingStatus(directory)).toMatchObject({ status: "running", in_flight: true,
+      connection_wait: { last_successful_contact: observation.lastSuccessfulContact, next_retry: observation.nextRetry } })
+    expect(waiting).toHaveBeenCalledWith(directory)
+    expect(readLeanText(directory, "state.json")).toBe(before)
+    rows = [{ ...observation, sessionID: "ses_unrelated" }]
+    expect(leanDraftingStatus(directory)?.connection_wait).toBeNull()
+    rows = [{ ...observation, sessionID: "ses_new", phase: "session-create", parentID: "ses_other_owner" }]
+    expect(leanDraftingStatus(directory)?.connection_wait).toBeNull()
+    rows = [{ ...observation, sessionID: "ses_new", phase: "session-create-readback", parentID: state.owner_session_id }]
+    expect(leanDraftingStatus(directory)?.connection_wait).toEqual({ last_successful_contact: observation.lastSuccessfulContact, next_retry: observation.nextRetry })
+    rows = []
+    expect(leanDraftingStatus(directory)?.connection_wait).toBeNull()
+    rows = [observation]
+    model.release()
+    await leanDraftingIdle(directory)
+    expect(leanDraftingStatus(directory)).toMatchObject({ status: "failed", in_flight: false, connection_wait: null })
+  } finally {
+    waiting.mockRestore()
+    model.release()
+  }
+})
 
 describe("drafting start profile", () => {
   test("defaults to lean and rejects every other profile", () => {

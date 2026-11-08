@@ -10,7 +10,7 @@ import { normalize } from "../../lib/quote-verify"
 import { changeListIDs, memoMode, mintedQuestionID, runItemIDs, withoutInternalIDs, withoutRefMarkers } from "./delivered-memo"
 import { notesForReader } from "./gate"
 import { currentInstructions } from "./instructions"
-import { excerpt, openItem, proseQuoteIssues, quoteMissItems } from "./quotes"
+import { excerpt, openItem, proseQuoteIssues, quoteMissItems, snapshotRead, withSourceSnapshot } from "./quotes"
 import type { SourceQuoteScanOptions } from "./source-quote-scan"
 import { readLeanPlan, type DocID } from "./plan"
 import { researchFindingIDs } from "./research"
@@ -140,6 +140,12 @@ export function settleApply(changes: ChangeList, result: ApplyResult | undefined
  * notes saved without one are delivered under a plain title (deliveredNotes),
  * so they are never delivered empty. */
 export function checkDraftingNotes(directory: string, content: string, items: OpenItem[], options: { final?: boolean; delegatedIDs?: readonly string[] } = {}): StageCheck {
+  // A checker is one synchronous evidence read. Share its repeated source
+  // verification and id collection, then discard them before any await.
+  return withSourceSnapshot(() => checkDraftingNotesSnapshot(directory, content, items, options))
+}
+
+function checkDraftingNotesSnapshot(directory: string, content: string, items: OpenItem[], options: { final?: boolean; delegatedIDs?: readonly string[] }): StageCheck {
   const shape = documentShapeIssues(content, "drafting notes")
   if (shape.length) return { issues: shape, openItems: [] }
   if (!options.final && !/^#{1,6}[ \t]+\S/m.test(notesForReader(directory, content, items)))
@@ -158,7 +164,7 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   const unlisted = options.final ? [] : (options.delegatedIDs ?? delegatedQuestions(directory).map(question => question.id)).filter(id => !markers.some(marker => standingID(id).test(marker)))
   const delivered = withoutRefMarkers(content)
   const ids = !options.final
-  const stray = ids ? runItemIDs(directory, items).filter(id => readerVisibleID(id) && standingID(id).test(delivered)) : []
+  const stray = ids ? notesItemIDs(directory, items).filter(id => readerVisibleID(id) && standingID(id).test(delivered)) : []
   // A planned document's short id ("d1") is internal too: the reader knows the
   // document by its title or file name.
   // Quoted text, a citation, a footnote marker and a locator's number are not
@@ -263,8 +269,12 @@ const REF_MARKER = /\[[ \t]*refs?[ \t]*:([^\]\n]*)\]/gi
  * each recorded change id, each review finding id and each research finding
  * id. Delivery removes the same ids (notesForReader). */
 export function readerIDs(directory: string, items: OpenItem[]) {
-  return [...new Set([...runItemIDs(directory, items).filter(readerVisibleID), ...(readLeanPlan(directory)?.documents ?? []).map(row => row.id), ...runChangeIDs(directory, items),
+  return [...new Set([...notesItemIDs(directory, items).filter(readerVisibleID), ...(readLeanPlan(directory)?.documents ?? []).map(row => row.id), ...runChangeIDs(directory, items),
     ...raisedFindings(directory).map(row => row.id), ...researchFindingIDs(directory)])]
+}
+
+function notesItemIDs(directory: string, items: OpenItem[]) {
+  return snapshotRead(`notes-item-ids\0${JSON.stringify([directory, items])}`, () => runItemIDs(directory, items))
 }
 
 /** The ids lawyer-facing text a model writes (a question, its context, advice)

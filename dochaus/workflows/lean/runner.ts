@@ -193,7 +193,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
   const reviewedSessions = new Set<string>()
   const questionReviews = new Map<string, QuestionReview>()
   const deps: LeanDeps = { ...sourceDeps, sessions: { ...sourceDeps.sessions, createSession(input) {
-    return paused() ? Promise.reject(new LeanPauseRequested()) : sourceDeps.sessions.createSession(input)
+    return paused() ? Promise.reject(new LeanPauseRequested())
+      : untilPaused(sourceDeps.sessions.createSession(pause ? { ...input, signal: pause } : input), pause)
   }, async prompt(input) {
     if (paused()) throw new LeanPauseRequested()
     if (preferencesChanged()) throw new ChecklistRefreshRestart()

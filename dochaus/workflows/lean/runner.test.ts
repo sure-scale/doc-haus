@@ -40,6 +40,35 @@ const recommending: Reply = prompt => {
 
 afterEach(cleanupMatters)
 
+test("pause settles while child creation is waiting and forwards cancellation to that wait", async () => {
+  const directory = matter()
+  const model = scriptedModel(happyPath)
+  const pause = new AbortController()
+  let entered!: () => void
+  let release!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve })
+  let observed: AbortSignal | undefined
+  const sessions: typeof model.port = { ...model.port, createSession(input) {
+    observed = input.signal
+    entered()
+    return new Promise<string>(resolve => { release = () => resolve("created-after-pause") })
+  } }
+  const working = runLean(directory, { sessions, pause: pause.signal })
+  await started
+  pause.abort()
+  try {
+    const result = await Promise.race([working, Bun.sleep(100).then(() => { throw new Error("Pause did not settle child creation") })])
+    expect(result.status).toBe("blocked")
+    expect(result.paused_at).toBeDefined()
+    expect(observed).toBe(pause.signal)
+    expect(model.prompts).toHaveLength(0)
+  } finally {
+    release()
+    await working
+  }
+  expect(model.prompts).toHaveLength(0)
+})
+
 describe("lean drafting runner", () => {
   test("a failed check is retried in the same session with the checker's issues; the fourth failure stops the run", async () => {
     const directory = matter()
