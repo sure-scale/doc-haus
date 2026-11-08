@@ -122,7 +122,8 @@ test("structural masks survive reload while literal revision-like text stays ind
     expect(db.query("SELECT rev FROM documents WHERE doc_path = ?").get(docPath)).toEqual(revision)
     expect(db.query("SELECT * FROM section_ops WHERE doc_path = ?").all(docPath)).toEqual([])
     expect(reconstructText(db, docPath)).toBe(canonical)
-    // An old document without any structural projection stays unrecorded.
+    // Missing legacy structural projections stay absent. Canonical source text
+    // identity can still be backfilled without interpreting revision labels.
     db.run("DELETE FROM defined_terms WHERE doc_path = ?", [docPath])
     db.run("DELETE FROM sections WHERE doc_path = ?", [docPath])
     db.run("UPDATE documents SET rev = NULL WHERE doc_path = ?", [docPath])
@@ -130,7 +131,7 @@ test("structural masks survive reload while literal revision-like text stays ind
     migrateStructure(db); migrateSections(db)
     expect(terms("Literal.docx")).toEqual([])
     expect(db.query("SELECT * FROM sections WHERE doc_path = ?").all(docPath)).toEqual([])
-    expect(db.query("SELECT rev FROM documents WHERE doc_path = ?").get(docPath)).toEqual({ rev: null })
+    expect(db.query("SELECT rev FROM documents WHERE doc_path = ?").get(docPath)).toEqual(revision)
   } finally { db.close() }
   await ingestDocument(directory, "Literal.docx", source, { existing: "replace" })
   db = openDb(directory)
