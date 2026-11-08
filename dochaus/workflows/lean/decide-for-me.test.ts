@@ -186,35 +186,79 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // same pins hold for typed or picked words; an adopted recommendation reads as
 // delegated, which moves every key that reads the answers and no other. The
 // instructions step was added, and intake and spine were re-pinned when they
-// began keying the instruction list (instructions.md). Every key that reads
+// began keying the instruction list (instructions.md), and the discrepancy
+// step when it began reading that list to list gaps and again when it split
+// into a differences job and a gaps job (differences-then-gaps-1), and once more
+// when the differences prompt was tagged (differences-then-gaps-2), and when the
+// jobs ran in parallel with a verify job per gap (differences-gaps-verified-1), and
+// when each difference gained a verify job too (differences-gaps-verified-2), and
+// when a gap's verify job read the lawyer's answers and later instructions
+// (differences-gaps-verified-3). Every key that reads
 // plan.json was re-pinned when whom the lawyer acts for gained its basis
-// (dochaus.lean.plan/2).
+// (dochaus.lean.plan/2). The draft step was re-pinned when the outline
+// contract gained the statement form (statement-form-12), and again when the
+// outline began naming every defect in one pass and planning a requested file
+// that holds no planned document, and each planned part began to be placed
+// from its own side too and to read each entry's limitations
+// (outline-one-pass-reverse-18), and when a template's restated title stopped
+// counting as a part, a memo named only by a requested file name or only by a
+// planned memo's title began to stand, and acts an answered scope question
+// settled stopped being sent back for revision (outline-one-pass-reverse-19),
+// and when the outline began to be shown the template parts it must account
+// for, to read deeper headings as scope, to adopt a lone advice document as
+// the memo and never to fold advice (outline-one-pass-reverse-20), and when a
+// rejected memo name began to be renamed rather than dropped
+// (outline-one-pass-reverse-21), and when the writer was told that its
+// directions speak to it, never to the reader (outline-one-pass-reverse-22),
+// and when every part began to be told whom the lawyer acts for, a part's
+// grounds began to be split by level and a scope carrying an open-item marker
+// began to be sent back (outline-one-pass-reverse-23), and when a part's scope
+// line began to say what the part tells the reader, a requested marking going
+// in its document's Legend: line (outline-one-pass-reverse-24).
+// The spine was re-pinned when its entries
+// began to be split into atoms (spine-atoms-1), when a one-atom split began to
+// read as atomic (spine-atoms-2), when its checks began asking each figure of
+// an entry or atom of its own quotes (spine-atoms-3), and when spine.json began
+// keeping the accepted entries beside their atoms, a figure became one with a
+// sign, a decimal point, separators or five digits, and its entries' absence
+// claims began to be verified (spine-atoms-5); every step after the spine,
+// other than the draft, was re-pinned then for keying the atoms. The spine
+// alone was re-pinned when an id's digits stopped being read as a number and a
+// dotted number after a reference label as a figure (spine-atoms-6), and when
+// its absence check began to skip open items, to run on every shaped attempt
+// and to record only on the last, and a figure stopped being a bare run of
+// digits (spine-atoms-7), and when a requirement began to record a working
+// direction by its effect on the document (spine-atoms-8).
+// Finalize was re-pinned when each open item began with the marker the notes
+// copy (lawyer-facing-notes-plain-refs-4), and when focused prose sections
+// gained a separate substantive coverage check before caching their text.
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", `  A (${ADOPTED_ANSWER}): Singapore law.`)
 // A draft keys its outline contract and plan entry, never answers.
-const UNANSWERED_STEPS = ["d1.draft"]
+// The steps that read no intake answer: the list and the discrepancy record before it, and a draft.
+const UNANSWERED_STEPS = ["instructions", "discrepancy", "d1.draft"]
 const INPUTS: Record<string, string> = {
-  "instructions": "7db0182116d00b86390816e69312620dff6c36a8920d47b9190fb725b72906b6",
-  "discrepancy": "8dac7eefaf1e988e35ffbe6c7f765a951943e9b1299546a9b94dc10e99950a72",
-  "intake": "097361ef1ee9a3958bc6d602d33eac98ff61d441ea7aa050c405152bf241c65d",
-  "research": "64a0d22c3dd780907955b2e56b3122b94ea72101092d694f899a15e2af0cb13b",
-  "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
-  "acts": "ff830f3d37f64416362401fa66710c9fc8e770429b6bc5f2af84baffd3f35a3c",
-  "spine": "2202a864334a3d94bdc8736e01051643ef15f12485641538cf68eac856dc7b89",
-  "d1.draft": "68f34f0d87312276c4f5d676b490753a5050865d40c0448aaae368a7d6252376",
-  "d1.review": "f92e8b2f697df753f08ff89503d1c092d84fd980a5649ffa77627092541a4a74",
-  "d1.review-independent": "d6b17a179c121993a0115e9cb582a88041569779f0b458d6092ef4d7917dd477",
-  "d1.review-wording": "a26d07fa11c6809f348701b39e3d4e22536470e85610e12e28aebdc0e5c7cebc",
-  "d1.review-client-disadvantage": "4c18d2beccef061120fd2ec812cbd37bd20f5520d490dc96e9b96b18e39b5d89",
-  "d1.change-plan": "505763faece914783109529ec3705c4be1a809d1503f433d368b8e455e14934f",
-  "d1.change-prepare": "b8c5bca696f6179fd04dcdc29b565be8804eac116fd7af6dfecd2baf9fbcde7c",
-  "d1.changes": "d5a641fd10fc180ec24955810f08868b68df08fba766824adff29bc38c618e39",
-  "d1.change-review": "d36fb4ee8463bcfda8c0fdad2c3aef05de8a6801ac65742ea3cbd336f6ed7711",
-  "d1.apply": "be634fcb03591aca6f952d8f756bc599cb4ef5b014ec37f1b37e38c2afaa27a4",
-  "finalize": "ede5a86d8ac5fb23776eb8d8a3a3018f04bc92f827998d6b5f1ef5a189f7f7b8",
-  "checklist-check": "593362745da684a2b335a4f33deb1e581b7bb97a0c652ab4c305ae7151e90423",
-  "package-review": "50e84f8ca0e182baec5a3abc41021134e95069b6fcea956220192846e017784e",
-  "gate": "0950183c873a0bd663d5367c064a7013025084deb8884311b2f38a54fcb8e229",
+  "instructions": "45ef72519d0f9443b4d3ee328737731146358b6133e95340634e314d28a54383",
+  "discrepancy": "a55dcd1402cd56afcfae4ab00ba3a8581c1d64fbb674c6dc93b2c9f2cbc25cc6",
+  "intake": "587857f0517ea6f653cbebbefd4d3a695f2de7c7c9a482217ba77e8afe15460e",
+  "research": "1ebbf37d1439992955bc19c9e57ebbe89d9232f7d75d7a1040b9e8715a953833",
+  "research-review": "d46bb345a28e68d58f42bdee05c7eb4f5e513513edeba8006b6b73c014df397c",
+  "acts": "cdb825181d5933554a4aa72aa29b3c61e5e8bdb55cce05b128c53db211a1bdec",
+  "spine": "a8fadb568dddf15425004c77b865dd935c647dedb2340b8fa1c2980a927246bb",
+  "d1.draft": "422a50c9fd97b9c10e37e8c83af8dab888767fbc2645374e77fce1e6776ad218",
+  "d1.review": "1bf22918ea02aad73fccf36d8e75154dbea6f35ea8e2b4e277a3e4f25f8493fd",
+  "d1.review-independent": "0e641d9e56cab04b1265d74d16b142b0b64e683d15a1d60946733c52d09e372c",
+  "d1.review-wording": "3125f01d1d8b308a3010baafafe16be01af50de62727fcd4e371284f6f2fbc80",
+  "d1.review-client-disadvantage": "e466165f127c9e98bc27e204483e36ec7efb345a82c3652436241f22e0df13f8",
+  "d1.change-plan": "be5812f2aec2b2abf657112934e4ad0dcf004a2ca4a205fae6d0c74046a26091",
+  "d1.change-prepare": "c6122dc82b8d275beb08effe55a68fb3e812c0f826d1e39ce3b3d9ffe490e44a",
+  "d1.changes": "d30eb5ee0a14f6b80c046c34469197ec62e228c858f4c4348010af0a6e410beb",
+  "d1.change-review": "3ce900d5fe48a19dbbc77a918877a1791f360120a7631e3c9a219addc9e98e96",
+  "d1.apply": "56d08255bf3abd89af535d2ed8d9fab99e55eedaad6e2a14ce5bf2d0dbba69bb",
+  "finalize": "026e7b8730229e661f3493e9268a4b031d2b0af4f71b0199356fff3965c093e7",
+  "checklist-check": "8276d20b72411334f034803a1d707e5b5bad9438c545a40143af0fb4efd27560",
+  "package-review": "33324cc0d053a0e8393aa94207d8febf58596647ef9c94c8166131e668dceaca",
+  "gate": "faff4cf1cb3e89b70403b322dbab69843a7c720003ec46a82a2538608c2f2e2c",
 }
 
 test("the answers text and every step's inputs are pinned, however the lawyer gave the answer", () => {
@@ -253,8 +297,11 @@ const QUESTION = "Should late delivery carry a remedy?"
 const LAW = "Which law should govern the supply note?"
 const spine = (...entries: object[]) => ({ entries, limitations: [] })
 const FACT = { kind: "fact", detail: "Delivery is within thirty days.", evidence: SUPPORT, limitations: [] }
-// Pinned on the code before hand-backs reached the spine.
-const SPINE_PROMPT = "aa0471af46a44d8b7a3ccc78fbfb1d1f647d5a746a00e934ca36b8886ea6a283"
+// Pinned on the code before hand-backs reached the spine; re-pinned when the
+// spine began carrying unsettled discrepancy gaps as open items, and when a
+// requirement began to record a working direction by its effect, and when the
+// adopted recommendation of a delegated question became citable.
+const SPINE_PROMPT = "3d4156ba1f9a00520ba8cfeeafed2ef435fbed4cce7ab7b3f30a10926bd47265"
 
 function spineMatter(late: "open" | "answered" | "adopted") {
   const directory = matter()
@@ -282,7 +329,7 @@ test("the spine takes its five entry kinds and refuses a drafting choice or a qu
     if (late === "open") expect(createHash("sha256").update(prompt).digest("hex")).toBe(SPINE_PROMPT)
   }
   // The discrepancy assessment never took one either.
-  expect(checkEvidence(spineMatter("adopted"), "discrepancy", { entries: [], limitations: [] })).toEqual([])
+  expect(checkEvidence(spineMatter("adopted"), "discrepancy", { entries: [], gaps: [], limitations: [] })).toEqual([])
 })
 
 test("intake told a question is answered is told so however it was answered", () => {

@@ -332,8 +332,12 @@ describe("the check in a lean run", () => {
       stage: "apply", document: "d1",
       detail: "Clause 3.1 refers to clause 2.2, but no clause in the final text is numbered 2.2. What was clause 2.2 before the changes is now clause 2.3.",
     }])
-    expect(model.prompts.find(prompt => prompt.agent === AGENT.finalize)!.text).toContain(items[0]!.detail)
-    expect(readFileSync(leanFile(directory, "drafting-notes.md"), "utf8")).toContain(`[ref: ${items[0]!.id}]`)
+    const points = model.prompts.filter(prompt => prompt.agent === AGENT.finalize).flatMap(prompt => {
+      const block = /<open_point>\n([\s\S]*?)\n<\/open_point>/.exec(prompt.text)?.[1]
+      return block ? [JSON.parse(block)] : []
+    })
+    expect(points.filter(point => point.kind === "consistency")).toEqual([{ kind: items[0]!.kind, detail: items[0]!.detail, location: items[0]!.ref }])
+    expect(readFileSync(leanFile(directory, "drafting-notes.md"), "utf8").split(`[ref: ${items[0]!.id}]`)).toHaveLength(2)
     const gate = readLeanJson(directory, "gate.json") as GateResult
     expect(gate.status).toBe("pass")
     expect(gate.items.find(item => item.id === items[0]!.id)).toMatchObject({ status: "disclosed", resolution: "cross-reference or defined-term problem named in the drafting notes" })

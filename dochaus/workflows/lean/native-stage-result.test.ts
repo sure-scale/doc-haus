@@ -48,7 +48,8 @@ test("the output-limit stop is a runtime stop, not a checker retry, and Continue
   const cutOff = scriptedModel({ ...happyPath, [AGENT.discrepancy]: () => nativeStageResult([USER, reply("length", [REASONING])], "msg_user", "expander") })
   const stopped = await runLean(directory, { sessions: cutOff.port })
 
-  expect(cutOff.count(AGENT.discrepancy)).toBe(1)
+  // The differences and gaps jobs are asked together; neither is retried.
+  expect(cutOff.count(AGENT.discrepancy)).toBe(2)
   expect(stopped.status).toBe("failed")
   expect(stopped.provider_stop).toBeUndefined()
   expect(stopped.stop_reason).toBe("discrepancy: stopped by a runtime error: The model's reply reached its output limit before giving any answer (131,072 reasoning tokens).")

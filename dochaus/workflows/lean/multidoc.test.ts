@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { readParagraphs } from "./checks"
 import { readLeanDocuments } from "./deliverables"
+import { focusedNotesInputs } from "./focused-notes"
 import type { GateResult } from "./gate"
 import { readLeanPlan, type StepID } from "./plan"
 import { enqueueLeanRequest } from "./requests"
@@ -223,7 +224,10 @@ describe("lean drafting with several documents", () => {
     expect(state.status).toBe("completed")
     expect(readRepairRound(directory)?.substantive_attempts).toBe(1)
     expect(model.count(AGENT["package-review"])).toBe(2)
-    expect(model.count(AGENT.finalize)).toBe(2)
+    const notesJobs = model.prompts.filter(prompt => prompt.agent === AGENT.finalize)
+    expect(notesJobs.filter(prompt => prompt.text.includes("separate repair-link job"))).toHaveLength(1)
+    expect(notesJobs.filter(prompt => prompt.text.includes("<required_repairs>"))).toHaveLength(1)
+    expect(model.count(AGENT.finalize)).toBe(focusedNotesInputs(directory).length + 2)
     const gate = readLeanJson(directory, "gate.json") as GateResult
     expect(gate).toMatchObject({ status: "pass", delivery: "execution_ready", disclosed: [], blocking: [] })
     expect(readFileSync(leanFile(directory, "delivered-notes.md"), "utf8")).not.toContain("Final review findings left open")
@@ -254,7 +258,13 @@ describe("lean drafting with several documents", () => {
     })
     expect(promptsOf(model, AGENT.draft, "Covering letter")[0]).toContain('Draft part 1 of 2 of "Covering letter": Enclosure')
     expect(model.prompts.filter(prompt => prompt.agent !== AGENT.finalize && !later.includes(prompt.text)).some(prompt => prompt.text.includes("<completed_documents>"))).toBe(false)
-    expect(model.prompts.find(prompt => prompt.agent === AGENT.finalize)!.text).toMatch(/<document id="d1" title="Supply note">[\s\S]*<document id="d2" title="Covering letter">/)
+    const notesJobs = model.prompts.filter(prompt => prompt.agent === AGENT.finalize)
+    const documentJobs = notesJobs.filter(prompt => prompt.text.includes("<section_kind>\ndocument\n"))
+    expect(documentJobs.map(prompt => JSON.parse(/<document>\n([\s\S]*?)\n<\/document>/.exec(prompt.text)![1]!).title)).toEqual(["Supply note", "Covering letter"])
+    const letterPassages = notesJobs.filter(prompt => prompt.text.includes("<section_kind>\npassage\n") && prompt.text.includes('"id": "d2"'))
+    expect(letterPassages).toHaveLength(1)
+    expect(letterPassages[0]!.text).toContain("The goods will be delivered as the supply note states.")
+    firstPids.forEach(pid => expect(letterPassages[0]!.text).not.toContain(pid))
     ;["d2/body-applied.docx", "d2/redline.docx", "d1/redline.docx"].forEach(name => expect(existsSync(leanFile(directory, name))).toBe(true))
     expect(readLeanDocuments(directory)!.documents.map(row => `${row.kind}:${row.document}:${row.title}:${row.deliverable}`)).toEqual([
       "body:d1:Supply note:Supply note.docx",
@@ -315,10 +325,11 @@ describe("lean drafting with several documents", () => {
   test("one placeholder wording in two documents is two open items; the notes must name both and the gate settles each in its document", async () => {
     const address = "\n\n## Address\n\nDeliver to [open item: confirm the delivery address].\n"
     const directory = matter()
-    const first = { prompt: "" }
     const notes: Reply = (prompt, index) => {
-      first.prompt = index === 0 ? prompt : first.prompt
-      return draftingNotes(index === 0 ? /<document id="d1"[\s\S]*?<\/document>/.exec(prompt)![0] : first.prompt, index)
+      const point = /<open_point>\n([\s\S]*?)\n<\/open_point>/.exec(prompt)?.[1]
+      if (!point || JSON.parse(point).kind !== "placeholder") return draftingNotes(prompt, index)
+      const title = JSON.parse(/<document>\n([\s\S]*?)\n<\/document>/.exec(prompt)![1]!).title as string
+      return `The delivery address for the ${title.toLowerCase()} remains for the lawyer to confirm.`
     }
     const model = scriptedModel({
       ...happyPath, [AGENT.draft]: drafter(`${DRAFT.trimEnd()}${address}`, `${LETTER.trimEnd()}${address}`),
@@ -330,11 +341,18 @@ describe("lean drafting with several documents", () => {
     expect(placeholders.map(item => item.ref.document)).toEqual(["d1", "d2"])
     expect(new Set(placeholders.map(item => item.id)).size).toBe(2)
     expect(new Set(placeholders.map(item => item.detail)).size).toBe(1)
-    const retries = model.prompts.filter(prompt => prompt.agent === AGENT.finalize).slice(1)
-    expect(retries).toHaveLength(1)
-    expect(retries[0]!.text).toContain("did not pass the finalize checks")
-    expect(retries[0]!.text).toContain(placeholders[1]!.id)
-    expect(retries[0]!.text).not.toContain(placeholders[0]!.id)
+    const pointJobs = model.prompts.filter(prompt => prompt.agent === AGENT.finalize && prompt.text.includes("<open_point>"))
+    expect(pointJobs).toHaveLength(2)
+    expect(new Set(pointJobs.map(prompt => prompt.sessionID)).size).toBe(2)
+    const written = readFileSync(leanFile(directory, "drafting-notes.md"), "utf8")
+    placeholders.forEach((item, index) => {
+      const title = index === 0 ? "Supply note" : "Covering letter"
+      expect(pointJobs[index]!.text).toContain(`"title": "${title}"`)
+      expect(pointJobs[index]!.text).toContain(`"document": "${item.ref.document}"`)
+      placeholders.forEach(other => expect(pointJobs[index]!.text).not.toContain(other.id))
+      expect(written).toContain(`The delivery address for the ${title.toLowerCase()} remains for the lawyer to confirm. [ref: ${item.id}]`)
+      expect(written.split(`[ref: ${item.id}]`)).toHaveLength(2)
+    })
     expect(state.status).toBe("completed")
     const gate = readLeanJson(directory, "gate.json") as GateResult
     expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
@@ -367,7 +385,7 @@ describe("lean drafting with several documents", () => {
     expect(model.count(AGENT.finalize)).toBe(0)
   }, 120_000)
 
-  test("an answer to a first-document question repeats earlier work but its accepted draft before starting the later document", async () => {
+  test("an answer to a first-document question repeats that document's work but its accepted draft before starting the later document", async () => {
     const directory = matter()
     const firstChanges: Reply = prompt => {
       const answered = prompt.includes("No remedy; say so.")
@@ -397,9 +415,12 @@ describe("lean drafting with several documents", () => {
     const resumed = await runLean(directory, { sessions: answered.port })
     expect(resumed.status).toBe("completed")
     // Only the later document is drafted; the first document's accepted draft is kept.
-    expect(answered.counts()).toEqual([2, 2, 2, 1])
+    expect(answered.counts()).toEqual([2, 1, 2, focusedNotesInputs(directory).length])
     const rerun = Object.keys(resumed.stages).filter(step => resumed.stages[step as keyof typeof resumed.stages]?.finished_at !== blocked.stages[step as keyof typeof blocked.stages]?.finished_at)
-    expect(rerun).toEqual(["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "d2.draft", "d2.review", "d2.review-independent", "d2.review-wording", "d2.review-client-disadvantage", "d2.change-plan", "d2.change-prepare", "d2.changes", "d2.change-review", "d2.apply", "finalize", "checklist-check", "package-review", "gate"])
+    // The preparation steps read only run-level answers, and a step reads only
+    // the questions asked at or before it, so the first document's reviews and
+    // change plan stay done too: the answer re-runs its changes step onward.
+    expect(rerun).toEqual(["d1.changes", "d1.change-review", "d1.apply", "d2.draft", "d2.review", "d2.review-independent", "d2.review-wording", "d2.review-client-disadvantage", "d2.change-plan", "d2.change-prepare", "d2.changes", "d2.change-review", "d2.apply", "finalize", "checklist-check", "package-review", "gate"])
     expect(readParagraphs(directory, "d2", "paragraphs-applied.json").map(row => row.text)).toContain(
       "The goods will be delivered as the supply note states: The supplier shall deliver the goods within thirty days of the order date, and late delivery carries no remedy.")
 
@@ -411,7 +432,7 @@ describe("lean drafting with several documents", () => {
     const reapplied = await runLean(directory, { sessions: edited.port })
     expect(reapplied.status).toBe("completed")
     // An edited rationale reaches the dependent covering letter through its review and change plan, not a redraft.
-    expect(edited.counts()).toEqual([0, 1, 1, 1])
+    expect(edited.counts()).toEqual([0, 1, 1, focusedNotesInputs(directory).length])
     expect(edited.count(AGENT["change-review"])).toBe(2)
     expect(edited.count(AGENT["change-plan"])).toBe(1)
     expect(edited.count(AGENT["change-prepare"])).toBe(0)
@@ -438,7 +459,7 @@ describe("lean drafting with several documents", () => {
     const resume = scriptedModel(replies)
     const resumed = await runLean(directory, { sessions: resume.port })
     expect(resumed.status).toBe("completed")
-    expect(resume.counts()).toEqual([2, 1, 1, 1])
+    expect(resume.counts()).toEqual([2, 1, 1, focusedNotesInputs(directory).length])
     expect(resume.sessions.every(session => !session.title.includes("Supply note"))).toBe(true)
     ;(["d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply"] as const).forEach(step => expect(resumed.stages[step]?.finished_at).toBe(first.stages[step]?.finished_at))
   }, 120_000)

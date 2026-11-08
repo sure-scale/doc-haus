@@ -6,7 +6,7 @@ import {
   currentChronologyChatReferences,
   type ChronologyChatReference,
 } from "./chronology/model"
-import { draftingUpdateAdmission } from "../../../../dochaus/lib/drafting-update-admission"
+import { draftingRunDrafted, draftingUpdateAdmission } from "../../../../dochaus/lib/drafting-update-admission"
 import { furnitureLegend } from "../../../../dochaus/lib/furniture-legend"
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import type { CompareParams } from "../api/ingest/compare"
@@ -550,6 +550,10 @@ export default function ChatPanel({
   const updateAdmission = run ? draftingUpdateAdmission(run) : "closed"
   const updateTooLate = updateAdmission === "closed"
   const clarifyingRun = updateAdmission === "clarification"
+  // Before the run has written a draft there is no current draft to update;
+  // the heading and the composer's button both say so.
+  const drafted = Boolean(run && draftingRunDrafted(run))
+  const heading = updatingRun && drafted ? "Update current draft" : title
   async function sendRunUpdate() {
     const draft = input
     if (checkingReferencesRef.current) return
@@ -721,6 +725,7 @@ export default function ChatPanel({
       hasAttachments={attachments.length > 0 || scopedChronologyReferences.length > 0}
       draftingUpdate={updatingRun}
       draftingClarification={clarifyingRun}
+      drafted={drafted}
       pinned={pinned}
       available={available}
       agent={agent}
@@ -761,9 +766,9 @@ export default function ChatPanel({
 
   return (
     <div className="card chat-card design-conversation">
-      {!own && (updatingRun || title) && (
+      {!own && heading && (
         <div className="chat-heading">
-          <h2>{updatingRun ? "Update current draft" : title}</h2>
+          <h2>{heading}</h2>
         </div>
       )}
       <WordWarning />
@@ -1048,10 +1053,12 @@ export default function ChatPanel({
       {updatingRun && (
         <p className="run-note" role="status">
           {updateTooLate
-            ? "Applying or finishing this draft. Wait for work to settle before clarifying a held checklist, or keep changes for a later amendment. You can still answer specific questions."
+            ? "Applying or finishing this draft. Keep further changes for a later amendment. You can still answer specific questions."
             : clarifyingRun
               ? "Clarify the source or applicability for checklist inspection. This preserves the draft and proposed amendments. A supported wording correction can then be submitted with Continue drafting; clarification does not approve a proposal or edit wording."
-              : "Messages here update the current draft after the current step. Earlier work may be repeated to reflect your instructions."}
+              : drafted
+                ? "Messages here update the current draft after the current step. Earlier work may be repeated to reflect your instructions."
+                : "Messages here go to the drafting run after the current step. Earlier work may be repeated to reflect your instructions."}
         </p>
       )}
       {updatingRun && !own && actions.error && (

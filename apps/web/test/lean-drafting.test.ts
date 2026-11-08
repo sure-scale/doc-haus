@@ -1,4 +1,4 @@
-import { draftingUpdateAdmission } from "../../../dochaus/lib/drafting-update-admission"
+import { draftingRunDrafted, draftingUpdateAdmission } from "../../../dochaus/lib/drafting-update-admission"
 import { afterEach, expect, test } from "bun:test"
 import path from "node:path"
 import { createElement } from "react"
@@ -80,6 +80,27 @@ test("drafting status reads a lean run's state", async () => {
   expect(await getDraftingStatus("matter-none")).toBeUndefined()
   respond({ ...completed, stages: { ...completed.stages, gate: undefined } })
   await expect(getDraftingStatus("matter-x")).rejects.toThrow("Drafting workflow status response is invalid.")
+})
+
+test("connection waiting stays running, explains automatic recovery, and keeps Pause available", async () => {
+  const now = Date.parse(start.status.updated_at)
+  const connection_wait = { last_successful_contact: now - 10_000, next_retry: now + 5_000 }
+  const body = { ...start.status, connection_wait }
+  respond(body)
+  const status = lean(await getDraftingStatus("matter-reconnecting"))
+  expect(status).toMatchObject({ status: "running", in_flight: true, connection_wait })
+  expect(runHeadline(status, now)).toMatchObject({ tone: "running", title: "Reconnecting…", meta: expect.arrayContaining(["Progress saved — resumes automatically", "Retrying in 5s"]) })
+  const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, choose: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
+  const html = renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
+  expect(html).toContain("Reconnecting…")
+  expect(html).toContain("Progress saved — resumes automatically")
+  expect(html).toContain("Pause drafting")
+  expect(html).not.toContain("Continue drafting")
+  for (const fixture of [completed, blockedGate, failed, orphaned, pausedRun()])
+    expect(runHeadline(lean({ ...fixture, connection_wait }), now).title).not.toBe("Reconnecting…")
+  expect(runHeadline(lean({ ...body, connection_wait: null }), now).title).not.toBe("Reconnecting…")
+  for (const invalid of ["waiting", {}, { ...connection_wait, next_retry: "soon" }, { ...connection_wait, last_successful_contact: -1 }])
+    expect(isLeanDraftingStatus({ ...body, connection_wait: invalid })).toBe(false)
 })
 
 test("a review draft delivered with unresolved checklist findings is read from ingest and named apart from a clean completion", async () => {
@@ -229,7 +250,10 @@ test("the header offers Pause only while the run is working; a paused run offers
   expect(stopped).not.toContain("Continue runs a repair round")
   expect(runHeadline(pausedRun(), now)).toMatchObject({ tone: "paused", title: "Paused at apply changes" })
   expect(runOutcome(pausedRun())?.text).toBe("Paused at your request. Continue drafting (above) picks up from the step that was in progress.")
-  expect(draftingUpdateAdmission({ ...pausedRun(), stages: { ...pausedRun().stages, "checklist-check": { status: "blocked" } } })).toBe("closed")
+  // A pause at the held checklist is not a settled hold; a pause before apply
+  // has not reached the late steps, whatever the earlier pass left after it.
+  expect(draftingUpdateAdmission({ ...pausedRun(), stages: { ...blockedGate.stages, "checklist-check": { status: "blocked" } } })).toBe("closed")
+  expect(draftingUpdateAdmission({ ...pausedRun(), stages: { ...pausedRun().stages, "checklist-check": { status: "blocked" } } })).toBe("update")
 })
 
 /** Stopped by the lawyer while a question and a request were still open. */
@@ -676,4 +700,18 @@ test("late drafting admission exposes only settled blocked checklist clarificati
     expect(draftingUpdateAdmission({ ...status, status: state })).toBe("closed")
   expect(draftingUpdateAdmission({ ...status, stages: { "d1.apply": { status: "done" } } })).toBe("closed")
   expect(draftingUpdateAdmission({ ...status, status: "running", stages: { "d1.draft": { status: "running" } } })).toBe("update")
+})
+
+test("late admission counts only the steps the walk has reached", () => {
+  const done = { status: "done" }
+  const status = lean(structuredClone(blockedGate))
+  // An early step failed again; apply and finalize are left from the earlier pass.
+  const rerun = { ...status, status: "failed", stages: { spine: { status: "failed" }, "d1.draft": done, "d1.apply": done, finalize: done, "checklist-check": { status: "pending" }, gate: { status: "pending" } } }
+  expect(draftingUpdateAdmission(rerun)).toBe("update")
+  expect(draftingRunDrafted(rerun)).toBe(false)
+  // The checklist loop runs after apply and finalize: too late for an update.
+  const checking = { ...status, status: "running", in_flight: true, stages: { spine: done, "d1.draft": done, "d1.apply": done, finalize: done, "checklist-check": { status: "running" }, gate: { status: "pending" } } }
+  expect(draftingUpdateAdmission(checking)).toBe("closed")
+  expect(draftingRunDrafted(checking)).toBe(true)
+  expect(draftingRunDrafted({ stages: { spine: done, "d1.draft": { status: "running" } } })).toBe(false)
 })

@@ -7,7 +7,7 @@ import { enqueueLeanRequest } from "./requests"
 import { restoreLeanStage } from "./restore-stage"
 import { runLean } from "./runner"
 import { LEAN_STAGE_AGENTS } from "./stages"
-import { leanDir, matterRelative, readLeanState } from "./state"
+import { leanDir, matterRelative, readLeanState, readLeanText } from "./state"
 import { happyLeanReplies, leanFixtureMatter, scriptedLeanModel } from "./test-support"
 
 const directories: string[] = []
@@ -29,6 +29,8 @@ test("a lean matter copied to another folder restores and resumes there and reco
 
   enqueueLeanRequest(original, { kind: "continue" })
   expect((await runLean(original, { sessions: scriptedLeanModel().port })).status).toBe("completed")
+  const notes = readLeanText(original, "drafting-notes.md")
+  expect(notes).toContain("The document records the supplied terms.")
 
   const parent = mkdtempSync(path.join(tmpdir(), "lean-portable-copy-"))
   directories.push(parent)
@@ -39,7 +41,11 @@ test("a lean matter copied to another folder restores and resumes there and reco
   const resume = scriptedLeanModel({ [LEAN_STAGE_AGENTS.finalize]: happyLeanReplies()[LEAN_STAGE_AGENTS.finalize] })
   const resumed = await runLean(copy, { sessions: resume.port })
   expect(resumed.status).toBe("completed")
-  expect(resume.agents()).toEqual([LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS.finalize, LEAN_STAGE_AGENTS["package-review"]])
+  expect(resume.agents()).toEqual([LEAN_STAGE_AGENTS["change-review"], LEAN_STAGE_AGENTS["package-review"]])
+  // Copied content-keyed prose is portable too: restoring earlier stages
+  // rebuilds the same notes without asking their unchanged sections again.
+  expect(readLeanText(copy, "drafting-notes.md")).toBe(notes)
+  expect(readLeanState(copy)?.stages.finalize?.status).toBe("done")
   expect(readLeanState(copy)?.stages.gate?.status).toBe("done")
   expect(readLeanDocuments(copy)?.status).toBe("completed")
 

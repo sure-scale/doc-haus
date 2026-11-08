@@ -145,6 +145,12 @@ test("a stopped run asks for nothing; a running one nothing is working on asks t
   expect(attention(activity([], { ...base, status: "running", in_flight: false })).map((item) => item.kind)).toEqual(["stalled"])
 })
 
+test("a run stopped on credit asks for credit, not a reconnect", () => {
+  const base = { owner_session_id: "run", questions: [] }
+  expect(attention(activity([], { ...base, status: "failed", provider_stop: "credit" })).map((item) => item.kind)).toEqual(["credit"])
+  expect(attention(activity([], { ...base, status: "failed", provider_stop: "auth" })).map((item) => item.kind)).toEqual(["provider"])
+})
+
 test("the spend export quotes commas and quotes and defuses formula cells", () => {
   const titled = { ...matter, title: 'Alder, "Phase 2"', client: "Alder Ltd", reference: "AL-7" } as Matter
   const csv = spendCsv([

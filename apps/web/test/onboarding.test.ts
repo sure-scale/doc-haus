@@ -6,6 +6,7 @@ import { visibleFields } from "../src/components/ai-setup/connection-fields"
 import ModelFields from "../src/components/ai-setup/ModelFields"
 import ProviderPicker from "../src/components/ai-setup/ProviderPicker"
 import { connectionChoices, methodDefaults } from "../src/components/ai-setup/ConnectionEditor"
+import { setupProgress } from "../src/components/ai-setup/AISetup"
 import type { Provider } from "../src/components/settings/types"
 import type { IntegrationInfo } from "@opencode/client"
 
@@ -48,4 +49,11 @@ test("hidden native defaults are submitted only while their condition is active"
   const fields = [{ key: "kind", type: "string" as const }, { key: "account", type: "string" as const, hidden: true, when: [{ key: "kind", op: "eq" as const, value: "team" }] }]
   expect(visibleFields(fields, { kind: "team" }, true).map(field => field.key)).toEqual(["kind", "account"])
   expect(visibleFields(fields, { kind: "personal" }, true).map(field => field.key)).toEqual(["kind"])
+})
+
+test("a saved setup keeps its connection step done after the candidate session clears", () => {
+  const base = { provider: true, models: true, test: true, loading: false, busy: false, saving: false }
+  expect(setupProgress({ ...base, configured: true, saved: false }).connection).toBe(true)
+  expect(setupProgress({ ...base, configured: false, saved: true }).connection).toBe(true)
+  expect(setupProgress({ ...base, configured: false, saved: false }).connection).toBe(false)
 })

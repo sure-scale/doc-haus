@@ -4,14 +4,14 @@ import { ACT_RECORD_SAMPLES } from "./act-record"
 import { readParagraphs } from "./checks"
 import { readLeanDocuments } from "./deliverables"
 import type { GateResult } from "./gate"
-import { coverageItems, coveragePlanHash, readLeanCoverage } from "./package-coverage"
+import { NO_NEW_DOCUMENT, coverageItems, coveragePlanHash, readLeanCoverage } from "./package-coverage"
 import { readLeanPlan, type LeanPlan } from "./plan"
 import { openItem } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES } from "./stages"
 import { leanFile, readLeanJson, readLeanText, readOpenItems, readQuestions, writeLeanText, writeOpenItems } from "./state"
-import { AGENT, NO_FINDINGS, actRecordJob, actRecordOf, cleanupMatters, draftingNotes, listedActs, matter, noChanges, registering, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, actRecordJob, actRecordOf, cleanupMatters, draftingNotes, labelledPart, listedActs, matter, noChanges, registering, scriptedModel, type Reply } from "./test-support"
 
 // Plan coverage through the whole run (runLean): the outline's placement job,
 // its revision requests to the outline session, and what the later steps
@@ -61,12 +61,12 @@ const coverageOf = (...acts: Instructed[]): Record<string, Reply> => ({
 
 /** The outline agent: `first` answers the outline prompt, `revised` any
  * revision request, and each part gets one plain paragraph, or `part`'s. */
-const outliner = (first: string, revised = first, part: Reply = () => "The terms are recorded."): Reply => (text, index) =>
+const outliner = (first: string, revised = first, part: Reply = text => labelledPart(text, "The terms are recorded.")): Reply => (text, index) =>
   /^Draft part \d+ of \d+ of "/m.test(text) ? part(text, index) : text.startsWith(REVISE) ? revised : first
 
 /** Parts whose resolution leaves its meeting date to be inserted: a draft item of d1's own. */
 const MEETING = "[insert meeting date]"
-const dated: Reply = text => /^Draft part \d+ of \d+ of "Committee resolution"/m.test(text) ? `The approval is given on ${MEETING}.` : "The terms are recorded."
+const dated: Reply = text => labelledPart(text, /^Draft part \d+ of \d+ of "Committee resolution"/m.test(text) ? `The approval is given on ${MEETING}.` : "The terms are recorded.")
 const draftItems = (directory: string, document: string) => readOpenItems(directory).filter(item => item.stage === "draft" && item.ref.document === document)
 
 /** A whole run whose act record lists `acts` (an empty list is a record that
@@ -104,7 +104,7 @@ async function laterPartiesEdited(part?: Reply) {
 }
 
 describe("plan coverage through the run", () => {
-  test("an act no planned document carries brings a companion document executed by its party; both are drafted and delivered and no question is asked", async () => {
+  test("an act no planned document carries: the revision is told to move it, not add a document; a revision that plans a companion anyway is drafted and delivered and no question is asked", async () => {
     const directory = prepared()
     const deliverables = registering()
     const model = scriptedModel(replies({
@@ -118,7 +118,7 @@ describe("plan coverage through the run", () => {
     expect(revisions(model)).toEqual([expect.objectContaining({ sessionID: outlinePrompt(model).sessionID })])
     const issues = revisions(model)[0]!.text.split("\n").filter(line => line.startsWith("- "))
     expect(issues).toEqual([`- The instructions direct "approve the revised schedule" ("${APPROVE}" [source: request]), but no planned document carries it. ` +
-      'Plan it in a document executed by "the Orchard Committee", adding one when none is planned.'])
+      'Plan it in a planned document executed by "the Orchard Committee". ' + NO_NEW_DOCUMENT])
     // The recorded acts are placed once per plan: the outline and its revision.
     expect(model.count(AGENT.coverage)).toBe(2)
 
@@ -157,7 +157,7 @@ describe("plan coverage through the run", () => {
       outline("# Schedule approval\nForm: other\nExecuted by: Kestrel Works\n## Approval\nThe approval.", RELEASE_LETTER),
       outline("# Schedule approval\nForm: other\nExecuted by: the Orchard Committee; Kestrel Works\n## Approval\nThe approval.", RELEASE_LETTER),
       { id: "d1", title: "Schedule approval", executed_by: ["the Orchard Committee", "Kestrel Works"] }],
-    ["the revision moves the act to a companion document executed by its party",
+    ["told to move the act, not add a document, the revision plans a companion document executed by its party anyway, which is kept",
       outline("# Schedule approval\nForm: other\nExecuted by: Kestrel Works\n## Approval\nThe approval.\n## Release\nThe release."),
       outline(RESOLUTION, RELEASE_LETTER),
       { id: "d1", title: "Committee resolution", executed_by: ["the Orchard Committee"] }],
@@ -170,7 +170,7 @@ describe("plan coverage through the run", () => {
       expect(revisions(model)).toEqual([expect.objectContaining({ sessionID: outlinePrompt(model).sessionID })])
       expect(revisions(model)[0]!.text.split("\n").filter(line => line.startsWith("- "))).toEqual([
         `- "approve the revised schedule" ("${APPROVE}" [source: request]) must be taken by "the Orchard Committee", but d1 "Schedule approval" is executed by "Kestrel Works". ` +
-        'Move the act to a document executed by "the Orchard Committee", or add a companion document executed by "the Orchard Committee".',
+        'Move the act into a planned document executed by "the Orchard Committee". ' + NO_NEW_DOCUMENT,
       ])
       const plan = readLeanPlan(directory)!
       expect(plan.documents.find(row => row.id === carrier.id)).toMatchObject({ title: carrier.title, executed_by: [...carrier.executed_by] })
@@ -254,8 +254,15 @@ describe("plan coverage through the run", () => {
     const items = coverageItems(directory)
     expect(items).toEqual([expect.objectContaining({ stage: "finalize", kind: "omission", detail: expect.stringContaining("Plan coverage could not be checked") })])
     const [item] = items
-    expect(model.prompts.find(prompt => prompt.agent === AGENT.finalize)!.text).toContain(`- ${item!.id}: `)
-    expect(readLeanText(directory, "drafting-notes.md")).toContain(`[ref: ${item!.id}]`)
+    const notes = model.prompts.filter(prompt => prompt.agent === AGENT.finalize)
+    const points = notes.flatMap(prompt => {
+      const block = /<open_point>\n([\s\S]*?)\n<\/open_point>/.exec(prompt.text)?.[1]
+      return block ? [JSON.parse(block)] : []
+    })
+    expect(points.filter(point => point.detail === item!.detail)).toEqual([{ kind: item!.kind, detail: item!.detail, location: item!.ref }])
+    // The focused writer explains the point; code attaches its exact reference once.
+    expect(notes.every(prompt => !prompt.text.includes(`[ref: ${item!.id}]`))).toBe(true)
+    expect(readLeanText(directory, "drafting-notes.md")!.split(`[ref: ${item!.id}]`)).toHaveLength(2)
     const gate = gateOf(directory)
     expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
     expect(gate.disclosed).toEqual([expect.objectContaining({ id: item!.id, status: "disclosed" })])

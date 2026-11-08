@@ -125,16 +125,21 @@ export type LeanDraftingStatus = {
   /** Set while the run is blocked only because the lawyer paused it. */
   paused_at?: string
   /** Set while the run is failed only because the model provider or setup needs
-   * the lawyer in Settings (dochaus/lib/provider-stop.ts); Continue resumes. */
-  provider_stop?: "auth" | "setup" | "model"
+   * the lawyer, in Settings or (credit) with the provider
+   * (dochaus/lib/provider-stop.ts); Continue resumes. */
+  provider_stop?: "auth" | "setup" | "model" | "credit"
   owner_session_id: string
   model: { providerID: string; modelID: string } | null
   created_at: string
   updated_at: string
-  research?: { status: "completed" | "limited" | "not-needed"; findings: unknown[]; limitations: string[] } | null
+  // checked_sources: distinct sources behind the findings the review approved.
+  research?: { status: "completed" | "limited" | "not-needed"; findings: unknown[]; limitations: string[]; checked_sources: number } | null
   stages: Record<LeanStep, LeanStageStatus>
   /** True while ingest runs this matter's coordinator. */
   in_flight: boolean
+  /** Ephemeral transport observation only, while this run reconnects. Epoch
+   * milliseconds; this neither changes stage status nor admits a new turn. */
+  connection_wait?: { last_successful_contact: number | null; next_retry: number } | null
   /** The lawyer stopped this run; derived by ingest at read time. `stop_reason` is display only. */
   stopped?: boolean
   pending_requests: number
@@ -215,6 +220,11 @@ export function isLeanDraftingStatus(value: unknown): value is LeanDraftingStatu
     typeof value.owner_session_id === "string" &&
     typeof value.updated_at === "string" &&
     typeof value.in_flight === "boolean" &&
+    (value.connection_wait == null ||
+      (record(value.connection_wait) &&
+        (value.connection_wait.last_successful_contact === null ||
+          (typeof value.connection_wait.last_successful_contact === "number" && Number.isFinite(value.connection_wait.last_successful_contact) && value.connection_wait.last_successful_contact >= 0)) &&
+        typeof value.connection_wait.next_retry === "number" && Number.isFinite(value.connection_wait.next_retry) && value.connection_wait.next_retry >= 0)) &&
     (value.stopped === undefined || typeof value.stopped === "boolean") &&
     Number.isInteger(value.pending_requests) &&
     Array.isArray(value.open_items) &&

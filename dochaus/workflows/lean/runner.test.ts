@@ -5,12 +5,14 @@ import { stagePrompt } from "./prompts"
 import { checkChanges } from "./change-checks"
 import { readParagraphs } from "./checks"
 import type { GateResult } from "./gate"
+import { readLeanEvents } from "./events"
+import { packageScopeQuestionID } from "./package-scope"
 import { enqueueLeanRequest } from "./requests"
 import type { RepairRound } from "./repairs"
 import { runLean } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS } from "./stages"
-import { leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText } from "./state"
-import { AGENT, DRAFT, NO_FINDINGS, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, matter, noChanges, pidOf, registering, sameSession, scriptedModel, type Reply } from "./test-support"
+import { REVIEW_STAGES, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
+import { AGENT, DRAFT, NO_FINDINGS, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, noChanges, pidOf, registering, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // Real coordinator, checkers, renderer, pointer applier and comparison. Only the
 // model is scripted: each agent's reply is a function of the prompt it received.
@@ -38,6 +40,35 @@ const recommending: Reply = prompt => {
 
 afterEach(cleanupMatters)
 
+test("pause settles while child creation is waiting and forwards cancellation to that wait", async () => {
+  const directory = matter()
+  const model = scriptedModel(happyPath)
+  const pause = new AbortController()
+  let entered!: () => void
+  let release!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve })
+  let observed: AbortSignal | undefined
+  const sessions: typeof model.port = { ...model.port, createSession(input) {
+    observed = input.signal
+    entered()
+    return new Promise<string>(resolve => { release = () => resolve("created-after-pause") })
+  } }
+  const working = runLean(directory, { sessions, pause: pause.signal })
+  await started
+  pause.abort()
+  try {
+    const result = await Promise.race([working, Bun.sleep(100).then(() => { throw new Error("Pause did not settle child creation") })])
+    expect(result.status).toBe("blocked")
+    expect(result.paused_at).toBeDefined()
+    expect(observed).toBe(pause.signal)
+    expect(model.prompts).toHaveLength(0)
+  } finally {
+    release()
+    await working
+  }
+  expect(model.prompts).toHaveLength(0)
+})
+
 describe("lean drafting runner", () => {
   test("a failed check is retried in the same session with the checker's issues; the fourth failure stops the run", async () => {
     const directory = matter()
@@ -54,7 +85,7 @@ describe("lean drafting runner", () => {
     expect(state.status).toBe("failed")
     expect(state.stop_reason).toStartWith("d1.draft: outline: checker failed after 3 retries: ")
     expect(state.stop_reason).toContain("has no \"# \" title line")
-    expect(state.stages["d1.draft"]).toMatchObject({ status: "failed", attempts: 4, calls: 4, session_id: "ses_child12" })
+    expect(state.stages["d1.draft"]).toMatchObject({ status: "failed", attempts: 4, calls: 4, session_id: "ses_child13" })
     expect(state.stages["d1.review"]?.status).toBe("pending")
     expect(model.sessions.find(row => row.agent === AGENT.draft)).toMatchObject({ parentID: "ses_owner", agent: AGENT.draft, permissions: LEAN_CHILD_PERMISSIONS })
     expect(existsSync(leanFile(directory, "d1/draft.md"))).toBe(false)
@@ -99,8 +130,9 @@ describe("lean drafting runner", () => {
     const reviewed = scriptedModel(replies)
     const afterReview = await runLean(directory, { sessions: reviewed.port })
     expect(afterReview.status).toBe("completed")
-    expect(reviewed.counts()).toEqual([0, 0, 1, 1])
-    expect(reviewed.prompts.find(row => row.agent === AGENT.finalize)?.text).toContain("Reviewed again by the lawyer.")
+    expect(reviewed.counts().slice(0, 3)).toEqual([0, 0, 1])
+    expect(reviewed.count(AGENT.finalize)).toBeGreaterThan(0)
+    expect(reviewed.prompts.some(row => row.agent === AGENT.finalize && row.text.includes("Reviewed again by the lawyer."))).toBe(true)
     expect(afterReview.stages.finalize?.input_sha).not.toBe(first.stages.finalize?.input_sha)
     expect(reviewed.count(AGENT["package-review"])).toBe(1)
     expect(afterReview.stages["d1.apply"]?.finished_at).toBe(first.stages["d1.apply"]?.finished_at)
@@ -112,7 +144,8 @@ describe("lean drafting runner", () => {
     const edited = scriptedModel(replies)
     const rerun = await runLean(directory, { sessions: edited.port })
     expect(rerun.status).toBe("completed")
-    expect(edited.counts()).toEqual([0, 0, 0, 1])
+    expect(edited.counts().slice(0, 3)).toEqual([0, 0, 0])
+    expect(edited.count(AGENT.finalize)).toBeGreaterThan(0)
     expect(rerun.stages["d1.draft"]?.finished_at).toBe(first.stages["d1.draft"]?.finished_at)
     expect(rerun.stages["d1.apply"]?.finished_at).not.toBe(first.stages["d1.apply"]?.finished_at)
     expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ applied: [{ id: "a1", mode: "code" }], unapplied: [] })
@@ -234,7 +267,7 @@ describe("lean drafting runner", () => {
       .toContain("The supplier shall deliver the goods within thirty days of the order date.")
   }, 120_000)
 
-  test("a question is never answered by the run; an answer repeats the review, not the accepted draft, and is not asked again", async () => {
+  test("a question is never answered by the run; an answer repeats the step that asked it, not the accepted draft or its reviews, and is not asked again", async () => {
     const directory = matter()
     const asking = sameSession(prompt => JSON.stringify({ ...JSON.parse(changes(prompt, 0)), questions: [{ question: "Should late delivery carry a remedy?", kind: "judgment", context: "The terms are silent." }] }))
     const model = scriptedModel({ ...happyPath, [AGENT.changes]: asking })
@@ -251,12 +284,141 @@ describe("lean drafting runner", () => {
     enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: "No remedy; leave the terms silent." })
     const answered = scriptedModel({ ...happyPath, [AGENT.changes]: asking })
     const resumed = await runLean(directory, { sessions: answered.port })
-    expect(answered.counts()).toEqual([0, 1, 1, 1])
+    expect(answered.counts().slice(0, 3)).toEqual([0, 0, 1])
+    expect(answered.count(AGENT.finalize)).toBeGreaterThan(0)
     expect(answered.prompts.find(prompt => prompt.agent === AGENT.changes)!.text).toContain("No remedy; leave the terms silent.")
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: question!.id, status: "answered" })])
     expect(resumed.status).toBe("completed")
     expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "execution_ready" })
     expect(readLeanState(directory)!.stop_reason).toBeNull()
     expect(readdirSync(leanFile(directory, "requests")).filter(name => name.endsWith(".json"))).toEqual([])
+  }, 120_000)
+
+  test("an answer to intake's question keeps the instruction list and the discrepancy record done and re-runs intake onward", async () => {
+    const directory = matter()
+    const ready = JSON.stringify({ ready: true, jurisdiction: "None needed", scope: "Supplied terms only", acting_for: { party: "", basis: "none" }, dates: { document_date: { date: "", basis: "today" }, operative_dates: [] } })
+    // Asks until its prompt carries the answer, as a model reading it would.
+    const asking: Reply = prompt => prompt.includes("No remedy; leave the terms silent.") ? ready : JSON.stringify({ questions: [{ question: "Should late delivery carry a remedy?", kind: "judgment", context: "The terms are silent." }] })
+    const blocked = await runLean(directory, { sessions: scriptedModel({ ...happyPath, [AGENT.intake]: asking }).port })
+    const [question] = readQuestions(directory)
+    expect(question).toMatchObject({ stage: "intake", status: "open" })
+    expect(question!.document).toBeUndefined()
+    expect(blocked.status).toBe("blocked")
+    expect(blocked.stages.instructions).toMatchObject({ status: "done" })
+    expect(blocked.stages.discrepancy).toMatchObject({ status: "done" })
+    const events = readLeanEvents(directory).length
+
+    enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: "No remedy; leave the terms silent." })
+    const answered = scriptedModel({ ...happyPath, [AGENT.intake]: asking })
+    const resumed = await runLean(directory, { sessions: answered.port })
+
+    expect(resumed.status).toBe("completed")
+    // The steps before intake never read its answer: each keeps its key and makes no call.
+    for (const step of ["instructions", "discrepancy"] as const) {
+      expect([step, resumed.stages[step]?.status, resumed.stages[step]?.input_sha]).toEqual([step, "done", blocked.stages[step]!.input_sha!])
+      expect([step, answered.count(AGENT[step])]).toEqual([step, 0])
+    }
+    const later = readLeanEvents(directory).slice(events)
+    expect(later.filter(event => event.event === "started").map(event => event.stage)).not.toContain("instructions")
+    expect(later.filter(event => event.event === "started").map(event => event.stage)).not.toContain("discrepancy")
+    // Intake reads it, in its prompt as in its key, and runs once more.
+    expect(resumed.stages.intake?.input_sha).not.toBe(blocked.stages.intake!.input_sha)
+    expect(answered.count(AGENT.intake)).toBe(1)
+    expect(answered.prompts.find(prompt => prompt.agent === AGENT.intake)!.text).toContain("No remedy; leave the terms silent.")
+    expect(stagePrompt(directory, "d1.review")).toContain("No remedy; leave the terms silent.")
+  }, 120_000)
+
+  test("an answer to a document's changes question keeps instructions through spine, the reviews, the change plan and its preparation done, and re-runs changes onward", async () => {
+    const preparation = ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine"] as const
+    const directory = matter()
+    const asking = sameSession(prompt => JSON.stringify({ ...JSON.parse(changes(prompt, 0)), questions: [{ question: "Should late delivery carry a remedy?", kind: "judgment", context: "The terms are silent." }] }))
+    const blocked = await runLean(directory, { sessions: scriptedModel({ ...happyPath, [AGENT.changes]: asking }).port })
+    const [question] = readQuestions(directory)
+    expect(question).toMatchObject({ stage: "changes", document: "d1", status: "open" })
+    expect(blocked.stages["d1.change-plan"]?.status).toBe("done")
+
+    enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: "No remedy; leave the terms silent." })
+    const answered = scriptedModel({ ...happyPath, [AGENT.changes]: asking })
+    const resumed = await runLean(directory, { sessions: answered.port })
+
+    expect(resumed.status).toBe("completed")
+    // The steps before changes never read its answer: each keeps its key and makes no call.
+    for (const step of preparation) {
+      expect([step, resumed.stages[step]?.status, resumed.stages[step]?.input_sha]).toEqual([step, "done", blocked.stages[step]!.input_sha!])
+      expect([step, answered.count(AGENT[step])]).toEqual([step, 0])
+    }
+    for (const stage of [...REVIEW_STAGES, "change-plan", "change-prepare"] as const) {
+      expect([stage, resumed.stages[`d1.${stage}`]?.status, resumed.stages[`d1.${stage}`]?.input_sha]).toEqual([stage, "done", blocked.stages[`d1.${stage}`]!.input_sha!])
+      expect([stage, answered.count(AGENT[stage])]).toEqual([stage, 0])
+    }
+    expect(answered.count(AGENT.draft)).toBe(0)
+    expect(resumed.stages["d1.draft"]?.input_sha).toBe(blocked.stages["d1.draft"]!.input_sha!)
+    // Changes reads it, in its prompt as in its key; the change plan's prompt leaves it out, as its key does.
+    expect(answered.prompts.find(prompt => prompt.agent === AGENT.changes)!.text).toContain("No remedy; leave the terms silent.")
+    expect(stagePrompt(directory, "d1.changes")).toContain("No remedy; leave the terms silent.")
+    expect(stagePrompt(directory, "d1.change-plan")).not.toContain("No remedy; leave the terms silent.")
+    expect(stagePrompt(directory, "d1.review")).not.toContain("No remedy; leave the terms silent.")
+  }, 120_000)
+
+  test("an answer to a document's change-plan question re-runs the change plan onward and none of the document's reviews", async () => {
+    const directory = matter()
+    // The scripted plan rejects the review findings, as the default does, and asks one question.
+    const asking: Reply = prompt => {
+      const resolves = listedFindingIDs(prompt)
+      return JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], findings: resolves.length ? [{
+        disposition: "rejected", kind: "suggestion", detail: "The scripted plan adjudicates the review findings.", reason: "The scripted changes stage decides the amendments.",
+        documents: ["d1"], sources: [], limitations: ["Scripted fixture."], resolves,
+      }] : [], questions: [{ pid: pidOf(prompt, "The supplier shall deliver the goods."), question: "Should late delivery carry a remedy?", kind: "judgment", context: "The terms are silent." }] })
+    }
+    const blocked = await runLean(directory, { sessions: scriptedModel({ ...happyPath, [AGENT["change-plan"]]: asking }).port })
+    const [question] = readQuestions(directory)
+    expect(question).toMatchObject({ stage: "change-plan", document: "d1", status: "open" })
+    expect(blocked.status).toBe("blocked")
+    for (const stage of REVIEW_STAGES) expect([stage, blocked.stages[`d1.${stage}`]?.status]).toEqual([stage, "done"])
+
+    enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: "No remedy; leave the terms silent." })
+    const answered = scriptedModel({ ...happyPath, [AGENT["change-plan"]]: asking })
+    const resumed = await runLean(directory, { sessions: answered.port })
+
+    expect(resumed.status).toBe("completed")
+    // The reviews never read the change plan's answer: each keeps its key and makes no call.
+    for (const stage of REVIEW_STAGES) {
+      expect([stage, resumed.stages[`d1.${stage}`]?.input_sha]).toEqual([stage, blocked.stages[`d1.${stage}`]?.input_sha])
+      expect([stage, answered.count(AGENT[stage])]).toEqual([stage, 0])
+    }
+    expect(answered.count(AGENT.draft)).toBe(0)
+    // The change plan reads its own answer and runs once more.
+    expect(answered.count(AGENT["change-plan"])).toBe(1)
+    expect(answered.prompts.find(prompt => prompt.agent === AGENT["change-plan"])!.text).toContain("No remedy; leave the terms silent.")
+    expect(stagePrompt(directory, "d1.review")).not.toContain("No remedy; leave the terms silent.")
+    expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: question!.id, status: "answered" })])
+  }, 120_000)
+
+  test("an answer to the gate's package-scope question after delivery keeps instructions through spine done and re-runs only the document's review and change path and the gate", async () => {
+    const preparation = ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine"] as const
+    const directory = matter()
+    const delivered = await runLean(directory, { sessions: scriptedModel(happyPath).port })
+    expect(delivered.status).toBe("completed")
+    // The gate's question as it asks it: the package's scope, with no document, and delivery not held.
+    const question: Question = { id: packageScopeQuestionID(["Payment is due on delivery."]), stage: "gate", status: "open", kind: "scope", mixed: true,
+      question: "The checklist check left this instruction open, so the package may not carry it:\nState when payment is due. No open decision recorded; state what is missing.\nAnswer the open decisions above (supply any missing fact or approval they name). If the package should carry it, say which planned document carries it; otherwise say it is outside this request.",
+      context: "Until a later check settles this instruction, it is disclosed with the review draft as left open; delivery is not held for it." }
+    writeQuestions(directory, [...readQuestions(directory), question])
+    enqueueLeanRequest(directory, { kind: "answer", question_id: question.id, answer: "Outside this request." })
+    const answered = scriptedModel(happyPath)
+    const resumed = await runLean(directory, { sessions: answered.port })
+
+    expect(resumed.status).toBe("completed")
+    for (const step of preparation) {
+      expect([step, resumed.stages[step]?.status, resumed.stages[step]?.input_sha]).toEqual([step, "done", delivered.stages[step]!.input_sha!])
+      expect([step, answered.count(AGENT[step])]).toEqual([step, 0])
+    }
+    expect(answered.count(AGENT.draft)).toBe(0)
+    expect(resumed.stages["d1.draft"]?.input_sha).toBe(delivered.stages["d1.draft"]!.input_sha!)
+    // The answer reaches the document through its own review onward, and the gate, which reads its own questions.
+    for (const step of ["d1.review", "d1.change-plan", "gate"] as const)
+      expect([step, resumed.stages[step]?.status, resumed.stages[step]?.input_sha === delivered.stages[step]!.input_sha]).toEqual([step, "done", false])
+    expect(answered.count(AGENT.review)).toBe(1)
+    expect(readQuestions(directory)).toContainEqual(expect.objectContaining({ id: question.id, status: "answered", answer: "Outside this request." }))
   }, 120_000)
 })

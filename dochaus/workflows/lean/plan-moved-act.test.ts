@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { readLeanEvents } from "./events"
-import { readLeanCoverage, type CoverageAct } from "./package-coverage"
+import { NO_NEW_DOCUMENT, readLeanCoverage, type CoverageAct } from "./package-coverage"
 import { leanSteps, readLeanPlan } from "./plan"
 import { runLean } from "./runner"
 import { readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
-import { AGENT, NO_FINDINGS, actRecordOf, cleanupMatters, draftingNotes, listedActs, matter, noChanges, scriptedModel } from "./test-support"
+import { AGENT, NO_FINDINGS, actRecordOf, cleanupMatters, draftingNotes, labelledPart, listedActs, matter, noChanges, scriptedModel } from "./test-support"
 
 // An answer that moves an instructed act to a separate document keeps that act
 // in the package: the act record lists it, blind to the plan, and the placement
@@ -45,7 +45,7 @@ const placement = (text: string) => {
 
 const PART = /^Draft part \d+ of \d+ of "([^"]*)"/m
 /** The outline agent: the release letter alone, the separate document on revision, and one plain paragraph per part. */
-const outliner = (text: string) => PART.test(text) ? "The terms are recorded." : text.startsWith(REVISE) ? SEPARATE : ONE
+const outliner = (text: string) => PART.test(text) ? labelledPart(text, "The terms are recorded.") : text.startsWith(REVISE) ? SEPARATE : ONE
 
 describe("an act an answer moves to a separate document", () => {
   test("listed with no planned document and no excluded_by, it sends the plan back for that document, which the run plans and drafts", async () => {
@@ -61,7 +61,7 @@ describe("an act an answer moves to a separate document", () => {
     // The plan without the separate document is not taken as covered: the act goes back to the outline.
     const revisions = readLeanEvents(directory).filter(event => event.stage === "draft" && event.step?.startsWith("outline revision") && event.event === "model_call")
     expect(revisions).toEqual([expect.objectContaining({ issues: [`The instructions direct "approve the revised schedule" ("${APPROVE}" [source: request]), but no planned document carries it. ` +
-      'Plan it in a document executed by "the Orchard Committee", adding one when none is planned.'] })])
+      'Plan it in a planned document executed by "the Orchard Committee". ' + NO_NEW_DOCUMENT] })])
     expect(readLeanPlan(directory)!.documents.map(row => [row.id, row.title, row.executed_by])).toEqual([
       ["d1", "Release letter", ["Kestrel Works"]], ["d2", "Committee resolution", ["the Orchard Committee"]],
     ])

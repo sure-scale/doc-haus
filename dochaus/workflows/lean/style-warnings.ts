@@ -1,7 +1,6 @@
-import { normalizePreferences } from "../../lib/drafting-preferences"
 import { lintDraftStyle } from "../../lib/markdown"
-import { readFirmPreferences } from "../../lib/preferences"
-import { plannedDocument, type DocID } from "./plan"
+import { appliedDraftingPreferences } from "../../lib/drafting-preferences"
+import { plannedDocument, runDateFormat, type DocID } from "./plan"
 import { matterSourceIDs } from "./quotes"
 import { templateSource } from "./template-contract"
 import { sourceText } from "./template-structure"
@@ -26,17 +25,18 @@ function sameWords(text: string) {
 }
 
 // Derive advisory presentation feedback from the authoritative current paragraph
-// records; do not persist a second, potentially stale style ledger.
-export function draftingStyleWarnings(rows: { pid: string; text: string }[]) {
-  const preferences = normalizePreferences(readFirmPreferences())
+// records; do not persist a second, potentially stale style ledger. The style is
+// the firm's with, until the firm sets its preferences, the date style the run froze.
+export function draftingStyleWarnings(directory: string, rows: { pid: string; text: string }[]) {
+  const preferences = appliedDraftingPreferences(runDateFormat(directory))
   return rows.flatMap(row => {
     const warnings = lintDraftStyle(row.text, preferences)
     return warnings.length ? [{ pid: row.pid, text: row.text, warnings }] : []
   })
 }
 
-export function draftingStyleWarningsBlock(rows: { pid: string; text: string }[], final = false) {
-  const warnings = draftingStyleWarnings(rows)
+export function draftingStyleWarningsBlock(directory: string, rows: { pid: string; text: string }[], final = false) {
+  const warnings = draftingStyleWarnings(directory, rows)
   if (!warnings.length) return ""
   return [
     "<drafting_style_warnings>",
@@ -51,15 +51,17 @@ export function draftingStyleWarningsBlock(rows: { pid: string; text: string }[]
 
 /** A non-blocking, human-facing appendix ensures surviving deviations remain
  * visible even when the notes writer does not mention the advisory handoff. */
-export function draftingStyleAdvisoryNotes(documents: { title: string; rows: { pid: string; text: string }[] }[]) {
+export function draftingStyleAdvisoryNotes(directory: string, documents: { title: string; rows: { pid: string; text: string }[] }[]) {
   const warnings = documents.flatMap(document => {
-    const issues = [...new Set(draftingStyleWarnings(document.rows).flatMap(row => row.warnings))]
+    const issues = [...new Set(draftingStyleWarnings(directory, document.rows).flatMap(row => row.warnings))]
     return issues.length ? [`- ${document.title}: ${issues.join("; ")}.`] : []
   })
   if (!warnings.length) return ""
   return [
     "## Drafting style advisories",
-    "The following date or number formats in the final documents differ from the saved drafting preferences. Exact source quotations and wording expressly preserved by instruction may intentionally retain their format. These presentation checks do not establish a substantive defect.",
+    `The following date or number formats in the final documents differ from ${appliedDraftingPreferences(runDateFormat(directory)).draftingConfigured
+      ? "the saved drafting preferences"
+      : "the style used until the firm sets its drafting preferences: the date style of the matter's sources, else the default"}. Exact source quotations and wording expressly preserved by instruction may intentionally retain their format. These presentation checks do not establish a substantive defect.`,
     ...warnings,
   ].join("\n\n")
 }

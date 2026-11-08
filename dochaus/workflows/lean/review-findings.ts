@@ -1,7 +1,6 @@
 import type { CounterpartyItem } from "../../lib/docx-markup"
 import { escapeTagOpeners } from "../../lib/untrusted"
-import { parseJsonObject } from "./change-checks"
-import { PID_REFERENCE, TOOL_SYNTAX_ISSUE, printedToolCall, record, type ParagraphRow } from "./checks"
+import { PID_REFERENCE, TOOL_SYNTAX_ISSUE, parseJsonObject, printedToolCall, record, type ParagraphRow } from "./checks"
 import { counterpartyFindings } from "./counterparty"
 import { requestedMemo } from "./deliverables"
 import { planActingFor, readLeanPlan, reviewStages, runPosture, type DocID } from "./plan"
@@ -58,7 +57,7 @@ export function acceptReviewReply(directory: string, document: DocID, stage: Rev
   { issues: string[]; record?: ReviewRecord; openItems: OpenItem[] } {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE], openItems: [] }
   const parsed = parseJsonObject(reply)
-  if (!parsed.ok) return { issues: [`${REVIEW_FINDINGS_CONTRACT} The reply could not be read: ${parsed.error}.`], openItems: [] }
+  if (!parsed.ok) return { issues: [`${REVIEW_FINDINGS_CONTRACT} ${parsed.error}`], openItems: [] }
   const value = parsed.value
   const playbook = stage === "review-playbook"
   if (!Array.isArray(value.findings) || (playbook && !nonempty(value.coverage)))
@@ -73,8 +72,22 @@ export function acceptReviewReply(directory: string, document: DocID, stage: Rev
   const findings = new Map<string, ReviewFinding>()
   value.findings.forEach((row, index) => {
     const at = `findings[${index}]`
-    if (!record(row) || !nonempty(row.finding) || !FINDING_ORIGINS.includes(row.origin as FindingOrigin) || !FINDING_BALANCES.includes(row.balance as FindingBalance)) {
-      issues.push(`${at} needs a finding, an origin (${FINDING_ORIGINS.join(", ")}) and a balance (${FINDING_BALANCES.join(", ")}).`)
+    if (!record(row)) {
+      issues.push(`${at} is not an object; each finding is one JSON object.`)
+      return
+    }
+    // The issue names the field and the value given, so the retry mends that field rather than resending the same object.
+    const given = (value: unknown) => value === undefined ? "missing" : JSON.stringify(value)
+    const choice = (field: "origin" | "balance", allowed: readonly string[]) =>
+      allowed.includes(row[field] as string) ? [] : [`${at}.${field} must be one of ${allowed.join(", ")}; it is ${given(row[field])}.`]
+    const text = nonempty(row.finding) ? row.finding.trim() : undefined
+    const invalid = [
+      ...(text ? [] : [`${at}.finding must say what is wrong and why; it is ${given(row.finding)}.`]),
+      ...choice("origin", FINDING_ORIGINS),
+      ...choice("balance", FINDING_BALANCES),
+    ]
+    if (!text || invalid.length) {
+      issues.push(...invalid)
       return
     }
     const balance = row.balance as FindingBalance
@@ -88,20 +101,20 @@ export function acceptReviewReply(directory: string, document: DocID, stage: Rev
       .map(pid => pid.trim().replace(/^\[(.*)\]$/, "$1")))] : []
     pids.filter(pid => !known.has(pid)).forEach(pid => issues.push(`${at}: [${pid}] is not a paragraph of the draft. Use only the [pid] values listed with the draft.`))
     const instead = nonempty(row.instead) ? row.instead.trim() : undefined
-    issues.push(...unknownPids(at, row.finding), ...(instead ? unknownPids(`${at}.instead`, instead) : []))
+    issues.push(...unknownPids(at, text), ...(instead ? unknownPids(`${at}.instead`, instead) : []))
     const sources = row.sources ?? []
     if (!Array.isArray(sources) || !sources.every(source => record(source) && nonempty(source.source_id) && nonempty(source.quote))) {
       issues.push(`${at}.sources must list {"source_id","quote"} pairs with exact nonempty quotes, or be empty.`)
       return
     }
     const finding: ReviewFinding = {
-      id: `f-${shortHash(`${document}/${stage}\0${target}\0${pids.toSorted().join(",")}\0${row.finding.trim().toLowerCase().replace(/\s+/g, " ")}`)}`,
+      id: `f-${shortHash(`${document}/${stage}\0${target}\0${pids.toSorted().join(",")}\0${text.toLowerCase().replace(/\s+/g, " ")}`)}`,
       document: target as FindingTarget,
       ...(pids.length ? { pids } : {}),
       origin: row.origin as FindingOrigin,
       balance,
       ...(favours ? { favours } : {}),
-      finding: row.finding.trim(),
+      finding: text,
       ...(instead ? { instead } : {}),
       sources: sources.map(source => ({ source_id: String(source.source_id).trim(), quote: String(source.quote).trim() })),
     }

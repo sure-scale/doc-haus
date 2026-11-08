@@ -4,15 +4,14 @@ import { checklistItemSchema, checklistFindingSchema, isDeliveryArtifactEvidence
 import { checklistProducerInputs } from "./checklist-source-context"
 import { CHECKLIST_JOB_PERMISSIONS, type ChecklistJobDeps, type ChecklistJobResult } from "./checklist-job"
 import { acceptChangePlan, checkChangePlan, readChangePlan, type ChangePlan, type ChangeGroup } from "./change-pipeline"
-import { readChangeList, readParagraphs, record, type ApplyResult, shownText } from "./checks"
-import { parseJsonObject } from "./change-checks"
+import { parseJsonObject, readChangeList, readParagraphs, record, type ApplyResult, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { documentRepairs } from "./repairs"
-import { packageCompositionBlock, retryPrompt } from "./prompts"
+import { QUESTION_WORDS, packageCompositionBlock, retryPrompt } from "./prompts"
 import { drainLeanRequests } from "./requests"
 import { LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, type LeanDeps } from "./stages"
 import { stageInputSha } from "./runner"
-import { matterSourceIDs, quoteFound, quoteMissIssue, type SourceQuote } from "./quotes"
+import { adoptedSources, matterSourceIDs, quoteFound, quoteMissIssue, sourceNameIssues, type SourceQuote } from "./quotes"
 import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../lib/source-provenance"
 import { approvedResearch } from "./research"
 import { QUESTION_KIND_CONTRACT, questionContent, readLeanJson, readQuestions, writeLeanText, type LeanState, type LeanStageState } from "./state"
@@ -20,7 +19,7 @@ import type { DocID } from "./plan"
 import { workflowConcurrency } from "./model-concurrency"
 
 export type Assessment = { item_id: string; item: ChecklistItem; finding: ChecklistFinding }
-export const REPAIR_ADJUDICATION_OUTPUT = 'Return one JSON object {"shared_decisions":[],"groups":[{"id":"label","pids":["initial pid"],"goal":"source-adjudicated correction and preservation requirements","sources":[{"source_id":"canonical source or request","quote":"exact words"}],"limitations":[]}],"dismissed":[],"findings":[{"disposition":"deferred|recommendation|rejected","kind":"information|research|suggestion","detail":"issue and remaining action","reason":"source-grounded disposition","documents":["planned id"],"sources":[{"source_id":"canonical source or request","quote":"exact words"}],"limitations":[]}],"questions":[{"pid":"initial pid","question":"indispensable unresolved human fact or decision","kind":"fact|instruction|judgment","context":"why needed"}],"superseded_decisions":[{"index":0,"reason":"why this supplied generated dependency conflicts with actual sources or human instructions","sources":[{"source_id":"canonical source or request","quote":"exact supporting words"}]}],"superseded_findings":[{"index":0,"reason":"why this supplied prior disposition is replaced","sources":[{"source_id":"canonical source or request","quote":"exact supporting words"}]}]}. Arrays may be empty. Common dependencies above are generated interpretations, not settled human authority; preserve supported dependencies and explicitly supersede a conflicting interpretation from actual sources. Supersession indices may refer ONLY to supplied related history; omit unaffected records. An omitted previous record is retained. Historical groups belong to an earlier pass; actual apply and withheld records determine implementation. Do not replay or supersede an entire historical group; return ONLY necessary current repair goals. Preserve source-supported cumulative intent. Rejected findings and each supersession require nonempty exact supporting source citations; a generated assessment or an evidence limitation cannot authorize dropping a duty. If source support is unavailable, retain the uncertainty as deferred instead of rejecting or superseding. Exact quotes are checked against canonical sources. ' + QUESTION_KIND_CONTRACT + ' No file writes.'
+export const REPAIR_ADJUDICATION_OUTPUT = 'Return one JSON object {"shared_decisions":["settled decision"],"groups":[{"id":"label","pids":["initial pid"],"goal":"source-adjudicated correction and preservation requirements","sources":[{"source_id":"canonical source or request","quote":"exact words"}],"limitations":[]}],"findings":[{"disposition":"deferred|recommendation|rejected","kind":"information|research|suggestion","detail":"issue and remaining action","reason":"source-grounded disposition","documents":["planned id"],"sources":[{"source_id":"canonical source or request","quote":"exact words"}],"limitations":[]}],"questions":[{"pid":"initial pid","question":"indispensable unresolved human fact or decision","kind":"fact|instruction|judgment","context":"why needed"}],"superseded_decisions":[{"index":0,"reason":"why this supplied generated dependency conflicts with actual sources or human instructions","sources":[{"source_id":"canonical source or request","quote":"exact supporting words"}]}],"superseded_findings":[{"index":0,"reason":"why this supplied prior disposition is replaced","sources":[{"source_id":"canonical source or request","quote":"exact supporting words"}]}]}. Arrays may be empty. Common dependencies above are generated interpretations, not settled human authority; preserve supported dependencies and explicitly supersede a conflicting interpretation from actual sources. Supersession indices may refer ONLY to supplied related history; omit unaffected records. An omitted previous record is retained. Historical groups belong to an earlier pass; actual apply and withheld records determine implementation. Do not replay or supersede an entire historical group; return ONLY necessary current repair goals. Preserve source-supported cumulative intent. Rejected findings and each supersession require nonempty exact supporting source citations; a generated assessment or an evidence limitation cannot authorize dropping a duty. If source support is unavailable, retain the uncertainty as deferred instead of rejecting or superseding. Exact quotes are checked against canonical sources. ' + QUESTION_KIND_CONTRACT + ' ' + QUESTION_WORDS + ' No file writes.'
 
 type Supersession = { index: number; reason: string; sources: SourceQuote[] }
 export type RepairAdjudication = ChangePlan & { superseded_findings: Supersession[]; superseded_decisions: Supersession[] }
@@ -106,12 +105,12 @@ export function repairAdjudicationIssues(directory: string, document: DocID, inp
  * checkable rather than borrowed from an unrelated new repair group. */
 function supersessionSourceIssues(directory: string, at: string, sources: unknown): string[] {
   if (!Array.isArray(sources) || !sources.length) return [`${at}: supersession requires nonempty supporting source citations; retain unsupported prior intent.`]
-  const canonical = new Set([...matterSourceIDs(directory), "request", ...approvedResearch(directory).map(row => row.url)])
-  return sources.flatMap(source => {
-    if (!record(source) || typeof source.source_id !== "string" || !canonical.has(source.source_id) || typeof source.quote !== "string" || !source.quote.trim())
-      return [`${at}.sources must name canonical matter sources, request or approved authority and exact nonempty quotes.`]
+  const canonical = new Set([...matterSourceIDs(directory), "request", ...adoptedSources(directory), ...approvedResearch(directory).map(row => row.url)])
+  return sources.flatMap((source, n) => {
+    const named = sourceNameIssues(`${at}.sources[${n}]`, source, canonical)
+    if (named.length || !record(source) || typeof source.source_id !== "string" || typeof source.quote !== "string") return named
     const quote = { source_id: source.source_id, quote: source.quote }
-    return quoteFound(directory, quote) ? [] : [quoteMissIssue(directory, `${at}.sources`, quote, "json")]
+    return quoteFound(directory, quote) ? [] : [quoteMissIssue(directory, `${at}.sources`, quote, "json", { adopted: true })]
   })
 }
 
@@ -135,7 +134,7 @@ export function mergeRepairAdjudications(previous: ChangePlan, adjudications: Re
   return { shared_decisions: [...new Set([...previous.shared_decisions.filter((_, index) => !removedDecisions.has(index)), ...results.flatMap(row => row.shared_decisions)])], groups,
     // Earlier groups are not prepared again, but keep the review findings they resolve.
     settled_groups: [...(previous.settled_groups ?? []), ...previous.groups],
-    dismissed: [...previous.dismissed, ...results.flatMap(row => row.dismissed)],
+    dismissed: [...previous.dismissed ?? [], ...results.flatMap(row => row.dismissed ?? [])],
     findings: [...(previous.findings ?? []).filter((_, index) => !removedFindings.has(index)), ...results.flatMap(row => row.findings ?? [])],
     questions: [...previous.questions, ...results.flatMap(row => row.questions)] }
 }

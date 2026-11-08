@@ -57,12 +57,13 @@ const RUN_FILES: Record<string, string> = {
 
 // Each stage in words: what it is doing while it runs, and its finished line.
 const STAGES: Record<string, { during: string; done: string }> = {
+  instructions: { during: "listing your instructions for this work", done: "Your instructions listed" },
   discrepancy: { during: "assessing discrepancies in the source materials", done: "Source discrepancies assessed" },
   intake: { during: "checking material decisions before research", done: "Material decisions checked" },
   research: { during: "researching legal authority", done: "Research findings and limitations recorded" },
   "research-review": { during: "checking research against retrieved sources", done: "Research support and limitations reviewed" },
   acts: { during: "listing the legal acts your instructions direct", done: "Instructed acts listed" },
-  spine: { during: "building the source-backed drafting spine", done: "Drafting spine prepared" },
+  spine: { during: "listing the points the draft must cover, with their sources", done: "Points for the draft listed with their sources" },
   draft: { during: "drafting", done: "Draft written" },
   review: { during: "reviewing the draft", done: "Reviewed the draft" },
   "review-playbook": { during: "Checking the applicable playbook", done: "Checked the applicable playbook" },
@@ -97,10 +98,14 @@ export function clip(text: string, max: number) {
   return flat.length <= max ? flat : `${flat.slice(0, max - 1).trimEnd()}…`
 }
 
-export function fileLabel(target: string) {
+/** A path as the lawyer knows it: a run file in plain words, a document by its
+ * name, and nothing for a folder (the matter folder or any path that is not a
+ * document), so a folder name never reaches the timeline. */
+export function fileLabel(target: string, matter?: string) {
   if (/(^|[\\/])\.dochaus[\\/]/.test(target))
     return RUN_FILES[basename(target)] ?? "the run's working files"
-  return basename(target)
+  const name = basename(target)
+  return name === matter || /[\\/]$/.test(target) || !/.\.[^.\s]+$/.test(name) ? undefined : name
 }
 
 /** One activity line for a stage session's part; undefined for parts that are
@@ -131,7 +136,7 @@ type ToolActivity = Pick<ActivityLine, "text" | "group" | "target" | "detail" | 
 function toolActivity(part: ToolPart, state: ActivityLine["state"], matter: string): ToolActivity {
   const input = part.state.input
   const running = state === "running"
-  const document = typeof input.document === "string" && input.document ? fileLabel(input.document) : undefined
+  const document = typeof input.document === "string" && input.document ? fileLabel(input.document, matter) : undefined
   if (["web-search", "websearch"].includes(part.tool)) {
     const query = typeof input.query === "string" ? input.query.trim() : ""
     const target = query ? `"${clip(query, SEARCH_CHARS)}"` : undefined
@@ -155,7 +160,12 @@ function toolActivity(part: ToolPart, state: ActivityLine["state"], matter: stri
   }
   if (part.tool === "read-document" || part.tool === "read") {
     const path = [input.filePath, input.path].find((value) => typeof value === "string" && value)
-    const target = document ?? (typeof path === "string" ? fileLabel(path) : undefined)
+    const target = document ?? (typeof path === "string" ? fileLabel(path, matter) : undefined)
+    // A read of a folder lists the matter's files; say so rather than naming the folder.
+    if (!target && typeof path === "string" && !input.document) {
+      if (state === "error") return { text: "Could not list the matter files" }
+      return { text: running ? "Listing the matter files" : "Listed the matter files", group: "read" }
+    }
     if (state === "error") return { text: `Could not read ${target ?? "a document"}` }
     return { text: `${running ? "Reading" : "Read"} ${target ?? "a document"}`, group: "read", target }
   }
@@ -214,7 +224,7 @@ export function stageMilestones(status: LeanDraftingStatus): ActivityLine[] {
 
 function pauseText(status: LeanDraftingStatus, step: string, state: string) {
   if (state === "failed")
-    return `Paused while ${during(step, status.memo)}${providerStopMessage(status) ? ": Settings need attention" : " after a technical problem"}`
+    return `Paused while ${during(step, status.memo)}${providerStopMessage(status) ? `: ${providerStopNeed(status)}` : " after a technical problem"}`
   if (step !== "gate") return `Paused while ${during(step, status.memo)}`
   const blocking = status.gate?.blocking.length ?? status.open_items.filter((item) => item.status === "open").length
   return `Final check found ${blocking} open item${blocking === 1 ? "" : "s"} to resolve`
@@ -261,9 +271,15 @@ export function stoppedByTechnicalProblem(status: LeanDraftingStatus) {
   return status.status === "failed" && (providerStopMessage(status) !== undefined || (status.stop_reason ?? "").includes("stopped by a runtime error"))
 }
 
-/** The lawyer's fix in Settings for a run its model provider or setup stopped. */
+/** The lawyer's fix for a run its model provider or setup stopped. */
 export function providerStopMessage(status: LeanDraftingStatus): string | undefined {
   return status.status === "failed" && status.provider_stop ? PROVIDER_STOP_MESSAGES[status.provider_stop] : undefined
+}
+
+/** What a provider stop needs, in a few words: credit is added with the
+ * provider, every other stop is fixed in Settings. */
+export function providerStopNeed(status: LeanDraftingStatus) {
+  return status.provider_stop === "credit" ? "the AI account needs credit" : "Settings need attention"
 }
 
 /** The step the run is working on, if any. */

@@ -4,7 +4,7 @@ import { withWorkflowLimit } from "./model-concurrency-test-support"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { readFileSync } from "node:fs"
-import { buildRepairAdjudicationInput, mergeRepairAdjudications, repairAdjudicationIssues, runFocusedRepairAdjudication, type RepairAdjudication } from "./checklist-repair-adjudication"
+import { buildRepairAdjudicationInput, mergeRepairAdjudications, REPAIR_ADJUDICATION_OUTPUT, repairAdjudicationIssues, runFocusedRepairAdjudication, type RepairAdjudication } from "./checklist-repair-adjudication"
 import { acceptChangePlan, changePlanPrompt, changePreparationPrompt, type ChangePlan } from "./change-pipeline"
 import { writeLeanPlan, type StepID } from "./plan"
 import { packageCompositionBlock } from "./prompts"
@@ -17,8 +17,8 @@ import type { ChecklistItem, ChecklistFinding } from "./checklist-contract"
 afterEach(cleanupMatters)
 const pid = "p111111111111", other = "p222222222222"
 const item: ChecklistItem = { check: "Identify timing uncertainty as advice, without adopting a new term.", basis: "directive", qualifications: ["Approval remains unknown."], required_action: "flag", source_refs: [{ document: SOURCE, locator: "source", quote: SUPPORT[0]!.quote }], target: { document: "d1", role: "Advice", treatment: "advice" } }
-const plan: ChangePlan = { shared_decisions: ["Generated scope: omit timing advice.", "Preserve unrelated source conditions."], groups: [{ id: "old", pids: [pid], goal: "Preserve supplied timing.", sources: SUPPORT, limitations: [] }, { id: "other", pids: [other], goal: "Preserve payment.", sources: SUPPORT, limitations: [] }], findings: [{ disposition: "rejected", kind: "suggestion", detail: "Prior timing assessment.", reason: "Prior generated decision.", documents: ["d1"], sources: SUPPORT, limitations: [] }, { disposition: "recommendation", kind: "suggestion", detail: "Unrelated advice.", reason: "Keep visible.", documents: ["d1"], sources: [], limitations: ["Unrelated uncertainty."] }], dismissed: [], questions: [] }
-const result: RepairAdjudication = { shared_decisions: [], groups: [{ id: "timing", pids: [pid], goal: "Identify uncertainty without adopting a new deadline.", sources: SUPPORT, limitations: ["No approval inferred."] }], dismissed: [], findings: [], questions: [], superseded_decisions: [{ index: 0, reason: "Generated scope cannot waive original instructions to identify uncertainty.", sources: SUPPORT }], superseded_findings: [{ index: 0, reason: "The original source calls for advice, not adoption.", sources: SUPPORT }] }
+const plan: ChangePlan = { shared_decisions: ["Generated scope: omit timing advice.", "Preserve unrelated source conditions."], groups: [{ id: "old", pids: [pid], goal: "Preserve supplied timing.", sources: SUPPORT, limitations: [] }, { id: "other", pids: [other], goal: "Preserve payment.", sources: SUPPORT, limitations: [] }], findings: [{ disposition: "rejected", kind: "suggestion", detail: "Prior timing assessment.", reason: "Prior generated decision.", documents: ["d1"], sources: SUPPORT, limitations: [] }, { disposition: "recommendation", kind: "suggestion", detail: "Unrelated advice.", reason: "Keep visible.", documents: ["d1"], sources: [], limitations: ["Unrelated uncertainty."] }], questions: [] }
+const result: RepairAdjudication = { shared_decisions: [], groups: [{ id: "timing", pids: [pid], goal: "Identify uncertainty without adopting a new deadline.", sources: SUPPORT, limitations: ["No approval inferred."] }], findings: [], questions: [], superseded_decisions: [{ index: 0, reason: "Generated scope cannot waive original instructions to identify uncertainty.", sources: SUPPORT }], superseded_findings: [{ index: 0, reason: "The original source calls for advice, not adoption.", sources: SUPPORT }] }
 async function setup() {
   const directory = matter()
   writeLeanPlan(directory, [{ title: "Advice", purpose: "Explain timing", file: "advice.docx", parts: [{ heading: "Timing", scope: "Timing" }] }])
@@ -61,6 +61,16 @@ test("supersession only names supplied history; completed groups cannot be super
   expect(repairAdjudicationIssues(directory, "d1", input, { ...result, groups: [], superseded_groups: [{ index: 0, reason: "Remove" }] }).join(" ")).toContain("not superseded or replayed")
   expect(repairAdjudicationIssues(directory, "d1", input, { ...result, groups: [{ ...result.groups[0], pids: ["p999999999999"] }] }).join(" ")).toContain("not an initial draft paragraph")
 })
+test("the repair contract shows text decisions and no dismissed list, and a decision sent as an object is named", async () => {
+  const { directory, assessment } = await setup()
+  const input = buildRepairAdjudicationInput(directory, "d1", assessment)
+  expect(REPAIR_ADJUDICATION_OUTPUT).toContain('{"shared_decisions":["settled decision"],')
+  expect(REPAIR_ADJUDICATION_OUTPUT).not.toContain('"dismissed"')
+  expect(changePlanPrompt(directory, "d1")).not.toContain("dismissed")
+  expect(repairAdjudicationIssues(directory, "d1", input, { ...result, shared_decisions: [{ decision: "Keep the timing advice.", index: 0 }] })).toEqual([
+    "Return one JSON object with shared_decisions, groups, findings and questions lists. Its shared_decisions is the wrong shape; give a list of nonempty text, possibly empty.",
+  ])
+})
 test("shared PID goals merge transitively and unrelated amendments/dispositions remain", () => {
   const merged = mergeRepairAdjudications(plan, [result, { ...result, groups: [{ ...result.groups[0]!, id: "dependent", pids: [pid, other], goal: "Preserve dependent effects." }], superseded_findings: [] }])
   expect(merged.groups).toHaveLength(1)
@@ -69,6 +79,7 @@ test("shared PID goals merge transitively and unrelated amendments/dispositions 
   expect(merged.groups[0]!.goal).not.toContain("Preserve payment.")
   expect(merged.shared_decisions).toEqual(["Preserve unrelated source conditions."])
   expect(merged.findings).toEqual([plan.findings![1]!])
+  expect(merged.dismissed).toEqual([])
   // Each joined goal stays separately readable, flattened across repeat merges.
   expect(merged.groups[0]!.parts!.map(row => row.id)).toEqual([result.groups[0]!.id, "dependent"])
   const again = mergeRepairAdjudications(plan, [{ ...result, groups: [merged.groups[0]!, { ...result.groups[0]!, id: "third", pids: [other], goal: "Third goal." }] }])
@@ -148,7 +159,7 @@ test("each supersession needs its own canonical exact support, not a sourced unr
     const row = result[field][0]!
     for (const sources of [undefined, []])
       expect(repairAdjudicationIssues(directory, "d1", input, { ...result, [field]: [{ ...row, sources }] }).join(" ")).toContain("supersession requires nonempty")
-    expect(repairAdjudicationIssues(directory, "d1", input, { ...result, [field]: [{ ...row, sources: [{ source_id: "generated-review", quote: SUPPORT[0]!.quote }] }] }).join(" ")).toContain("canonical matter sources")
+    expect(repairAdjudicationIssues(directory, "d1", input, { ...result, [field]: [{ ...row, sources: [{ source_id: "generated-review", quote: SUPPORT[0]!.quote }] }] }).join(" ")).toContain(`${field}[0].sources[0].source_id "generated-review" is not a known source name.`)
     expect(repairAdjudicationIssues(directory, "d1", input, { ...result, [field]: [{ ...row, sources: [{ source_id: SOURCE, quote: "Permission to abandon prior duties." }] }] }).join(" ")).toContain("but those words")
   }
 })

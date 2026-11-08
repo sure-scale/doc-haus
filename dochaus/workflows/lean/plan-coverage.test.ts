@@ -8,7 +8,7 @@ import { readLeanPlan, writeLeanPlan } from "./plan"
 import { LEAN_MAX_RETRIES, disclosableItems, outlineBasis } from "./stages"
 import { PACKAGE_SCOPE_QUESTION } from "./package-scope"
 import { leanFile, readLeanState, readQuestions, updateLeanStage, writeLeanText, writeQuestions, type LeanStageState } from "./state"
-import { AGENT, cleanupMatters, matter, placementJob, scriptedModel } from "./test-support"
+import { AGENT, cleanupMatters, labelledPart, matter, placementJob, scriptedModel } from "./test-support"
 
 // The outline step's coverage check: the run's act record (acts.json) lists the
 // instructed acts blind to the plan; a placement job in a session of its own
@@ -36,7 +36,7 @@ const ACTS = JSON.stringify({ acts: [act] })
 /** The outline agent: `first` answers the outline prompt, `revised` any
  * revision request, and each part gets one plain paragraph. */
 const outliner = (first: string, revised = first) => (text: string) =>
-  /^Draft part \d+ of \d+ of "/m.test(text) ? "The terms are recorded." : text.startsWith(REVISE) ? revised : first
+  /^Draft part \d+ of \d+ of "/m.test(text) ? labelledPart(text, "The terms are recorded.") : text.startsWith(REVISE) ? revised : first
 
 type RecordedAct = { act: string; source: string; quote: string; parties: string[] }
 
@@ -99,7 +99,8 @@ describe("plan coverage at the outline step", () => {
     expect(model.prompts.find(prompt => prompt.agent === AGENT.draft)!.text).toContain("- Under each title write \"Executed by: <party>; <party>\"")
     expect(model.prompts.find(prompt => prompt.agent === AGENT.draft)!.text).toContain("Leave the line out when neither says who executes it. " +
       "Plan no document the instructions leave out of this package. For each legal act the instructions direct, unless they leave out the document of the party who can take it, " +
-      "plan the act in a document that party executes, adding a companion document where none is planned.\n")
+      "plan the act in a document that party executes; plan a companion document for it only where the request or an answer names or clearly implies one. " +
+      "Where none fits, leave the act: whether to add a document is the lawyer's call, which the run asks before drafting.\n")
   }, 60_000)
 
   test("an act whose document the instructions leave out sends a plan with a document its parties execute back to the outline, and the revised plan without it is covered with no question", async () => {
@@ -151,7 +152,7 @@ describe("plan coverage at the outline step", () => {
     expect(readQuestions(directory)).toEqual([])
   }, 60_000)
 
-  test("a coverage issue goes back to the outline session, whose revised plan adds the companion document", async () => {
+  test("a coverage issue goes back to the outline session, whose revised plan, adding a companion document anyway, is kept", async () => {
     const { directory, state } = prepared()
     const model = scriptedModel({ [AGENT.draft]: outliner(ONE, TWO), ...placementJob(() => ACTS) })
     expect((await run(directory, state, model)).status).toBe("done")
@@ -230,16 +231,29 @@ describe("plan coverage at the outline step", () => {
   // Without an answered package-scope question that showed the act the step
   // stops instead (plan-scope-question.test.ts); once one that showed it is
   // answered it saves the plan.
-  test("once a package-scope question that showed the act is answered, issues left after the allowed revisions are recorded as uncovered and the last plan is saved", async () => {
+  test("once a package-scope question that showed the act is answered, its issue is never sent back for a revision: it is recorded as uncovered and the plan is saved", async () => {
     const { directory, state } = prepared()
-    writeQuestions(directory, [{ id: `${PACKAGE_SCOPE_QUESTION}earlier`, stage: "draft", question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in d1 "Release letter", executed by "Kestrel Works".`, context: "", status: "answered", answer: "The release letter only." }])
+    writeQuestions(directory, [{ id: `${PACKAGE_SCOPE_QUESTION}earlier`, stage: "draft", question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in "Release letter", executed by "Kestrel Works".`, context: "", status: "answered", answer: "The release letter only." }])
     const model = scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => ACTS) })
     expect((await run(directory, state, model)).status).toBe("done")
 
-    expect(revisions(model)).toHaveLength(PLAN_COVERAGE_REVISIONS)
-    expect(coverageSessions(model)).toHaveLength(PLAN_COVERAGE_REVISIONS + 1)
+    expect(revisions(model)).toEqual([])
+    expect(coverageSessions(model)).toHaveLength(1)
     expect(readLeanCoverage(directory)).toMatchObject({ status: "uncovered", acts: [act], issues: [expect.stringContaining(MISPLACED)] })
     expect(readLeanPlan(directory)!.documents.map(row => row.title)).toEqual(["Release letter"])
+
+    // An act no answer settled still goes back for the allowed revisions beside it.
+    const released = { act: "release the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works"] }
+    const both = prepared([act, released])
+    writeQuestions(both.directory, readQuestions(directory))
+    const unplaced = scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => JSON.stringify({ acts: [act, { ...released, document: null }] })) })
+    expect((await run(both.directory, both.state, unplaced)).status).toBe("blocked")
+    expect(revisions(unplaced)).toHaveLength(PLAN_COVERAGE_REVISIONS)
+    for (const revision of revisions(unplaced)) {
+      expect(revision.text).toContain('"release the deposit"')
+      expect(revision.text).not.toContain(MISPLACED)
+    }
+    expect(readLeanCoverage(both.directory)).toMatchObject({ status: "uncovered", issues: [expect.stringContaining(MISPLACED), expect.stringContaining('"release the deposit"')] })
 
     // An answered question that showed no act settles none: the step stops on one about it.
     const other = prepared()
@@ -391,6 +405,9 @@ describe("plan coverage observability", () => {
     // The revised outline plans two documents, so the files job reads it too.
     const filed = [...new Set(model.prompts.filter(prompt => prompt.agent === AGENT.files).map(prompt => prompt.sessionID))]
     expect(filed).toHaveLength(1)
-    expect(readLeanState(directory)!.stages["d1.draft"]).toMatchObject({ session_id: outline, session_ids: [outline, ...covered, ...filed] })
+    // Once the body exists, each drafted part's reader job reads it in a session of its own.
+    const read = [...new Set(model.prompts.filter(prompt => prompt.agent === AGENT.reader).map(prompt => prompt.sessionID))]
+    expect(read.length).toBeGreaterThan(0)
+    expect(readLeanState(directory)!.stages["d1.draft"]).toMatchObject({ session_id: outline, session_ids: [outline, ...covered, ...filed, ...read] })
   }, 60_000)
 })

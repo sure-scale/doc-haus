@@ -1,7 +1,12 @@
 import type { SessionContext } from "@opencode/plugin/promise/session"
+import { isProjectedUserAdmission } from "../../lib/engine-v2-projection"
 import type { Message, Part } from "./policy-types"
 import { MAX_STEPS_PROMPT } from "@opencode/core/session/runner/max-steps"
 type History = Array<{ info: Message; parts: Part[] }>
+
+// Native runner control from packages/core/src/session/runner/llm.ts. Text
+// alone never authenticates it; its projected native identity is required.
+const INTERRUPTED_STREAM_CONTROL = "The previous response was interrupted. Continue from where you left off without repeating completed content."
 
 // Modify the native context in place: keep provider reasoning and attachments,
 // and apply policy removals to both sides of each tool call/result pair.
@@ -67,8 +72,21 @@ export function applyLegalContextChanges(event: SessionContext, before: History,
   // unparseable progress summary. Adapt only the actual transient control;
   // durable user messages and the native tool/step limits remain unchanged.
   if (!event.agent?.startsWith("lean-")) return
+  const admission = before.findLastIndex(isProjectedUserAdmission)
+  const interruptions = new Set(admission < 0 ? [] : before.slice(admission + 1).flatMap(message =>
+    message.info.role === "user" && "type" in message.info && message.info.type === "synthetic" &&
+    message.parts.length === 1 && message.parts[0]?.type === "text" && message.parts[0].text === INTERRUPTED_STREAM_CONTROL
+      ? [message.info.id] : [],
+  ))
   event.messages = event.messages.map(message => {
     const part = message.content[0]
+    // Adapt the provider request only. Native history, retry timing, tool
+    // permissions and completed actions remain owned by the native runner.
+    if (message.id && interruptions.has(message.id) && message.role === "user" && message.content.length === 1 &&
+      part?.type === "text" && part.text === INTERRUPTED_STREAM_CONTROL)
+      return { ...message, content: [{ ...part, text:
+        "The previous response was interrupted. Return a complete replacement final output for this stage, including every required part already written before the interruption. The latest successful reply alone is accepted; earlier errored or partial replies are not accepted as part of it. Use the inspected evidence and supplied context, preserving all required unknowns, limitations, questions, source checks and human approval requirements. Do not repeat completed tool actions, obtain new tool permissions, invent evidence or answers, or present unfinished work as complete. Follow the existing stage output contract and tool limits.",
+      }] }
     if (message.id !== undefined || message.role !== "user" || message.content.length !== 1 ||
       part?.type !== "text" || part.text !== MAX_STEPS_PROMPT) return message
     return { ...message, content: [{ ...part, text:

@@ -88,13 +88,13 @@ test("totals are the provider-reported cost of every model step, upkeep and gene
   ])
   expect(detail.by_model.reduce((sum, row) => sum + row.cost_usd, 0)).toBeCloseTo(lean.matter_total.cost_usd)
   expect(detail.by_agent.map(({ agent, label, group, turns }) => ({ agent, label, group, turns }))).toEqual([
-    { agent: "draft", label: "Draft", group: "work", turns: 2 },
-    { agent: "conversation-upkeep", label: "Conversation titles and compaction", group: "work", turns: 0 },
-    { agent: "prepare-changes", label: "Prepare changes", group: "work", turns: 1 },
+    { agent: "Drafting", label: "Drafting", group: "work", turns: 2 },
+    { agent: "Conversation titles and compaction", label: "Conversation titles and compaction", group: "work", turns: 0 },
+    { agent: "Prepare changes", label: "Prepare changes", group: "work", turns: 1 },
   ])
   expect(detail.recent_turns.map((row) => row.cost_usd)).toEqual([0.05, 0.1, 0.3])
   expect(detail.recent_turns[0]).toMatchObject({ label: "Prepare changes", model: "synthetic/fast", tokens: 0 })
-  expect(detail.recent_turns[1]).toMatchObject({ label: "Draft", tokens: 600 })
+  expect(detail.recent_turns[1]).toMatchObject({ label: "Drafting", tokens: 600 })
   expect(detail.sparkline.reduce((sum, point) => sum + point.cost_usd, 0)).toBeCloseTo(0.55)
 })
 
@@ -117,8 +117,8 @@ test("background agents and Word suggestions are split from the lawyer's own wor
     { group: "background", label: "Background agents", cost_usd: expect.closeTo(0.3), turns: 2 },
     { group: "work", label: "Your work", cost_usd: 0.4, turns: 1 },
   ])
-  expect(detail.by_agent).toContainEqual({ agent: "word-suggestions", label: "Suggest ideas in Word", group: "background", cost_usd: 0.2, turns: 1, tool_calls: 1 })
-  expect(detail.by_agent).toContainEqual({ agent: "qa", label: "Questions", group: "work", cost_usd: 0.4, turns: 1, tool_calls: 2 })
+  expect(detail.by_agent).toContainEqual({ agent: "Suggest ideas in Word", label: "Suggest ideas in Word", group: "background", cost_usd: 0.2, turns: 1, tool_calls: 1 })
+  expect(detail.by_agent).toContainEqual({ agent: "Questions", label: "Questions", group: "work", cost_usd: 0.4, turns: 1, tool_calls: 2 })
   expect(detail.by_tool).toEqual([
     { tool: "read-document", label: "Read document", calls: 2, total_duration_ms: 40, avg_duration_ms: 20 },
     { tool: "record-key-date", label: "Record key date", calls: 1, total_duration_ms: 5, avg_duration_ms: 5 },
@@ -127,6 +127,25 @@ test("background agents and Word suggestions are split from the lawyer's own wor
     { id: "chat", title: "chat", label: "Questions", group: "work" },
     { id: "words", title: "words", label: "Suggest ideas in Word", group: "background" },
     { id: "story", title: "", label: "Narrate drafting progress", group: "background" },
+  ])
+})
+
+test("a drafting run's steps share one row per task, and an unlabelled agent reads as other work", async () => {
+  const dir = tempMatter()
+  const now = Date.now()
+  const db = seedDb(dir)
+  insertToolCall(db, { sessionId: "place", ts: now, tool: "read-document", agent: "lean-placement", durationMs: 10 })
+  db.close()
+  fakeEngine(dir, [
+    { id: "level", parentID: "run", agent: "lean-spine-level", cost: 0.2, updated: now - 2_000, messages: [{ id: "m1", time: now - 2_000, cost: 0.2, agent: "lean-spine-level" }] },
+    { id: "place", parentID: "run", agent: "lean-placement", cost: 0.1, updated: now - 1_500, messages: [{ id: "m2", time: now - 1_500, cost: 0.1, agent: "lean-placement" }] },
+    { id: "odd", agent: "synthetic-helper", cost: 0.05, updated: now - 1_000, messages: [{ id: "m3", time: now - 1_000, cost: 0.05, agent: "synthetic-helper" }] },
+  ])
+
+  const detail = await readDetailPayload(dir, signal())
+  expect(detail.by_agent).toEqual([
+    { agent: "Planning", label: "Planning", group: "work", cost_usd: expect.closeTo(0.3), turns: 2, tool_calls: 1 },
+    { agent: "Other work", label: "Other work", group: "work", cost_usd: 0.05, turns: 1, tool_calls: 0 },
   ])
 })
 
@@ -139,7 +158,7 @@ test("a conversation's cost includes the sub-agents it started", async () => {
   ])
 
   const detail = await readDetailPayload(dir, signal())
-  expect(detail.recent_sessions).toEqual([{ id: "root", title: "root", agent: "draft", label: "Draft", group: "work", last_activity_at: now - 1_000, cost_usd: 0.5 }])
+  expect(detail.recent_sessions).toEqual([{ id: "root", title: "root", agent: "draft", label: "Drafting", group: "work", last_activity_at: now - 1_000, cost_usd: 0.5 }])
 })
 
 test("polling re-reads only conversations that changed", async () => {

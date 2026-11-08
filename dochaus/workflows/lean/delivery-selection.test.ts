@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test"
 import { readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { renderMarkdownToDocx } from "../../lib/render"
-import { memoNotesFile, readLeanDocuments } from "./deliverables"
+import { memoNotesFile, readLeanDocuments, requestedMemo } from "./deliverables"
 import { checkDeliverySelections, selectedDeliveryPlan } from "./delivery-selection"
 import { packageReviewPrompt, readPackageReview } from "./package-review"
 import { DOC_STAGES, readLeanPlan, writeLeanPlan } from "./plan"
@@ -381,9 +381,15 @@ test("grounded notes selection names the existing reviewed notes without reopeni
   expect(readFileSync(leanFile(directory, "d1/redline.docx")).toString("hex")).toEqual(comparison!)
   expect(model.count(AGENT.draft)).toBe(3)
   expect(model.count(AGENT.changes)).toBe(1)
-  expect(model.count(AGENT.finalize)).toBe(2)
+  expect(model.count(AGENT.finalize)).toBeGreaterThan(control.count(AGENT.finalize))
+  expect(model.prompts.some(prompt => prompt.agent === AGENT.finalize && prompt.text.includes('"planned_filename": "supply-advice.docx"'))).toBe(true)
   expect(model.count(AGENT["package-review"])).toBe(2)
   expect(readRepairRound(directory)?.substantive_attempts).toBe(1)
+  const calls = model.count(AGENT.finalize)
+  const notes = readLeanText(directory, "drafting-notes.md")
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(model.count(AGENT.finalize)).toBe(calls)
+  expect(readLeanText(directory, "drafting-notes.md")).toBe(notes)
 }, 120_000)
 
 
@@ -403,11 +409,13 @@ test("notes selection remains user-grounded, unambiguous and outside operative i
   const before = Object.fromEntries([...DOC_STAGES.map(stage => `d1.${stage}` as const), "finalize" as const, "package-review" as const].map(step => [step, stageInputSha(directory, step)]))
   const plan = selectedDeliveryPlan(directory, [selection])!
   expect(plan.documents).toEqual(readLeanPlan(directory)!.documents)
-  expect(plan.notes_file).toBe(selection.file)
+  expect(plan.record_file).toBe(selection.file)
+  expect(plan.memo).toBeUndefined()
   writeLeanText(directory, "plan.json", JSON.stringify(plan))
   for (const stage of DOC_STAGES) expect(stageInputSha(directory, `d1.${stage}`)).toBe(before[`d1.${stage}`])
   expect(stageInputSha(directory, "finalize")).not.toBe(before.finalize)
   expect(stageInputSha(directory, "package-review")).not.toBe(before["package-review"])
+  // Applying the selection again changes nothing.
   expect(selectedDeliveryPlan(directory, [selection])).toBeUndefined()
 })
 
@@ -457,7 +465,7 @@ for (const selected of [false, true]) test(`notes selection at the repair ceilin
   const control = scriptedModel(happyPath)
   expect((await runLean(directory, { sessions: control.port })).status).toBe("completed")
   for (let index = 0; index < 5; index++) startRepairRound(directory, [], true)
-  if (selected) writeLeanText(directory, "plan.json", JSON.stringify({ ...readLeanPlan(directory)!, notes_file: "ceiling-note.docx" }))
+  if (selected) writeLeanText(directory, "plan.json", JSON.stringify({ ...readLeanPlan(directory)!, record_file: "ceiling-note.docx" }))
   const state = readLeanState(directory)!
   writeLeanText(directory, "package-review.json", JSON.stringify({ status: "pass", findings: [], limitations: [], delivery: [{ document: null, role: "drafting_notes", file: "ceiling-note.docx", instruction_quote: instruction }] }))
   writeLeanState(directory, { ...state, status: "running", stages: { ...state.stages, "package-review": { ...state.stages["package-review"]!, input_sha: stageInputSha(directory, "package-review") } } })
@@ -466,41 +474,30 @@ for (const selected of [false, true]) test(`notes selection at the repair ceilin
   expect(result.status).toBe("completed")
   expect(readRepairRound(directory)?.substantive_attempts).toBe(5)
   expect(model.count(AGENT.draft)).toBe(0)
-  expect(readLeanPlan(directory)?.notes_file).toBe("ceiling-note.docx")
+  expect(readLeanPlan(directory)?.record_file).toBe("ceiling-note.docx")
   expect(readLeanDocuments(directory)?.documents.find(row => row.kind === "drafting_notes")?.deliverable).toBe("ceiling-note.docx")
 }, 120_000)
+
 
 const memoDoc = (title: string, extra: Record<string, unknown> = {}) => ({ title, purpose: "p", parts: [{ heading: "Terms", scope: "s" }], ...extra })
 const memoPlan = (docs: ReturnType<typeof memoDoc>[]) => {
   const directory = matter()
   const notes = memoNotesFile(docs, "cover memo")
-  writeLeanPlan(directory, docs, undefined, undefined, { name: "cover memo", file: notes })
+  writeLeanPlan(directory, docs, undefined, undefined, { name: "cover memo" })
   return { directory, notes }
 }
 const pick = (document: "d1" | "d2", role: "body" | "redline", file: string) => ({ document, role, file, instruction_quote: "x" }) as const
+const memoFile = (directory: string, selection: ReturnType<typeof pick>) => requestedMemo(directory, selectedDeliveryPlan(directory, [selection]) ?? readLeanPlan(directory)!)?.file
 
-test("a requested memo keeps its name when a selection names a redline or body of another document", () => {
+test("a requested memo follows a rename of its anchor document's body", () => {
   const { directory, notes } = memoPlan([memoDoc("Share Purchase Agreement"), memoDoc("Disclosure Letter")])
   expect(notes).toBe("Share Purchase Agreement - cover memo.docx")
-  expect(selectedDeliveryPlan(directory, [pick("d2", "redline", "Disclosure Letter - marked.docx")])?.notes_file).toBe(notes)
-  expect(selectedDeliveryPlan(directory, [pick("d2", "body", "DL-final.docx")])?.notes_file).toBe(notes)
-})
-
-test("a requested memo follows a rename of its anchor document's body, not its redline", () => {
-  const { directory, notes } = memoPlan([memoDoc("Share Purchase Agreement"), memoDoc("Disclosure Letter")])
-  expect(selectedDeliveryPlan(directory, [pick("d1", "body", "SPA-final.docx")])?.notes_file).toBe("SPA-final - cover memo.docx")
-  expect(selectedDeliveryPlan(directory, [pick("d1", "redline", "SPA - marked.docx")])?.notes_file).toBe(notes)
+  expect(memoFile(directory, pick("d1", "body", "SPA-final.docx"))).toBe("SPA-final - cover memo.docx")
 })
 
 test("a requested memo anchored on the combined document follows its rename only", () => {
   const { directory, notes } = memoPlan([memoDoc("Share Purchase Agreement"), memoDoc("Disclosure Letter", { deliverable: "combined" })])
   expect(notes).toBe("Disclosure Letter - cover memo.docx")
-  expect(selectedDeliveryPlan(directory, [pick("d1", "body", "SPA-final.docx")])?.notes_file).toBe(notes)
-  expect(selectedDeliveryPlan(directory, [pick("d2", "body", "DL-final.docx")])?.notes_file).toBe("DL-final - cover memo.docx")
-})
-
-test("a requested memo anchored on the first named file ignores a file given to an earlier document", () => {
-  const { directory, notes } = memoPlan([memoDoc("Share Purchase Agreement"), memoDoc("Disclosure Letter", { file: "DL.docx" })])
-  expect(notes).toBe("DL - cover memo.docx")
-  expect(selectedDeliveryPlan(directory, [pick("d1", "body", "SPA-final.docx")])?.notes_file).toBe(notes)
+  expect(memoFile(directory, pick("d1", "body", "SPA-final.docx"))).toBe(notes)
+  expect(memoFile(directory, pick("d2", "body", "DL-final.docx"))).toBe("DL-final - cover memo.docx")
 })

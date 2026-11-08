@@ -12,9 +12,11 @@ import { furnitureLegend } from "./furniture-legend"
 // keeps it; a revised original keeps its own, the firm's header lines written
 // above its own header text (addPageFurnitureLines).
 
-/** A planned document's form, from its outline "Form:" line. */
-export type DocumentForm = "agreement" | "advice" | "letter" | "advice letter" | "other"
-export const DOCUMENT_FORMS: readonly DocumentForm[] = ["agreement", "advice", "letter", "advice letter", "other"]
+/** A planned document's form, from its outline "Form:" line. A statement, a
+ * record of facts given by a named person under signature, carries the
+ * furniture of "other". */
+export type DocumentForm = "agreement" | "advice" | "letter" | "advice letter" | "statement" | "other"
+export const DOCUMENT_FORMS: readonly DocumentForm[] = ["agreement", "advice", "letter", "advice letter", "statement", "other"]
 
 /** A letter, advising or not: numbered from its second page, its planning
  * labels unheaded. */

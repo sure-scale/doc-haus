@@ -7,9 +7,10 @@ import { openItemMarkers } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 import { retypedListLabel } from "../../lib/list-label"
 import { normalize } from "../../lib/quote-verify"
-import { changeListIDs, memoMode, mintedQuestionID, runItemIDs, withoutRefMarkers } from "./delivered-memo"
+import { changeListIDs, memoMode, mintedQuestionID, runItemIDs, withoutInternalIDs, withoutRefMarkers } from "./delivered-memo"
 import { notesForReader } from "./gate"
-import { excerpt, openItem, proseQuoteIssues, quoteMissItems } from "./quotes"
+import { currentInstructions } from "./instructions"
+import { excerpt, openItem, proseQuoteIssues, quoteMissItems, snapshotRead, withSourceSnapshot } from "./quotes"
 import type { SourceQuoteScanOptions } from "./source-quote-scan"
 import { readLeanPlan, type DocID } from "./plan"
 import { researchFindingIDs } from "./research"
@@ -138,7 +139,13 @@ export function settleApply(changes: ChangeList, result: ApplyResult | undefined
  * heading once delivery has removed their markers and ids (notesForReader);
  * notes saved without one are delivered under a plain title (deliveredNotes),
  * so they are never delivered empty. */
-export function checkDraftingNotes(directory: string, content: string, items: OpenItem[], options: { final?: boolean } = {}): StageCheck {
+export function checkDraftingNotes(directory: string, content: string, items: OpenItem[], options: { final?: boolean; delegatedIDs?: readonly string[] } = {}): StageCheck {
+  // A checker is one synchronous evidence read. Share its repeated source
+  // verification and id collection, then discard them before any await.
+  return withSourceSnapshot(() => checkDraftingNotesSnapshot(directory, content, items, options))
+}
+
+function checkDraftingNotesSnapshot(directory: string, content: string, items: OpenItem[], options: { final?: boolean; delegatedIDs?: readonly string[] }): StageCheck {
   const shape = documentShapeIssues(content, "drafting notes")
   if (shape.length) return { issues: shape, openItems: [] }
   if (!options.final && !/^#{1,6}[ \t]+\S/m.test(notesForReader(directory, content, items)))
@@ -147,12 +154,17 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   const markers = [...content.matchAll(REF_MARKER)].map(match => match[1]!)
   const undisclosed = items.filter(item => !markers.some(marker => standingID(item.id).test(marker)) && !(options.final && !memo && standingID(item.id).test(content)))
     .map(item => item.id)
+  // A marker holding only an id's last part ("[ref: 798598f814]") names no
+  // item; the retry shows the whole marker to copy.
+  const shortened = undisclosed.filter(id => id.includes(":") && markers.some(marker => standingID(id.slice(id.lastIndexOf(":") + 1)).test(marker)))
   // Each delegated question is listed (delegatedDecisionsText); on the last
   // attempt notes that miss one are saved as written.
-  const unlisted = options.final ? [] : delegatedQuestions(directory).map(question => question.id).filter(id => !markers.some(marker => standingID(id).test(marker)))
+  // A focused notes section checks only its assigned delegated question. The
+  // assembled notes use the default and must still disclose every question.
+  const unlisted = options.final ? [] : (options.delegatedIDs ?? delegatedQuestions(directory).map(question => question.id)).filter(id => !markers.some(marker => standingID(id).test(marker)))
   const delivered = withoutRefMarkers(content)
   const ids = !options.final
-  const stray = ids ? runItemIDs(directory, items).filter(id => readerVisibleID(id) && standingID(id).test(delivered)) : []
+  const stray = ids ? notesItemIDs(directory, items).filter(id => readerVisibleID(id) && standingID(id).test(delivered)) : []
   // A planned document's short id ("d1") is internal too: the reader knows the
   // document by its title or file name.
   // Quoted text, a citation, a footnote marker and a locator's number are not
@@ -179,6 +191,9 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
     issues: [
       ...(undisclosed.length
         ? [`The drafting notes do not mention these open items: ${undisclosed.join(", ")}. Say what each is and what the lawyer needs to do about it, ending that statement with its exact id as "[ref: <id>]".`]
+        : []),
+      ...(shortened.length
+        ? [`These markers hold only the last part of an id: ${shortened.map(id => `"[ref: ${id.slice(id.lastIndexOf(":") + 1)}]" must be "[ref: ${id}]"`).join("; ")}. Copy each marker whole, exactly as open_items lists it.`]
         : []),
       ...(unlisted.length
         ? [`The drafting notes do not list these delegated questions: ${unlisted.join(", ")}. For each, say in words what was decided and why, or why the point stays open, ending with its exact id as "[ref: <id>]".`]
@@ -254,8 +269,59 @@ const REF_MARKER = /\[[ \t]*refs?[ \t]*:([^\]\n]*)\]/gi
  * each recorded change id, each review finding id and each research finding
  * id. Delivery removes the same ids (notesForReader). */
 export function readerIDs(directory: string, items: OpenItem[]) {
-  return [...new Set([...runItemIDs(directory, items).filter(readerVisibleID), ...(readLeanPlan(directory)?.documents ?? []).map(row => row.id), ...runChangeIDs(directory, items),
+  return [...new Set([...notesItemIDs(directory, items).filter(readerVisibleID), ...(readLeanPlan(directory)?.documents ?? []).map(row => row.id), ...runChangeIDs(directory, items),
     ...raisedFindings(directory).map(row => row.id), ...researchFindingIDs(directory)])]
+}
+
+function notesItemIDs(directory: string, items: OpenItem[]) {
+  return snapshotRead(`notes-item-ids\0${JSON.stringify([directory, items])}`, () => runItemIDs(directory, items))
+}
+
+/** The ids lawyer-facing text a model writes (a question, its context, advice)
+ * may not name: the ids readerIDs keeps from the notes and each instruction id,
+ * matched as the notes check matches them (a short id only in prose). */
+function lawyerTextIDs(directory: string) {
+  const ids = [...new Set([...readerIDs(directory, []), ...currentInstructions(directory).map(item => item.id)])]
+  return (text: string) => {
+    const prose = NOT_PROSE.reduce((masked, mask) => masked.replace(mask, " "), text)
+    return ids.filter(id => standingID(id).test(readerVisibleID(id) ? text : prose))
+  }
+}
+
+/** Retry feedback for each run id a lawyer-facing field names, as
+ * [where, text] pairs: the id found and how to say it in words. */
+export function lawyerTextIDIssues(directory: string, fields: [where: string, text: string][]) {
+  const named = lawyerTextIDs(directory)
+  return fields.flatMap(([where, text]) => named(text).map(id => `${where} names the internal id "${id}". The lawyer sees only words: ${
+    /^p[0-9a-f]{12}$/.test(id) ? "name the paragraph by its heading or quote its words"
+      : /^d\d+$/.test(id) ? "name the document by its title"
+      : mintedQuestionID(id) ? "name the question or answer by what it asked"
+      : "say what it refers to in plain words"}.`))
+}
+
+/** `text` as the lawyer may see it, for a field saved on a last attempt: each
+ * id lawyerTextIDIssues reports goes as the notes' ids go for the reader
+ * (notesForReader), an instruction id by its kind (withoutInternalIDs). Text
+ * naming none is returned as written. */
+export function inLawyerWords(directory: string, text: string) {
+  if (!lawyerTextIDs(directory)(text).length) return text
+  return withoutInternalIDs(notesForReader(directory, text, []), currentInstructions(directory).map(item => item.id))
+}
+
+/** A question's two lawyer-facing fields. */
+type LawyerQuestion = { question: string; context: string }
+
+/** Retry feedback for each internal id a question's asking or context names
+ * (lawyerTextIDIssues), at the question's index. */
+export function questionWordIssues(directory: string, questions: (LawyerQuestion | undefined)[]) {
+  return lawyerTextIDIssues(directory, questions.flatMap((question, index) => question
+    ? [[`questions[${index}].question`, question.question], [`questions[${index}].context`, question.context]] as [string, string][] : []))
+}
+
+/** A question saved on a last attempt with ids still in it: its asking and
+ * context in the lawyer's words (inLawyerWords). */
+export function inQuestionWords<T extends LawyerQuestion>(directory: string, question: T): T {
+  return { ...question, question: inLawyerWords(directory, question.question), context: inLawyerWords(directory, question.context) }
 }
 
 /** The change ids the run records for its planned documents (each change
@@ -417,28 +483,72 @@ export function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-const REPLY_FENCE_OPEN = /^```(?:json)?\s*/
-const REPLY_FENCE_CLOSE = /\s*```$/
+/** A fenced block of a reply, plain or labelled json in either case. */
+const REPLY_FENCE = /```(?:json)?\s*([\s\S]*?)```/gi
+const NOT_OBJECT = "The JSON value is not an object; return one JSON object."
 
-/** A reply's JSON value, bare or fenced; undefined when it is not JSON. */
-export function replyJson(reply: string): unknown {
-  try { return JSON.parse(reply.trim().replace(REPLY_FENCE_OPEN, "").replace(REPLY_FENCE_CLOSE, "")) } catch {}
+/** The one JSON object of a stage reply, the reader every lean stage reply
+ * goes through: the whole reply when it is JSON, or else its one fenced
+ * block, or else the one object from the first "{" to the last "}" in
+ * prose around it. A reply that could be read two ways is refused, never
+ * guessed at: braces outside the fenced blocks, or an array (the whole
+ * value is preferred, so an array holding an object is not taken for the
+ * object). Several fenced blocks are a model's drafts of its one answer,
+ * the last its final one: the last is taken when every block is an object
+ * with the same keys as the last and no brace stands outside the fences;
+ * any other several blocks are refused. The error is one or more sentences;
+ * a syntax error says where the JSON breaks (jsonBreakNote). */
+export function parseJsonObject(content: string): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
+  try {
+    const value: unknown = JSON.parse(content.trim())
+    return record(value) ? { ok: true, value } : { ok: false, error: NOT_OBJECT }
+  } catch { /* A prose wrapper can still contain one complete JSON object. */ }
+  const start = content.indexOf("{")
+  const end = content.lastIndexOf("}")
+  if (start < 0) return { ok: false, error: "No JSON object was found in the reply." }
+  if (end < start) return { ok: false, error: jsonBreakNote(content) ?? "The reply ends before its JSON object is closed." }
+  const blocks = [...content.matchAll(REPLY_FENCE)]
+  const bracesOutside = /[{}]/.test(content.replace(REPLY_FENCE, ""))
+  if (blocks.length > 1) {
+    const values = blocks.map(block => { try { return JSON.parse(block[1]!.trim()) as unknown } catch { return undefined } })
+    const last = values.at(-1)
+    const shape = (value: unknown) => record(value) ? JSON.stringify(Object.keys(value).toSorted()) : undefined
+    return record(last) && !bracesOutside && values.every(value => shape(value) === shape(last))
+      ? { ok: true, value: last }
+      : { ok: false, error: "The reply holds more than one fenced block; return one JSON object." }
+  }
+  const candidate = blocks[0]?.[1]?.trim() ?? content.slice(start, end + 1)
+  if (!blocks.length && (content.slice(0, start).trimEnd().endsWith("[") || content.slice(end + 1).trimStart().startsWith("]")))
+    return { ok: false, error: NOT_OBJECT }
+  try {
+    const value: unknown = JSON.parse(candidate)
+    if (blocks.length && record(value) && bracesOutside)
+      return { ok: false, error: "The reply has braces outside its fenced block, so its object is ambiguous; return one JSON object." }
+    return record(value) ? { ok: true, value } : { ok: false, error: NOT_OBJECT }
+  } catch (error) {
+    return { ok: false, error: jsonBreakNote(content) ?? `The reply is not valid JSON: ${error instanceof Error ? error.message : "it could not be parsed"}.` }
+  }
 }
 
 const JSON_SPACE = new Set([" ", "\t", "\n", "\r"])
 const JSON_LITERAL = /true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y
 
-/** Retry feedback for a reply that replyJson cannot read: where its JSON
- * first breaks, as a character offset in the reply, what was expected there
- * (such as the bracket that closes the list or object open at that point,
- * found by tracking nesting outside strings) and the words around it. A model
- * told only the format tends to resend the same long reply unchanged; the
- * place lets it mend the one slip. Undefined when no break is found, so the
- * caller's format restatement stands alone. */
+/** Retry feedback for a reply that parseJsonObject cannot read: where its
+ * JSON first breaks, as a character offset in the reply, what was expected
+ * there (such as the bracket that closes the list or object open at that
+ * point, found by tracking nesting outside strings) and the words around it.
+ * The JSON is read where parseJsonObject reads it: inside the one fenced
+ * block, or else from the first "{" to the end of the reply, so a reply cut
+ * off inside its object is placed at its end. A model told only the format
+ * tends to resend the same long reply unchanged; the place lets it mend the
+ * one slip. Undefined when no break is found, so the caller's format
+ * restatement stands alone. */
 export function jsonBreakNote(reply: string): string | undefined {
-  const lead = reply.length - reply.trimStart().length
-  const start = lead + (REPLY_FENCE_OPEN.exec(reply.slice(lead))?.[0].length ?? 0)
-  const body = reply.trim().replace(REPLY_FENCE_OPEN, "").replace(REPLY_FENCE_CLOSE, "")
+  const blocks = [...reply.matchAll(REPLY_FENCE)]
+  const block = blocks.length === 1 ? blocks[0]! : undefined
+  // A fenced block's JSON starts after its label and spaces: the match less the closing fence and the JSON.
+  const start = block ? block.index + block[0].length - 3 - block[1]!.length : Math.max(0, reply.indexOf("{"))
+  const body = block ? block[1]!.trimEnd() : reply.slice(start).trimEnd()
   const stack: { bracket: "{" | "["; at: number; name?: string }[] = []
   // What the last token was: nothing yet, an opening bracket, a comma, a colon, an object's name or a complete value.
   let last = "start" as "start" | "open" | "comma" | "colon" | "name" | "value"

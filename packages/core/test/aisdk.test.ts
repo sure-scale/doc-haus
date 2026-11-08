@@ -784,6 +784,27 @@ it.effect("sends AI SDK requests directly when no HTTP hook middleware is attach
   }),
 )
 
+for (const operation of ["request", "read"] as const) {
+  it.effect(`preserves native socket reset identity through the actual SDK ${operation} boundary`, () =>
+    Effect.gen(function* () {
+      const cause = Object.assign(new Error("The socket connection was closed unexpectedly"), { code: "ECONNRESET" })
+      const resolved = yield* compatibleModel(Object.assign(async () => {
+        if (operation === "request") throw cause
+        return new Response(new ReadableStream({ start(controller) { controller.error(cause) } }), {
+          headers: { "content-type": "text/event-stream" },
+        })
+      }, { preconnect: fetch.preconnect }))
+      const error = yield* LLMClient.generate(ai.request({ model: resolved, prompt: "Continue the saved work" })).pipe(
+        Effect.provide(client),
+        Effect.flip,
+      )
+      expect(error).toBeInstanceOf(AIError)
+      expect(error.reason).toMatchObject({ _tag: "Transport", transport: "http", operation, code: "ECONNRESET" })
+      expect(SessionRunnerRetry.isRetryable(error)).toBeTrue()
+    }),
+  )
+}
+
 it.effect("fails with a retryable transport error when response headers time out", () =>
   Effect.gen(function* () {
     const aisdk = yield* AISDK.Service
@@ -1160,6 +1181,75 @@ it.effect("classifies native fetch failures as request transport errors", () =>
     expect(SessionRunnerRetry.isRetryable(error)).toBeTrue()
   }),
 )
+
+it.effect("preserves a nested native reset cause through a retryable SDK wrapper", () =>
+  Effect.gen(function* () {
+    const reset = Object.assign(new Error("socket closed"), { code: "ECONNRESET" })
+    const wrapped = new TypeError("fetch failed", { cause: reset })
+    const retryable = yield* streamFailure(apiCallError({ isRetryable: true, cause: wrapped }))
+    expect(retryable.reason).toMatchObject({ _tag: "Transport", operation: "request", code: "ECONNRESET" })
+  }),
+)
+
+it.effect("retains HTTP authentication classification despite a nested native reset cause", () =>
+  Effect.gen(function* () {
+    const error = yield* streamFailure(apiCallError({
+      statusCode: 401,
+      isRetryable: true,
+      cause: Object.assign(new Error("socket closed"), { code: "ECONNRESET" }),
+    }))
+    expect(error.reason._tag).toBe("Authentication")
+    expect(SessionRunnerRetry.isRetryable(error)).toBeFalse()
+  }),
+)
+
+it.effect("does not promote an explicitly non-retryable SDK wrapper to a native reset", () =>
+  Effect.gen(function* () {
+    const error = yield* streamFailure(apiCallError({
+      isRetryable: false,
+      cause: Object.assign(new Error("socket closed"), { code: "ECONNRESET" }),
+    }))
+    expect(error.reason._tag).not.toBe("Transport")
+    expect(error.reason).not.toHaveProperty("code")
+  }),
+)
+
+it.effect("does not classify an SDK TLS cause as a recognized native reset", () =>
+  Effect.gen(function* () {
+    const error = yield* streamFailure(apiCallError({
+      isRetryable: true,
+      cause: Object.assign(new Error("certificate validation failed"), { code: "CERT_HAS_EXPIRED" }),
+    }))
+    expect(error.reason).toMatchObject({ _tag: "Transport", operation: "request" })
+    expect(error.reason).not.toHaveProperty("code")
+  }),
+)
+
+for (const operation of ["request", "read"] as const) {
+  it.effect(`normalizes raw SDK socket reset ${operation} failures without relying on provider error events`, () =>
+    Effect.gen(function* () {
+      const cause = Object.assign(new Error("The socket connection was closed unexpectedly"), { code: "ECONNRESET" })
+      const aisdk = yield* AISDK.Service
+      yield* aisdk.hook.sdk(event => {
+        event.sdk = {
+          languageModel: () => operation === "request" ? failingModel(cause) : {
+            ...streamModel([]),
+            doStream: async () => ({ stream: new ReadableStream({ start(controller) { controller.error(cause) } }) }),
+          },
+        }
+      })
+      const resolved = yield* aisdk.model(model("raw-connection-test-sdk"))
+      const error = yield* LLMClient.generate(ai.request({ model: resolved, prompt: "Continue the saved work" })).pipe(
+        Effect.provide(client),
+        Effect.flip,
+      )
+      expect(error).toBeInstanceOf(AIError)
+      expect(error.reason).toMatchObject({ _tag: "Transport", transport: "http", operation, code: "ECONNRESET" })
+      expect(error.reason.cause).toBe(cause)
+      expect(SessionRunnerRetry.isRetryable(error)).toBeTrue()
+    }),
+  )
+}
 
 it.effect("classifies mid-stream socket drops as read transport errors", () =>
   Effect.gen(function* () {

@@ -4,7 +4,7 @@ import path from "node:path"
 import { createHash } from "node:crypto"
 import { preserveResearchSourceSnapshot } from "../../lib/research-source-snapshot"
 import { citationRowsForLeanText, citationRowsForText } from "../../lib/citation-extraction"
-import { acceptResearchReply, approvedResearch, checkResearch, researchHandoff, researchPermissions, researchPrompt, researchContextLocators } from "./research"
+import { acceptResearchReply, approvedResearch, checkResearch, researchHandoff, researchPermissions, researchPrompt, researchContextLocators, researchStatus } from "./research"
 import { checkDraftingNotes } from "./checks"
 import { finalGate } from "./gate"
 import { quoteFound } from "./quotes"
@@ -38,7 +38,7 @@ test("unresolved jurisdiction pauses intake before research tools or drafting se
   const model = scriptedModel({ ...happyPath, [AGENT.intake]: () => JSON.stringify({ questions: [{ question: "Which jurisdiction governs?", kind: "instruction", context: "The legal approach depends on the governing law." }] }) })
   const result = await runLean(directory, { sessions: model.port })
   expect(result.status).toBe("blocked")
-  expect(model.sessions.map(row => row.agent)).toEqual([AGENT.instructions, AGENT.discrepancy, AGENT.intake, AGENT.advise])
+  expect(model.sessions.map(row => row.agent)).toEqual([AGENT.instructions, AGENT.discrepancy, AGENT.discrepancy, AGENT.intake, AGENT.advise])
   expect(model.sessions[0]?.permissions?.some(row => row.action === "official-source")).toBe(false)
   expect(model.count(AGENT.research)).toBe(0)
   expect(readQuestions(directory)[0]?.stage).toBe("intake")
@@ -66,8 +66,11 @@ test("retrieved text verifies exact quotations, while URLs, fabricated quotes an
   expect(checkResearch(directory, { ...research, findings: [{ ...research.findings[0], url: "https://example.gov/other" }] })).not.toEqual([])
   expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])
   expect(approvedResearch(directory)).toEqual([])
+  expect(researchStatus(directory)?.checked_sources).toBe(0)
   expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: ["Currency unconfirmed"], gaps: [] })).issues).toEqual([])
   expect(approvedResearch(directory)).toHaveLength(1)
+  // A limitation keeps research limited, but the count of checked sources goes with it.
+  expect(researchStatus(directory)).toMatchObject({ status: "limited", checked_sources: 1 })
   expect(quoteFound(directory, { source_id: research.findings[0]!.url, quote: research.findings[0]!.quote })).toBe(true)
   expect(quoteFound(directory, { source_id: research.findings[0]!.url, quote: "Invented text" })).toBe(false)
   expect(quoteFound(directory, { source_id: research.findings[0]!.url, quote: "[a] party must give written notice" })).toBe(true)
@@ -414,7 +417,7 @@ test("research review reports researchable gaps separately and the checker valid
   expect(accepted.openItems).toEqual([expect.objectContaining({ stage: "research-review", kind: "research_gap", detail: GAP_TEXT })])
   expect(JSON.parse(researchHandoff(directory)).limitations).toEqual(["Currency remains to be confirmed", GAP_TEXT])
   const prompt = researchPrompt(directory, "research-review", researchBasis(directory))
-  expect(prompt).toContain("A failed or unavailable provider, an inaccessible source, incomplete extraction and currency limits are limitations; a gap is material authority not yet retrieved that a targeted retrieval could find and on which a drafting choice depends.")
+  expect(prompt).toContain("A failed or unavailable provider, an inaccessible source, incomplete extraction and currency limits are limitations; a gap is material authority not yet retrieved that a targeted retrieval could find and on which a drafting choice depends; a proposition of law the documents assert or rely on with nothing retrieved for it is a gap, a not-needed status included.")
   expect(prompt).toContain('"limitations":["other remaining legal research limits the lawyer must see"],"gaps":[{"issue":"material authority not yet retrieved","affects":"the drafting choice that depends on it"}]}.')
   // A review saved before gaps were reported remains valid.
   writeLeanText(directory, "research-review.json", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [] }))
@@ -477,7 +480,7 @@ test("a review without gaps keeps the research steps and inputs unchanged", asyn
   const directory = matter()
   const model = scriptedModel(happyPath)
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
-  expect(model.sessions.map(row => row.agent).slice(0, 11)).toEqual([AGENT.instructions, AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], ...Array(5).fill(AGENT.acts), AGENT.spine])
+  expect(model.sessions.map(row => row.agent).slice(0, 12)).toEqual([AGENT.instructions, AGENT.discrepancy, AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], ...Array(5).fill(AGENT.acts), AGENT.spine])
   expect(model.count(AGENT.research)).toBe(1)
   expect(model.count(AGENT["research-review"])).toBe(1)
   expect(stageInputs(directory, "research").map(part => part.name)).not.toContain("research-gaps")
@@ -633,10 +636,10 @@ test("a later research run keeps earlier approved findings, replaces a re-return
   const after = readLeanJson(directory, "research.json") as { status: string; findings: { citation: string }[] }
   expect(after.findings.map(row => row.citation)).toEqual(["Rule 3", "Rule 1"])
   expect(after.status).toBe("limited")
-  // Research that is no longer needed carries nothing forward.
+  // Was []: a reply that needs no new authority dropped every approved finding.
   acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1", "r2"], rejected: [], limitations: [], gaps: [] }))
   expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "not-needed", findings: [], limitations: ["No external authority is needed."] })).issues).toEqual([])
-  expect((readLeanJson(directory, "research.json") as { findings: unknown[] }).findings).toEqual([])
+  expect((readLeanJson(directory, "research.json") as { findings: { citation: string }[] }).findings.map(row => row.citation)).toEqual(["Rule 3", "Rule 1"])
 })
 
 /** Research accepted with one finding at Rule 1 and approved by its review. */
@@ -661,6 +664,36 @@ test("a later research run that finds nothing new is checked with the findings i
   expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "completed", findings: [], limitations: [] })).issues).toEqual([])
   expect(readLeanJson(directory, "research.json")).toEqual({ status: "completed", findings: [finding], limitations: [] })
   expect(checkResearch(directory, readLeanJson(directory, "research.json"))).toEqual([])
+})
+
+test("a not-needed targeted re-run keeps previously approved findings", () => {
+  const directory = matter()
+  const finding = approvedNotice(directory)
+  const reason = "The new issue needs no external authority."
+  const result = acceptResearchReply(directory, "research", JSON.stringify({ status: "not-needed", findings: [], limitations: [reason] }))
+  expect(result.issues).toEqual([])
+  // Was { status: "not-needed", findings: [] }: the approved authority the plan cites was lost.
+  // The saved set holds authority, so its status cannot stay not-needed; the reason is no research gap,
+  // so it is not saved as one ("limited" tells the lawyer research is incomplete).
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "completed", findings: [finding], limitations: [] })
+  expect(checkResearch(directory, readLeanJson(directory, "research.json"))).toEqual([])
+  expect(result.openItems).toEqual([])
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "not-needed", findings: [], limitations: [] })).issues).toEqual([])
+  expect(readLeanJson(directory, "research.json")).toEqual({ status: "completed", findings: [finding], limitations: [] })
+})
+
+test("a review of not-needed research discloses its gaps, not the restated reason", () => {
+  const directory = matter()
+  const reason = "The note records supplied facts and relies on no proposition of law."
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "not-needed", findings: [], limitations: [reason] })).openItems).toEqual([])
+  // Was one research_gap open item holding the reason: "Legal research is incomplete" for a note that needs none.
+  const restated = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [], limitations: [reason], gaps: [] }))
+  expect(restated.issues).toEqual([])
+  expect(restated.openItems).toEqual([])
+  const gap = { issue: "Whether the stated deadline is a statutory minimum.", affects: "The deadline the note records." }
+  const missed = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: [], rejected: [], limitations: [reason], gaps: [gap] }))
+  expect(missed.issues).toEqual([])
+  expect(missed.openItems.map(row => row.detail)).toEqual([expect.stringContaining(gap.issue)])
 })
 
 test("research that runs again before its review keeps the findings that review has not covered; a current review's rejection is kept", () => {

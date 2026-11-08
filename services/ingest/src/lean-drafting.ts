@@ -15,6 +15,7 @@ import { enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, queuedAnswerI
 import { runLean, stageInputSha, stopLeanRun } from "../../../dochaus/workflows/lean/runner"
 import { leanSteps } from "../../../dochaus/workflows/lean/plan"
 import { withSourceSnapshot } from "../../../dochaus/workflows/lean/quotes"
+import { nativeSessionWaits } from "../../../dochaus/workflows/lean/session-port"
 import { engineSessionPort, type LeanDeps } from "../../../dochaus/workflows/lean/stages"
 import { catalogModel, engineModelCatalog, type CatalogModel } from "./setup"
 import {
@@ -173,6 +174,7 @@ function readLeanDraftingStatus(directory: string) {
   return {
     ...state,
     in_flight: running.has(directory),
+    connection_wait: connectionWait(directory, state),
     // Derived, never stored: the lawyer stopped this run (the reason is display only).
     stopped: draftingRunStopped(state),
     // The later of the last state write and this process's last run event.
@@ -198,6 +200,18 @@ function readLeanDraftingStatus(directory: string) {
     // The lawyer's own request, so the chat can show it again after a reload.
     request: readLeanText(directory, "request.md")?.trim() ?? null,
   }
+}
+
+/** Transport backoff is an observation of this process, never run state.
+ * Ignore another session/owner and any observation left after the run stops. */
+function connectionWait(directory: string, state: LeanState) {
+  if (!running.has(directory) || state.status !== "running" || state.paused_at) return null
+  const sessions = new Set(Object.values(state.stages).flatMap(stage => stage?.status === "running"
+    ? [...(stage.session_ids ?? []), ...(stage.session_id ? [stage.session_id] : [])] : []))
+  const waiting = nativeSessionWaits(directory).filter(row => sessions.has(row.sessionID) ||
+    ((row.phase === "session-create" || row.phase === "session-create-readback") && row.parentID === state.owner_session_id))
+    .sort((a, b) => a.nextRetry - b.nextRetry)[0]
+  return waiting ? { last_successful_contact: waiting.lastSuccessfulContact, next_retry: waiting.nextRetry } : null
 }
 
 /** Admission is not application. Only a completed, current final check can
@@ -397,7 +411,7 @@ export function leanDraftingRoutes(options: { directory: (id: string) => string;
       return c.json({ error: "The active drafting run changed. Reload before sending this update.", code: "lean_run_changed" }, 409)
     if (draftingRunStopped(state)) return c.json(STOPPED, 409)
     const admission = draftingUpdateAdmission({ ...state, in_flight: running.has(directory), pending_requests: pendingLeanRequests(directory).length })
-    if (admission === "closed") return c.json({ error: "This update was not sent. Late clarification requires an idle draft held at checklist checking. Wait for the current work to settle; completed drafts need an amendment. You can still answer specific questions.", code: "lean_update_too_late" }, 409)
+    if (admission === "closed") return c.json({ error: "This update was not sent: this draft is being applied or finished, or is complete. Keep further changes for a later amendment. You can still answer specific questions.", code: "lean_update_too_late" }, 409)
     const text = typeof input.text === "string" ? input.text.replace(/\r\n/g, "\n").trim() : ""
     if (!text || text.length > 20_000)
       return c.json({ error: "An update must contain 1–20,000 characters.", code: "invalid_update" }, 400)

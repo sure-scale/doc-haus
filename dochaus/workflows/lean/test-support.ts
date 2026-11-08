@@ -39,7 +39,7 @@ export function matter(sourceText = SOURCE_TEXT, request = "Draft a short supply
 /** The current plan, now also naming a requested memo, as an outline does. */
 export function requestMemo(directory: string) {
   const plan = readLeanPlan(directory)!
-  writeLeanPlan(directory, plan.documents.map(({ id, ...document }) => document), plan.basis, plan.acting_for, { name: "cover memo", file: "cover memo.docx" }, plan.posture, plan.dates)
+  writeLeanPlan(directory, plan.documents.map(({ id, ...document }) => document), plan.basis, plan.acting_for, { name: "cover memo" }, plan.posture, plan.dates, plan.date_format)
 }
 
 export function scriptedModel(replies: Record<string, Reply>) {
@@ -64,11 +64,20 @@ export function scriptedModel(replies: Record<string, Reply>) {
         [AGENT.acts]: actRecord,
         // The outline's files job finds no lawyer instruction on the files to deliver.
         [AGENT.files]: () => JSON.stringify({ stated: false, files: [] }),
+        // Each spine entry binds some part's text, and neither its placement job nor any part's reverse job places it, so no part prompt carries grounds.
+        [AGENT.level]: () => JSON.stringify({ level: "text" }),
+        // Every drafted part speaks to its reader.
+        [AGENT.reader]: () => JSON.stringify({ hits: [] }),
+        [AGENT.notesCheck]: () => JSON.stringify({ status: "pass", reason: "The synthetic section substantively addresses its assigned point." }),
+        [AGENT.notesEvidence]: prompt => JSON.stringify(prompt.includes("<notes_evidence_inspection>")
+          ? { excerpts: [], limitation: "The scripted fixture selects no evidence for this point; it establishes neither absence nor resolution." }
+          : { targets: [], limitation: "The scripted fixture does not inspect current passages for this point; it establishes neither missing content nor resolution." }),
+        [AGENT.placement]: prompt => JSON.stringify(prompt.includes("<part>\n") ? { entries: [] } : { parts: [] }),
         // The plan rejects every listed review finding: the scripted changes
         // stage amends from the findings it is shown, whatever the plan says.
         [AGENT["change-plan"]]: prompt => {
           const resolves = listedFindingIDs(prompt)
-          return JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [], findings: resolves.length ? [{
+          return JSON.stringify({ shared_decisions: [], groups: [], questions: [], findings: resolves.length ? [{
             disposition: "rejected", kind: "suggestion", detail: "The scripted plan adjudicates the review findings.", reason: "The scripted changes stage decides the amendments.",
             documents: [/^- (d\d+) "[^"]*" \(this document\)$/m.exec(prompt)?.[1] ?? "d1"], sources: [], limitations: ["Scripted fixture."], resolves,
           }] : [] })
@@ -77,19 +86,33 @@ export function scriptedModel(replies: Record<string, Reply>) {
         [AGENT["change-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [] }),
         // Ordinary fixtures list no instruction, so no question is settled.
         [AGENT.instructions]: () => JSON.stringify({ items: [], documents: [] }),
-        [AGENT.discrepancy]: () => JSON.stringify({ entries: [], limitations: [] }),
+        [AGENT.discrepancy]: () => JSON.stringify({ entries: [], gaps: [], limitations: [] }),
         [AGENT.spine]: () => JSON.stringify({ entries: [], limitations: [] }),
+        // Every spine entry already states one point.
+        [AGENT.split]: () => JSON.stringify({ atomic: true }),
+        // No spine entry says the sources do not record something, and any claim checked stands.
+        [AGENT.absence]: () => JSON.stringify({ claims: [] }),
+        [AGENT["absence-verify"]]: () => JSON.stringify({ verdict: "stands" }),
         [AGENT["review-independent"]]: () => NO_FINDINGS,
         [AGENT["review-wording"]]: () => NO_FINDINGS,
         [AGENT["review-client-disadvantage"]]: () => NO_FINDINGS,
+        // A templated document's guidance review finds every position covered.
+        [AGENT["review-playbook"]]: () => JSON.stringify({ coverage: "Every guidance position is covered.", findings: [] }),
         [AGENT["package-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [], delivery: [] }),
         [AGENT.intake]: () => JSON.stringify({ ready: true, jurisdiction: "No external legal determination needed for this supplied-source fixture", scope: "Reproduce supplied terms only", acting_for: { party: "", basis: "none" }, dates: { document_date: { date: "", basis: "today" }, operative_dates: [] } }),
         [AGENT.research]: () => JSON.stringify({ status: "not-needed", findings: [], limitations: ["This fixture requests a note from supplied terms only."] }),
         [AGENT["research-review"]]: () => JSON.stringify({ approved: [], rejected: [], limitations: [], gaps: [] }),
         // Every asked question is advised; the fixture's advisor recommends nothing.
         [AGENT.advise]: () => JSON.stringify({ unavailable: { reason: "The scripted advisor recommends nothing." } }),
-        // Every answer in the lawyer's words is read as their own answer.
-        [AGENT.answer]: () => JSON.stringify({ class: "answered" }),
+        // Typed replies are their own answers; refresh adds no evidence or permission.
+        [AGENT.answer]: prompt => {
+          if (prompt.includes('"drafting_permission"')) {
+            const prior = /"prior_status":"(provisional|wait)"/.exec(prompt)?.[1]
+            return JSON.stringify({ drafting_permission: prior ?? "none", reason: "The scripted review preserves the prior drafting instruction.", basis: [] })
+          }
+          if (prompt.includes('"evidence_status"')) return JSON.stringify({ evidence_status: "missing", reason: "The scripted check supplies no new evidence.", basis: [] })
+          return JSON.stringify({ class: "answered", fact_status: "supplied", fact_quote: /<reply>\n([\s\S]*?)\n<\/reply>/.exec(prompt)?.[1] ?? "" })
+        },
         // Every set of answers can be followed together.
         [AGENT.reconcile]: () => JSON.stringify({ conflicts: [] }),
       }
@@ -227,6 +250,13 @@ export function drafter(...documents: string[]): Reply {
   }
 }
 
+/** A scripted part reply: `text` under the label the part prompt asks for,
+ * which the section check requires as the part's first line. */
+export function labelledPart(prompt: string, text: string) {
+  const heading = /^Draft part \d+ of \d+ of "[^"]*": (.+)$/m.exec(prompt)?.[1]
+  return heading ? `## ${heading}\n\n${text}` : text
+}
+
 export function pidOf(prompt: string, text: string) {
   const pid = new RegExp(`\\[(p[0-9a-f]{12})\\] ${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).exec(prompt)?.[1]
   if (!pid) throw new Error(`The prompt does not list a paragraph starting "${text}".`)
@@ -269,13 +299,18 @@ export const changes: Reply = prompt => JSON.stringify({
 
 export const noChanges: Reply = () => JSON.stringify({ amendments: [], questions: [] })
 
-// Discloses every open item the coordinator lists, in every document's block,
-// and every delegated question, as the drafting-notes contract asks: in words,
-// each ending with its id in a trailing "[ref: <id>]".
+// Generic fixtures answer the focused prose contract; code owns references.
+// Retain the old full-note reply for direct legacy prompt/checker fixtures.
 export const draftingNotes: Reply = prompt => {
+  if (prompt.includes("<current_target_lookup>"))
+    return JSON.stringify({ targets: [], limitation: "The scripted fixture does not inspect current passages for this point; it establishes neither missing content nor resolution." })
+  if (prompt.includes("This is a separate repair-link job"))
+    return JSON.stringify({ sections: [0], reason: "The synthetic package explanation owns this generic memo correction." })
+  if (prompt.includes("<section_kind>"))
+    return "The document records the supplied terms. Review any stated unresolved point before using the draft."
   const blocks = [...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].map(match => match[1]!)
   const delegated = /<delegated_decisions>\n([\s\S]*?)\n<\/delegated_decisions>/.exec(prompt)?.[1] ?? ""
-  const ids = [...blocks.flatMap(block => [...block.matchAll(/^- (\S+):/gm)].map(match => match[1])), ...[...delegated.matchAll(/^- \[(\S+)\] Q:/gm)].map(match => match[1])]
+  const ids = [...blocks.flatMap(block => [...block.matchAll(/^- \[ref: (\S+)\]/gm)].map(match => match[1])), ...[...delegated.matchAll(/^- \[(\S+)\] Q:/gm)].map(match => match[1])]
   return ["# Drafting notes", "", "The draft states the delivery period from the supply terms.", "",
     ...ids.map(id => `- The lawyer must resolve this before the draft is used. [ref: ${id}]`)].join("\n")
 }
@@ -284,6 +319,10 @@ export const happyPath: Record<string, Reply> = { [AGENT.draft]: drafter(DRAFT),
 
 // Runs that plan a second document: a covering letter for the supply note,
 // whose part labels are not its headings.
+/** A requested cover memo as the outline plans it: an advice document, with a
+ * scripted reply for each of the workflow's memo parts (parsePlan). */
+export const COVER_MEMO = ["# Cover memo", "Form: advice", "", ...["What this is and what you need to do", "Decisions taken and why", "Discrepancies and how handled",
+  "What the documents do", "Research relied on and its limits"].flatMap(heading => [`## ${heading}`, "", `The memo sets out ${heading.toLowerCase()}.`, ""])].join("\n")
 export const LETTER = "# Covering letter\nForm: letter\n\n## Enclosure\n\nWe enclose the supply note for signature.\n\n## Delivery\n\nThe goods will be delivered as the supply note states.\n"
 export const DRAFTED = "The supplier shall deliver the goods."
 export const APPLIED = "The supplier shall deliver the goods within thirty days of the order date."

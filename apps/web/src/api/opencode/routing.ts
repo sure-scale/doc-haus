@@ -1,7 +1,7 @@
 import type { Client } from "./client"
 import { abortSession, createSession, deleteSession, getMessages } from "./sessions"
 import { errorOf } from "../../components/chat/turn-model"
-import { routeAgent as sharedRouteAgent, type Route } from "../../../../../dochaus/lib/chat-routing"
+import { answerText, routeAgent as sharedRouteAgent, type Route } from "../../../../../dochaus/lib/chat-routing"
 
 export { ackLine, parseRoute, quickDraftEligible, type DraftScope, type Route } from "../../../../../dochaus/lib/chat-routing"
 
@@ -28,7 +28,7 @@ export function routeAgent(input: {
     wait: async sessionID => { await client.session.wait({ sessionID }) },
     messages: async sessionID => (await getMessages(client, sessionID)).map(message => ({
       role: message.info.role,
-      text: message.parts.filter(part => part.type === "text").map(part => part.text).join(""),
+      text: answerText(message.parts.filter(part => part.type === "text")),
       error: errorOf(message.info.error),
     })),
     interrupt: async sessionID => { await abortSession(client, sessionID) },

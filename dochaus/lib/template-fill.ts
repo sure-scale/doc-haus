@@ -1,7 +1,7 @@
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { docxodus } from "./docxodus"
 import { withParagraphPointers } from "./drafting-amendment"
-import { renumberHeadings, splitBlocks } from "./markdown"
+import { renumberHeadings, splitBlocks, type DraftStyle } from "./markdown"
 import { lintRenderedDraftMarkdown } from "./render"
 import { withGeneratedDocxAttribution } from "./docx-attribution"
 import { numberDocxClauses } from "./docx-numbering"
@@ -29,6 +29,8 @@ export type TemplateFillOptions = {
   replaces?: { clause: string; replacement: string }[]
   /** Markdown body inserted after the template's first paragraph, which is then dropped. */
   content?: string
+  /** The date and number style the lint holds the draft to; the firm's saved preferences by default. */
+  style?: DraftStyle
 }
 
 /** The markdown body could not be inserted into the template. */
@@ -136,6 +138,7 @@ export async function fillTemplate(template: Uint8Array, options: TemplateFillOp
       .split("\n")
       .filter((line) => line !== "# Document")
       .join("\n"),
+    options.style,
   )
 
   const remaining = session.findPlaceholders().map((p) => p.match.text)

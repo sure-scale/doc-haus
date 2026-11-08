@@ -347,28 +347,54 @@ function numberStyleProblems(markdown: string, pref: DraftStyle["numberStyle"]) 
       .filter((m) => !(m[1] && m[3]))
       .map((m) => `"${m[2]}${m[4]}"`)
     if (bare.length === 0) return []
-    return [`durations must be words then numerals ("thirty (30) days") per firm preferences: ${[...new Set(bare)].join(", ")}`]
+    return [`durations must be words then numerals ("thirty (30) days"): ${[...new Set(bare)].join(", ")}`]
   }
   const wordy = [
     ...markdown.matchAll(new RegExp(`\\b(?:${NUMBER_WORDS})(?:[ -](?:${NUMBER_WORDS}))?\\s*\\(\\d{1,4}\\)`, "gi")),
   ].map((m) => `"${m[0]}"`)
   if (wordy.length === 0) return []
-  return [`numbers must be plain numerals ("30 days") per firm preferences: ${[...new Set(wordy)].join(", ")}`]
+  return [`numbers must be plain numerals ("30 days"): ${[...new Set(wordy)].join(", ")}`]
 }
 
 const MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December"
+// Month names as sources write them: in full, or abbreviated with an optional stop.
+const WRITTEN_MONTHS = `${MONTHS}|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept|Sep|Oct|Nov|Dec`
+const ORDINAL = "(?:st|nd|rd|th)?"
+
+/** The three unambiguous written date forms. `strict` is the exact form the
+ * style lint holds a draft to; `written` is the same form as a source may
+ * write it (an ordinal, an abbreviated month, a day "of" the month or a
+ * dropped comma allowed), which detectDateFormat counts. Numeric forms
+ * (30/08/2026) are ambiguous and in neither. */
+export const DATE_FORMS: Record<DraftStyle["dateFormat"], { example: string; strict: RegExp; written: RegExp }> = {
+  "month-day-year": {
+    example: '"June 11, 2026"',
+    strict: new RegExp(`\\b(?:${MONTHS}) \\d{1,2}, \\d{4}\\b`, "g"),
+    written: new RegExp(`\\b(?:${WRITTEN_MONTHS})\\.? \\d{1,2}${ORDINAL},? \\d{4}\\b`, "g"),
+  },
+  "day-month-year": {
+    example: '"11 June 2026"',
+    strict: new RegExp(`\\b\\d{1,2} (?:${MONTHS}) \\d{4}\\b`, "g"),
+    written: new RegExp(`\\b\\d{1,2}${ORDINAL}(?: day)?(?: of)? (?:${WRITTEN_MONTHS})\\.? \\d{4}\\b`, "g"),
+  },
+  iso: { example: '"2026-06-11"', strict: /\b\d{4}-\d{2}-\d{2}\b/g, written: /\b\d{4}-\d{2}-\d{2}\b/g },
+}
+
+/** The written date form a text uses most, or undefined when it writes no
+ * date or no form outnumbers the others. */
+export function detectDateFormat(text: string): DraftStyle["dateFormat"] | undefined {
+  const counts = (Object.keys(DATE_FORMS) as DraftStyle["dateFormat"][])
+    .map((format) => ({ format, count: text.match(DATE_FORMS[format].written)?.length ?? 0 }))
+    .toSorted((a, b) => b.count - a.count)
+  return counts[0]!.count > counts[1]!.count ? counts[0]!.format : undefined
+}
 
 function dateFormatProblems(markdown: string, pref: DraftStyle["dateFormat"]) {
-  const formats = {
-    "month-day-year": { example: '"June 11, 2026"', pattern: new RegExp(`\\b(?:${MONTHS}) \\d{1,2}, \\d{4}\\b`, "g") },
-    "day-month-year": { example: '"11 June 2026"', pattern: new RegExp(`\\b\\d{1,2} (?:${MONTHS}) \\d{4}\\b`, "g") },
-    iso: { example: '"2026-06-11"', pattern: /\b\d{4}-\d{2}-\d{2}\b/g },
-  }
-  const offenders = Object.entries(formats)
+  const offenders = Object.entries(DATE_FORMS)
     .filter(([key]) => key !== pref)
-    .flatMap(([, format]) => [...markdown.matchAll(format.pattern)].map((m) => `"${m[0]}"`))
+    .flatMap(([, format]) => [...markdown.matchAll(format.strict)].map((m) => `"${m[0]}"`))
   if (offenders.length === 0) return []
-  return [`dates must be written ${formats[pref].example} per firm preferences: ${[...new Set(offenders)].join(", ")}`]
+  return [`dates must be written ${DATE_FORMS[pref].example}: ${[...new Set(offenders)].join(", ")}`]
 }
 
 function escapeRegExp(text: string) {

@@ -10,9 +10,9 @@ import { deliveredNotes, finalGate } from "./gate"
 import { readLeanPlan, writeLeanPlan } from "./plan"
 import { openItem } from "./quotes"
 import { runLean } from "./runner"
-import { acceptStageReply } from "./stages"
+import { acceptStageReply, disclosableItems } from "./stages"
 import { leanFile, readLeanState, readLeanText, readOpenItems, updateLeanStage, writeLeanText, writeOpenItems, writeQuestions, type OpenItem, type Question } from "./state"
-import { AGENT, DRAFT, SOURCE, cleanupMatters, drafter, happyPath, matter, pidOf, registering, sameSession, scriptedModel, type Reply } from "./test-support"
+import { AGENT, COVER_MEMO, DRAFT, DRAFTED, SOURCE, cleanupMatters, drafter, happyPath, listed, matter, noChanges, pidOf, registering, reviewFirst, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // The drafting notes, a requested memo or not, are delivered at the gate
 // without their "[ref: …]" markers, and the finding lines the gate composes
@@ -810,24 +810,27 @@ test("a refined parent's memo finding with no coverage issue recorded gives a pl
 test("through the run, the registered memo has no markers or ids while the working notes keep them", async () => {
   const directory = matter()
   writeLeanText(directory, "request.md", "Draft a short supply note from the supply terms, with a cover memo on the open points.")
-  const draft = drafter(DRAFT)
+  const draft = drafter(DRAFT, COVER_MEMO)
   const memoDrafter: Reply = (prompt, index) => draft(prompt, index).replace("Acting for: not stated", "Acting for: not stated\nMemo: cover memo")
-  const changes = sameSession(prompt => JSON.stringify({ amendments: [{ pid: pidOf(prompt, "The supplier shall deliver the goods."),
-    updated: "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen].", reason: "Drafting judgment.", sources: [] }], questions: [] }))
-  const memo: Reply = prompt => ["# Cover memo", "", "The draft follows the supply terms.", "",
-    ...[...prompt.matchAll(/<open_items>\n([\s\S]*?)\n<\/open_items>/g)].flatMap(match => [...match[1]!.matchAll(/^- (\S+):/gm)])
-      .map(row => `- The condition standard is for the lawyer to confirm. [ref: ${row[1]}]`)].join("\n")
+  // The memo document has no supply paragraph to review or change.
+  const changes = sameSession((prompt, index) => listed(prompt, DRAFTED) ? JSON.stringify({ amendments: [{ pid: pidOf(prompt, DRAFTED),
+    updated: "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen].", reason: "Drafting judgment.", sources: [] }], questions: [] }) : noChanges(prompt, index))
+  const memo: Reply = prompt => prompt.includes("<section_kind>\nopen-item\n") && prompt.includes("condition standard")
+    ? "The condition standard is for the lawyer to confirm."
+    : "The draft follows the supply terms."
   const deliverables = registering()
-  const model = scriptedModel({ ...happyPath, [AGENT.draft]: memoDrafter, [AGENT.changes]: changes, [AGENT.finalize]: memo })
+  const model = scriptedModel({ ...happyPath, [AGENT.draft]: memoDrafter, [AGENT.review]: reviewFirst, [AGENT.changes]: changes, [AGENT.finalize]: memo })
   expect((await runLean(directory, { sessions: model.port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
 
   expect(memoMode(directory)).toBe(true)
   const item = readOpenItems(directory).find(row => row.kind === "placeholder" && row.stage === "apply")!
   const working = readLeanText(directory, "drafting-notes.md")!
-  expect(working).toContain(`[ref: ${item.id}]`)
+  expect(working).toContain(`The condition standard is for the lawyer to confirm. [ref: ${item.id}]`)
+  for (const point of disclosableItems(directory)) expect(working.split(`[ref: ${point.id}]`)).toHaveLength(2)
   expect(readLeanText(directory, "delivered-notes.md")).toBe(withoutRefMarkers(working))
   const name = deliverables.names.find(name => name.endsWith("cover memo.docx"))!
   const delivered = docxText(readFileSync(path.join(directory, name)))
   expect(delivered).toContain("The condition standard is for the lawyer to confirm.")
-  for (const text of ["[ref", item.id]) expect(delivered).not.toContain(text)
+  for (const text of ["[ref", ...disclosableItems(directory).map(point => point.id)]) expect(delivered).not.toContain(text)
+  expect(finalGate(directory)).toMatchObject({ status: "pass", blocking: [] })
 }, 120_000)

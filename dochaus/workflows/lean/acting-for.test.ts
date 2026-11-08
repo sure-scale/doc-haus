@@ -9,12 +9,12 @@ import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES, LEAN_PROMPT_VERSION, stageInputs } from "./stages"
 import { checkIntakeActingFor, intakeActingFor } from "./intake"
 import { researchPrompt } from "./research"
-import { hashStageInputs, readLeanJson, writeLeanText, type OpenItem } from "./state"
+import { hashStageInputs, readLeanJson, readLeanText, writeLeanText, type OpenItem } from "./state"
 import { AGENT, DRAFT, SOURCE, cleanupMatters, drafter, happyPath, matter, scriptedModel, type Reply } from "./test-support"
 
 // Whom the lawyer acts for: read once by the outline, kept in the plan, shown to
-// every model stage and keyed into their inputs. Real coordinator; only the
-// model is scripted.
+// every model stage and every drafted part, and keyed into the stages' inputs.
+// Real coordinator; only the model is scripted.
 
 afterEach(cleanupMatters)
 
@@ -37,9 +37,10 @@ describe("whom the lawyer acts for", () => {
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
     expect(readLeanPlan(directory)?.acting_for).toEqual(NOT_STATED)
-    const [outline, firstPart] = promptsOf(model, AGENT.draft)
+    const [outline, ...parts] = promptsOf(model, AGENT.draft)
     expect(outline).toContain('"Acting for: not stated"')
-    expect(firstPart).toContain(NEUTRAL)
+    expect(parts).toHaveLength(2)
+    for (const part of parts) expect(part).toContain(NEUTRAL)
     const review = promptsOf(model, AGENT.review)[0]!
     expect(review).toContain(NEUTRAL)
     expect(review).toContain(NEUTRAL_REVIEW)
@@ -55,8 +56,10 @@ describe("whom the lawyer acts for", () => {
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
     expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the supplier", basis: "stated" })
-    const block = "<acting_for>\nThe lawyer acts for: the supplier.\n</acting_for>"
-    expect(promptsOf(model, AGENT.draft)[1]).toContain(block)
+    const block = "<acting_for>\nThe lawyer acts for: the supplier. Draft for that party.\n</acting_for>"
+    const [, ...parts] = promptsOf(model, AGENT.draft)
+    expect(parts).toHaveLength(2)
+    for (const part of parts) expect(part).toContain(block)
     const review = promptsOf(model, AGENT.review)[0]!
     expect(review).toContain(block)
     expect(review).toContain(SIDED_REVIEW)
@@ -89,10 +92,11 @@ describe("whom the lawyer acts for", () => {
     expect(readLeanCoverage(directory)?.plan).toBe(coveragePlanHash(directory, plan.documents, client))
     expect(readLeanCoverage(directory)?.plan).not.toBe(coveragePlanHash(directory, plan.documents, NOT_STATED))
     expect(planCoverageCurrent(directory)).toBe(true)
-    const [outline, firstPart] = promptsOf(model, AGENT.draft)
+    const [outline, ...parts] = promptsOf(model, AGENT.draft)
     expect(outline).toContain('"Acting for: not stated"')
-    const block = "<acting_for>\nThe lawyer acts for: Northwind Traders Ltd.\n</acting_for>"
-    expect(firstPart).toContain(block)
+    const block = "<acting_for>\nThe lawyer acts for: Northwind Traders Ltd. Draft for that party.\n</acting_for>"
+    expect(parts).toHaveLength(2)
+    for (const part of parts) expect(part).toContain(block)
     const review = promptsOf(model, AGENT.review)[0]!
     expect(review).toContain(block)
     expect(review).toContain(SIDED_REVIEW)
@@ -107,7 +111,7 @@ describe("whom the lawyer acts for", () => {
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
     expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the supplier", basis: "stated" })
-    expect(promptsOf(model, AGENT.draft)[1]).toContain("<acting_for>\nThe lawyer acts for: the supplier.\n</acting_for>")
+    expect(promptsOf(model, AGENT.draft)[1]).toContain("<acting_for>\nThe lawyer acts for: the supplier. Draft for that party.\n</acting_for>")
     expect(promptsOf(model, AGENT.review)[0]).not.toContain("Northwind Traders Ltd")
   }, 120_000)
 
@@ -227,12 +231,13 @@ describe("who executes each planned document", () => {
     expect(parsePlan(outline("- **Executed by:** \u201CKestrel Works\u201D.\n")).value?.documents[0]?.executed_by).toEqual(["Kestrel Works"])
     for (const line of ["Executed by: none", "Executed by: None.", "- Executed by: none (it takes no legal act)"])
       expect(parsePlan(outline(`${line}\n`))).toEqual({ issues: [], value: expect.objectContaining({ documents: [expect.objectContaining({ executed_by: [] })] }) })
-    // Lines add up; a non-answer declares nothing; a line under a part is scope text.
+    // Lines add up; a non-answer declares nothing; a line under a part is named and read as nothing.
     expect(parsePlan(outline("Executed by: Kestrel Works\nExecuted by: Wren Atelier; Kestrel Works\n")).value?.documents[0]?.executed_by).toEqual(["Kestrel Works", "Wren Atelier"])
     expect(parsePlan(outline("Executed by: not stated\n")).value?.documents[0]).not.toHaveProperty("executed_by")
-    const late = parsePlan("Acting for: not stated\n# Resolution\nForm: other\n## Approval\nExecuted by: Kestrel Works").value?.documents[0]
-    expect(late).not.toHaveProperty("executed_by")
-    expect(late?.parts[0]?.scope).toBe("Executed by: Kestrel Works")
+    const late = parsePlan("Acting for: not stated\n# Resolution\nForm: other\n## Approval\nExecuted by: Kestrel Works")
+    expect(late.issues).toEqual([expect.stringContaining('The line "Executed by: Kestrel Works" comes after the "## " parts of "Resolution"')])
+    expect(late.value?.documents[0]).not.toHaveProperty("executed_by")
+    expect(late.value?.documents[0]?.parts[0]?.scope).toBe("")
   })
 
   test("a later none or non-answer keeps the parties already named, and none must be the whole answer", () => {
@@ -320,7 +325,14 @@ describe("a side taken from the sources", () => {
     const items = (readLeanJson(directory, "gate.json") as { items: OpenItem[] }).items.filter(item => item.kind === "drafted_default")
     expect(items).toHaveLength(1)
     expect(items[0]).toMatchObject({ status: "disclosed", detail: expect.stringContaining("drafted for Kestrel Works") })
-    expect(promptsOf(model, AGENT.finalize)[0]).toContain(items[0]!.id)
+    const owningNotes = promptsOf(model, AGENT.finalize).filter(prompt => {
+      const point = /<open_point>\n([\s\S]*?)\n<\/open_point>/.exec(prompt)?.[1]
+      return point && JSON.parse(point).kind === "drafted_default"
+        && JSON.parse(point).detail.startsWith("The documents are drafted for Kestrel Works,")
+    })
+    expect(owningNotes).toHaveLength(1)
+    expect(owningNotes[0]).not.toContain(items[0]!.id)
+    expect(readLeanText(directory, "drafting-notes.md")!.split(`[ref: ${items[0]!.id}]`)).toHaveLength(2)
   }, 120_000)
 
   test("the client recorded on the matter prevails over a side taken from the sources", async () => {

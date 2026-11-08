@@ -8,17 +8,19 @@ import { acceptChangePlan, acceptChangeReview, preparationOutputValid, readChang
 import { comparisonBasis } from "./comparison"
 import { checkPackageReview, isLeftOpenPackageFinding, isWithheldDeliveryItem, readPackageReview, withholdUngroundedDelivery } from "./package-review"
 import { coverageItems, planCoverageCurrent } from "./package-coverage"
+import { placementItems, planPlacementCurrent, SPINE_ATOMS } from "./spine-placement"
 import { readActRecord } from "./act-record"
 import { requestedFilesItems } from "./requested-files"
+import { PROVISIONAL_FACT_MARKER_CONTRACT, provisionalFactMarkerItems } from "./provisional-fact-markers"
 import { draftedDefaultItems } from "./drafted-defaults"
+import { READER_CHECK_CONTRACT } from "./reader-check"
 import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
-import { currentResearchGaps, researchOutputValid } from "./research"
-import { normalizeLegend, normalizePreferences, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
+import { currentResearchGaps, intakeDiscrepancy, researchOutputValid } from "./research"
+import { appliedDraftingPreferences, normalizeLegend, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { firmPracticeAreaContext } from "../../lib/practice-areas"
 import { pageFurniture, type FurnitureKind, type RequestedFurniture } from "../../lib/page-furniture"
 import { matterClient } from "../../lib/matter-client"
-import { readFirmPreferences } from "../../lib/preferences"
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
 import path from "node:path"
 import { ensureParagraphRows, paragraphSha256 } from "../../lib/drafting-amendment"
@@ -28,19 +30,20 @@ import { linkCrossReferences } from "../../lib/docx-crossrefs"
 import { withTemplateStyleIds } from "../../lib/template-seed"
 import { presentDraft, type DraftPresentation } from "./draft-presentation"
 import { carryRevisionParagraphs, carryRevisionTables, draftedTablesNotes } from "./original-tables"
-import { checkChanges, parseJsonObject } from "./change-checks"
+import { checkChanges } from "./change-checks"
 import { splitNumberingIssues } from "./apply-stage"
 import {
   checkDraft,
   finalBodyParagraphs,
   checkDraftingNotes,
+  parseJsonObject,
   readChangeList,
   readParagraphs,
   type ApplyResult,
   type ParagraphRow,
   type StageCheck,
 } from "./checks"
-import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type PlannedDocument, type StepID } from "./plan"
+import { askedAtOrBefore, reviewGuidance, reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, runDateFormat, runPosture, stepDocument, stepStage, type DocID, type PlannedDocument, type StepID } from "./plan"
 import { acceptReviewReply, forwardedFindings, readReviewRecord } from "./review-findings"
 import { templateSource } from "./template-contract"
 import { INSTRUCTIONS_FILE, instructionsOutputValid } from "./instructions"
@@ -74,11 +77,11 @@ import {
 // goes to the pointer applier as data, addressed by paragraph pointer. Steps of
 // one planned document keep their files under that document's id (d1/, d2/...).
 
-export const LEAN_PROMPT_VERSION = "lean-28-numbered-headings-revise-scope"
-const OUTLINE_CONTRACT = "document-form-unheaded-labels-9"
+export const LEAN_PROMPT_VERSION = "lean-32-change-contracts"
+const OUTLINE_CONTRACT = "outline-one-pass-reverse-24"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
-const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-plain-refs-3"
+const DRAFTING_NOTES_CONTRACT = "lawyer-facing-notes-checked-sections-8-semantic-owner-dependencies"
 /** Keys finalize only when the notes are a requested memo (the plan has a
  * memo name), so runs without one keep their finalize key. */
 const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
@@ -86,9 +89,18 @@ const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
  * change to how it words or keys a question, or how it composes the delivered
  * notes, re-runs a done gate, so an open question it asked takes the current
  * form and the delivered notes are written again. */
-const GATE_CONTRACT = "checklist-open-delivery-6"
+const GATE_CONTRACT = "checklist-open-delivery-7-fact-markers"
 /** Keys the act-record step: a change to its jobs, prompts or checks re-runs it. */
 const ACT_RECORD_CONTRACT = "act-record-7"
+/** Keys the spine step and each saved split of one of its entries: a change to
+ * the spine's checks (its absence-claim jobs included, spine-absence.ts), the
+ * split job's prompt or checks, or the files the step writes re-runs the step
+ * and every split. */
+export const SPINE_CONTRACT = "spine-atoms-8"
+/** The discrepancy stage runs a differences job and a gaps job in parallel, then one verify job per difference and per gap (discrepancy.ts). */
+const DISCREPANCY_CONTRACT = "differences-gaps-verified-3"
+/** Keys the guidance review: its guidance list and the template's focus. */
+const GUIDANCE_REVIEW_CONTRACT = "template-guidance-1"
 export const LEAN_MAX_RETRIES = 3
 
 export const LEAN_STAGE_AGENTS = {
@@ -113,10 +125,26 @@ export const LEAN_STAGE_AGENTS = {
   "change-review": "lean-change-review",
   changes: "lean-changes",
   finalize: "lean-drafting-notes",
+  // One tool-denied verification job per proposed notes section, before prose is accepted and its references attached.
+  notesCheck: "lean-notes-check",
+  // Read-only evidence selections are separate from the notes prose owner.
+  notesEvidence: "lean-notes-evidence",
   // A job of the outline, not a stage: it places each act the act record lists in the planned document that carries it.
   coverage: "lean-coverage",
+  // A job of the outline, not a stage: one per spine entry, it says whether the entry binds some part's text or the package.
+  level: "lean-spine-level",
+  // A job of the outline, not a stage: one per spine entry, beside its level job, it names the planned parts that rest on that entry.
+  placement: "lean-placement",
   // A job of the outline, not a stage: it reads the files the lawyer asks to receive.
   files: "lean-files",
+  // A job of the draft and apply steps, not a stage: one per drafted part, it names the sentences written for the lawyer rather than the document's reader.
+  reader: "lean-reader-check",
+  // A job of the spine, not a stage: it splits one spine entry into atoms that each state one point.
+  split: "lean-spine-split",
+  // A job of the spine, not a stage: one per spine entry, it lists what the entry says the sources do not record.
+  absence: "lean-spine-absence",
+  // A job of the spine, not a stage: one per absence claim, it checks the sources for what the entry says they do not record.
+  "absence-verify": "lean-spine-absence-verify",
   // A job of the asking step, not a stage: it advises on one question before it is recorded.
   advise: "lean-advise",
   // A job of taking an answer, not a stage: it reads how the lawyer's own words answer one question.
@@ -139,6 +167,7 @@ export const LEAN_CHILD_PERMISSIONS: PermissionRule[] = [
 export type StageSessionPort = {
   createSession(input: {
     directory: string
+    signal?: AbortSignal
     parentID?: string
     agent: string
     title: string
@@ -190,7 +219,9 @@ export const OPTIONAL_OUTPUTS = ["coverage.json", "requested-files.json"]
  * document's draft also saves the run's plan, its coverage record and its
  * requested-files record. */
 export function stepOutputs(step: StepID): string[] {
-  if (step === "discrepancy" || step === "spine" || step === "package-review") return [`${step}.json`]
+  if (step === "discrepancy" || step === "package-review") return [`${step}.json`]
+  // The spine as accepted and its entries split into atoms (spine-split.ts).
+  if (step === "spine") return ["spine.json", SPINE_ATOMS]
   if (step === "checklist-check") return ["checklist/extraction.json", "checklist/refinements.json", "checklist/checks.json", "checklist/report.md"]
   if (step === "instructions") return ["instructions.json", INSTRUCTIONS_FILE]
   if (step === "intake") return ["intake.json"]
@@ -212,8 +243,9 @@ export function stepOutputs(step: StepID): string[] {
 }
 
 // Items the drafting notes must disclose. Draft and review findings are re-derived from the
-// final body at apply, so the notes disclose what the delivered body still has.
-const DISCLOSED_STAGES: StageID[] = ["research", "research-review", "change-plan", "change-prepare", "changes", "change-review", "apply"]
+// final body at apply, so the notes disclose what the delivered body still has. The spine's
+// are entries it kept on its final attempt with figures none of their quotes states (runner.ts).
+const DISCLOSED_STAGES: StageID[] = ["intake", "spine", "research", "research-review", "change-plan", "change-prepare", "changes", "change-review", "apply"]
 
 /** Named inputs of each step: everything its prompt or code step reads. Their
  * content hash is the step's resume key and nothing more. A document's accepted
@@ -223,7 +255,11 @@ const DISCLOSED_STAGES: StageID[] = ["research", "research-review", "change-plan
  * gives its id to another document, drafts it again. Answers, updates,
  * research, an earlier document's final text and accepted explanations, and
  * whom the lawyer acts for reach a drafted document as amendments through its
- * review and change-plan keys. Answers are inputs of every other step. The
+ * review and change-plan keys. Answers are inputs of every other step, each
+ * reading the questions asked at or before it (askedAtOrBefore): a run-level
+ * answer re-runs the step that asked it and the steps after it, never one
+ * before it, and a document's answer that document's steps from the asking
+ * one onward, never the preparation steps; the gate reads its own. The
  * changes step's own previous output
  * and open questions are shown to it but are not inputs, so its output never
  * changes its own key. The planned documents' ids, titles and purposes are
@@ -245,15 +281,18 @@ export function stageInputs(directory: string, step: StepID, options: { repairCo
     ...(["finalize", "package-review", "gate"].includes(step) ? [{ name: "review-dispositions", bytes: JSON.stringify((readLeanPlan(directory)?.documents ?? []).map(row => reviewDispositionText(directory, row.id))) }] : []),
     ...(["finalize", "package-review"].includes(step) ? [{ name: "delivery-review-contract", bytes: DELIVERY_REVIEW_CONTRACT }] : []),
     ...(step === "gate" ? [{ name: "gate-contract", bytes: GATE_CONTRACT }] : []),
+    ...(["checklist-check", "gate"].includes(step) && provisionalFactMarkerItems(directory).length
+      ? [{ name: "provisional-fact-marker-contract", bytes: PROVISIONAL_FACT_MARKER_CONTRACT }] : []),
     // A review asking for changes that ran with the repair allowance used up
     // started no round: its findings stand, so a resume on unchanged inputs
     // does not run it again. One that last started a round runs once more.
     ...(exhaustedReview(directory, step) ? [{ name: "repair-allowance", bytes: "used-up" }] : []),
     ...(!["instructions", "discrepancy", "intake", "research", "research-review", "acts"].includes(step) ? ["research.json", "research-review.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
-    ...(!["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine"].includes(step) ? ["discrepancy.json", "spine.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
+    // Later steps read the whole spine (spine.json) and, through the placement, its atoms.
+    ...(!["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine"].includes(step) ? ["discrepancy.json", "spine.json", SPINE_ATOMS].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" })) : []),
     ...(clarifications.length && ["checklist-check", "package-review", "gate"].includes(step) ? [{ name: "inspection-clarifications", bytes: JSON.stringify(clarifications) }] : []),
     { name: "source-content", bytes: matterSourceBasis(directory) },
-    ...(!inputs.some(part => part.name === "answers") ? [{ name: "answers", bytes: answeredQuestionsText(directory) }] : []),
+    ...(!inputs.some(part => part.name === "answers") ? [{ name: "answers", bytes: answeredQuestionsText(directory, { asked: askedAtOrBefore(directory, step) }) }] : []),
     ...(updates && !inputs.some(part => part.name === "updated-notes.md") ? [{ name: "updated-notes.md", bytes: updates }] : [])]
 }
 
@@ -276,32 +315,35 @@ function keyedQuestions(directory: string, gate = false) {
 
 function baseStageInputs(directory: string, step: StepID, options: { repairContext?: false; researchGaps?: false }): { name: string; bytes: string | Uint8Array }[] {
   const file = (name: string) => ({ name, bytes: existsSync(leanFile(directory, name)) ? readFileSync(leanFile(directory, name)) : "" })
-  const answers = { name: "answers", bytes: answeredQuestionsText(directory) }
+  const answers = { name: "answers", bytes: answeredQuestionsText(directory, { asked: askedAtOrBefore(directory, step) }) }
   const sources = { name: "sources", bytes: matterSourceIDs(directory).join("\n") }
   const planned = readLeanPlan(directory)?.documents.map(row => row.id) ?? []
   if (step === "checklist-check") return [{ name: "checklist-refinement-contract", bytes: "source-unit-refinement-1" }, { name: "checklist-refinement-selection", bytes: JSON.stringify(checklistRefinementSelections(directory)) }, file("checklist/refinements.json"), file("request.md"), file("plan.json"), file("checklist/extraction.json"), file("drafting-notes.docx"), file("research-context.txt"), ...planned.flatMap(id => [file(`${id}/body.docx`), file(`${id}/body-applied.docx`), file(`${id}/redline.docx`), file(`${id}/review-independent.json`), file(`${id}/changes.json`), file(`${id}/apply.json`)])]
-  // What an instruction settled is not an input of the list it was settled by.
-  if (step === "instructions") return outlineInputs(directory, { settled: false })
-  if (step === "discrepancy") return outlineInputs(directory)
+  // The list reads no answer (none is asked before it): a new direction arrives as a later instruction.
+  if (step === "instructions") return outlineInputs(directory, step, { settled: false })
+  // The gaps job reads the instruction list to find what the sources leave
+  // silent; the differences and verify jobs' own keys leave it out (discrepancy.ts).
+  if (step === "discrepancy") return [...outlineInputs(directory, step), file(INSTRUCTIONS_FILE), { name: "discrepancy-contract", bytes: DISCREPANCY_CONTRACT }]
   if (step === "intake") {
     // Only with a client recorded on the matter, so a matter without one keeps its key.
     const client = matterClient(directory)
-    return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), file("discrepancy.json"), ...(client ? [{ name: "matter-client", bytes: client }] : [])]
+    // Intake reads the discrepancy record without the gaps a source supplies (intakeDiscrepancy).
+    return [...outlineInputs(directory, step), file(INSTRUCTIONS_FILE), { name: "discrepancy.json", bytes: intakeDiscrepancy(directory) }, ...(client ? [{ name: "matter-client", bytes: client }] : [])]
   }
   // The act record reads the instructions, the sources and the approved research; it runs before the spine and reads no discrepancy record.
-  if (step === "acts") return [...outlineInputs(directory), file("intake.json"), file("research.json"), file("research-review.json"), { name: "act-record-contract", bytes: ACT_RECORD_CONTRACT }]
-  // The spine is shown the act record when it plans documents, parties and signatories.
-  if (step === "spine") return [...outlineInputs(directory), file(INSTRUCTIONS_FILE), file("discrepancy.json"), file("intake.json"), file("research.json"), file("research-review.json"), file("acts.json")]
+  if (step === "acts") return [...outlineInputs(directory, step), file("intake.json"), file("research.json"), file("research-review.json"), { name: "act-record-contract", bytes: ACT_RECORD_CONTRACT }]
+  // The spine is shown the act record when it plans documents, parties and signatories; its entries are then split into atoms.
+  if (step === "spine") return [...outlineInputs(directory, step), file(INSTRUCTIONS_FILE), file("discrepancy.json"), file("intake.json"), file("research.json"), file("research-review.json"), file("acts.json"), { name: "spine-contract", bytes: SPINE_CONTRACT }]
   // Applied deletion evidence includes the original paragraph's exact wording.
-  if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(plannedDocument(directory, id)?.playbook_review?.sources.length ? [file(`${id}/review-playbook.json`)] : [])]),
+  if (step === "package-review") return [file("checklist/refinements.json"), file("checklist/checks.json"), file("checklist/report.md"), file("request.md"), file("plan.json"), file("drafting-notes.md"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/apply.json`), file(`${id}/changes.json`), file(`${id}/redline.docx`), ...(reviewStages(directory, id).includes("review-playbook") ? [file(`${id}/review-playbook.json`)] : [])]),
     packageReviewOpenItems(directory)]
   if (step === "research") {
     // Without a gap round the key is unchanged.
     const gaps = options.researchGaps === false ? undefined : currentResearchGaps(directory, researchBasis(directory))
-    return [...outlineInputs(directory), file("intake.json"), { name: "research-repairs", bytes: JSON.stringify(readRepairRound(directory)?.items.filter(item => item.ref.repair_target === "research") ?? []) },
+    return [...outlineInputs(directory, step), file("intake.json"), { name: "research-repairs", bytes: JSON.stringify(readRepairRound(directory)?.items.filter(item => item.ref.repair_target === "research") ?? []) },
       ...(gaps?.length ? [{ name: "research-gaps", bytes: JSON.stringify(gaps) }] : [])]
   }
-  if (step === "research-review") return [...outlineInputs(directory), file("intake.json"), file("research.json"), file("research-context.txt")]
+  if (step === "research-review") return [...outlineInputs(directory, step), file("intake.json"), file("research.json"), file("research-context.txt")]
   if (step === "finalize")
     return [file("repairs.json"),file("request.md"), file("plan.json"), ...planned.flatMap(id => [file(`${id}/paragraphs.json`), file(`${id}/paragraphs-applied.json`), file(`${id}/changes.json`), file(`${id}/apply.json`), file(`${id}/redline.docx`)]),
       { name: "open-items", bytes: JSON.stringify(disclosableItems(directory)) },
@@ -328,7 +370,9 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   const repairs = options.repairContext === false || !["change-plan", "change-prepare", "changes", "change-review"].includes(stage) ? undefined : documentRepairs(directory, document)
   // Only with the other side's markup in the original it revises, so a run without one keeps its keys.
   const counterparty = existsSync(leanFile(directory, `${document}/counterparty.json`)) ? [at("counterparty.json")] : []
-  if (isReviewStage(stage)) return [{ name: "playbook-selection", bytes: JSON.stringify(plannedDocument(directory, document)?.playbook_review ?? null) }, file("request.md"), at("paragraphs.json"), sources, finished, acting, scope, ...composed, ...dated]
+  // The guidance review's key carries its contract and guidance list, so the other reviews keep theirs.
+  const guidance = stage === "review-playbook" ? [{ name: "guidance-review-contract", bytes: GUIDANCE_REVIEW_CONTRACT }, { name: "review-guidance", bytes: JSON.stringify(reviewGuidance(directory, document)) }] : []
+  if (isReviewStage(stage)) return [{ name: "playbook-selection", bytes: JSON.stringify(plannedDocument(directory, document)?.playbook_review ?? null) }, ...guidance, file("request.md"), at("paragraphs.json"), sources, finished, acting, scope, ...composed, ...dated]
   if (stage === "change-prepare") return [file("request.md"), entry, at("paragraphs.json"), at("change-plan.json"), answers, sources, finished, acting, scope, ...composed, ...dated, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
   if (stage === "change-review") return [...(repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-review-contract", bytes: "prepared-dependency-component-review-2-proposed-body" }] : []), { name: "review-contract", bytes: "phase-aware-owned-body-review-2" }, file("request.md"), entry, at("paragraphs.json"), at("changes.json"), at("paragraphs-projected.json"), at("change-plan.json"), at("change-preparation.json"), ...reviewStages(directory, document).map(stage => at(`${stage}.json`)), ...counterparty, answers, sources, finished, acting, scope, ...composed, ...dated, { name: "questions", bytes: keyedQuestions(directory) }, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
   if (stage === "changes" || stage === "change-plan") {
@@ -340,7 +384,7 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
       finished, acting, scope, ...composed, ...dated]
   }
   const marking = unverifiedMarkingBasis(directory, document)
-  return [at("body.docx"), at("changes.json"), at("change-review.json"), { name: "operative-plan", bytes: JSON.stringify(operativePlan(readLeanPlan(directory))) }, sources, { name: "comparison-original", bytes: comparisonBasis(directory, document) },
+  return [{ name: "reader-check-contract", bytes: READER_CHECK_CONTRACT }, at("body.docx"), at("changes.json"), at("change-review.json"), { name: "operative-plan", bytes: JSON.stringify(operativePlan(readLeanPlan(directory))) }, sources, { name: "comparison-original", bytes: comparisonBasis(directory, document) },
     ...(marking ? [{ name: "unverified-marking", bytes: marking }] : [])]
 }
 
@@ -364,24 +408,27 @@ function exhaustedReview(directory: string, step: StepID) {
  * sources. A saved plan records it as its basis, which marks an outlined plan
  * and ties the requested-files record to it; once saved, the plan is followed. */
 export function outlineBasis(directory: string) {
-  return hashStageInputs(`${FIRST_DOCUMENT}.draft`, LEAN_PROMPT_VERSION, [{ name: "outline-contract", bytes: OUTLINE_CONTRACT }, ...outlineInputs(directory), ...["research.json", "research-review.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" }))])
+  return hashStageInputs(`${FIRST_DOCUMENT}.draft`, LEAN_PROMPT_VERSION, [{ name: "outline-contract", bytes: OUTLINE_CONTRACT }, ...outlineInputs(directory, `${FIRST_DOCUMENT}.draft`), ...["research.json", "research-review.json"].map(name => ({ name, bytes: readLeanText(directory, name) ?? "" }))])
 }
 
 /** The drafting preferences every lean stage reads (the legal plugin renders
- * the same for lean agents): the firm's, with the run's Posture. With the firm's
- * own Posture the bytes, and so the keys, are the firm's rendering. */
+ * the same for lean agents): the firm's, with the run's Posture and, until the
+ * firm sets its preferences, the date style the run's sources use. With the
+ * firm's own Posture and preferences the bytes, and so the keys, are the
+ * firm's rendering. */
 export function stageDraftingPreferences(directory: string) {
-  const preferences = readFirmDraftingPreferences("full", runPosture(directory))
+  const preferences = readFirmDraftingPreferences("full", runPosture(directory), runDateFormat(directory))
   const areas = firmPracticeAreaContext()
   return areas ? `${preferences}\n${areas}` : preferences
 }
 
-function outlineInputs(directory: string, options: { settled?: false } = {}) {
+/** The inputs the preparation steps share, with the answers `step` reads (askedAtOrBefore). */
+function outlineInputs(directory: string, step: StepID, options: { settled?: false } = {}) {
   const request = leanFile(directory, "request.md")
   const updates = readLeanText(directory, "updated-notes.md")
   // Only with a working draft, so a run without one keeps its keys.
   const working = readLeanText(directory, WORKING_DRAFT)
-  return [{ name: "drafting-preferences", bytes: stageDraftingPreferences(directory) }, { name: "source-content", bytes: matterSourceBasis(directory) }, { name: "answers", bytes: answeredQuestionsText(directory, options) }, ...(updates ? [{ name: "updated-notes.md", bytes: updates }] : []), { name: "request.md", bytes: existsSync(request) ? readFileSync(request) : "" }, { name: "sources", bytes: matterSourceIDs(directory).join("\n") }, ...(working ? [{ name: WORKING_DRAFT, bytes: working }] : [])]
+  return [{ name: "drafting-preferences", bytes: stageDraftingPreferences(directory) }, { name: "source-content", bytes: matterSourceBasis(directory) }, { name: "answers", bytes: answeredQuestionsText(directory, { asked: askedAtOrBefore(directory, step), ...options }) }, ...(updates ? [{ name: "updated-notes.md", bytes: updates }] : []), { name: "request.md", bytes: existsSync(request) ? readFileSync(request) : "" }, { name: "sources", bytes: matterSourceIDs(directory).join("\n") }, ...(working ? [{ name: WORKING_DRAFT, bytes: working }] : [])]
 }
 
 /** Checks a model reply and, when it passes, writes the step's output files. */
@@ -392,7 +439,7 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   if (stage === "package-review") {
     // A prose preamble before the one object costs no attempt.
     const parsed = parseJsonObject(reply)
-    if (!parsed.ok) return { issues: ["Reply with the package review JSON only."], outputs: [], openItems: [] }
+    if (!parsed.ok) return { issues: [`Reply with the package review JSON only. ${parsed.error}`], outputs: [], openItems: [] }
     // On the last attempt a delivery row the check still refuses, or a missing
     // delivery list, is withheld with a limitation and the planned names stand;
     // earlier attempts retry it. Only code records a withheld row.
@@ -470,7 +517,7 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   // them.
   const check = checkDraftingNotes(directory, reply, disclosableItems(directory), { final: options.final })
   if (check.issues.length) return { ...check, outputs: [] }
-  const advisory = draftingStyleAdvisoryNotes([
+  const advisory = draftingStyleAdvisoryNotes(directory, [
     ...(readLeanPlan(directory)?.documents ?? []).map(row => ({ title: row.title, rows: styleScopedRows(directory, row.id, finalBodyParagraphs(directory, row.id)) })),
     { title: "Drafting notes", rows: [{ pid: "drafting-notes", text: reply }] },
   ])
@@ -489,7 +536,7 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
  * state rather than the render clock or a step's start (steps restart), so
  * every file and render in the run reads the same date. */
 export function renderedFurniture(directory: string, kind: FurnitureKind, requested?: RequestedFurniture) {
-  return pageFurniture(kind, normalizePreferences(readFirmPreferences()), readLeanState(directory)?.created_at, requested)
+  return pageFurniture(kind, appliedDraftingPreferences(runDateFormat(directory)), readLeanState(directory)?.created_at, requested)
 }
 
 /** The clause list of the original a planned document is compared against, and
@@ -573,15 +620,17 @@ export function stageOutputValid(directory: string, step: StepID) {
   if (step === "checklist-check") return checklistOutputState(directory).valid
   if (step === "package-review") return Boolean(readPackageReview(directory))
   if (step === "instructions") return instructionsOutputValid(directory)
-  if (step === "discrepancy" || step === "spine") return evidenceOutputValid(directory, step)
+  if (step === "discrepancy") return evidenceOutputValid(directory, step)
+  // A spine saved without its atoms re-runs; the splits it saved are reused.
+  if (step === "spine") return evidenceOutputValid(directory, step) && Array.isArray((readLeanJson(directory, SPINE_ATOMS) as { entries?: unknown } | undefined)?.entries)
   if (step === "intake" || step === "research" || step === "research-review") return researchOutputValid(directory, step)
   if (step === "acts") return Boolean(readActRecord(directory))
   const stage = stepStage(step)
   const document = stepDocument(step) ?? FIRST_DOCUMENT
-  // The first document's draft step also settles the plan's coverage: a missing,
-  // unreadable or earlier plan's record re-runs it, which checks the saved plan
-  // again and keeps the accepted draft (draftOutputValid).
-  if (stage === "draft") return draftOutputValid(directory, step) && (document !== FIRST_DOCUMENT || planCoverageCurrent(directory))
+  // The first document's draft step also settles the plan's coverage and spine
+  // placement: a missing, unreadable or earlier plan's record re-runs it, which
+  // checks the saved plan again and keeps the accepted draft (draftOutputValid).
+  if (stage === "draft") return draftOutputValid(directory, step) && (document !== FIRST_DOCUMENT || planCoverageCurrent(directory) && planPlacementCurrent(directory))
   if (!stepOutputs(step).every(name => OPTIONAL_OUTPUTS.includes(name) || existsSync(leanFile(directory, name)))) return false
   const text = (name: string) => readLeanText(directory, name) ?? ""
   if (stage === "change-plan") return Boolean(readChangePlan(directory, document))
@@ -611,7 +660,7 @@ export function stageOutputValid(directory: string, step: StepID) {
 
 /** Open items the drafting notes must disclose. */
 export function disclosableItems(directory: string): OpenItem[] {
-  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory), ...draftedDefaultItems(directory)]
+  return [...readOpenItems(directory).filter(item => DISCLOSED_STAGES.includes(item.stage)), ...deferredFindingItems(directory), ...coverageItems(directory), ...placementItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory), ...draftedDefaultItems(directory)]
 }
 
 function ensureNewline(text: string) {
@@ -631,13 +680,13 @@ export type ChecklistUnresolvedFinding = ChecklistOpenFinding & { class: Checkli
 /** A refined parent whose reconciled coverage is unsatisfied or indeterminate,
  * with its coverage issues and each issue's kind. */
 export type ChecklistUnresolvedParent = { parent_id: string; item: ChecklistItem; status: "unsatisfied" | "indeterminate"; issues: string[]; issue_kinds: ChecklistCoverageIssue[] }
-export type ChecklistOutputState = { valid: boolean; open: boolean; openFindings: ChecklistOpenFinding[]; unresolved: ChecklistUnresolvedFinding[]; unresolvedParents: ChecklistUnresolvedParent[] }
+export type ChecklistOutputState = { valid: boolean; open: boolean; openFindings: ChecklistOpenFinding[]; unresolved: ChecklistUnresolvedFinding[]; unresolvedParents: ChecklistUnresolvedParent[]; currentFindings?: ChecklistOpenFinding[] }
 
 /** Validate authoritative effective IDs and recompute coverage; archived originals
  * remain evidence, not the current delivery verdict. Output that is incomplete,
  * failed or stale is invalid. A completed adverse finding, or adverse parent
  * coverage, is valid output returned for disclosure, never as a pass. */
-export function checklistOutputState(directory: string): ChecklistOutputState {
+export function checklistOutputState(directory: string, { includeCurrentFindings = false } = {}): ChecklistOutputState {
   const invalid: ChecklistOutputState = { valid: false, open: false, openFindings: [], unresolved: [], unresolvedParents: [] }
   try {
     const extraction = z.object({
@@ -684,6 +733,7 @@ export function checklistOutputState(directory: string): ChecklistOutputState {
     // as recorded; a parent's coverage is open only through such a child finding.
     const openFindings = current.filter(row => !unresolved.some(adverse => adverse.item_id === row.item_id) &&
       (row.finding.status === "open" || row.finding.open_decisions?.length))
-    return { valid: true, open: openFindings.length > 0 || coverage.some(row => row.status === "open"), openFindings, unresolved, unresolvedParents }
+    return { valid: true, open: openFindings.length > 0 || coverage.some(row => row.status === "open"), openFindings, unresolved, unresolvedParents,
+      ...(includeCurrentFindings ? { currentFindings: current } : {}) }
   } catch { return invalid }
 }

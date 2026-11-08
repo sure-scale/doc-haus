@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test"
-import { leanSteps, parsePlan, plannedDocument, reviewStages, writeLeanPlan } from "./plan"
+import { leanSteps, parsePlan, plannedDocument, reviewGuidance, reviewStages, writeLeanPlan } from "./plan"
 import { playbookSelectionIssues } from "./playbook-review"
 import { packageReviewPrompt } from "./package-review"
+import { stagePrompt } from "./prompts"
 import { changePlanPrompt } from "./change-pipeline"
 import { runLean, stageInputSha } from "./runner"
 import { LEAN_CHILD_PERMISSIONS } from "./stages"
@@ -32,6 +33,51 @@ test("planning routes the optional review per document and rejects invented evid
   changed[0]!.playbook_review!.sources[0]!.source_id = "unknown.docx"
   expect(playbookSelectionIssues(directory, changed)).toHaveLength(1)
   expect(parsePlan('Acting for: not stated\n# Note\nPlaybook review: invalid\n## Terms').value).toBeUndefined()
+})
+
+const focus = (prompt: string) => /<review_focus>\n([\s\S]*?)\n<\/review_focus>/.exec(prompt)?.[1] ?? ""
+const TEMPLATE_POSITIONS = "positions are the provisions its text carries and every note or bracketed direction to the drafter"
+
+test("a document drafted from a template gets the guidance review with the template among its guidance", () => {
+  const directory = matter()
+  writeLeanPlan(directory, [{ ...doc, template: SOURCE }, { ...doc, title: "Cover note" }])
+  expect(reviewStages(directory, "d1")).toContain("review-playbook")
+  expect(leanSteps(directory)).toContain("d1.review-playbook")
+  expect(reviewGuidance(directory, "d1")).toEqual([SOURCE])
+  // Without a template or a selected playbook, a document keeps the ordinary reviews.
+  expect(reviewStages(directory, "d2")).not.toContain("review-playbook")
+  expect(leanSteps(directory)).not.toContain("d2.review-playbook")
+  const prompt = stagePrompt(directory, "d1.review-playbook")
+  expect(prompt).toContain(`<guidance>\nCheck this document against each of these sources, read in full with read-document:\n- ${SOURCE} (the template this document is drafted from)\n</guidance>`)
+  expect(focus(prompt)).toContain(TEMPLATE_POSITIONS)
+  expect(focus(prompt)).not.toMatch(/restore/i)
+  // The other reviews of the templated document keep their focus.
+  expect(focus(stagePrompt(directory, "d1.review"))).not.toContain(TEMPLATE_POSITIONS)
+})
+
+test("a revision with no selected playbook keeps the ordinary reviews: its original is the baseline, not guidance", () => {
+  const directory = matter()
+  writeLeanPlan(directory, [{ ...doc, mode: "revise", template: SOURCE, comparison: SOURCE }, { ...doc, title: "Revised note", mode: "revise", template: SOURCE, playbook_review: selection }])
+  expect(reviewGuidance(directory, "d1")).toEqual([])
+  expect(reviewStages(directory, "d1")).not.toContain("review-playbook")
+  expect(leanSteps(directory)).not.toContain("d1.review-playbook")
+  // A selected playbook still schedules it, without the original or the template focus.
+  expect(reviewGuidance(directory, "d2")).toEqual([SOURCE])
+  expect(focus(stagePrompt(directory, "d2.review-playbook"))).not.toContain(TEMPLATE_POSITIONS)
+})
+
+test("the guidance list is the selected playbook sources plus the template, the focus sentence only with a template", () => {
+  const directory = matter()
+  writeLeanPlan(directory, [{ ...doc, playbook_review: selection, template: "precedent.md" }, { ...doc, title: "Cover note", playbook_review: selection }])
+  expect(reviewGuidance(directory, "d1")).toEqual([SOURCE, "precedent.md"])
+  expect(reviewGuidance(directory, "d2")).toEqual([SOURCE])
+  const templated = stagePrompt(directory, "d1.review-playbook")
+  expect(templated).toContain(`- ${SOURCE} (selected guidance)\n- precedent.md (the template this document is drafted from)`)
+  expect(focus(templated)).toContain(TEMPLATE_POSITIONS)
+  const selected = stagePrompt(directory, "d2.review-playbook")
+  expect(selected).toContain(`- ${SOURCE} (selected guidance)\n</guidance>`)
+  expect(focus(selected)).not.toContain(TEMPLATE_POSITIONS)
+  expect(packageReviewPrompt(directory)).toContain(`<playbook_review document="d1">\nSelection: ${JSON.stringify(selection)}\nTemplate: precedent.md\n`)
 })
 
 test("a changed selection revisits consumers while an unassigned body retains the original reviews", () => {

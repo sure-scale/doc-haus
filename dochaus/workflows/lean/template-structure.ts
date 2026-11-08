@@ -68,6 +68,10 @@ export function parseTemplateUnits(text: string): TemplateUnit[] {
   const headings = mergedHeadings(lines)
   const titled = headings[0]?.level === 0 && headings[0].start === lines.findIndex(Boolean)
   const shape = structure(headings, titled)
+  // A cover block's restated title (the title again above the preamble) is the
+  // title, not a part.
+  const wording = (heading: Heading) => tokens(heading.titles.join(" ")).join(" ")
+  const restated = (heading: Heading, at: number) => titled && at > 0 && heading.level === 0 && wording(heading) === wording(headings[0]!)
   const inside = (at: number, holder: number): boolean => {
     const parent = shape[at]!.parent
     return parent !== undefined && (parent === holder || inside(parent, holder))
@@ -80,7 +84,7 @@ export function parseTemplateUnits(text: string): TemplateUnit[] {
       wordings: headingWordings(heading.titles),
       level: heading.number?.length ?? 0,
       words: Math.max(0, countWords(span) - heading.titles.reduce((sum, title) => sum + countWords(title), 0) - (heading.number?.length ?? 0)),
-      title: titled && at === 0,
+      title: (titled && at === 0) || restated(heading, at),
     }
   })
   const kept = units.flatMap((unit, at) =>

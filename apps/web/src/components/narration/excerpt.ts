@@ -128,7 +128,8 @@ export function buildExcerpt(input: {
 function runState(status: LeanDraftingStatus) {
   if (status.status === "running") return status.in_flight ? "working" : "paused, nothing is working on it"
   if (status.status === "blocked") return "stopped, waiting on the lawyer"
-  if (providerStopMessage(status)) return "paused until Settings are fixed; the work so far is kept"
+  if (providerStopMessage(status))
+    return `paused until ${status.provider_stop === "credit" ? "the AI account has credit" : "Settings are fixed"}; the work so far is kept`
   if (stoppedByTechnicalProblem(status)) return "paused after a technical problem; the work so far is kept"
   if (leanRunStopped(status)) return "stopped by the lawyer; a new drafting request starts a new draft"
   if (status.status === "failed") return "stopped before finishing"

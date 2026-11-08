@@ -9,6 +9,8 @@ export type ProviderTestResult = { ok: true } | {
   kind: "auth" | "model" | "unavailable"
   expired?: boolean
   restriction?: "free-tier" | "region"
+  // Typed cause of an `unavailable` result the browser may name; raw provider text never leaves the engine.
+  reason?: "credit"
   error: string
 }
 
@@ -67,6 +69,7 @@ export function providerTestFailure(error: unknown): ProviderTestResult {
   let auth = false
   let expired = false
   let model = false
+  let quota = false
   let restriction: "free-tier" | "region" | undefined
   for (let index = 0; index < queue.length && index < 32; index++) {
     const value = queue[index]
@@ -88,6 +91,7 @@ export function providerTestFailure(error: unknown): ProviderTestResult {
     if (item._tag === "Generate.ModelNotFoundError" || item._tag === "Generate.UnsupportedModelError" ||
       item._tag === "Generate.InvalidRequestError" && typeof item.field === "string" && /^model(?:\.|$)/.test(item.field) ||
       typeof item._tag === "string" && item._tag.startsWith("SessionRunnerModel.")) model = true
+    if (item._tag === "QuotaExceeded") quota = true
     for (const key of ["reason", "cause", "error", "defect"]) if (item[key] !== undefined) queue.push(item[key])
     if (Array.isArray(item.reasons)) queue.push(...item.reasons.slice(0, 8))
   }
@@ -98,6 +102,9 @@ export function providerTestFailure(error: unknown): ProviderTestResult {
     error: restriction === "free-tier" ? "The provider is restricting access to this free model. Check the provider’s free-model availability or choose another model in Settings."
       : "The provider does not offer this model in your region. Choose another available model or provider in Settings." }
   if (model) return unavailableModel
+  // Credit or usage caps keep kind `unavailable`: the saved connection still works.
+  if (quota) return { ok: false, kind: "unavailable", reason: "credit",
+    error: "The AI account has run out of credit or reached its usage limit. Add credit with your provider, then retry." }
   return { ok: false, kind: "unavailable", error: "The provider could not be checked. Check the connection, model access or account allowance, then retry." }
 }
 

@@ -6,6 +6,7 @@ import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { referenceFields } from "../../lib/docx-crossrefs"
 import { compareDocxWithPointers, paragraphSha256 } from "../../lib/drafting-amendment"
+import { OPEN_ITEM_PATTERN } from "../../lib/marker-patterns"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { readParagraphs, shownText } from "./checks"
 import { LEAN_ACTS_SCHEMA } from "./act-record"
@@ -17,6 +18,7 @@ import { stageInputSha } from "./runner"
 import { acceptStageReply, LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, outlineBasis, type StageSessionPort } from "./stages"
 import { initLeanState, leanFile, updateLeanStage, writeLeanState, writeLeanText, type LeanState } from "./state"
 import { rowsBody } from "./template-coverage"
+import { labelledPart } from "./test-support"
 
 // Real plan parser, section checks, assembly, renderer and pointer writer.
 // Only the draft agent's replies are scripted.
@@ -42,15 +44,22 @@ function matter() {
 
 function scripted(reply: (text: string, index: number) => string) {
   const prompts: { sessionID: string; text: string }[] = []
+  // Each drafted part's reader job, in a session of its own, finds every sentence addressed to the reader.
+  const readers: { sessionID: string; text: string }[] = []
+  let readerSessions = 0
   const sessions: StageSessionPort = {
-    createSession: async () => "ses_draft",
+    createSession: async input => input.agent === LEAN_STAGE_AGENTS.reader ? `ses_reader${++readerSessions}` : "ses_draft",
     prompt: async input => {
+      if (input.agent === LEAN_STAGE_AGENTS.reader) {
+        readers.push({ sessionID: input.sessionID, text: input.text })
+        return JSON.stringify({ hits: [] })
+      }
       prompts.push({ sessionID: input.sessionID, text: input.text })
       expect(input.agent).toBe(LEAN_STAGE_AGENTS.draft)
       return reply(input.text, prompts.length - 1)
     },
   }
-  return { sessions, prompts }
+  return { sessions, prompts, readers }
 }
 
 /** Runs `run` with these firm settings saved in a fresh workspace, dates written day first. */
@@ -141,9 +150,9 @@ describe("sectioned draft stage", () => {
     const outline = "Acting for: not stated\n# Notice letter\nForm: letter\n## Opening instructions\nDisplay heading: none\nOpening text.\n## Terms &amp; drafting\nDisplay heading: **Terms**\nTerms text.\n## Closing instructions\nDisplay heading: none\nClosing text."
     const model = scripted((text, index) => {
       if (index === 0) return outline
-      if (text.includes("part 1 of 3")) return "Opening instructions\n\nRepeated text."
-      if (text.includes("part 2 of 3")) return "Repeated text.\n\n| Item | Value |\n| --- | --- |\n| Notice | Written |"
-      return "Repeated text.\n\nWe await your reply."
+      if (text.includes("part 1 of 3")) return labelledPart(text, "Opening instructions\n\nRepeated text.")
+      if (text.includes("part 2 of 3")) return labelledPart(text, "Repeated text.\n\n| Item | Value |\n| --- | --- |\n| Notice | Written |")
+      return labelledPart(text, "Repeated text.\n\nWe await your reply.")
     })
     const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
     expect(result.status).toBe("done")
@@ -326,7 +335,7 @@ describe("sectioned draft stage", () => {
     writeLeanText(directory, "spine.json", JSON.stringify({ entries: [{ detail: "Source-backed notice requirement" }], limitations: [] }))
     const model = scripted((text, index) => {
       if (index === 0) return OUTLINE
-      return text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given in writing." : "We await your reply."
+      return labelledPart(text, text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given in writing." : "We await your reply.")
     })
     const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
     expect(result.status).toBe("done")
@@ -345,7 +354,7 @@ describe("sectioned draft stage", () => {
     const { directory, state } = matter()
     const model = scripted((text, index) => {
       if (index === 0) return OUTLINE
-      if (text.includes("part 1 of 3")) return "The parties signed the terms.\n\nThey remain in force."
+      if (text.includes("part 1 of 3")) return labelledPart(text, "The parties signed the terms.\n\nThey remain in force.")
       // The second part first strays into the third; the retry is clean.
       if (text.includes("part 2 of 3")) return "## Notice\n\nNotice must be given in writing.\n\n## Next steps\n\nWe will wait."
       if (text.startsWith("Your reply did not pass the draft checks:")) return "## Notice\n\n\"Notice must be given in writing\" [source: terms.docx]."
@@ -366,8 +375,10 @@ describe("sectioned draft stage", () => {
       "## Next steps", "", "### Timing", "", "We will wait for a reply. [open item: reply deadline]", "",
     ].join("\n"))
     // Five calls; the hardest step (the retried part) took two tries. The accepted draft's key is
-    // recorded with it.
-    expect(progress.slice(-2)).toEqual([{ attempts: 2, calls: 5, feedback: [] }, { input_sha: stageInputSha(directory, "d1.draft") }])
+    // recorded with it, before the parts' reader jobs report.
+    const settled = progress.findIndex(patch => typeof patch === "object" && patch !== null && "input_sha" in patch)
+    expect(progress.slice(settled - 1, settled + 1)).toEqual([{ attempts: 2, calls: 5, feedback: [] }, { input_sha: stageInputSha(directory, "d1.draft") }])
+    expect(model.readers.map(prompt => prompt.sessionID).toSorted()).toEqual(["ses_reader1", "ses_reader2", "ses_reader3"])
 
     // Every listed paragraph carries its hidden pointer bookmark in the body docx.
     const rows = readParagraphs(directory, "d1")
@@ -376,13 +387,18 @@ describe("sectioned draft stage", () => {
     expect(rows.map(row => row.text)).toContain("We will wait for a reply. [open item: reply deadline]")
     expect(marks.toSorted()).toEqual(rows.map(row => row.pid).toSorted())
 
+    // The parts' reader jobs run side by side once the body exists, so their events follow in no fixed order.
     const events = readLeanEvents(directory).map(event => `${event.event}:${event.step}`)
-    expect(events).toEqual([
+    expect(events.filter(event => !event.includes(":reader: part "))).toEqual([
       // The act record lists no act, so no act is placed.
       "model_call:outline", "checker:outline", "coverage:coverage",
       "model_call:part 1/3", "checker:part 1/3",
       "model_call:part 2/3", "checker:part 2/3", "retry:part 2/3", "checker:part 2/3",
       "model_call:part 3/3", "checker:part 3/3",
+    ])
+    expect(events.filter(event => event.includes(":reader: part ")).toSorted()).toEqual([
+      "checker:reader: part 1/3", "checker:reader: part 2/3", "checker:reader: part 3/3",
+      "model_call:reader: part 1/3", "model_call:reader: part 2/3", "model_call:reader: part 3/3",
     ])
   }, 60_000)
 
@@ -406,10 +422,72 @@ describe("sectioned draft stage", () => {
       .toEqual([{ title: "Title", purpose: "", parts: [{ heading: "One", scope: "covers the start", display_heading: "" }, { heading: "Two", scope: "", display_heading: "" }], form: "other" }])
     // Several documents: each "# " starts one, its plain lines before the first
     // part are its purpose, and the same part heading may recur across documents.
-    expect(parsePlan("Acting for: not stated\n# First\nWhat the first is for.\nForm: agreement\n## Terms\n# Second\nForm: advice\n## Terms\nCovers terms.").value?.documents).toEqual([
+    // (A lone advice document would be the memo: requested-memo-outline.test.ts.)
+    expect(parsePlan("Acting for: not stated\n# First\nWhat the first is for.\nForm: agreement\n## Terms\n# Second\nForm: letter\n## Terms\nCovers terms.").value?.documents).toEqual([
       { title: "First", purpose: "What the first is for.", parts: [{ heading: "Terms", scope: "", display_heading: "" }], form: "agreement" },
-      { title: "Second", purpose: "", parts: [{ heading: "Terms", scope: "Covers terms.", display_heading: "" }], form: "advice" },
+      { title: "Second", purpose: "", parts: [{ heading: "Terms", scope: "Covers terms.", display_heading: "" }], form: "letter" },
     ])
+  })
+
+  describe("misplaced lines", () => {
+    const ORDER = 'Begin each document with its own "# " title line, then its lines such as "Form:" and "File:", then its "## " parts.'
+
+    test("an outline whose levels are shifted is named in one pass: the parts it lacks, its file-name title and its missing form", () => {
+      const shifted = parsePlan("Acting for: not stated\n# Outline\n## Supply note\n# supply-note.docx\nForm: other\n### Delivery\nThe delivery.\n### Price")
+      expect(shifted.value).toBeUndefined()
+      expect(shifted.issues).toEqual([
+        'The document "supply-note.docx" lists no parts. Add one "## " line per top-level part of that document, in order.',
+        expect.stringContaining('The document "Outline" has no "Form:" line.'),
+        expect.stringContaining('The title "supply-note.docx" carries a file name.'),
+      ])
+    })
+
+    test("a \"###\" or deeper line is scope text of the current part, its heading text kept, with no issue", () => {
+      const deeper = parsePlan("Acting for: not stated\n# Supply note\nForm: other\n## Delivery\n#### Timing ####\nWithin a week.\n## Price\n### Payment\n#### \n")
+      expect(deeper.issues).toEqual([])
+      expect(deeper.value?.documents[0]?.parts).toEqual([
+        { heading: "Delivery", scope: "Timing Within a week.", display_heading: "" },
+        { heading: "Price", scope: "Payment", display_heading: "" },
+      ])
+    })
+
+    test("a document's own lines after its parts are named, per document, and read neither as its lines nor as scope", () => {
+      const late = parsePlan("Acting for: not stated\n# Supply note\nForm: other\n## Delivery\nThe delivery.\nForm: advice\nExecuted by: none\nFile: Partner note.docx\n# Side letter\nForm: letter\n## Terms\nMode: new")
+      expect(late.issues).toEqual([
+        `The lines "Form: advice", "Executed by: none", "File: Partner note.docx" come after the "## " parts of "Supply note", so no document reads them. ${ORDER}`,
+        `The line "Mode: new" comes after the "## " parts of "Side letter", so no document reads it. ${ORDER}`,
+      ])
+      expect(late.value?.documents).toEqual([
+        { title: "Supply note", purpose: "", parts: [{ heading: "Delivery", scope: "The delivery.", display_heading: "" }], form: "other" },
+        { title: "Side letter", purpose: "", parts: [{ heading: "Terms", scope: "", display_heading: "" }], form: "letter" },
+      ])
+    })
+
+    test("a title that is only a file name, still so on the last attempt, stands as that name's words", () => {
+      for (const [title, planned] of [["supply-note.docx", "Supply note"], ["`Kestrel_Release_Pack.docx`", "Kestrel Release Pack"], ["Supply note (supply-note.docx)", "Supply note (supply-note.docx)"]]) {
+        const parsed = parsePlan(`Acting for: not stated\n# ${title}\nForm: other\n## Delivery`)
+        expect(parsed.issues).toEqual([expect.stringContaining("carries a file name")])
+        expect(parsed.value?.documents[0]?.title).toBe(planned)
+      }
+    })
+
+    test("a part scope that carries an open-item marker is named, and on the last attempt stands as the marker's words", () => {
+      const marked = parsePlan("Acting for: not stated\n# Supply note\nForm: other\n## Delivery\nWhen the goods arrive [Open item: confirm the delivery window].\n## Price\nThe price (open item: confirm the currency) and ____ payment terms.")
+      expect(marked.issues).toEqual([
+        'In "Supply note", the scope of "Delivery" carries an open-item marker. Scope describes the part; write the open point as scope words, the drafter sets the marker.',
+        'In "Supply note", the scope of "Price" carries an open-item marker. Scope describes the part; write the open point as scope words, the drafter sets the marker.',
+      ])
+      const parts = marked.value!.documents[0]!.parts
+      expect(parts.map(part => part.scope)).toEqual(["When the goods arrive confirm the delivery window.", "The price confirm the currency and payment terms."])
+      // The drafter is handed the words, never the marker, in its scope line and the outline list.
+      const prompt = sectionPrompt({ title: "Supply note", parts }, 0)
+      expect(prompt).toContain("This part covers: When the goods arrive confirm the delivery window.")
+      expect(prompt.match(new RegExp(OPEN_ITEM_PATTERN.source, "gi"))).toBeNull()
+      // A scope without a marker reads as written.
+      const plain = parsePlan("Acting for: not stated\n# Supply note\nForm: other\n## Delivery\nWhen the goods arrive, and the open items on timing.")
+      expect(plain.issues).toEqual([])
+      expect(plain.value?.documents[0]?.parts[0]?.scope).toBe("When the goods arrive, and the open items on timing.")
+    })
   })
 
   test("the outline records whom the lawyer acts for from one line before the first title", () => {
@@ -426,35 +504,42 @@ describe("sectioned draft stage", () => {
     expect(parsePlan("Acting for: the buyer\n## One").value).toBeUndefined()
   })
 
-  test("a missing acting-for line is retried, the outline is saved with it, and the first part is told whom the lawyer acts for", async () => {
+  test("a missing acting-for line is retried, the outline is saved with it, and every part is told whom the lawyer acts for", async () => {
     const { directory, state } = matter()
     writeLeanText(directory, "request.md", "Draft a notice of the terms. We act for the sender.")
     const model = scripted((text, index) => {
       if (index === 0) return OUTLINE.replace("Acting for: not stated\n", "")
       if (index === 1) return OUTLINE.replace("not stated", "the sender")
-      return text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given." : "We will wait."
+      return labelledPart(text, text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given." : "We will wait.")
     })
     const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
     expect(result.status).toBe("done")
     expect(model.prompts[1]!.text).toContain('The outline has no "Acting for:" line.')
     expect(readLeanPlan(directory)?.acting_for).toEqual({ party: "the sender", basis: "stated" })
-    expect(model.prompts[2]!.text).toContain("<acting_for>\nThe lawyer acts for: the sender.\n</acting_for>")
-    expect(model.prompts[3]!.text).not.toContain("<acting_for>")
+    const side = "<acting_for>\nThe lawyer acts for: the sender. Draft for that party.\n</acting_for>"
+    expect(model.prompts[2]!.text).toContain(side)
+    // Each later part opens with the side again, before its handoff and section.
+    for (const part of [3, 4]) expect(model.prompts[part]!.text).toStartWith(side)
   }, 60_000)
 
   test("an outline that never states the line is accepted on the last attempt as not stated", async () => {
     const { directory, state } = matter()
     const model = scripted((text, index) => index < 4 ? OUTLINE.replace("Acting for: not stated\n", "")
-      : text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given." : "We will wait.")
+      : labelledPart(text, text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given." : "We will wait."))
     const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
     expect(result.status).toBe("done")
     expect(readLeanPlan(directory)?.acting_for).toEqual(NOT_STATED)
-    expect(model.prompts[4]!.text).toContain("The request does not say whom the lawyer acts for, and no side was taken.")
+    for (const part of [4, 5, 6]) expect(model.prompts[part]!.text).toContain("The request does not say whom the lawyer acts for, and no side was taken.")
   }, 60_000)
 
   test("a part reply is checked against its outlined heading", () => {
     const outline = { title: "T", parts: [{ heading: "One", scope: "" }, { heading: "Two", scope: "" }] }
-    expect(checkSection("Text only.", outline, 0)).toEqual({ issues: [], value: "## One\n\nText only." })
+    // The part begins at its label: a sentence before it is left out, and a reply without it is retried.
+    expect(checkSection("Text only.", outline, 0)).toEqual({ issues: ['Begin the part with the line "## One".'] })
+    expect(checkSection("Now the first part, consistent with the outline:\n\n## One\n\nText.", outline, 0)).toEqual({ issues: [], value: "## One\n\nText." })
+    expect(checkSection("Now the first part:\n\n## One\n\nText.\n\n## Two\n\nMore text.", outline, 0).issues).toEqual([expect.stringContaining('also contains other parts ("Two")')])
+    // A heading before the label is not narration: nothing is dropped, and the reply is retried.
+    expect(checkSection("## Two\n\nText.\n\n## One\n\nMore text.", outline, 0).issues).toEqual(['Begin the part with the line "## One".', expect.stringContaining('"## " heading in its body')])
     expect(checkSection("## One\n\nText.\n\n## **Two**\n\nMore text.", outline, 0).issues).toEqual([expect.stringContaining('use "### " or lower headings inside it')])
     expect(checkSection("## One\n\nText.\n\n## T&#119;o\n\nMore text.", outline, 0).issues).toEqual([expect.stringContaining('use "### " or lower headings inside it')])
     expect(checkSection("## One\n\nText.\n\n## One\n\nMore text.", outline, 0).issues).toEqual([expect.stringContaining('use "### " or lower headings inside it')])
@@ -466,7 +551,7 @@ describe("sectioned draft stage", () => {
   test("the part that opens the document is retried for an opening line repeating the printed title, naming the line; a later part, or a mention, keeps it", () => {
     const deed = { title: "Rent Deposit Deed", form: "other" as const, parts: [{ heading: "One", scope: "", display_heading: "" }, { heading: "Two", scope: "", display_heading: "" }] }
     const issue = (line: string) => `The part opens with the document title "Rent Deposit Deed". The title is printed once at the top of the document: keep the "## " line first and remove the line "${line}" after it.`
-    for (const [reply, line] of [["## One\n\n**RENT DEPOSIT DEED**\n\nThis deed is made on [date].", "**RENT DEPOSIT DEED**"], ["**Rent deposit deed.**\n\nText.", "**Rent deposit deed.**"], ["## One\n\n### _Rent  Deposit_ `Deed`\n\nText.", "### _Rent  Deposit_ `Deed`"]])
+    for (const [reply, line] of [["## One\n\n**RENT DEPOSIT DEED**\n\nThis deed is made on [date].", "**RENT DEPOSIT DEED**"], ["## One\n\n**Rent deposit deed.**\n\nText.", "**Rent deposit deed.**"], ["## One\n\n### _Rent  Deposit_ `Deed`\n\nText.", "### _Rent  Deposit_ `Deed`"]])
       expect(checkSection(reply!, deed, 0).issues).toEqual([issue(line!)])
     expect(checkSection("## One\n\n**RENT DEPOSIT DEED**", deed, 0).issues).toEqual([issue("**RENT DEPOSIT DEED**"), 'The part "One" has no text under its heading.'])
     expect(checkSection("## One\n\nThis Rent Deposit Deed is made on [date].", deed, 0)).toEqual({ issues: [], value: "## One\n\nThis Rent Deposit Deed is made on [date]." })
@@ -539,7 +624,8 @@ describe("sectioned draft stage", () => {
 // Each planned document's form, from its "Form:" line: page furniture follows
 // it, and a letter reads as one letter, its planning labels unheaded.
 describe("a planned document's form", () => {
-  const FORMS = '"Form: agreement", "Form: advice", "Form: letter", "Form: advice letter", "Form: other"'
+  const FORMS = '"Form: agreement", "Form: advice", "Form: letter", "Form: advice letter", "Form: statement", "Form: other"'
+  const DOCUMENT_ORDER = 'Begin each document with its own "# " title line, then its lines such as "Form:" and "File:", then its "## " parts.'
   const outline = (lines: string) => `Acting for: not stated\n# Notice letter\n${lines}\n## Opening\nWhy we write.\n## Terms\nDisplay heading: Terms of notice\nThe notice.\n## Closing\nDisplay heading: none\nWhat follows.`
   const shown = (lines: string) => parsePlan(outline(lines)).value?.documents[0]?.parts.map(part => part.display_heading)
 
@@ -547,16 +633,22 @@ describe("a planned document's form", () => {
     const prompt = stagePrompt(matter().directory, "d1.draft", { outline: true })
     expect(prompt).toContain('- Under each title write its form: "Form: agreement" for')
     expect(prompt).toContain('"Form: advice letter" for a letter giving the client legal advice, "Form: letter" for other correspondence addressed to a recipient')
-    expect(prompt).toContain('otherwise "Form: other".')
+    expect(prompt).toContain('"Form: statement" for a record of facts given by a named person under their signature, otherwise "Form: other".')
     expect(prompt).toContain("Each part's ## label identifies the drafting job and is not printed; the part's text carries the document's own headings in its style. " +
       "To print a heading in a label's place, add Display heading: <publication heading> immediately under that label.")
     expect(prompt).toContain('For a letter whose text uses headings, write "Headings: shown" under its title to print its labels as its headings.')
     expect(prompt).toContain("print a heading they change as its part's Display heading.")
   })
 
+  test("the outline prompt gives a purpose line the document's own purpose and a statement every subject its purpose names", () => {
+    const prompt = stagePrompt(matter().directory, "d1.draft", { outline: true })
+    expect(prompt).toContain("- A document's purpose line says what that document is for in its own right; what another document relies on it for belongs in that other document's scope. " +
+      'The parts of a "Form: statement" cover every subject within the declarant\'s knowledge that its purpose names, not only what other documents rely on.')
+  })
+
   test("is read from one line under each title, ignoring case and list, bold or code marks, and an advice letter's hyphen or underscore", () => {
     for (const [line, form] of [["Form: agreement", "agreement"], ["- **Form:** Advice", "advice"], ["Form: `letter`.", "letter"], ["FORM:   other", "other"],
-      ["Form: advice letter", "advice letter"], ["- **Form:** Advice-Letter.", "advice letter"], ["Form: `advice_letter`", "advice letter"]] as const) {
+      ["Form: advice letter", "advice letter"], ["- **Form:** Advice-Letter.", "advice letter"], ["Form: `advice_letter`", "advice letter"], ["Form: Statement", "statement"]] as const) {
       const parsed = parsePlan(outline(line))
       expect(parsed.issues).toEqual([])
       expect(parsed.value?.documents[0]?.form).toBe(form)
@@ -564,10 +656,13 @@ describe("a planned document's form", () => {
   })
 
   test("a missing or unknown form is retry feedback naming the document and the forms, and the document stands without one", () => {
-    // Under a part the line is that part's scope, not the document's form.
+    // Under a part the line is no document's: named, and read as neither form nor scope.
     const missing = parsePlan("Acting for: not stated\n# Notice letter\n## Opening\nForm: letter")
-    expect(missing.issues).toEqual([`The document "Notice letter" has no "Form:" line. Under its title, before its first "## " part, write one of ${FORMS}.`])
-    expect(missing.value?.documents[0]).toEqual({ title: "Notice letter", purpose: "", parts: [{ heading: "Opening", scope: "Form: letter", display_heading: "" }] })
+    expect(missing.issues).toEqual([
+      `The line "Form: letter" comes after the "## " parts of "Notice letter", so no document reads it. ${DOCUMENT_ORDER}`,
+      `The document "Notice letter" has no "Form:" line. Under its title, before its first "## " part, write one of ${FORMS}.`,
+    ])
+    expect(missing.value?.documents[0]).toEqual({ title: "Notice letter", purpose: "", parts: [{ heading: "Opening", scope: "", display_heading: "" }] })
     expect(parsePlan(outline("Form:")).issues).toEqual([expect.stringContaining('The document "Notice letter" has no "Form:" line.')])
     const unknown = parsePlan(`${outline("Form: memo")}\n# Supply terms\nForm: agreement\n## Delivery`)
     expect(unknown.issues).toEqual([`The "Form:" line of "Notice letter" gives "memo", which is not one of the forms. Under its title, before its first "## " part, write one of ${FORMS}.`])
@@ -577,7 +672,7 @@ describe("a planned document's form", () => {
   })
 
   test("a missing Form line is retried in the outline session; an outline that never gives one is saved without a form, its labels unheaded", async () => {
-    const part = (text: string) => text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given." : "We will wait."
+    const part = (text: string) => labelledPart(text, text.includes("part 1 of 3") ? "The parties signed the terms." : text.includes("part 2 of 3") ? "Notice is given." : "We will wait.")
     const formless = OUTLINE.replace("Form: letter\nHeadings: shown\n", "")
     for (const [given, form] of [[1, "letter"], [4, undefined]] as const) {
       const { directory, state } = matter()
@@ -601,10 +696,10 @@ describe("a planned document's form", () => {
       const { directory, state } = matter()
       const model = scripted((text, index) => {
         if (index === 0) return ["Acting for: not stated", "# Notice letter", `Form: ${form}`, ...labels.flatMap(label => [`## ${label}`, "What it covers."])].join("\n")
-        if (text.includes("part 1 of 3")) return "We write about the terms."
-        // A part may begin with its label line, which the check requires as written.
+        if (text.includes("part 1 of 3")) return labelledPart(text, "We write about the terms.")
+        // A part begins with its label line, which the check requires as written.
         if (text.includes("part 2 of 3")) return `## ${labels[1]}\n\n"Notice must be given in writing" [source: terms.docx].`
-        return "We await your reply."
+        return labelledPart(text, "We await your reply.")
       })
       const result = await withFirm({}, () => runDraftStage(directory, dated(directory, state), { sessions: model.sessions }, () => {}, "d1", () => {}))
       expect(result.status).toBe("done")
@@ -632,7 +727,7 @@ describe("a planned document's form", () => {
   test("an advice letter carries the firm's advice legend and the draft line from its first page, which has no page number", async () => {
     const { directory, state } = matter()
     const outline = "Acting for: not stated\n# Advice on the notice\nForm: advice letter\n## Advice\nThe advice."
-    const model = scripted((_, index) => index === 0 ? outline : "We advise that notice be given in writing.")
+    const model = scripted((text, index) => index === 0 ? outline : labelledPart(text, "We advise that notice be given in writing."))
     const firm = { firm: "Doe Partners LLP", adviceLegend: "Privileged and confidential", agreementLegend: "Subject to contract" }
     expect((await withFirm(firm, () => runDraftStage(directory, dated(directory, state), { sessions: model.sessions }, () => {}, "d1", () => {}))).status).toBe("done")
     const parts = unzipSync(new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx"))))
@@ -944,11 +1039,13 @@ describe("a document's furniture lines", () => {
       expect(parsed.issues).toEqual([])
       expect(parsed.value?.documents[0]?.furniture).toEqual(furniture)
     }
-    // Without the lines, or with them under a part, the document asks nothing of its furniture.
+    // Without the lines, or with them under a part, the document asks nothing of
+    // its furniture; a line under a part is named, and is not scope text.
     expect(parsePlan(outline(), REQUEST).value?.documents[0]).not.toHaveProperty("furniture")
     const under = parsePlan(`${outline()}\nLegend: none`, REQUEST)
+    expect(under.issues).toEqual([expect.stringContaining('The line "Legend: none" comes after the "## " parts of')])
     expect(under.value?.documents[0]).not.toHaveProperty("furniture")
-    expect(under.value?.documents[0]?.parts[0]?.scope).toBe("Why we write. Legend: none")
+    expect(under.value?.documents[0]?.parts[0]?.scope).toBe("Why we write.")
   })
 
   test("a legend the request does not use as written is retry feedback and is dropped, the other lines kept", () => {
@@ -981,7 +1078,7 @@ describe("a document's furniture lines", () => {
     for (const [given, requested] of [[1, ["Without prejudice save as to costs"]], [4, []]] as const) {
       const { directory, state } = matter()
       writeLeanText(directory, "request.md", REQUEST)
-      const model = scripted((text, index) => text.includes("Draft part") ? part : reply(index < given ? "Strictly private" : "Without prejudice save as to costs"))
+      const model = scripted((text, index) => text.includes("Draft part") ? labelledPart(text, part) : reply(index < given ? "Strictly private" : "Without prejudice save as to costs"))
       const result = await withFirm({ adviceLegend: "Privileged and confidential" }, () => runDraftStage(directory, dated(directory, state), { sessions: model.sessions }, () => {}, "d1", () => {}))
       expect(result.status).toBe("done")
       expect(model.prompts.filter(prompt => prompt.text.includes(UNGROUNDED.replace("Notice letter", "Advice on the notice")))).toHaveLength(given === 1 ? 1 : LEAN_MAX_RETRIES)

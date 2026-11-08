@@ -7,13 +7,14 @@ import { ensureParagraphRows } from "../../lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { finalGate, type GateResult } from "./gate"
 import { readLeanPlan, type PlannedPart } from "./plan"
+import { stagePrompt } from "./prompts"
 import { runLean } from "./runner"
 import { leanFile, readLeanJson, readOpenItems } from "./state"
 import { plannedContract } from "./template-contract"
 import { contractGaps, rowsBody } from "./template-coverage"
 import { parseTemplateUnits } from "./template-structure"
 import { AGREEMENT, PARTS, PLAIN, TEMPLATE, TITLE, heading, templateMatter } from "./template-test-support"
-import { AGENT, NO_FINDINGS, cleanupMatters, drafter, draftingNotes, noChanges, pidIn, sameSession, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, cleanupMatters, drafter, draftingNotes, matter, noChanges, pidIn, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // Template coverage through the real coordinator. Only the model is scripted.
 
@@ -129,8 +130,10 @@ describe("template coverage in a lean run", () => {
   }, 120_000)
 
   test("a template part the outline leaves out with a reason is not retried or asked for, and the drafting notes disclose the removal", async () => {
+    // The annexes the text refers to print their headings, so the final text has them.
+    const shown = (part: string) => [PARTS.annexA, PARTS.annexB].includes(part) ? `${heading(part)}\nDisplay heading: ${heading(part).slice(3)}` : heading(part)
     const outline = [ACTING, TITLE, FORM, `Template: ${TEMPLATE}`, 'Left out: "3. Service Credits" – the customer asked for no service credits.',
-      ...Object.values(PARTS).filter(part => part !== PARTS.credits).map(heading)].join("\n")
+      ...Object.values(PARTS).filter(part => part !== PARTS.credits).map(shown)].join("\n")
     const draft = [TITLE, ...Object.values(PARTS).filter(part => part !== PARTS.credits)].join("\n\n")
     const directory = templateMatter()
     const model = scriptedModel(replies(templateDrafter([draft], { outline: () => outline })))
@@ -180,6 +183,16 @@ describe("template coverage in a lean run", () => {
     expect(gate).toMatchObject({ status: "pass", delivery: "execution_ready", blocking: [] })
     expect(gate.items.find(item => item.id === removals[0]!.id)).toMatchObject({ status: "resolved" })
   }, 120_000)
+
+  test("the outline prompt lists the top-level parts of each matter Word document with headed parts, before any Template line is planned", () => {
+    const block = /<template_parts>\n([\s\S]*?)\n<\/template_parts>/.exec(stagePrompt(templateMatter(), "d1.draft", { outline: true }))?.[1]
+    expect(block?.split("\n")).toEqual([
+      'The top-level parts of each matter Word document with headed parts, as the run reads them. Only a document planned with a "Template:" line naming that matter document accounts for its parts.',
+      `- ${TEMPLATE}: "1 Scope of Work"; "2 Charges"; "3 Service Credits"; "4 Duration"; "ANNEX A – HELP DESK SERVICES"; "ANNEX B – CHARGING SCHEDULE"`,
+    ])
+    expect(block).not.toContain(PLAIN)
+    expect(stagePrompt(matter(), "d1.draft", { outline: true })).not.toContain("<template_parts>")
+  })
 
   test("a template with no headed parts is not checked", async () => {
     const outline = [ACTING, TITLE, FORM, `Template: ${PLAIN}`, heading(PARTS.scope), heading(PARTS.charges), heading(PARTS.duration)].join("\n")

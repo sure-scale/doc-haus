@@ -1,10 +1,13 @@
 import { adviseQuestions } from "./advise"
-import { acceptInstructionsReply, confirmationQuestions, instructionsPrompt, settleByInstructions } from "./instructions"
-import { proposedFactQuestions, questionReviewKey, reviewProposedQuestion, sourceFactsFeedback, type QuestionReview } from "./question-review"
+import { acceptInstructionsReply, confirmationQuestions, instructionsPrompt, settleByInstructions, writeInstructionsFile } from "./instructions"
+import { proposedFactQuestions, questionReviewKey, reviewProposedQuestion, sourceFactsFeedback, repeatedQuestionsFeedback, type QuestionReview } from "./question-review"
 import { parallel } from "./checklist-flow"
-import { classifyAnswers } from "./answer-class"
+import { classifyAnswers, refreshFactAnswers } from "./answer-class"
+import { factOpenItems, waitingFactQuestions } from "./fact-answers"
 import { answersToReconcile, reconcileAnswers } from "./answer-reconcile"
 import { runFocusedChangeReview } from "./focused-change-review"
+import { runFocusedNotes } from "./focused-notes"
+import { reconcilePackageReaderItems } from "./reader-reconciliation"
 import { DRAFTING_STOPPED_REASON } from "../../lib/drafting-update-admission"
 import { PROVIDER_STOP_MESSAGES, providerStopKind, type ProviderStopKind } from "../../lib/provider-stop"
 import { existsSync, readFileSync, rmSync } from "node:fs"
@@ -17,17 +20,20 @@ import { checklistFindingRecovery } from "./checklist-contract"
 import { buildChecklistRefinementContext } from "./checklist-refinement-context"
 import { runChecklistRefinementFlow, readEffectiveChecklistItems, runChecklistExtractionFlow, runChecklistCheckFlow, type ChecklistCheckResult } from "./checklist-flow"
 import { selectedDeliveryPlan } from "./delivery-selection"
-import { changePlanPrompt, changeReviewItem, changeReviewPrompt, readChangeReview, reviewWithheldFinding, reviewWithheldItem, runChangePreparation, unadjudicatedFindings, type ChangeReview } from "./change-pipeline"
+import { changePlanPrompt, changeReviewItem, changeReviewPrompt, readChangePlan, readChangeReview, reviewWithheldFinding, reviewWithheldItem, runChangePreparation, unadjudicatedFindings, type ChangeReview } from "./change-pipeline"
 import { findingTextUnchanged, readChangeList } from "./checks"
 import { packageReviewPrompt, readPackageReview, recordPackageFindings } from "./package-review"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, repairedChecklistItems, startRepairRound, startUnverifiedRepairRound } from "./repairs"
-import { acceptEvidenceReply, evidencePrompt } from "./evidence"
+import { checkEvidenceReply, evidencePrompt, unquotedFigureIssue, type UnquotedFigures } from "./evidence"
+import { splitSpineEntries } from "./spine-split"
+import { checkAbsenceClaims } from "./spine-absence"
 import { checkAdoptedAgainstResearch } from "./research-check"
 import { researchPermissions, acceptResearchReply, researchPrompt, startResearchGapRound } from "./research"
 import { runApply, writeProjectedNumbers } from "./apply-stage"
 import { DELIVERED_NOTES, forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
 import { runDraftStage } from "./draft-sections"
 import { runActRecordStage } from "./act-record"
+import { runDiscrepancyStage } from "./discrepancy"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { checklistFindingLabel, deliveredNotes, finalGate, notesCoverageReport } from "./gate"
 import { issueRegister } from "./register"
@@ -187,7 +193,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
   const reviewedSessions = new Set<string>()
   const questionReviews = new Map<string, QuestionReview>()
   const deps: LeanDeps = { ...sourceDeps, sessions: { ...sourceDeps.sessions, createSession(input) {
-    return paused() ? Promise.reject(new LeanPauseRequested()) : sourceDeps.sessions.createSession(input)
+    return paused() ? Promise.reject(new LeanPauseRequested())
+      : untilPaused(sourceDeps.sessions.createSession(pause ? { ...input, signal: pause } : input), pause)
   }, async prompt(input) {
     if (paused()) throw new LeanPauseRequested()
     if (preferencesChanged()) throw new ChecklistRefreshRestart()
@@ -196,18 +203,29 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       const reply = await untilPaused(sourceDeps.sessions.prompt(pause ? { ...input, signal: pause } : input), pause)
       const stage = input.agent === LEAN_STAGE_AGENTS.advise ? undefined : Object.entries(LEAN_STAGE_AGENTS).find(([, agent]) => agent === input.agent)?.[0] as StageID | undefined
       const askingStep = Object.entries(state.stages).find(([, row]) => row?.session_id === input.sessionID || row?.session_ids?.includes(input.sessionID))?.[0] as StepID | undefined
-      const candidates = stage && !reviewedSessions.has(input.sessionID) ? proposedFactQuestions(directory, reply, stage, askingStep ? stepDocument(askingStep) ?? undefined : undefined) : []
-      if (!candidates.length) return reply
-      reviewedSessions.add(input.sessionID)
-      const findings: { question: string; source: NonNullable<QuestionReview["source"]> }[] = []
-      await parallel(candidates, async question => {
-        const review = await reviewProposedQuestion(directory, question, { sessions: deps.sessions, parentID: state.owner_session_id, model: state.model })
-        questionReviews.set(questionReviewKey(question), review)
-        if (review.source) findings.push({ question: question.question, source: review.source })
-      })
-      if (!findings.length || paused() || preferencesChanged()) return reply
-      appendLeanEvent(directory, { stage: stage!, event: "retry", step: "source evidence before question", session_id: input.sessionID, attempt: 1 })
-      return await untilPaused(sourceDeps.sessions.prompt({ ...input, text: sourceFactsFeedback(findings), ...(pause ? { signal: pause } : {}) }), pause)
+      const inspect = async (text: string, reconsider: boolean): Promise<string> => {
+        // Intake checks every revised proposal. A reworded retry must not bypass
+        // the evidence review already applied to its earlier wording.
+        const candidates = stage && (stage === "intake" || !reviewedSessions.has(input.sessionID))
+          ? proposedFactQuestions(directory, text, stage, askingStep ? stepDocument(askingStep) ?? undefined : undefined) : []
+        if (!candidates.length) return text
+        const findings: { question: string; source: NonNullable<QuestionReview["source"]> }[] = []
+        const repeats: { question: string; repeat: NonNullable<QuestionReview["repeat"]> }[] = []
+        await parallel(candidates, async question => {
+          const key = questionReviewKey(question)
+          const review = questionReviews.get(key) ?? await reviewProposedQuestion(directory, question, { sessions: deps.sessions, parentID: state.owner_session_id, model: state.model })
+          questionReviews.set(key, review)
+          if (review.source) findings.push({ question: question.question, source: review.source })
+          if (review.repeat) repeats.push({ question: question.question, repeat: review.repeat })
+        })
+        if (!reconsider || reviewedSessions.has(input.sessionID) || (!findings.length && !repeats.length) || paused() || preferencesChanged()) return text
+        reviewedSessions.add(input.sessionID)
+        appendLeanEvent(directory, { stage: stage!, event: "retry", step: "source evidence before question", session_id: input.sessionID, attempt: 1 })
+        const feedback = [findings.length ? sourceFactsFeedback(findings) : "", repeats.length ? repeatedQuestionsFeedback(repeats) : ""].filter(Boolean).join("\n\n")
+        const revised = await untilPaused(sourceDeps.sessions.prompt({ ...input, text: feedback, ...(pause ? { signal: pause } : {}) }), pause)
+        return inspect(revised, false)
+      }
+      return await inspect(reply, true)
     } catch (error) {
       const kind = providerStopKind(error)
       if (!kind) throw error
@@ -233,6 +251,14 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     const stage = stepStage(step)
     const document = stepDocument(step) ?? undefined
     const changes = drainLeanRequests(directory)
+    if (changes.answered || changes.updated) {
+      questionReviews.clear()
+      reviewedSessions.clear()
+    }
+    // A confirmation's answer changes which listed documents the list follows:
+    // the list every later step reads and keys is made current before any
+    // step is keyed, as the instructions step itself stays done.
+    if (index === 0 || changes.answered) writeInstructionsFile(directory)
     // The gate asks its question after the walk; it holds back no step.
     const unanswered = readQuestions(directory).filter(question => question.status === "open" && question.stage !== "gate")
     if (unanswered.length)
@@ -245,6 +271,27 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       if (preferencesChanged()) return { state, restart: true }
       if (provider.stop) return { state: settleProviderStop(directory, state, provider.stop) }
     }
+    const beforeFactRefresh = readLeanText(directory, "questions.json")
+    await refreshFactAnswers(directory, state, deps)
+    if (paused()) return { state: settlePause(directory, state), paused: true }
+    if (preferencesChanged()) return { state, restart: true }
+    // A sibling's prefetched failure is attributed when its own step consumes it.
+    if (provider.stop && ![...prepared.values()].some(row => row.sessionID === provider.sessionID))
+      return { state: settleProviderStop(directory, state, provider.stop) }
+    const factsChanged = beforeFactRefresh !== readLeanText(directory, "questions.json")
+    if (factsChanged) {
+      questionReviews.clear()
+      reviewedSessions.clear()
+      if (settled.length) return { state, restart: true }
+    }
+    if (index === 0 || changes.answered || changes.updated || factsChanged) {
+      const facts = factOpenItems(directory)
+      const ids = new Set(facts.map(item => item.id))
+      const kept = readOpenItems(directory).filter(item => !ids.has(item.id) && !(item.kind === "question" && item.ref.question_id && readQuestions(directory).some(question => question.id === item.ref.question_id && question.kind === "fact" && question.stage === "intake")))
+      writeOpenItems(directory, [...kept, ...facts])
+    }
+    const waitingFacts = waitingFactQuestions(directory)
+    if (waitingFacts.length) return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: "Waiting for you to supply evidence or change your answer to allow a marked provisional draft." }) }
     // Answers given one question at a time are then read together: answers
     // that cannot all be followed become one question each for the lawyer,
     // asked before any step reads them.
@@ -319,6 +366,10 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       if (step === "research-review" && startResearchGapRound(directory, researchBasis(directory))) return { state, restart: true }
       continue
     }
+    if (stage === "intake" && recorded?.status === "failed" && recorded.input_sha === inputSha &&
+      recorded.attempts >= LEAN_MAX_RETRIES + 1) {
+      return { state: writeLeanState(directory, { ...state, status: "failed", stop_reason: "Intake already exhausted its checker retries for these inputs. Supply new evidence or change the relevant answer before retrying." }) }
+    }
     const prefetched = prepared.get(step)
     const currentPrefetch = prefetched?.inputSha === inputSha
     if (!currentPrefetch) appendLeanEvent(directory, { stage, document, event: "started", check_ms })
@@ -374,7 +425,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     }
     if (prefetched && prefetched.inputSha !== inputSha) await prefetched.reply.catch(() => undefined)
     prepared.delete(step)
-    const result = await runStep(directory, state, step, deps, progress, planned, prefetched?.inputSha === inputSha ? prefetched : undefined, reinspectChecklist, recorded)
+    const result = await runStep(directory, state, step, deps, progress, planned, prefetched?.inputSha === inputSha ? prefetched : undefined, reinspectChecklist, recorded, questionReviews)
       .catch((error: unknown): StageRun => error instanceof ChecklistRefreshRestart ? { status: "restart" } : ({ status: "failed", reason: `${step}: stopped by a runtime error: ${message(directory, error)}` }))
     // Whatever the step returned once paused (helpers turn a refused prompt into
     // their own failure) is not accepted; the step is run again on Continue.
@@ -386,16 +437,18 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     // A prefetched review's failure is settled when its own step takes the reply.
     if (provider.stop && ![...prepared.values()].some(row => row.sessionID === provider.sessionID))
       return { state: settleProviderStop(directory, state, provider.stop, step) }
+    // Once the list is made, the lawyer is asked whether to follow each listed
+    // document of directions the request does not designate, before any step
+    // reads the list; the step is done, so its answer runs the list once.
+    const confirmations = step === "instructions" && result.status === "done" ? confirmationQuestions(directory) : []
+    if (confirmations.length) appendLeanEvent(directory, { stage, document, event: "blocked", reason: ANSWERS_BEFORE_RESEARCH })
     appendLeanEvent(directory, result.status === "failed"
       ? { stage, document, event: "failed", reason: result.reason }
       : { stage, document, event: result.status, outputs: result.outputs, reason: result.reason })
     if (result.status === "failed") {
-      state = updateLeanStage(directory, state, step, { status: "failed", finished_at: now() })
+      state = updateLeanStage(directory, state, step, { status: "failed", ...(stage === "intake" ? { input_sha: inputSha } : {}), finished_at: now() })
       return { state: writeLeanState(directory, { ...state, status: "failed", stop_reason: result.reason }) }
     }
-    // Intake asks whether to follow each document of directions awaiting the
-    // lawyer's confirmation, with its own questions or alone once it is ready.
-    const confirmations = step === "intake" ? confirmationQuestions(directory) : []
     const asked = result.questions || confirmations.length ? [...confirmations, ...result.questions ?? []] : undefined
     // Every question the step asks is advised before anything from the step is
     // recorded; one a current instruction decides is settled by it, not asked.
@@ -411,15 +464,15 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     // (withholdReviewedChanges, recordPackageFindings).
     const exhaustedReview = (stage === "change-review" && document !== undefined || stage === "package-review") && (readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
     const exhaustedChangeReview = exhaustedReview && stage === "change-review"
-    if (!exhaustedReview) replaceStageOpenItems(directory, stage, document ?? null, document ? result.openItems.map(item => inDocument(item, document)) : result.openItems)
+    if (!exhaustedReview) replaceStageOpenItems(directory, stage, document ?? null, document ? result.openItems.map(item => inDocument(item, document)) : stage === "intake" ? [...result.openItems, ...factOpenItems(directory)] : result.openItems)
     if (questions) replaceStageQuestions(directory, stage, document ?? null, questions)
     // A step blocked only by questions its instructions settled runs again,
-    // reading the settled answers; a confirmation blocks a ready intake.
+    // reading the settled answers.
     if (questions && !questions.some(question => question.status === "open") && result.status === "blocked" && result.questions?.length) {
       state = updateLeanStage(directory, state, step, { status: "pending", ...unkeyed(step), outputs: [], finished_at: null })
       return { state, restart: true }
     }
-    const status = confirmations.length ? "blocked" : result.status
+    const status = result.status
     snapshotStage(directory, state.revision, step, result.outputs)
     const review = stage === "change-review" && document ? readChangeReview(directory, document) : undefined
     // With the repair allowance used up the run goes on to a review draft, the
@@ -450,10 +503,10 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     // final body starts the round a Continue would, once per set of such items
     // and charged to the allowance; apply then marks what it leaves.
     if (stage === "gate" && status === "blocked" && startUnverifiedRepairRound(directory, blockedGateItems(directory))) return { state, restart: true }
-    if (status === "blocked") {
+    if (status === "blocked" || confirmations.length) {
       await recordLeanDocuments(directory, deps, false)
       if (preferencesChanged()) return { state, restart: true }
-      return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: result.reason ?? "Waiting for your answers before legal research and drafting." }) }
+      return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: result.reason ?? ANSWERS_BEFORE_RESEARCH }) }
     }
   }
   if (preferencesChanged()) return { state, restart: true }
@@ -528,6 +581,7 @@ function withholdReviewedChanges(directory: string, document: DocID, review: Cha
 async function reconcilePackageReview(directory: string, state: LeanState, deps: LeanDeps) {
   const review = readPackageReview(directory)
   if (!review) return
+  if (await reconcilePackageReaderItems(directory, state, deps, review)) return { state, restart: true }
   const plan = selectedDeliveryPlan(directory, review.delivery)
   const prior = readRepairRound(directory)
   const exhausted = (prior?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
@@ -562,6 +616,8 @@ async function reconcilePackageReview(directory: string, state: LeanState, deps:
 class ChecklistRefreshRestart extends Error {}
 
 export const LEAN_PAUSED_REASON = "Paused at your request."
+/** Why the run waits when a step before research asks the lawyer a question. */
+const ANSWERS_BEFORE_RESEARCH = "Waiting for your answers before legal research and drafting."
 
 /** The lawyer paused the run: no further model work starts or is accepted. */
 class LeanPauseRequested extends Error {
@@ -716,27 +772,33 @@ export function stageInputSha(directory: string, step: StepID) {
 }
 
 /** `recorded` is the step's state before this run of it. */
-function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, planned: () => void | Promise<void>, prepared?: PreparedReview, reinspectChecklist = false, recorded?: LeanStageState): Promise<StageRun> {
+function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, planned: () => void | Promise<void>, prepared?: PreparedReview, reinspectChecklist = false, recorded?: LeanStageState, questionReviews?: ReadonlyMap<string, QuestionReview>): Promise<StageRun> {
   const stage = stepStage(step)
   const document = stepDocument(step)
-  if (stage === "apply" && document) return runApply(directory, state, document)
+  if (stage === "apply" && document) return runApply(directory, state, document, deps)
   if (stage === "gate") return runGate(directory)
   if (stage === "checklist-check") return runChecklistStage(directory, state, deps, reinspectChecklist)
   if (stage === "acts") return runActRecordStage(directory, state, deps, progress)
-  // A review that re-ran since the plan has findings only a full plan sees.
-  if (stage === "change-plan" && document && !roundPlanned(directory, state, recorded) && focusedChecklistRepairs(directory, document) && !unadjudicatedFindings(directory, document).length) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
+  if (stage === "discrepancy") return runDiscrepancyStage(directory, state, deps, progress)
+  if (stage === "finalize") return runFocusedNotes(directory, state, deps, progress)
+  // Focused repair amends the accepted plan. A review that re-ran since the plan
+  // has findings only a full plan sees, and a saved plan that no longer checks
+  // (research it cites was re-reviewed) is re-planned in full.
+  const previous = stage === "change-plan" && document ? readChangePlan(directory, document) : undefined
+  if (previous && document && !roundPlanned(directory, state, recorded) && focusedChecklistRepairs(directory, document) && !unadjudicatedFindings(directory, document, previous).length) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
   if (stage === "change-review" && document && focusedChecklistRepairs(directory, document)) return runFocusedChangeReview(directory, state, deps, document, progress)
   if (stage === "changes" && document && focusedChecklistRepairs(directory, document)) return runChangeReconciliation(directory, state, deps, document, progress)
   if (stage === "change-prepare" && document) return runChangePreparation(directory, state, deps, document, progress)
   if (stage === "draft" && document) return runDraftStage(directory, state, deps, progress, document, planned)
-  if (stage === "spine") return checkAdoptedAgainstResearch(directory, state, deps).then(() => runModelStage(directory, state, step, deps, progress, prepared))
-  return runModelStage(directory, state, step, deps, progress, prepared)
+  if (stage === "spine") return checkAdoptedAgainstResearch(directory, state, deps).then(() => runModelStage(directory, state, step, deps, progress, prepared, questionReviews))
+  return runModelStage(directory, state, step, deps, progress, prepared, questionReviews)
 }
 
 /** The files the lawyer asks to receive, read again before the notes are
  * written when the lawyer's words have changed since the record was saved (a
  * later instruction or answer): one files job against the saved plan, as when
- * the plan was outlined, whose record replaces the earlier one. The plan is
+ * the plan was outlined, whose record replaces the earlier one. The memo is
+ * the memo document, listed once, by its planned id. The plan is
  * followed as saved and nothing is asked; requestedFilesItems discloses a file
  * it does not deliver as asked, and a reply that never passed its check leaves
  * an unchecked record, disclosed alike. Errors from the session calls
@@ -744,15 +806,16 @@ function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDe
 async function recheckRequestedFiles(directory: string, state: LeanState, deps: LeanDeps) {
   const plan = readLeanPlan(directory)
   const words = requestedFilesWords(directory)
-  if (!plan?.basis || (plan.memo === undefined && plan.documents.length < 2) || readRequestedFiles(directory)?.words === words) return
+  if (!plan?.basis || plan.documents.length < 2 || readRequestedFiles(directory)?.words === words) return
+  const memo = plan.memo !== undefined ? plan.memo_document : undefined
   const agent = LEAN_STAGE_AGENTS.files
   const sessionID = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, "finalize", "files"), model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
   const refused = new Map<string, string>()
   let checked: ReturnType<typeof parseRequestedFiles> = { issues: [] }
   for (let attempt = 0; attempt <= LEAN_MAX_RETRIES; attempt += 1) {
     appendLeanEvent(directory, { stage: "finalize", event: attempt ? "retry" : "model_call", step: "files", attempt, session_id: sessionID })
-    const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: attempt ? retryPrompt("finalize", checked.issues) : requestedFilesPrompt(directory, plan.documents, plan.memo) })
-    checked = parseRequestedFiles(reply, directory, plan.documents, plan.memo, { final: attempt >= LEAN_MAX_RETRIES, refused })
+    const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: attempt ? retryPrompt("finalize", checked.issues) : requestedFilesPrompt(directory, plan.documents, memo) })
+    checked = parseRequestedFiles(reply, directory, plan.documents, { final: attempt >= LEAN_MAX_RETRIES, refused })
     appendLeanEvent(directory, { stage: "finalize", event: "checker", step: "files", attempt, issues: checked.issues })
     if (!checked.issues.length) break
   }
@@ -760,7 +823,7 @@ async function recheckRequestedFiles(directory: string, state: LeanState, deps: 
   const record = { schema: LEAN_REQUESTED_FILES_SCHEMA, basis: plan.basis, words, planned: requestedFilesPlanned(plan.documents, plan.memo) } as const
   writeRequestedFiles(directory, requested ? { ...record, stated: requested.stated, files: requested.files } : { ...record, status: "unchecked", stated: false, files: [] })
   appendLeanEvent(directory, { stage: "finalize", event: "requested_files", step: "files", outcome: !requested ? "unchecked" : requested.stated ? "stated" : "not_stated",
-    issues: requested ? requestedFilesIssues(plan.documents, plan.memo, requested).issues.map(row => row.issue) : [],
+    issues: requested ? requestedFilesIssues(plan.documents, memo, requested).issues.map(row => row.issue) : [],
     ...(!requested ? { reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive could not be confirmed; the plan delivers its files as saved and the drafting notes say so." } : {}) })
 }
 
@@ -783,9 +846,11 @@ function roundPlanned(directory: string, state: LeanState, recorded: LeanStageSt
  * review still faults once the repair allowance is used up, withholdReviewedChanges), research withholds
  * findings it cannot verify (disclosed as research limitations), and package review
  * withholds delivery rows its check still refuses, or reads a missing delivery
- * list as none (the planned names stand);
+ * list as none (the planned names stand), and the spine keeps an entry figure
+ * none of its quotes states (an open item the notes disclose) or an absence
+ * claim a source contradicts (both recorded in the checker event);
  * any other fourth failed check stops the run with those issues. */
-async function runModelStage(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, prepared?: PreparedReview): Promise<StageRun> {
+async function runModelStage(directory: string, state: LeanState, step: StepID, deps: LeanDeps, progress: Progress, prepared?: PreparedReview, questionReviews?: ReadonlyMap<string, QuestionReview>): Promise<StageRun> {
   const stage = stepStage(step) as ModelStageID
   const document = stepDocument(step) ?? undefined
   const agent = LEAN_STAGE_AGENTS[stage]
@@ -793,29 +858,59 @@ async function runModelStage(directory: string, state: LeanState, step: StepID, 
     directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, step), model: state.model, permissions: stage === "research" ? researchPermissions : LEAN_CHILD_PERMISSIONS,
   })
   progress({ session_id: sessionID })
+  // The spine's absence and split jobs each report their own sessions; the step lists them all.
+  const jobSessions = new Set<string>()
+  const jobProgress: Progress = patch => {
+    patch.session_ids?.forEach(id => jobSessions.add(id))
+    progress(patch.session_ids ? { ...patch, session_ids: [...jobSessions] } : patch)
+  }
   const attempt = async (index: number, text: string): Promise<StageRun> => {
     appendLeanEvent(directory, { stage, document, event: index ? "retry" : "model_call", attempt: index, session_id: sessionID })
     const asked = performance.now()
     const reply = await (index === 0 && prepared ? prepared.reply : deps.sessions.prompt({ directory, sessionID, agent, text }))
     const answered = performance.now()
-    const accepted = stage === "instructions"
+    const repeats = stage === "intake" ? proposedFactQuestions(directory, reply, stage).flatMap(question => {
+      const repeat = questionReviews?.get(questionReviewKey(question))?.repeat
+      return repeat ? [`That fact already has an answer: ${repeat.answer}. Do not ask it again. Preserve any unknown and the lawyer's choice to draft provisionally or wait; return readiness only where permitted, or ask a genuinely different unresolved decision.`] : []
+    }) : []
+    // A spine reply with the spine's shape has its parent entries' absence
+    // claims verified against the sources (spine-absence.ts) on every attempt,
+    // so a contradicted claim goes back in the same retry as the reply's
+    // evidence issues. A spine that passes both is then split into atoms
+    // before spine.json is written. On the last attempt an unquoted figure or
+    // a contradicted claim no longer fails it: the checker event records it,
+    // and each entry kept with unquoted figures is an open item.
+    const spine = stage === "spine" ? checkEvidenceReply(directory, stage, reply, { final: index >= LEAN_MAX_RETRIES }) : undefined
+    const absence = spine?.shaped ? await checkAbsenceClaims(directory, state, deps, spine.shaped, { final: index >= LEAN_MAX_RETRIES }, jobProgress) : undefined
+    const accepted = repeats.length ? { issues: repeats, outputs: [], openItems: [] } : spine
+      ? { issues: [...spine.issues, ...absence?.issues ?? []], outputs: [], openItems: spine.value ? unquotedFigureItems(spine.value, spine.recorded) : [] }
+      : stage === "instructions"
       ? acceptInstructionsReply(directory, reply)
-      : stage === "discrepancy" || stage === "spine"
-      ? acceptEvidenceReply(directory, stage, reply)
       : stage === "intake" || stage === "research" || stage === "research-review"
       ? acceptResearchReply(directory, stage, reply, { final: index >= LEAN_MAX_RETRIES })
       : await acceptStageReply(directory, step, reply, { final: index >= LEAN_MAX_RETRIES })
     const timing = { wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) }
     progress({ attempts: index + 1, calls: index + 1, feedback: accepted.issues })
-    appendLeanEvent(directory, { stage, document, event: "checker", attempt: index, issues: accepted.issues, ...timing })
+    const figures = spine?.recorded.flatMap(row => row.figures.map(figure => unquotedFigureIssue(row.index, figure))) ?? []
+    appendLeanEvent(directory, { stage, document, event: "checker", attempt: index, issues: [...accepted.issues, ...figures, ...absence?.recorded ?? []], ...timing })
+    if (spine?.value && !accepted.issues.length) accepted.outputs = await splitSpineEntries(directory, state, deps, spine.value, jobProgress)
     if (!accepted.issues.length)
       return { status: (stage === "intake" || stage === "change-plan") && accepted.questions?.length ? "blocked" : "done", outputs: accepted.outputs, openItems: accepted.openItems, questions: accepted.questions,
-        ...((stage === "intake" || stage === "change-plan") && accepted.questions?.length ? { reason: stage === "intake" ? "Waiting for your answers before legal research and drafting." : "Waiting for your answers before drafting amendments." } : {}) }
+        ...((stage === "intake" || stage === "change-plan") && accepted.questions?.length ? { reason: stage === "intake" ? ANSWERS_BEFORE_RESEARCH : "Waiting for your answers before drafting amendments." } : {}) }
     if (index >= LEAN_MAX_RETRIES)
       return { status: "failed", reason: `${step}: checker failed after ${LEAN_MAX_RETRIES} retries: ${accepted.issues.join(" ")}` }
     return attempt(index + 1, retryPrompt(stage, accepted.issues))
   }
-  return attempt(0, stage === "change-plan" && document ? changePlanPrompt(directory, document) : stage === "change-review" && document ? changeReviewPrompt(directory, document) : stage === "package-review" ? `${packageReviewPrompt(directory)}\n\nFocused checklist findings are saved at .dochaus/lean/checklist/report.md and checklist/checks.json; use targeted read-record lookup when relevant. Open findings remain unresolved, not satisfied. In that report, a "Disclosed, not satisfied" line is an unresolved finding: it is disclosed with the review draft, is not a blocker for this review to clear, and is never treated as satisfied. Do not re-run every checklist item in this package review.` : stage === "instructions" ? instructionsPrompt(directory) : stage === "discrepancy" || stage === "spine" ? evidencePrompt(directory, stage) : stage === "intake" || stage === "research" || stage === "research-review" ? researchPrompt(directory, stage, researchBasis(directory)) : stagePrompt(directory, step))
+  return attempt(0, stage === "change-plan" && document ? changePlanPrompt(directory, document) : stage === "change-review" && document ? changeReviewPrompt(directory, document) : stage === "package-review" ? `${packageReviewPrompt(directory)}\n\nFocused checklist findings are saved at .dochaus/lean/checklist/report.md and checklist/checks.json; use targeted read-record lookup when relevant. Open findings remain unresolved, not satisfied. In that report, a "Disclosed, not satisfied" line is an unresolved finding: it is disclosed with the review draft, is not a blocker for this review to clear, and is never treated as satisfied. Do not re-run every checklist item in this package review.` : stage === "instructions" ? instructionsPrompt(directory) : stage === "spine" ? evidencePrompt(directory, stage) : stage === "intake" || stage === "research" || stage === "research-review" ? researchPrompt(directory, stage, researchBasis(directory)) : stagePrompt(directory, step))
+}
+
+// A spine entry kept on the final attempt with figures none of its quotes
+// states is never silent: each is an open item the drafting notes must name.
+function unquotedFigureItems(spine: Record<string, unknown>, rows: UnquotedFigures[]) {
+  const entries = spine.entries as { detail: string }[]
+  return rows.map(row => openItem("spine", "omission",
+    `Points for the draft: this ${row.kind} states ${row.figures.map(figure => JSON.stringify(figure)).join(", ")}, which none of its quoted source words states; confirm each against the sources.`,
+    { statement: entries[row.index].detail, repair_target: "memo" }))
 }
 
 /** The state's step rows follow the plan, whether the first draft wrote it or

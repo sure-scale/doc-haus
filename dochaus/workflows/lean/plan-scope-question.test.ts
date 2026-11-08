@@ -14,7 +14,7 @@ import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES, outlineBasis } from "./stages"
 import { leanFile, readLeanJson, readLeanState, readQuestions, shortHash, updateLeanStage, writeLeanText, writeQuestions, type LeanState, type Question } from "./state"
-import { AGENT, NO_FINDINGS, actRecordOf, cleanupMatters, draftingNotes, matter, noChanges, placementJob, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, actRecordOf, cleanupMatters, draftingNotes, labelledPart, matter, noChanges, placementJob, scriptedModel, type Reply } from "./test-support"
 
 // The plan step's package-scope question: when the outline's coverage check
 // still leaves an instructed act without a document executed by the parties
@@ -77,7 +77,7 @@ const openChecklist: Record<string, Reply> = {
 /** The outline agent: `first` answers the outline prompt, `revised` any
  * revision request, and each part gets one plain paragraph. */
 const outliner = (first: string, revised = first): Reply => text =>
-  /^Draft part \d+ of \d+ of "/m.test(text) ? "The terms are recorded." : text.startsWith(REVISE) ? revised : first
+  /^Draft part \d+ of \d+ of "/m.test(text) ? labelledPart(text, "The terms are recorded.") : text.startsWith(REVISE) ? revised : first
 
 /** A whole run: the act record lists the act, the outline keeps one document
  * whatever the coverage job reports, and the later steps find nothing to change. */
@@ -181,10 +181,11 @@ describe("the plan step's package-scope question", () => {
 
     const answered = scriptedModel(replies())
     expect((await runLean(directory, { sessions: answered.port })).status).toBe("completed")
-    // The outline is asked again, with the answer, and its coverage checked again.
+    // The outline is asked again, with the answer, and its coverage checked again;
+    // the act the answer settled is never sent back for a revision.
     const outline = answered.prompts.find(prompt => prompt.agent === AGENT.draft)!
     expect(outline.text).toContain(ANSWER)
-    expect(revisions(answered)).toHaveLength(PLAN_COVERAGE_REVISIONS)
+    expect(revisions(answered)).toEqual([])
     expect(readLeanPlan(directory)).toMatchObject({ basis: outlineBasis(directory), documents: [expect.objectContaining({ title: "Release letter" })] })
     expect(readLeanCoverage(directory)).toMatchObject({ status: "uncovered", acts: [act] })
     expect(planCoverageCurrent(directory)).toBe(true)
@@ -251,11 +252,11 @@ describe("the plan step's package-scope question", () => {
     expect(gate).not.toHaveProperty("questions")
     // The instruction left open stays disclosed. Its checklist item quotes the
     // request sentence that holds the span the answered question showed, so it
-    // refers to that question, as does the uncovered act itself.
+    // refers to that question; the act itself is settled by the answer, not an omission.
     const leftOpen = gate.disclosed.filter(item => item.kind === "checklist_open")
     expect(leftOpen).toHaveLength(1)
     expect(leftOpen[0]!.ref).toMatchObject({ question_id: SCOPE_ID })
-    expect(gate.disclosed).toContainEqual(expect.objectContaining({ kind: "omission", detail: expect.stringContaining(`The lawyer answered the package-scope question ${SCOPE_ID};`) }))
+    expect(gate.disclosed.some(item => item.kind === "omission" && item.detail.includes("Plan coverage"))).toBe(false)
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: SCOPE_ID, stage: "draft", status: "answered", answer: ANSWER })])
   }, 180_000)
 
@@ -297,18 +298,18 @@ describe("the plan step's package-scope question", () => {
 
   // The plan step asks again only about acts no answered scope question showed.
   const shows = (text: string, status: "answered" | "open" = "answered", stage: "draft" | "gate" = "draft") =>
-    ({ id: SCOPE_ID, stage, question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${text}" [source: request]; to be taken by "the Orchard Committee"; planned in d1 "Release letter", executed by "Kestrel Works".`, context: "", status, ...(status === "answered" ? { answer: ANSWER } : {}) })
+    ({ id: SCOPE_ID, stage, question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${text}" [source: request]; to be taken by "the Orchard Committee"; planned in "Release letter", executed by "Kestrel Works".`, context: "", status, ...(status === "answered" ? { answer: ANSWER } : {}) })
   const DEPOSIT = "Kestrel Works then releases the deposit"
   const release: CoverageAct = { act: "release the deposit", source: "request", quote: DEPOSIT, parties: ["the Orchard Committee"], document: "d1" }
   const SENTENCE = "Prepare the papers so that the Orchard Committee approves the revised schedule."
 
-  test("an answered question showed the act and a re-run leaves it uncovered: no new question, and the act is disclosed with the answered-question note; one that showed only another act settles none", async () => {
+  test("an answered question showed the act and a re-run leaves it uncovered: no new question, and the act is settled, not disclosed; one that showed only another act settles none", async () => {
     const directory = prepared()
     writeQuestions(directory, [shows(APPROVE)])
     const result = await runStep(directory, scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => ACTS) }))
     expect(result.status).toBe("done")
     expect(readLeanCoverage(directory)).toMatchObject({ status: "uncovered", acts: [act] })
-    expect(coverageItems(directory).map(item => item.detail)).toEqual([expect.stringContaining(`The lawyer answered the package-scope question ${SCOPE_ID};`)])
+    expect(coverageItems(directory)).toEqual([])
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: SCOPE_ID, status: "answered" })])
     // An answered question that showed only another act leaves this one to ask.
     const other = prepared()
@@ -335,7 +336,7 @@ describe("the plan step's package-scope question", () => {
     writeQuestions(directory, [shows(SENTENCE)])
     const result = await runStep(directory, scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => JSON.stringify({ acts: [{ ...act, quote: APPROVE }] })) }))
     expect(result.status).toBe("done")
-    expect(coverageItems(directory).map(item => item.detail)).toEqual([expect.stringContaining(`The lawyer answered the package-scope question ${SCOPE_ID};`)])
+    expect(coverageItems(directory)).toEqual([])
     // The answered line quoted one clause, which may have been another act's:
     // the act on the whole sentence is asked under its own id.
     const longer = prepared()
@@ -371,13 +372,14 @@ describe("the plan step's package-scope question", () => {
     writeLeanText(directory, "coverage.json", JSON.stringify({ schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(directory, plan.documents, plan.acting_for), status: "uncovered",
       acts: [act, release], issues: planCoverageIssues([act, release], plan.documents, directory) }))
     // The plan step asked about the approval alone and the lawyer answered.
-    writeQuestions(directory, [{ id: SCOPE_ID, stage: "draft", question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in d1 "Release letter", executed by "Kestrel Works".`,
+    writeQuestions(directory, [{ id: SCOPE_ID, stage: "draft", question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in "Release letter", executed by "Kestrel Works".`,
       context: "", status: "answered", answer: ANSWER }])
-    const [approval, deposit] = coverageItems(directory)
-    expect(approval!.detail).toContain(`directed by "${APPROVE}"`)
-    expect(approval!.detail).toContain(`The lawyer answered the package-scope question ${SCOPE_ID}; the plan still leaves this act so.`)
-    // The deposit's release was not in that question: plain uncovered wording.
+    // The approval is settled by the answer; the deposit's release was not in
+    // that question: plain uncovered wording, with no mention of the question.
+    const [deposit, ...rest] = coverageItems(directory)
+    expect(rest).toEqual([])
     expect(deposit!.detail).toContain(`directed by "${DEPOSIT}"`)
+    expect(deposit!.detail).not.toContain(APPROVE)
     expect(deposit!.detail).toEndWith("no planned document carries it.")
     expect(deposit!.detail).not.toContain("package-scope")
   })
@@ -451,7 +453,7 @@ describe("scope asker termination: fix wave 3", () => {
     const result = await runStep(directory, scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => ACTS) }))
     expect(result.status).toBe("done")
     expect(planSaved(directory)).toBe(true)
-    expect(coverageItems(directory).map(item => item.detail)).toEqual([expect.stringContaining(`The lawyer answered the package-scope question ${SCOPE_ID};`)])
+    expect(coverageItems(directory)).toEqual([])
     expect(readQuestions(directory)).toEqual([answered])
   }, 120_000)
 
@@ -506,14 +508,14 @@ describe("scope asker termination: fix wave 3", () => {
       for (const text of [MINUTE, NOTICE]) expect(asked).toContain(`directed by "${text}"`)
       expect(asked).not.toContain(quote.slice(0, 40))
       // Two of the step's questions answered: none is asked, the plan is saved,
-      // and the shown act's item still names the question that showed it.
+      // the shown act is settled and the two beside it are disclosed.
       const spent = await step([answered, planAnswered([quoting(INSPECTOR)])])
       expect(spent.result.status).toBe("done")
       expect(planSaved(spent.directory)).toBe(true)
       const details = coverageItems(spent.directory).map(item => item.detail)
-      expect(details).toHaveLength(3)
-      expect(details[0]).toContain(`The lawyer answered the package-scope question ${answered.id};`)
-      for (const detail of details.slice(1)) expect(detail).not.toContain("package-scope")
+      expect(details).toHaveLength(2)
+      for (const text of [MINUTE, NOTICE]) expect(details.some(detail => detail.includes(`directed by "${text}"`))).toBe(true)
+      for (const detail of details) for (const text of [`"${shown.act}"`, "package-scope"]) expect(detail).not.toContain(text)
     }
   }, 120_000)
 
@@ -534,12 +536,11 @@ describe("scope asker termination: fix wave 3", () => {
     expect(result.status).toBe("done")
     expect(planSaved(twice)).toBe(true)
     expect(readQuestions(twice)).toEqual([first, second])
+    // The two answered acts are settled; the third is disclosed alone.
     const details = coverageItems(twice).map(item => item.detail)
-    expect(details).toHaveLength(3)
-    expect(details[0]).toContain(`The lawyer answered the package-scope question ${first.id};`)
-    expect(details[1]).toContain(`The lawyer answered the package-scope question ${second.id};`)
-    expect(details[2]).toContain(`directed by "${NOTICE}" [source: request]`)
-    expect(details[2]).not.toContain("package-scope")
+    expect(details).toHaveLength(1)
+    expect(details[0]).toContain(`directed by "${NOTICE}" [source: request]`)
+    for (const text of [MINUTE, APPROVE, "package-scope"]) expect(details[0]).not.toContain(text)
 
     // The same two answered by the gate leave the plan step its own question.
     const byGate = prepared()
@@ -584,34 +585,30 @@ describe("scope asker termination: fix wave 3", () => {
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: question!.id, status: "answered", answer: ANSWER })])
     const gate = readLeanJson(directory, "gate.json") as { status: string; disclosed: { kind: string; detail: string }[] }
     expect(gate.status).toBe("pass")
-    expect(gate.disclosed).toContainEqual(expect.objectContaining({ kind: "omission",
-      detail: expect.stringContaining(`The lawyer answered the package-scope question ${question!.id}; the plan still leaves this act so.`) }))
+    // The answer settles the act: no omission is disclosed for it.
+    expect(gate.disclosed.some(item => item.kind === "omission" && item.detail.includes("Plan coverage"))).toBe(false)
   }, 180_000)
 
-  test("through the run: answers the coverage job quotes back as new acts bring one more question, then a disclosure; the run ends after two answers", async () => {
+  test("through the run: the plan step's answer never reaches the act record, so no act is quoted back from it and neither the record nor the spine re-runs; the run ends after one answer with the act settled", async () => {
     const directory = prepared()
-    // Each act the lawyer's answers direct is in the act record once those
-    // answers exist, and placed where the plan puts the approval.
+    // Were an answer shown to the act record, each act its words direct would
+    // be listed and placed where the plan puts the approval, bringing another question.
     const instructed = (text: string) => [act, ...[MINUTE, NOTICE].filter(quote => text.includes(quote)).map(quoting)]
     const coverage: Reply = text => JSON.stringify({ acts: instructed(text) })
-    const run = () => runLean(directory, { sessions: scriptedModel(replies({ [AGENT.acts]: actRecordOf(instructed), ...placementJob(coverage) })).port })
-    const answer = (text: string) => {
-      const open = readQuestions(directory).filter(question => question.status === "open")
-      expect(open).toHaveLength(1)
-      enqueueLeanRequest(directory, { kind: "answer", question_id: open[0]!.id, answer: text })
-      return open[0]!.id
-    }
-    expect((await run()).status).toBe("blocked")
-    expect(answer(FIRST_ANSWER)).toBe(SCOPE_ID)
-    expect((await run()).status).toBe("blocked")
-    expect(answer(SECOND_ANSWER)).toBe(planID(quoting(MINUTE)))
+    const model = () => scriptedModel(replies({ [AGENT.acts]: actRecordOf(instructed), ...placementJob(coverage) }))
+    expect((await runLean(directory, { sessions: model().port })).status).toBe("blocked")
+    expect(readQuestions(directory).filter(question => question.status === "open").map(question => question.id)).toEqual([SCOPE_ID])
+    enqueueLeanRequest(directory, { kind: "answer", question_id: SCOPE_ID, answer: FIRST_ANSWER })
 
-    const third = await run()
-    expect(answerable(directory, third)).toBe(true)
-    expect(third.status).toBe("completed")
-    expect(readQuestions(directory).map(question => [question.id, question.status])).toEqual([[SCOPE_ID, "answered"], [planID(quoting(MINUTE)), "answered"]])
+    const resumed = model()
+    const second = await runLean(directory, { sessions: resumed.port })
+    expect(answerable(directory, second)).toBe(true)
+    expect(second.status).toBe("completed")
+    for (const agent of [AGENT.acts, AGENT.spine]) expect([agent, resumed.count(agent)]).toEqual([agent, 0])
+    expect(readQuestions(directory).map(question => [question.id, question.status])).toEqual([[SCOPE_ID, "answered"]])
+    expect(readLeanCoverage(directory)).toMatchObject({ acts: [act] })
     const gate = readLeanJson(directory, "gate.json") as { status: string; disclosed: { kind: string; detail: string }[] }
     expect(gate.status).toBe("pass")
-    expect(gate.disclosed).toContainEqual(expect.objectContaining({ kind: "omission", detail: expect.stringContaining(`directed by "${NOTICE}" [source: request]`) }))
+    expect(gate.disclosed.some(item => item.kind === "omission" && item.detail.includes("Plan coverage"))).toBe(false)
   }, 300_000)
 })

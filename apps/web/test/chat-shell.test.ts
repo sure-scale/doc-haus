@@ -28,7 +28,7 @@ test("starters return once the matter has documents, and surfaces without a coun
   }
 })
 
-function composer(toolsLoading: boolean, draftingClarification = false) {
+function composer(toolsLoading: boolean, draftingClarification = false, run: { draftingUpdate?: boolean; drafted?: boolean } = {}) {
   return renderToStaticMarkup(
     createElement(Composer, {
       available: new Set(["draft", "extract"]),
@@ -41,8 +41,9 @@ function composer(toolsLoading: boolean, draftingClarification = false) {
       playbooks: [{ name: "standard", description: "Standard positions" }],
       onPlaybookChange: () => {},
       toolsLoading,
-      draftingUpdate: draftingClarification,
+      draftingUpdate: run.draftingUpdate ?? draftingClarification,
       draftingClarification,
+      drafted: run.drafted,
       composerPlaceholder: "Ask",
       input: "",
       setInput: () => {},
@@ -67,4 +68,14 @@ test("held checklist composer names clarification without claiming a draft edit"
   expect(html).toContain('aria-label="Send checklist clarification"')
   expect(html).toContain("Clarify checklist")
   expect(html).not.toContain("Update draft")
+})
+
+test("a drafting run's composer offers Update draft only once a draft is written", () => {
+  const before = composer(false, false, { draftingUpdate: true, drafted: false })
+  expect(before).toContain('aria-label="Send drafting update"')
+  expect(before).toContain("<span>Send</span>")
+  expect(before).not.toContain("Update draft")
+  const after = composer(false, false, { draftingUpdate: true, drafted: true })
+  expect(after).toContain('aria-label="Send drafting update"')
+  expect(after).toContain("<span>Update draft</span>")
 })

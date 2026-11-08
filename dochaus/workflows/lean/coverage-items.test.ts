@@ -4,7 +4,6 @@ import path from "node:path"
 import { LEAN_ACTS_SCHEMA, type ActRecord } from "./act-record"
 import { checkDraftingNotes } from "./checks"
 import { selectedDeliveryPlan } from "./delivery-selection"
-import { PLAN_COVERAGE_REVISIONS } from "./draft-sections"
 import { finalGate, type GateResult } from "./gate"
 import { PACKAGE_SCOPE_QUESTION } from "./package-scope"
 import { LEAN_COVERAGE_SCHEMA, coverageCarries, coveragePlanHash, coverageScopeQuestion, planCoverageCurrent, planCoverageIssues, readLeanCoverage, type CoverageAct, type LeanCoverage } from "./package-coverage"
@@ -17,7 +16,7 @@ import {
   currentOpenItems, readLeanJson, readLeanState, readOpenItems, readQuestions, replaceStageOpenItems, updateLeanStage, writeLeanText, writeOpenItems, writeQuestions,
   type OpenItem,
 } from "./state"
-import { AGENT, NO_FINDINGS, SOURCE, actRecordOf, cleanupMatters, draftingNotes, matter, noChanges, placementJob, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, SOURCE, actRecordOf, cleanupMatters, draftingNotes, labelledPart, matter, noChanges, placementJob, scriptedModel, type Reply } from "./test-support"
 
 // Plan coverage left open after the plan step reaches the lawyer: the open
 // items are derived from the current coverage.json, never stored, so the
@@ -60,7 +59,7 @@ function recordCoverage(directory: string, plan: LeanPlan, status: LeanCoverage[
   writeLeanText(directory, "coverage.json", `${JSON.stringify(coverage, null, 2)}\n`)
 }
 
-const answerScope = (directory: string) => writeQuestions(directory, [{ id: SCOPE_ID, stage: "draft", question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in d1 "Release letter", executed by "Kestrel Works".`, context: "", status: "answered", answer: ANSWER }])
+const answerScope = (directory: string) => writeQuestions(directory, [{ id: SCOPE_ID, stage: "draft", question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in "Release letter", executed by "Kestrel Works".`, context: "", status: "answered", answer: ANSWER }])
 
 /** An uncovered plan: the act sits in a document its party does not execute,
  * and a companion document declares a party the record names nowhere. */
@@ -104,27 +103,24 @@ describe("plan coverage open items", () => {
     expect(finalGate(directory).items).toEqual([])
   })
 
-  test("uncovered after an answered scope question: one item per uncovered act and per other issue, disclosed by the notes and delivered by the gate", () => {
+  test("uncovered after an answered scope question: one item per other issue, none for the act the answer settled, disclosed by the notes and delivered by the gate", () => {
     const directory = prepared()
     uncovered(directory)
     const items = coverageItems(directory)
-    expect(items).toHaveLength(2)
+    expect(items).toHaveLength(1)
     // Ids are content-derived: the same record gives the same ids.
     expect(coverageItems(directory)).toEqual(items)
     expect(items.map(item => item.id)).toEqual(items.map(item => openItem(item.stage, item.kind, item.detail, item.ref).id))
     expect(items.every(item => item.kind === "omission" && item.status === "open" && item.ref.document === undefined && item.ref.repair_target === "memo")).toBe(true)
 
-    const [uncoveredAct, declared] = items
+    const [declared] = items
     expect(declared!.detail).toContain('d2 "Trust consent" declares "Executed by: the Heron Trust"')
     // The outline's instruction for fixing the plan is not the lawyer's to read.
     expect(declared!.detail).not.toContain("never supply a party")
     expect(declared!.detail).toEndWith('nor any matter document names "the Heron Trust".')
-    expect(uncoveredAct!.detail).toContain(`"approve the revised schedule", directed by "${APPROVE}" [source: request]`)
-    expect(uncoveredAct!.detail).toContain('to be taken by "the Orchard Committee"')
-    expect(uncoveredAct!.detail).toContain('planned in d1 "Release letter", executed by "Kestrel Works"')
-    // The answered question is mentioned, never restated or interpreted.
-    expect(uncoveredAct!.detail).toContain(SCOPE_ID)
-    expect(items.some(item => item.detail.includes(ANSWER))).toBe(false)
+    // The act the lawyer's answer settled is no omission: the plan follows the
+    // answer, which is nowhere restated, and the act's issue returns as no other issue.
+    expect(items.some(item => item.detail.includes(APPROVE) || item.detail.includes(ANSWER) || item.detail.includes(SCOPE_ID))).toBe(false)
     // Nothing is stored and no question is touched.
     expect(readOpenItems(directory)).toEqual([])
     expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: SCOPE_ID, status: "answered", answer: ANSWER })])
@@ -141,6 +137,22 @@ describe("plan coverage open items", () => {
     const passed = gate(directory, notesNaming(items))
     expect(passed).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
     expect(passed.disclosed.map(item => [item.id, item.status])).toEqual(items.map(item => [item.id, "disclosed"]))
+  })
+
+  test("an uncovered act stays an item until a scope answer decides it: a declined or delegated answer with no adopted recommendation leaves it, saying so without naming the question; an adopted recommendation settles it", () => {
+    const directory = prepared()
+    uncovered(directory)
+    const [question] = readQuestions(directory)
+    const asked = (item: OpenItem) => item.detail.includes(`directed by "${APPROVE}"`)
+    for (const undecided of [{ answer_class: "declined" as const }, { answer_class: "delegated" as const }]) {
+      writeQuestions(directory, [{ ...question!, ...undecided }])
+      const items = coverageItems(directory)
+      expect(items).toHaveLength(2)
+      expect(items.filter(asked).map(item => item.detail)).toEqual([expect.stringMatching(/ The lawyer was asked where this act belongs and left the point open\.$/)])
+      for (const item of items) for (const text of [SCOPE_ID, "package-scope", ANSWER]) expect(item.detail).not.toContain(text)
+    }
+    writeQuestions(directory, [{ ...question!, answer_class: "delegated", answer_kind: "adopted", option_id: "o3" }])
+    expect(coverageItems(directory).filter(asked)).toEqual([])
   })
 
   test("an act whose document the instructions leave out yields one item, even on a covered record, naming the act, who must take it and the words that leave it out", () => {
@@ -408,7 +420,7 @@ describe("plan coverage open items", () => {
   test("a stale record (the plan changed since it was checked) yields the one not-checked item, never none", () => {
     const directory = prepared()
     uncovered(directory)
-    expect(coverageItems(directory)).toHaveLength(2)
+    expect(coverageItems(directory)).toHaveLength(1)
     const plan = writeLeanPlan(directory, [RELEASE])
     const items = coverageItems(directory)
     expect(items).toEqual(notCheckedItems())
@@ -442,7 +454,7 @@ describe("plan coverage open items", () => {
     const directory = prepared()
     uncovered(directory)
     const items = coverageItems(directory)
-    expect(items).toHaveLength(2)
+    expect(items).toHaveLength(1)
     const named = selectedDeliveryPlan(directory, [
       { document: "d1", role: "redline", file: "release.docx", instruction_quote: "" }, { document: null, role: "drafting_notes", file: "notes.docx", instruction_quote: "" },
     ])!
@@ -480,7 +492,7 @@ describe("plan coverage open items", () => {
     const directory = prepared()
     uncovered(directory)
     const items = coverageItems(directory)
-    expect(items).toHaveLength(2)
+    expect(items).toHaveLength(1)
     const drafted = openItem("draft", "omission", "The draft leaves the release date open.", { document: "d1" })
     writeOpenItems(directory, [drafted])
     const finalized = (result: GateResult) => result.items.filter(item => item.stage === "finalize").map(item => [item.id, item.status])
@@ -503,7 +515,7 @@ describe("plan coverage open items", () => {
 // coverage stays uncovered, and the finalize and gate steps carry the items.
 const ONE = "Acting for: not stated\n# Release letter\nExecuted by: Kestrel Works\n## Terms\nThe release."
 /** The outline keeps one document, revised or not; each part gets one plain paragraph. */
-const outliner: Reply = text => /^Draft part \d+ of \d+ of "/m.test(text) ? "The terms are recorded." : ONE
+const outliner: Reply = text => /^Draft part \d+ of \d+ of "/m.test(text) ? labelledPart(text, "The terms are recorded.") : ONE
 /** A whole run's replies, for one scripted model: the act record lists the act. */
 const replies = (): Record<string, Reply> => ({
   [AGENT.acts]: actRecordOf([act]),
@@ -515,7 +527,7 @@ const replies = (): Record<string, Reply> => ({
 })
 
 describe("plan coverage open items through the run", () => {
-  test("after the answered scope question the drafting notes are asked to name the act's item and the passed gate delivers it", async () => {
+  test("after the answered scope question the act is settled: the drafting notes are asked to name no item for it and the passed gate discloses none", async () => {
     const directory = prepared()
     await runLean(directory, { sessions: scriptedModel(replies()).port })
     const [question] = readQuestions(directory)
@@ -524,16 +536,15 @@ describe("plan coverage open items through the run", () => {
 
     const model = scriptedModel(replies())
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
-    const items = coverageItems(directory)
-    expect(items).toEqual([expect.objectContaining({ detail: expect.stringContaining(question!.id) })])
+    expect(coverageItems(directory)).toEqual([])
     const finalize = model.prompts.find(prompt => prompt.agent === AGENT.finalize)!
-    expect(finalize.text).toContain(`- ${items[0]!.id}: `)
+    expect(finalize.text).not.toContain("Plan coverage:")
     const result = readLeanJson(directory, "gate.json") as GateResult
-    expect(result).toMatchObject({ status: "pass", delivery: "review_draft" })
-    expect(result.disclosed).toContainEqual(expect.objectContaining({ id: items[0]!.id, status: "disclosed" }))
+    expect(result.status).toBe("pass")
+    expect(result.disclosed.filter(item => item.kind === "omission")).toEqual([])
   }, 120_000)
 
-  test("a delivery name the package review writes into the plan keeps the act's item disclosed, without a second check", async () => {
+  test("a delivery name the package review writes into the plan keeps the record current, without a second check", async () => {
     const naming = "Save the letter as release-letter.docx."
     const directory = matter(SOURCE_TEXT)
     writeLeanText(directory, "request.md", `${REQUEST} ${naming}`)
@@ -546,10 +557,10 @@ describe("plan coverage open items through the run", () => {
     const model = scriptedModel(named())
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
     expect(readLeanPlan(directory)!.documents[0]).toMatchObject({ file: "release-letter.docx", deliverable: "body" })
-    // The answer re-plans once (an outline and its revisions); the renaming asks for no further check.
-    expect(model.count(AGENT.coverage)).toBe(PLAN_COVERAGE_REVISIONS + 1)
-    const items = coverageItems(directory)
-    expect(items).toEqual([expect.objectContaining({ detail: expect.stringContaining(question!.id) })])
-    expect((readLeanJson(directory, "gate.json") as GateResult).disclosed).toContainEqual(expect.objectContaining({ id: items[0]!.id, status: "disclosed" }))
+    // The answer re-plans once (one outline: the act it settled is sent back for no revision); the renaming asks for no further check.
+    expect(model.count(AGENT.coverage)).toBe(1)
+    expect(readLeanCoverage(directory)?.plan).toBe(coveragePlanHash(directory, readLeanPlan(directory)!.documents, readLeanPlan(directory)!.acting_for))
+    expect(coverageItems(directory)).toEqual([])
+    expect((readLeanJson(directory, "gate.json") as GateResult).status).toBe("pass")
   }, 120_000)
 })

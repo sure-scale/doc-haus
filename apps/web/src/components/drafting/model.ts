@@ -12,7 +12,7 @@ const STEP_NAMES: Record<string, string> = {
   research: "Legal research",
   "research-review": "Check legal research",
   acts: "List the instructed acts",
-  spine: "Build the drafting spine",
+  spine: "List the points for the draft",
   draft: "Draft",
   review: "Review",
   "review-playbook": "Check applicable playbook",
@@ -80,8 +80,10 @@ export function stepGroups(status: LeanDraftingStatus) {
 function groupTitle(id: string, planned: Array<{ id: string; title: string }>, position: number) {
   if (id === "preparation") return "Preparation"
   if (id === "run") return "Finishing"
-  const title = planned.find((row) => row.id === id)?.title
-  return title ? cleanTitle(title) || `Document ${position + 1}` : `Document ${position + 1}`
+  const title = cleanTitle(planned.find((row) => row.id === id)?.title ?? "")
+  // The first document's draft step writes the plan; until then no document
+  // has a title or a place in a numbered list.
+  return title || (planned.length ? `Document ${position + 1}` : "Draft")
 }
 
 /** The step the run is in or stopped at: its key, 1-based position and the total. */
@@ -181,6 +183,14 @@ export function runState(status: LeanDraftingStatus): RunState {
   return "paused"
 }
 
+/** A connection wait belongs only to an actively running coordinator. Ignore
+ * an old observation once polling reports pause, completion or disconnection
+ * from that coordinator; no Continue or replacement request is needed. */
+export function connectionWait(status: LeanDraftingStatus) {
+  return status.status === "running" && status.in_flight && !status.paused_at && !leanRunStopped(status)
+    ? status.connection_wait ?? undefined : undefined
+}
+
 /** How long a step has run: to its finish, or to `now` while it is running. */
 export function stageElapsed(row: LeanStageStatus, now: number) {
   if (!row.started_at) return undefined
@@ -217,6 +227,7 @@ const KIND_LABELS: Record<string, string> = {
   checklist_open: "Requirements left open by the checklist check",
   checklist_unresolved: "Unresolved checklist findings",
   draft_status: "Draft-status wording in the agreement",
+  reader: "Sentences written for you, not the document's reader",
   drafted_default: "Choices made for you to confirm",
 }
 

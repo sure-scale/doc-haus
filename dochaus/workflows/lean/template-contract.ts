@@ -43,8 +43,6 @@ export type TemplateContract = DocumentTemplate & {
 
 type OutlinedDocument = Omit<PlannedDocument, "id">
 
-const MAX_LISTED = 12
-
 type TemplateEntry = { template?: string; comparison?: string; mode?: "new" | "revise" }
 
 /** The name a planned document's template is drawn from: a revision's
@@ -159,8 +157,7 @@ export function outlineCoverageIssues(directory: string, documents: OutlinedDocu
         `The "Left out:" line "${row.line}" of "${document.title}" leaves out the template part "${row.unit.label}", which "${row.by}" also names. ` +
         "Keep the \"Left out:\" line only if no part carries it; otherwise drop that line."),
       ...(contract.unaccounted.length
-        ? [`The outline of "${document.title}" does not account for these parts of its template "${contract.source}": ${quoted(contract.unaccounted.slice(0, MAX_LISTED))}` +
-          `${contract.unaccounted.length > MAX_LISTED ? ` and ${contract.unaccounted.length - MAX_LISTED} more` : ""}. ` +
+        ? [`The outline of "${document.title}" does not account for these parts of its template "${contract.source}": ${quoted(contract.unaccounted)}. ` +
           `${labelsPrint(document) ? PRINTED_LABEL_PLACE : "Name each in the \"## \" heading or scope line of the part that carries it"}, or, for a part left out on purpose, ` +
           "add a line \"Left out: \"<template part>\" – <reason>\" under the title."]
         : []),

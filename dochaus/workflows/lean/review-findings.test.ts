@@ -36,6 +36,17 @@ test("each unknown paragraph is reported and a finding for another document keep
   expect(acceptReviewReply(directory, "d1", "review", other, paragraphs).record!.findings[0]!.pids).toBeUndefined()
 })
 
+test("a reply that drafts its findings and then corrects them is read from its last block; blocks of different shapes are refused", () => {
+  const directory = planned()
+  const finding = (pid: string, text: string) => JSON.stringify({ findings: [{ pids: [pid], origin: "drafting", balance: "neutral", finding: text, sources: [] }] })
+  const reply = `Looking at the draft:\n\`\`\`json\n${finding(FIRST, "Delivery is unclear.")}\n\`\`\`\nOn reflection the second paragraph is the one:\n\`\`\`json\n${finding(SECOND, "The delivery date is unclear.")}\n\`\`\``
+  const accepted = acceptReviewReply(directory, "d1", "review", reply, paragraphs)
+  expect(accepted.issues).toEqual([])
+  expect(accepted.record!.findings.map(row => [row.pids, row.finding])).toEqual([[[SECOND], "The delivery date is unclear."]])
+  const mixed = `\`\`\`json\n${finding(FIRST, "Delivery is unclear.")}\n\`\`\`\n\`\`\`json\n${JSON.stringify({ findings: [], coverage: "None." })}\n\`\`\``
+  expect(acceptReviewReply(directory, "d1", "review", mixed, paragraphs).issues[0]).toContain("more than one fenced block")
+})
+
 test("another document's view of a finding shows its instead without this draft's paragraph pointers", () => {
   const row: RaisedFinding = { id: "f-0000000001", document: "d2", origin: "request", finding: `The letter contradicts [${FIRST}].`,
     instead: `State the period of [${FIRST}].`, sources: [], raised_in: "d1", stage: "review" }
@@ -47,8 +58,12 @@ test("a finding says how far its change moves rights or risk toward one party, a
   const directory = planned()
   const reply = (row: Record<string, unknown>) => JSON.stringify({ findings: [{ pids: [FIRST], origin: "missing_protection", finding: "Delivery has no remedy.", sources: [], ...row }] })
   const accept = (row: Record<string, unknown>) => acceptReviewReply(directory, "d1", "review", reply(row), paragraphs)
-  for (const row of [{}, { balance: "aggressive" }, { balance: "" }])
-    expect(accept(row).issues).toEqual(["findings[0] needs a finding, an origin (request, source_conflict, missing_fact, missing_protection, law, drafting) and a balance (neutral, market, beyond_market)."])
+  // The issue names the field and the value given.
+  expect(accept({}).issues).toEqual(["findings[0].balance must be one of neutral, market, beyond_market; it is missing."])
+  for (const balance of ["aggressive", ""])
+    expect(accept({ balance }).issues).toEqual([`findings[0].balance must be one of neutral, market, beyond_market; it is "${balance}".`])
+  expect(accept({ balance: "neutral", origin: "guess" }).issues).toEqual(['findings[0].origin must be one of request, source_conflict, missing_fact, missing_protection, law, drafting; it is "guess".'])
+  expect(accept({ balance: "neutral", finding: " " }).issues).toEqual(['findings[0].finding must say what is wrong and why; it is " ".'])
   for (const balance of ["market", "beyond_market"])
     expect(accept({ balance }).issues).toEqual(["findings[0].favours must name the party the change favours when its balance is market or beyond_market."])
   expect(accept({ balance: "beyond_market", favours: " Northwind Traders Ltd " }).record!.findings[0]).toMatchObject({ balance: "beyond_market", favours: "Northwind Traders Ltd" })

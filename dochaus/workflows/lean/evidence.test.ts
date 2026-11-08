@@ -2,25 +2,27 @@ import { afterEach, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { writeFileSync } from "node:fs"
 import path from "node:path"
-import { researchBasis } from "./stages"
+import { LEAN_MAX_RETRIES, researchBasis, stageOutputValid } from "./stages"
 import { researchPrompt } from "./research"
-import { acceptEvidenceReply, checkEvidence, evidencePrompt } from "./evidence"
+import { acceptEvidenceReply, checkDifferences, checkDifferenceVerify, checkEvidence, checkEvidenceReply, checkGaps, checkGapVerify, differenceVerifyPrompt, evidencePrompt, figures, gapsPrompt, gapVerifyPrompt, numbers, restatesDifference, type Discrepancy } from "./evidence"
+import { readLeanEvents } from "./events"
 import { enqueueLeanRequest, drainLeanRequests } from "./requests"
 import { leanSteps } from "./plan"
-import { stageInputSha } from "./runner"
-import { answerQuestion, writeQuestions, writeLeanText } from "./state"
-import { cleanupMatters, matter, SOURCE, SOURCE_TEXT } from "./test-support"
+import { runLean, stageInputSha } from "./runner"
+import { answerQuestion, readLeanJson, readOpenItems, writeQuestions, writeLeanText } from "./state"
+import { acceptInstructionsReply, confirmationQuestions, writeInstructionsFile } from "./instructions"
+import { AGENT, cleanupMatters, happyPath, matter, scriptedModel, SOURCE, SOURCE_TEXT } from "./test-support"
 
 afterEach(cleanupMatters)
 
 test("discrepancy evidence must match canonical text and uncertainty stays explicit", () => {
   const directory = matter()
   const entry = { detail: "Delivery term appears in the source", evidence: [{ source_id: SOURCE, quote: SOURCE_TEXT }], limitations: [], material: false, status: "benign", resolution: "Delivery and payment are distinct events." }
-  expect(checkEvidence(directory, "discrepancy", { entries: [entry], limitations: [] })).toEqual([])
-  expect(checkEvidence(directory, "discrepancy", { entries: [{ ...entry, evidence: [{ source_id: SOURCE, quote: "Invented delivery period" }] }], limitations: [] }).length).toBeGreaterThan(0)
-  expect(checkEvidence(directory, "discrepancy", { entries: [{ ...entry, evidence: [], limitations: [] }], limitations: [] }).length).toBeGreaterThan(0)
-  expect(checkEvidence(directory, "discrepancy", { entries: [{ ...entry, evidence: [], limitations: ["Original unavailable"], status: "unresolved", resolution: "" }], limitations: [] })).toEqual([])
-  expect(checkEvidence(directory, "discrepancy", { entries: [entry, { ...entry, resolution: " " }], limitations: [] })).toEqual([
+  expect(checkEvidence(directory, "discrepancy", { entries: [entry], gaps: [], limitations: [] })).toEqual([])
+  expect(checkEvidence(directory, "discrepancy", { entries: [{ ...entry, evidence: [{ source_id: SOURCE, quote: "Invented delivery period" }] }], gaps: [], limitations: [] }).length).toBeGreaterThan(0)
+  expect(checkEvidence(directory, "discrepancy", { entries: [{ ...entry, evidence: [], limitations: [] }], gaps: [], limitations: [] }).length).toBeGreaterThan(0)
+  expect(checkEvidence(directory, "discrepancy", { entries: [{ ...entry, evidence: [], limitations: ["Original unavailable"], status: "unresolved", resolution: "" }], gaps: [], limitations: [] })).toEqual([])
+  expect(checkEvidence(directory, "discrepancy", { entries: [entry, { ...entry, resolution: " " }], gaps: [], limitations: [] })).toEqual([
     "entries[1] has status benign with an empty resolution. Explain the evidence that settles it or the intentional distinction; leave resolution empty only for an unresolved or verify-source entry. Unresolved findings must never be silently corrected.",
   ])
 })
@@ -30,9 +32,166 @@ test("a quotation of the run's own record of a settled question points to the la
   const decided_by = { text: "Keep it in one document.", source_id: SOURCE, quote: SOURCE_TEXT }
   writeQuestions(directory, [{ id: "q-one", stage: "intake", question: "One document or two?", context: "", status: "answered", answer: "Keep one combined document", answer_kind: "instruction", decided_by }])
   const entry = { detail: "One document is wanted", evidence: [{ source_id: "request", quote: "Keep one combined document" }], limitations: [], material: false, status: "resolved", resolution: "The instruction settles it." }
-  const [issue] = checkEvidence(directory, "discrepancy", { entries: [entry], limitations: [] })
+  const [issue] = checkEvidence(directory, "discrepancy", { entries: [entry], gaps: [], limitations: [] })
   expect(issue).toContain(`Those words are the run's own record of question q-one, which an instruction settled; they are not the lawyer's words. The lawyer's words behind it are "${SOURCE_TEXT}" in "${SOURCE}".`)
-  expect(evidencePrompt(directory, "discrepancy")).toContain(`from their words "${SOURCE_TEXT}" in ${SOURCE}`)
+  // The spine reads intake's settled question; the discrepancy record, before intake, reads no answer.
+  expect(evidencePrompt(directory, "spine")).toContain(`from their words "${SOURCE_TEXT}" in ${SOURCE}`)
+  expect(evidencePrompt(directory, "discrepancy")).not.toContain("q-one")
+})
+
+// A gap is a point the request or instructions need that no source settles.
+// Its requirement quotes the words that need it, verified like evidence.
+const ENTRY: Discrepancy = { detail: "Delivery term appears in the source", evidence: [{ source_id: SOURCE, quote: SOURCE_TEXT }], limitations: [], material: false, status: "benign", resolution: "Delivery and payment are distinct events." }
+const GAP = { detail: "The supply terms state no governing law; the note needs one.", requirement: { source_id: "request", quote: "Draft a short supply note" },
+  evidence: [{ source_id: SOURCE, quote: "Payment is due on delivery." }], limitations: [], material: true, lawyer: true }
+
+test("the discrepancy reply lists gaps, each resting on verified words that need it", () => {
+  const directory = matter()
+  const reply = (...gaps: object[]) => ({ entries: [], gaps, limitations: [] })
+  expect(checkEvidence(directory, "discrepancy", reply(GAP))).toEqual([])
+  expect(checkEvidence(directory, "discrepancy", { entries: [], limitations: [] })).toEqual(["Return JSON with entries, gaps and limitations arrays."])
+  expect(checkEvidence(directory, "spine", { entries: [], limitations: [] })).toEqual([])
+  expect(checkEvidence(directory, "discrepancy", reply({ ...GAP, requirement: undefined }))).toEqual(["gaps[0] needs detail, requirement {source_id,quote}, evidence [{source_id,quote}] and limitations arrays."])
+  const [invented] = checkEvidence(directory, "discrepancy", reply({ ...GAP, requirement: { source_id: "request", quote: "Draft a long supply agreement" } }))
+  expect(invented).toStartWith('gaps[0].requirement quotes "Draft a long supply agreement" as from "request", but those words are not in the request')
+  const [unsupported] = checkEvidence(directory, "discrepancy", reply(GAP, { ...GAP, evidence: [{ source_id: SOURCE, quote: "Invented delivery period" }] }))
+  expect(unsupported).toStartWith('gaps[1].evidence[0] quotes "Invented delivery period" as from')
+  expect(checkEvidence(directory, "discrepancy", reply({ ...GAP, material: "yes", lawyer: undefined }))).toEqual([
+    "gaps[0] needs material: true or false.",
+    "gaps[0] needs lawyer: true when only the lawyer or client can supply it, else false.",
+  ])
+})
+
+test("a gap's requirement comes from the lawyer's words or a document the lawyer said to follow", () => {
+  const directory = matter()
+  const fromSource = { ...GAP, requirement: { source_id: SOURCE, quote: "within thirty days of the order date" } }
+  expect(checkEvidence(directory, "discrepancy", { entries: [], gaps: [fromSource], limitations: [] })).toEqual([
+    `gaps[0].requirement quotes "${SOURCE}", which gives no instructions for this work. Quote the words that need the point from one of ["request"]; a point only another source raises is an entry or evidence, not a gap.`,
+  ])
+  writeLeanText(directory, "instructions.json", JSON.stringify({ items: [{ id: "i1", text: "Deliver within thirty days.", source_id: SOURCE, quote: "within thirty days of the order date" }],
+    documents: [{ source_id: SOURCE, from: "the client", quote: "within thirty days of the order date", designated_by: "from the supply terms" }] }))
+  writeInstructionsFile(directory)
+  expect(checkEvidence(directory, "discrepancy", { entries: [], gaps: [fromSource], limitations: [] })).toEqual([])
+})
+
+test("the differences job asks the pre-split question; the gaps job reads the instruction list, not the differences, in tags", () => {
+  const directory = matter()
+  const before = stageInputSha(directory, "discrepancy")
+  writeLeanText(directory, "instructions.json", JSON.stringify({ items: [{ id: "i1", text: "Draft a short supply note.", source_id: "request", quote: "Draft a short supply note" }], documents: [] }))
+  writeInstructionsFile(directory)
+  expect(stageInputSha(directory, "discrepancy")).not.toBe(before)
+  const differences = evidencePrompt(directory, "discrepancy")
+  expect(differences).toContain("Compare identities, roles, dates, figures, versions and instructions.")
+  expect(differences).not.toMatch(/gap/i)
+  expect(differences).not.toContain("# The lawyer's instructions")
+  expect(differences).toContain('Return JSON {"entries":[')
+  // Each kind of context in its own tag, the question and output contract last.
+  expect([...differences.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["request", "sources", "instructions", "answers", "question", "output"])
+  expect(differences.trimEnd().endsWith("</output>")).toBe(true)
+  const gaps = gapsPrompt(directory)
+  expect([...gaps.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["request", "instructions", "sources", "question", "output_contract"])
+  expect(gaps).toMatch(/<instructions>\n[^<]*# The lawyer's instructions[\s\S]*Draft a short supply note\.[\s\S]*<\/instructions>/)
+  expect(gaps).not.toContain("<differences>")
+  expect(gaps).toMatch(/<request>\nDraft a short supply note from the supply terms\.\n<\/request>/)
+  expect(gaps).toContain(`- ${SOURCE}`)
+  expect(gaps).toContain("<question>\nWhich points must the instructed work settle that the sources leave silent, or that only one source speaks to")
+  expect(gaps).not.toContain("Compare identities")
+  expect(evidencePrompt(directory, "spine")).toContain("record the difference as a limitation")
+  expect(acceptEvidenceReply(directory, "discrepancy", JSON.stringify({ entries: [], gaps: [GAP], limitations: [] })).issues).toEqual([])
+  const intake = researchPrompt(directory, "intake", researchBasis(directory))
+  expect(intake).toContain(GAP.detail)
+  expect(intake).toContain("ask a material gap marked lawyer unless an answer or instruction now settles it; the others stay disclosed placeholders or open items.")
+  const spine = evidencePrompt(directory, "spine")
+  expect(spine).toContain(GAP.detail)
+  expect(spine).toContain("Record each discrepancy gap that no answer or approved research settles as an open-item entry.")
+})
+
+test("each discrepancy job is checked by its own part; code tells a gap restating a difference by its quotes", () => {
+  const directory = matter()
+  expect(checkDifferences(directory, { entries: [ENTRY], limitations: [] })).toEqual([])
+  expect(checkDifferences(directory, { entries: [{ ...ENTRY, status: "maybe" }], limitations: [] })).toEqual(["entries[0] needs status resolved, unresolved, verify-source or benign."])
+  expect(checkGaps(directory, { gaps: [GAP], limitations: [] })).toEqual([])
+  expect(checkGaps(directory, { entries: [], limitations: [] })).toEqual(["Return JSON with gaps and limitations arrays."])
+  // Restating a difference is no longer the gaps job's check: code leaves the gap out.
+  const restated = { ...GAP, evidence: [{ source_id: SOURCE, quote: `  ${SOURCE_TEXT.replaceAll(" ", "\n")} ` }] }
+  expect(checkGaps(directory, { gaps: [GAP, restated], limitations: [] })).toEqual([])
+  expect(restatesDifference(restated, [ENTRY])).toBe(true)
+  expect(restatesDifference(GAP, [ENTRY])).toBe(false)
+  expect(restatesDifference({ evidence: [{ source_id: "request", quote: SOURCE_TEXT }] }, [ENTRY])).toBe(false)
+  // The assembled record is checked as before, with any supplied gaps.
+  expect(checkEvidence(directory, "discrepancy", { entries: [ENTRY], gaps: [GAP], limitations: [] })).toEqual([])
+  const supplied = { ...GAP, evidence: [{ source_id: SOURCE, quote: "within thirty days of the order date" }] }
+  expect(checkEvidence(directory, "discrepancy", { entries: [ENTRY], gaps: [], supplied: [supplied], limitations: [] })).toEqual([])
+  expect(checkEvidence(directory, "discrepancy", { entries: [], gaps: [], supplied: [{ ...supplied, evidence: [] }], limitations: [] })).toEqual(["supplied[0] needs evidence quoting the words that supply it."])
+  expect(checkEvidence(directory, "discrepancy", { entries: [], gaps: [], supplied: [{ ...supplied, lawyer: undefined }], limitations: [] })).toEqual(["supplied[0] needs lawyer: true when only the lawyer or client can supply it, else false."])
+  expect(checkEvidence(directory, "discrepancy", { entries: [], gaps: [], supplied: {}, limitations: [] })).toEqual(["supplied, when given, must be an array of gaps a source supplies."])
+})
+
+test("a verify job asks one gap against the source index, the lawyer's later instructions and answers; a supplied answer rests on found words", () => {
+  const directory = matter()
+  const prompt = gapVerifyPrompt(directory, { ...GAP, detail: "No <b>governing</b> law." })
+  // Without updates or answers, their blocks are left out.
+  expect([...prompt.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["gap", "sources", "question", "output_contract"])
+  expect(prompt).toContain('<gap>\nA point another job found no matter source settles:\nNo \\u003cb>governing\\u003c/b> law.\nThe words that need it, in "request": "Draft a short supply note"\n</gap>')
+  expect(prompt).toContain(`- ${SOURCE}`)
+  expect(prompt).toContain(`Use source_id "request" for exact words from the lawyer's later instructions or answers, and a matter source's exact name for its words.\n</sources>`)
+  expect(prompt).toContain("<question>\nDoes a matter source, one of the lawyer's answers or one of the lawyer's later instructions supply this point")
+  expect(prompt).toContain('"source_id":"request or exact matter source name"')
+  // Only the gap's detail and requirement: not the gaps job's evidence, nor the request.
+  expect(prompt).not.toContain(GAP.evidence[0]!.quote)
+  expect(prompt).not.toContain("<request>")
+  const supplies = { supplied: true, evidence: [{ source_id: SOURCE, quote: "within thirty days of the order date" }], limitations: [] }
+  expect(checkGapVerify(directory, supplies, GAP)).toEqual([])
+  expect(checkGapVerify(directory, { supplied: false, evidence: [], limitations: [] }, GAP)).toEqual([])
+  expect(checkGapVerify(directory, { ...supplies, supplied: false }, GAP)).toEqual([])
+  expect(checkGapVerify(directory, { ...supplies, evidence: [] }, GAP)).toEqual(["supplied is true but evidence is empty. Quote the words that supply the point, or set supplied false."])
+  const [invented] = checkGapVerify(directory, { ...supplies, evidence: [{ source_id: SOURCE, quote: "Invented delivery period" }] }, GAP)
+  expect(invented).toStartWith('evidence[0] quotes "Invented delivery period" as from "supply-terms.docx", but those words are not in that document.')
+  const [unknown] = checkGapVerify(directory, { ...supplies, evidence: [{ source_id: "notes.md", quote: "Thirty days." }] }, GAP)
+  expect(unknown).toStartWith(`evidence[0]: Unknown evidence source_id "notes.md". Allowed source_id values: ${JSON.stringify(["request", SOURCE])}.`)
+  expect(unknown).toContain('Use source_id "request" for exact words from the lawyer\'s later instructions or answers')
+  // The words that need the point, or a part of them, never supply it; they may speak to it.
+  const needing = "supplied is true but evidence quotes only the words that need the point, which do not supply it. Quote the words that supply it, or set supplied false."
+  expect(checkGapVerify(directory, { ...supplies, evidence: [GAP.requirement] }, GAP)).toEqual([needing])
+  expect(checkGapVerify(directory, { ...supplies, evidence: [{ source_id: "request", quote: "short supply note" }] }, GAP)).toEqual([needing])
+  expect(checkGapVerify(directory, { ...supplies, evidence: [GAP.requirement, ...supplies.evidence] }, GAP)).toEqual([])
+  expect(checkGapVerify(directory, { ...supplies, supplied: false, evidence: [GAP.requirement] }, GAP)).toEqual([])
+  expect(checkGapVerify(directory, { supplied: "yes", evidence: [], limitations: [] }, GAP)).toEqual(['Return JSON {"supplied":true or false,"evidence":[{"source_id","quote"}],"limitations":[]}.'])
+
+  // The lawyer's later instructions, in the gaps job's block, their words
+  // quoted as "request". The discrepancy record is made before any question
+  // is asked and reads no answer: an intake answer is not shown to it, and a
+  // gap that answer supplies reaches intake beside the answer. An adopted
+  // recommendation is not the lawyer's words.
+  writeLeanText(directory, "updated-notes.md", "Keep the note to one page.")
+  writeQuestions(directory, [
+    { id: "q-law", stage: "intake", question: "Which law governs the note?", context: "", status: "answered", answer: "Singapore law governs the note." },
+    { id: "q-venue", stage: "intake", question: "Which courts?", context: "", status: "answered", answer: "The Singapore courts.", answer_kind: "adopted" },
+  ])
+  const answered = gapVerifyPrompt(directory, GAP)
+  expect([...answered.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["gap", "user_updates", "sources", "question", "output_contract"])
+  expect(answered).toContain("<user_updates>\nLater instructions from the lawyer, in arrival order.")
+  expect(answered).toContain("Keep the note to one page.\n</user_updates>")
+  expect(answered).not.toContain("Singapore law governs the note.")
+  // Not the request, nor the rest of the matter.
+  expect(answered).not.toContain("<request>")
+  expect(answered).not.toContain("<instructions>")
+  expect(answered).not.toContain("from the supply terms")
+  expect(checkGapVerify(directory, { supplied: true, evidence: [{ source_id: "request", quote: "Singapore law governs the note." }], limitations: [] }, GAP)).toEqual([])
+  const [adopted] = checkGapVerify(directory, { supplied: true, evidence: [{ source_id: "request", quote: "The Singapore courts." }], limitations: [] }, GAP)
+  expect(adopted).toContain("Those words are the recommendation adopted for question q-venue, which the lawyer delegated; they are not the lawyer's words.")
+})
+
+test("a difference verify job asks one entry against its own passages; its reply is a differs boolean", () => {
+  const prompt = differenceVerifyPrompt({ ...ENTRY, detail: "The <b>term</b> differs.", evidence: [{ source_id: SOURCE, quote: "a <tag> quote" }] })
+  expect([...prompt.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["entry", "question", "output_contract"])
+  expect(prompt).toContain('The \\u003cb>term\\u003c/b> differs.')
+  expect(prompt).toContain(`- in "${SOURCE}": "a \\u003ctag> quote"`)
+  expect(prompt).not.toContain(ENTRY.resolution)
+  expect(prompt).toContain('<output_contract>\nReturn JSON {"differs":true} when they do, or {"differs":false} when they state it the same way.\n</output_contract>')
+  expect(checkDifferenceVerify({ differs: true })).toEqual([])
+  expect(checkDifferenceVerify({ differs: false })).toEqual([])
+  for (const value of [{ differs: "no" }, {}, [], null]) expect(checkDifferenceVerify(value)).toEqual(['Return JSON {"differs":true} or {"differs":false}.'])
 })
 
 test("later answers and same-name source revisions invalidate dependent work", () => {
@@ -43,10 +202,14 @@ test("later answers and same-name source revisions invalidate dependent work", (
   db.close()
   expect(stageInputSha(directory, "discrepancy")).not.toBe(before)
   const review = stageInputSha(directory, "d1.review")
+  const discrepancy = stageInputSha(directory, "discrepancy")
   writeQuestions(directory, [{ id: "q-choice", stage: "intake", question: "Which delivery term applies?", context: "Versions conflict", status: "open" }])
   answerQuestion(directory, "q-choice", { text: "Use the later expressly agreed term." })
   expect(stageInputSha(directory, "d1.review")).not.toBe(review)
-  expect(evidencePrompt(directory, "discrepancy")).toContain("Use the later expressly agreed term.")
+  // Intake's answer reaches intake and the steps after it, not the discrepancy record before it.
+  expect(stageInputSha(directory, "discrepancy")).toBe(discrepancy)
+  expect(evidencePrompt(directory, "discrepancy")).not.toContain("Use the later expressly agreed term.")
+  expect(evidencePrompt(directory, "spine")).toContain("Use the later expressly agreed term.")
   const spine = stageInputSha(directory, "spine")
   writeLeanText(directory, "updated-notes.md", "Use the earlier term instead.")
   expect(stageInputSha(directory, "spine")).not.toBe(spine)
@@ -59,6 +222,105 @@ test("spine is source-linked and followed by four independent reviews", () => {
   expect(evidencePrompt(directory, "spine")).toContain("future stages must retrieve underlying text")
 })
 
+
+// Each figure a spine entry states is stated by one of its own quotes,
+// compared as quotations are and without currency signs or separators.
+const PRICED = `${SOURCE_TEXT} The price is $4,800,000.`
+const priced = (detail: string, quotes: string[], extra: object = {}) =>
+  ({ entries: [{ kind: "fact", detail, evidence: quotes.map(quote => ({ source_id: SOURCE, quote })), limitations: [], ...extra }], limitations: [] })
+const UNQUOTED = 'entries[0] states "4,800,000", which none of its quotes states; quote the source words that state it.'
+
+test("a spine entry's figures are stated by its own quotes, however the currency sign and separators are written", () => {
+  const directory = matter(PRICED)
+  expect(checkEvidence(directory, "spine", priced("The price is 4,800,000.", ["Payment is due on delivery.", "The price is $4,800,000."]))).toEqual([])
+  expect(checkEvidence(directory, "spine", priced("The purchase price is $4,800,000.", ["4,800,000"]))).toEqual([])
+  expect(checkEvidence(directory, "spine", priced("The purchase price is 4800000.", ["The price is $4,800,000."]))).toEqual([])
+  expect(checkEvidence(directory, "spine", priced("State payment timing.", ["Payment is due on delivery."]))).toEqual([])
+  expect(checkEvidence(directory, "spine", priced("The purchase price is $4,800,000.", ["Payment is due on delivery.", "within thirty days of the order date"]))).toEqual([UNQUOTED])
+  // A part of a stated figure is not that figure.
+  expect(checkEvidence(directory, "spine", priced("The price is 4,800.", ["The price is $4,800,000."]))).toEqual(['entries[0] states "4,800", which none of its quotes states; quote the source words that state it.'])
+  // Only the spine's entries: a discrepancy entry is not held to it.
+  expect(checkEvidence(directory, "discrepancy", { ...priced("The price is $4,800,000.", ["Payment is due on delivery."], { material: false, status: "benign", resolution: "Distinct terms." }), gaps: [] })).toEqual([])
+})
+
+test("a figure carries a currency sign or %, a decimal point or thousands separators", () => {
+  for (const [text, figure] of [["$1,500,000", "1500000"], ["12.5", "12.5"], ["1.00%", "1.00"], ["15 %", "15"], ["€ 15", "15"], ["15€", "15"]])
+    expect({ text, figures: figures(text) }).toEqual({ text, figures: [figure] })
+  // A bare number (a list or part number, a count, a year, or an identifier
+  // such as a postal code or phone number, however many digits), a date or a
+  // dotted reference is not.
+  for (const text of ["1", "15", "2025", "45000", "02139", "5551234567", "§ 3", "(2)", "15/01/2025", "2025-01-15", "15.01.2025", "3.2.1", "USD 15"])
+    expect({ text, figures: figures(text) }).toEqual({ text, figures: [] })
+  // Every number can state a figure.
+  expect(numbers("§ 3 of the 2025 terms: $1,500")).toEqual(["3", "2025", "1500"])
+})
+
+test("an id's digits are no number, and a dotted number after a reference label is a reference, not a figure", () => {
+  // Digits attached to a letter, "-" or "_" are part of an id.
+  for (const text of ["q-3", "src_12", "a1", "src_12345", "item A12345", "v1.2"]) {
+    expect({ text, figures: figures(text) }).toEqual({ text, figures: [] })
+    expect({ text, numbers: numbers(text) }).toEqual({ text, numbers: [] })
+  }
+  for (const text of ["Section 7.12(c)", "sections 7.12", "clause 4.2", "Art. 3.1", "para. 12.5", "§ 4.2", "§§4.2", "Schedule 2.1"])
+    expect({ text, figures: figures(text) }).toEqual({ text, figures: [] })
+  expect(numbers("Section 7.12(c)")).toEqual(["7.12"])
+  // Money, percentages and decimals stay figures, in a text that cites a part
+  // too; a number carrying a sign or % is never an id, whatever it is attached to.
+  for (const [text, stated] of [["$1,500,000", ["1500000"]], ["12.5%", ["12.5"]], ["5-10%", ["10"]], ["up-to-10%", ["10"]], ["a rate of 2.5", ["2.5"]], ["the section's 12.5% fee", ["12.5"]],
+    ["Section 3 sets a fee of $1,500.50", ["1500.50"]], ["Clause 4: 45000 units", []],
+    // An amount written against a currency code is money, not an id.
+    ["a cap of USD1,500,000", ["1500000"]], ["GBP250.50", ["250.50"]], ["ref ABC12345", []]] as const)
+    expect({ text, figures: figures(text) }).toEqual({ text, figures: [...stated] })
+})
+
+test("a spine entry's bare numbers, years and dates are not asked of its quotes; a figure stated in any form is quoted", () => {
+  const directory = matter(PRICED)
+  expect(checkEvidence(directory, "spine", priced("Under clause 3 of the 2025 terms, delivery is due 15 days after 1 March 2026 (item 2).", ["Payment is due on delivery."]))).toEqual([])
+  expect(checkEvidence(directory, "spine", priced("A 4.5% charge and 12000 units are stated.", ["Payment is due on delivery."]))).toEqual([
+    'entries[0] states "4.5", which none of its quotes states; quote the source words that state it.',
+  ])
+  // A small number with a currency sign is a figure; a quote stating it as a bare number states it.
+  const fee = matter(`${PRICED} A fee of 30 is due on signing.`)
+  expect(checkEvidence(fee, "spine", priced("The fee is $30.", ["The price is $4,800,000."]))).toEqual(['entries[0] states "30", which none of its quotes states; quote the source words that state it.'])
+  expect(checkEvidence(fee, "spine", priced("The fee is $30.", ["A fee of 30 is due on signing."]))).toEqual([])
+})
+
+test("on the final attempt the spine stands with its entry's unquoted figures recorded, and a saved spine stays valid", () => {
+  const directory = matter(PRICED)
+  const reply = JSON.stringify(priced("The purchase price is $4,800,000.", ["Payment is due on delivery."]))
+  // A failing reply with the spine's shape still gives its parsed value as shaped.
+  expect(checkEvidenceReply(directory, "spine", reply)).toEqual({ issues: [UNQUOTED], recorded: [], shaped: JSON.parse(reply) })
+  const final = checkEvidenceReply(directory, "spine", reply, { final: true })
+  expect(final).toEqual({ issues: [], recorded: [{ index: 0, kind: "fact", figures: ["4,800,000"] }], shaped: JSON.parse(reply), value: JSON.parse(reply) })
+  // Any other issue still fails the final attempt.
+  expect(checkEvidenceReply(directory, "spine", JSON.stringify(priced("The price is $4,800,000.", ["Invented price"])), { final: true }).issues[0]).toContain("but those words are not in that document")
+  // A reply without the spine's shape, or with an unknown kind, is not shaped.
+  expect(checkEvidenceReply(directory, "spine", JSON.stringify({ entries: [{ kind: "fact" }], limitations: [] })).shaped).toBeUndefined()
+  expect(checkEvidenceReply(directory, "spine", JSON.stringify(priced("The price is $4,800,000.", ["The price is $4,800,000."], { kind: "note" }))).shaped).toBeUndefined()
+  writeLeanText(directory, "spine.json", reply)
+  // A spine saved without its atoms re-runs.
+  expect(stageOutputValid(directory, "spine")).toBe(false)
+  writeLeanText(directory, "spine-atoms.json", JSON.stringify({ entries: JSON.parse(reply).entries }))
+  expect(stageOutputValid(directory, "spine")).toBe(true)
+})
+
+test("a spine that keeps an unquoted figure is retried with the figure named, then accepted on the final attempt with the entry disclosed", async () => {
+  const directory = matter(PRICED)
+  const model = scriptedModel({ ...happyPath, [AGENT.spine]: () => JSON.stringify(priced("The purchase price is $4,800,000.", ["Payment is due on delivery."])) })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  const spine = model.prompts.filter(prompt => prompt.agent === AGENT.spine)
+  expect(spine).toHaveLength(LEAN_MAX_RETRIES + 1)
+  for (const retry of spine.slice(1)) expect(retry.text).toContain(`- ${UNQUOTED}`)
+  const checks = readLeanEvents(directory).filter(event => event.stage === "spine" && event.event === "checker" && event.step === undefined)
+  expect(checks.map(event => [event.attempt, event.issues])).toEqual([0, 1, 2, 3].map(attempt => [attempt, [UNQUOTED]]))
+  expect((readLeanJson(directory, "spine.json") as { entries: { detail: string }[] }).entries.map(entry => entry.detail)).toEqual(["The purchase price is $4,800,000."])
+  // One open item for the entry, which the notes name and the gate discloses.
+  const items = readOpenItems(directory).filter(item => item.stage === "spine")
+  expect(items.map(item => [item.kind, item.detail, item.ref])).toEqual([["omission",
+    'Points for the draft: this fact states "4,800,000", which none of its quoted source words states; confirm each against the sources.',
+    { statement: "The purchase price is $4,800,000.", repair_target: "memo" }]])
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass" })
+})
 
 test("user instruction evidence uses the canonical request identity and rejects handoff aliases", () => {
   const directory = matter()
@@ -76,7 +338,7 @@ test("user instruction evidence uses the canonical request identity and rejects 
     expect(issues[0]).toContain('source_id "request"')
     expect(issues[0]).toContain("derived records")
   }
-  expect(checkEvidence(directory, "spine", reply(SOURCE, "Unsupported words"))[0]).toContain("not found in that canonical source")
+  expect(checkEvidence(directory, "spine", reply(SOURCE, "Unsupported words"))[0]).toContain(`entries[0].evidence[0] quotes "Unsupported words" as from "${SOURCE}", but those words are not in that document.`)
   expect(evidencePrompt(directory, "spine")).toContain('source_id "request"')
 })
 
@@ -90,9 +352,7 @@ test("a rejected quotation identifies the exact evidence to correct without acce
   const rejected = `Answer: ${answer}`
   const issues = checkEvidence(directory, "spine", reply(rejected))
   expect(issues).toHaveLength(1)
-  expect(issues[0]).toContain(JSON.stringify(rejected))
-  expect(issues[0]).toContain('in "request"')
-  expect(issues[0]).toContain("not found in that canonical source")
+  expect(issues[0]).toContain(`entries[0].evidence[0] quotes ${JSON.stringify(rejected)} as from "request", but those words are not in the request`)
 })
 
 test("a child source's provenance is a separate labelled line; plain matters' prompts are unchanged", () => {
@@ -106,4 +366,55 @@ test("a child source's provenance is a separate labelled line; plain matters' pr
   expect(evidence).toContain(`Evidence source_id values: ${JSON.stringify(["request", SOURCE])}`)
   expect(evidence).toContain(`Source provenance (where each attachment or archive entry came from; display only, not part of the source names or citations): ${JSON.stringify({ [SOURCE]: "attachment of Thread.eml" })}`)
   expect(researchPrompt(directory, "intake", researchBasis(directory))).toContain(`- ${SOURCE} (provenance: attachment of Thread.eml)`)
+})
+
+test("the spine cites the recommendation adopted for a delegated question under its adopted name, verified against its words", () => {
+  const directory = matter()
+  writeQuestions(directory, [
+    { id: "q-venue", stage: "intake", question: "Which courts?", context: "", status: "answered", answer: "The Singapore courts.", answer_kind: "adopted", option_id: "o1" },
+    { id: "q-law", stage: "intake", question: "Which law?", context: "", status: "answered", answer: "Singapore law governs.", answer_kind: "option", option_id: "o1" },
+  ])
+  const reply = (source_id: string, quote: string) => ({ entries: [{ kind: "decision", detail: "Singapore courts and law", evidence: [{ source_id, quote }], limitations: [] }], limitations: [] })
+  const prompt = evidencePrompt(directory, "spine")
+  expect(prompt).toContain(`Evidence source_id values: ${JSON.stringify(["request", SOURCE, "adopted:q-venue"])}`)
+  expect(prompt).toContain('An "adopted:" source_id, as listed, holds the recommendation adopted for a question the lawyer delegated')
+  expect(checkEvidence(directory, "spine", reply("adopted:q-venue", "The Singapore courts."))).toEqual([])
+  // The discrepancy record, made before intake asks, reads no adopted recommendation.
+  expect(checkEvidence(directory, "discrepancy", { ...reply("adopted:q-venue", "The Singapore courts."), entries: [{ ...reply("adopted:q-venue", "The Singapore courts.").entries[0], material: false, status: "benign", resolution: "Noted." }], gaps: [] })[0]).toContain('Unknown evidence source_id "adopted:q-venue"')
+  expect(checkEvidence(directory, "spine", reply("request", "Singapore law governs."))).toEqual([])
+  expect(checkEvidence(directory, "spine", reply("adopted:q-venue", "The English courts."))[0]).toContain('as from "adopted:q-venue", but those words are not in the recommendation adopted for that question.')
+  // The adopted words under "request" are pointed to their own name; a question id to the name its words are quoted under.
+  expect(checkEvidence(directory, "spine", reply("request", "The Singapore courts."))[0]).toContain('Quote them under the source name "adopted:q-venue".')
+  expect(checkEvidence(directory, "spine", reply("q-venue", "The Singapore courts."))[0]).toEndWith('"q-venue" names question q-venue, which the lawyer delegated: cite the recommendation adopted for it as "adopted:q-venue".')
+  expect(checkEvidence(directory, "spine", reply("adopted:q-law", "Singapore law governs."))[0]).toEndWith('"adopted:q-law" names question q-law; its answer is the lawyer\'s own: quote the lawyer\'s own answer under "request".')
+})
+
+test("a confirmation question's answer is a label the spine neither reads nor cites", () => {
+  const directory = matter()
+  const quote = "within thirty days of the order date"
+  expect(acceptInstructionsReply(directory, JSON.stringify({ items: [{ text: "State delivery within thirty days.", source_id: SOURCE, quote }], documents: [{ source_id: SOURCE, from: "the client", quote }] })).issues).toEqual([])
+  const [confirmation] = confirmationQuestions(directory)
+  writeQuestions(directory, [{ ...confirmation!, status: "answered", answer: "Follow it as my instructions", answer_kind: "adopted", option_id: "o1" }])
+  writeInstructionsFile(directory)
+  const prompt = evidencePrompt(directory, "spine")
+  expect(prompt).toContain(`Evidence source_id values: ${JSON.stringify(["request", SOURCE])}`)
+  expect(prompt).not.toContain("Follow it as my instructions")
+  expect(prompt).toContain(`- [i1] State delivery within thirty days. (${SOURCE}: "${quote}")`)
+  const reply = { entries: [{ kind: "decision", detail: "The terms are followed", evidence: [{ source_id: confirmation!.id, quote: "Follow it as my instructions" }], limitations: [] }], limitations: [] }
+  expect(checkEvidence(directory, "spine", reply)[0]).toEndWith(`"${confirmation!.id}" names question ${confirmation!.id}, which asks whether to follow "${SOURCE}": its answer is not a source. Quote the words of "${SOURCE}" itself under its name.`)
+})
+
+test("each missed quotation is named by its entry and gets the reason it missed", () => {
+  const filler = "Each party shall bear its own costs of preparing this agreement. ".repeat(6)
+  const directory = matter(`The supplier shall deliver the goods within thirty days of the order date. ${filler}Payment is due on delivery of the goods.`)
+  const ok = { source_id: SOURCE, quote: "Payment is due on delivery of the goods." }
+  const entry = (evidence: unknown[]) => ({ kind: "decision", detail: "Follow the supplied terms", evidence, limitations: [] })
+  const check = (...evidence: unknown[]) => checkEvidence(directory, "spine", { entries: [entry([ok]), entry([ok, ...evidence])], limitations: [] })
+  // An elision across a long omitted stretch is two passages, not one quotation.
+  const [apart] = check({ source_id: SOURCE, quote: "The supplier shall deliver the goods ... Payment is due on delivery" })
+  expect(apart).toStartWith(`entries[1].evidence[1] quotes "The supplier shall deliver the goods ... Payment is due on delivery" as from "${SOURCE}"`)
+  expect(apart).toContain("in separate passages. Quote each passage as its own quotation, without an ellipsis.")
+  // A change of case alone shows the source's own words to copy.
+  const [cased] = check({ source_id: SOURCE, quote: "the supplier shall deliver the goods within thirty days" })
+  expect(cased).toContain('The document reads: "The supplier shall deliver the goods within thirty days". Copy those exact characters, or write [x] for a change of case.')
 })

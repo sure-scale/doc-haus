@@ -10,6 +10,7 @@ import { readLeanEvents } from "../../../dochaus/workflows/lean/events"
 import { openItem } from "../../../dochaus/workflows/lean/quotes"
 import { drainLeanRequests, enqueueLeanRequest, pendingLeanRequests } from "../../../dochaus/workflows/lean/requests"
 import { runLean } from "../../../dochaus/workflows/lean/runner"
+import * as nativeSessionPort from "../../../dochaus/workflows/lean/session-port"
 import { LEAN_STAGE_AGENTS, type LeanDeps, type StageSessionPort } from "../../../dochaus/workflows/lean/stages"
 import {
   initLeanState,
@@ -21,6 +22,7 @@ import {
   writeLeanText,
   writeOpenItems,
   writeQuestions,
+  type LeanState,
   type Question,
 } from "../../../dochaus/workflows/lean/state"
 import { FIXTURE_SOURCE_TEXT, NO_FINDINGS, happyPath, leanFixtureMatter, scriptedModel, noChanges } from "../../../dochaus/workflows/lean/test-support"
@@ -32,7 +34,7 @@ import {
   startLeanDraftingRun,
 } from "./lean-drafting"
 import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
-import { memoNotesFile, recordLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
+import { recordLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
 import { writeLeanPlan, type PlannedDocument } from "../../../dochaus/workflows/lean/plan"
 import { writeLeanBytes } from "../../../dochaus/workflows/lean/state"
 import { scriptedLeanModel } from "../../../dochaus/workflows/lean/test-support"
@@ -63,6 +65,7 @@ function heldModel() {
   const created: Parameters<StageSessionPort["createSession"]>[0][] = []
   const prompts: string[] = []
   const gate = Promise.withResolvers<void>()
+  const waiting = Promise.withResolvers<void>()
   const sessions: StageSessionPort = {
     createSession: async (input) => {
       created.push(input)
@@ -70,14 +73,52 @@ function heldModel() {
     },
     prompt: async (input) => {
       prompts.push(input.agent)
+      waiting.resolve()
       await gate.promise
       throw new Error("scripted engine outage")
     },
   }
-  return { deps: { sessions } satisfies LeanDeps, created, prompts, release: () => gate.resolve() }
+  return { deps: { sessions } satisfies LeanDeps, created, prompts, waiting: waiting.promise, release: () => gate.resolve() }
 }
 
 const MODEL = { providerID: "test", modelID: "scripted" }
+
+test("connection waits are ephemeral and belong only to this active run's sessions", async () => {
+  const directory = matter()
+  const model = heldModel()
+  const now = Date.now()
+  let rows: nativeSessionPort.NativeSessionWait[] = []
+  const waiting = spyOn(nativeSessionPort, "nativeSessionWaits").mockImplementation(() => rows)
+  try {
+    await startLeanDraftingRun(directory, { request: "Draft the container handover.", agent: "draft", model: MODEL }, model.deps)
+    await model.waiting
+    const state = readLeanState(directory)!
+    const active = Object.values(state.stages).find(row => row?.status === "running")!
+    const sessionID = active.session_id!
+    const before = readLeanText(directory, "state.json")
+    const observation = { sessionID, phase: "completion-message-read", lastSuccessfulContact: now - 10_000, nextRetry: now + 5_000 }
+    rows = [observation]
+    expect(leanDraftingStatus(directory)).toMatchObject({ status: "running", in_flight: true,
+      connection_wait: { last_successful_contact: observation.lastSuccessfulContact, next_retry: observation.nextRetry } })
+    expect(waiting).toHaveBeenCalledWith(directory)
+    expect(readLeanText(directory, "state.json")).toBe(before)
+    rows = [{ ...observation, sessionID: "ses_unrelated" }]
+    expect(leanDraftingStatus(directory)?.connection_wait).toBeNull()
+    rows = [{ ...observation, sessionID: "ses_new", phase: "session-create", parentID: "ses_other_owner" }]
+    expect(leanDraftingStatus(directory)?.connection_wait).toBeNull()
+    rows = [{ ...observation, sessionID: "ses_new", phase: "session-create-readback", parentID: state.owner_session_id }]
+    expect(leanDraftingStatus(directory)?.connection_wait).toEqual({ last_successful_contact: observation.lastSuccessfulContact, next_retry: observation.nextRetry })
+    rows = []
+    expect(leanDraftingStatus(directory)?.connection_wait).toBeNull()
+    rows = [observation]
+    model.release()
+    await leanDraftingIdle(directory)
+    expect(leanDraftingStatus(directory)).toMatchObject({ status: "failed", in_flight: false, connection_wait: null })
+  } finally {
+    waiting.mockRestore()
+    model.release()
+  }
+})
 
 describe("drafting start profile", () => {
   test("defaults to lean and rejects every other profile", () => {
@@ -101,6 +142,12 @@ const OPTIONS = [{ id: "o1", text: "The buyer." }, { id: "o2", text: "The seller
 const RECOMMENDATION = { option: "o2", rationale: "The supplied terms put the cost on the seller.", basis: [{ source_id: "request", quote: "Draft the agreement." }] }
 const advised = (id: string, kind: NonNullable<Question["kind"]>): Question =>
   ({ id, stage: "intake", question: `Question ${id}?`, context: "", status: "open", kind, advice: { options: OPTIONS, recommendation: RECOMMENDATION } })
+/** The walk at apply: every step before it done and apply running. */
+const atApply = (stages: LeanState["stages"]) => {
+  const steps = Object.keys(stages), apply = steps.indexOf("d1.apply")
+  return Object.fromEntries(Object.entries(stages).map(([step, row], index) =>
+    [step, index < apply ? { ...row!, status: "done" } : index === apply ? { ...row!, status: "running" } : row])) as typeof stages
+}
 const queuedRequests = (directory: string) => pendingLeanRequests(directory).map(name => {
   const { id: _id, received_at: _received, ...request } = JSON.parse(readFileSync(path.join(leanDir(directory), "requests", name), "utf8"))
   return request
@@ -447,7 +494,7 @@ test("chat updates are queued for the matching run and late updates retain an ex
     expect(response.status).toBe(202)
     expect(await response.json()).toMatchObject({ mode: "queued", status: { updates: [{ text: "Use concise headings.", status: "queued", progress: "received" }] } })
     const state = readLeanState(directory)!
-    writeLeanState(directory, { ...state, stages: { ...state.stages, "d1.apply": { ...state.stages["d1.apply"]!, status: "running" } } })
+    writeLeanState(directory, { ...state, stages: atApply(state.stages) })
     const late = await send("Change the scope.")
     expect(late.status).toBe(409)
     expect(await late.json()).toMatchObject({ code: "lean_update_too_late" })
@@ -484,9 +531,10 @@ test("the HTTP answer flow holds a run until every intake question is answered",
   expect(waiting.status).toBe("blocked")
   expect(waiting.questions).toHaveLength(2)
   expect(waiting.stages["d1.review"]?.status).toBe("pending")
-  // Instructions, discrepancy, intake and one advice per question; waiting asks the model nothing more.
+  // Instructions, the discrepancy stage's differences and gaps jobs, intake and
+  // one advice per question; waiting asks the model nothing more.
   const asked = model.prompts.length
-  expect(asked).toBe(5)
+  expect(asked).toBe(6)
   const post = (id: string, answer: string) => routes.request(`/m1/lean/questions/${id}`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ answer }),
   })
@@ -572,6 +620,8 @@ test("amendment status rows preserve stage order, worker-only sessions and the u
   const initial = readLeanState(directory)!
   expect(Object.keys(initial.stages).filter(step => order.includes(step as typeof order[number]))).toEqual([...order])
   try {
+    // Wait until the sole writer is held before installing status-only fixtures.
+    await model.waiting
     for (const step of order.slice(0, -1)) {
       const state = readLeanState(directory)!
       writeLeanState(directory, { ...state, stages: { ...state.stages, [step]: { ...state.stages[step]!, status: "running", session_id: null, session_ids: ["ses_worker_a", "ses_worker_b"], calls: 2, outputs: ["d1/change-preparation.json"] } } })
@@ -583,7 +633,7 @@ test("amendment status rows preserve stage order, worker-only sessions and the u
     }
     writeQuestions(directory, [{ id: "amendment-choice", stage: "change-plan", document: "d1", question: "Which allocation should the amendment use?", context: "The source leaves this decision open.", status: "open" }])
     const state = readLeanState(directory)!
-    writeLeanState(directory, { ...state, status: "blocked", stages: { ...state.stages, "d1.change-plan": { ...state.stages["d1.change-plan"]!, status: "blocked" }, "d1.apply": { ...state.stages["d1.apply"]!, status: "running" } } })
+    writeLeanState(directory, { ...state, status: "blocked", stages: atApply(state.stages) })
     const late = await routes.request("/matter/lean/updates", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "Change the allocation.", ownerSessionID: start.ownerSessionID }),
     })
@@ -1049,12 +1099,19 @@ test("checker events time the model wait and the check as numbers, never content
   // A review prefetched beside its sibling counts only the wait left when its own step began.
   const prefetched = new Set(["review-independent", "review-wording", "review-client-disadvantage"])
   const checkerKeys = new Set(["at", "stage", "document", "event", "step", "attempt", "issues", "wait_ms", "check_ms"])
+  let explanationChecks = 0
   for (const event of checkers) {
-    expect(Object.keys(event).filter(key => !checkerKeys.has(key))).toEqual([])
+    const explanation = event.stage === "finalize" && event.step?.endsWith(":explanation-check") === true
+    expect(Object.keys(event).filter(key => !checkerKeys.has(key) && !(explanation && key === "outcome"))).toEqual([])
+    if (explanation) {
+      explanationChecks++
+      expect(event.outcome === "pass" || event.outcome === "rewrite").toBe(true)
+    }
     expect(event.issues).toEqual([])
     expect(event.check_ms).toBeGreaterThanOrEqual(0)
     expect(event.wait_ms).toBeGreaterThanOrEqual(prefetched.has(event.stage) ? 0 : SLEEP_MS)
   }
+  expect(explanationChecks).toBeGreaterThan(0)
   const boundaries = events.filter(event => event.event === "started" || event.event === "skipped")
   expect(boundaries.length).toBeGreaterThan(0)
   for (const event of boundaries) expect(event.check_ms).toBeGreaterThanOrEqual(0)
@@ -1086,7 +1143,7 @@ test("status names the requested memo and a combined document's delivered parts 
   directories.push(directory)
   // Before the outline: no memo, no combined file.
   expect(leanDraftingStatus(directory)).toMatchObject({ memo: null, combined_output: null })
-  writeLeanPlan(directory, [SUPPLY_PACK], undefined, undefined, { name: "cover memo", file: memoNotesFile([SUPPLY_PACK], "cover memo") })
+  writeLeanPlan(directory, [SUPPLY_PACK], undefined, undefined, { name: "cover memo" })
   // Planned with the memo but not delivered: the memo is named, no combined file yet.
   expect(leanDraftingStatus(directory)).toMatchObject({ memo: "cover memo", combined_output: null })
   // An older run's file holds the body's first name, so the body registers under its next free name.

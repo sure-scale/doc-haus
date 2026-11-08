@@ -3,7 +3,7 @@ import type { SessionMessageInfo, SessionMessageAssistantTool, V2Event } from "@
 // Keep the chat's display model local to the browser. The engine remains the
 // source of truth: these values are projected from its public v2 transcript.
 export type Part =
-  | { type: "text"; id: string; sessionID: string; messageID: string; text: string; synthetic?: boolean }
+  | { type: "text"; id: string; sessionID: string; messageID: string; text: string; synthetic?: boolean; phase?: string }
   | { type: "reasoning"; id: string; sessionID: string; messageID: string; text: string; time: { start: number; end?: number } }
   | {
       type: "tool"
@@ -71,7 +71,9 @@ export function contentParts(sessionID: string, messageID: string, content: Extr
         text: part.text,
         time: { start: part.time?.created ?? 0, end: part.time?.completed },
       }
-    return { type: "text" as const, id: `${messageID}:text:${index}`, sessionID, messageID, text: part.text }
+    // A phased provider marks working notes as commentary; routing reads past them.
+    const phase = part.native?.phase
+    return { type: "text" as const, id: `${messageID}:text:${index}`, sessionID, messageID, text: part.text, ...(typeof phase === "string" ? { phase } : {}) }
   })
 }
 

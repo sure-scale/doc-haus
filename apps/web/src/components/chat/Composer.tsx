@@ -32,6 +32,7 @@ export default function Composer({
   busy,
   draftingUpdate = false,
   draftingClarification = false,
+  drafted = false,
   documentsControl,
   attachmentControl,
   hasAttachments = false,
@@ -61,6 +62,8 @@ export default function Composer({
   busy: boolean
   draftingUpdate?: boolean
   draftingClarification?: boolean
+  // The run has written a draft; until then an update has no draft to name.
+  drafted?: boolean
   // The matter's Documents control (see DocumentChips), seated after the playbook.
   documentsControl?: ReactNode
   attachmentControl?: ReactNode
@@ -170,7 +173,7 @@ export default function Composer({
                   : "Send message"
             }
           >
-            <span>{draftingClarification ? "Clarify checklist" : draftingUpdate ? "Update draft" : "Send"}</span>
+            <span>{draftingClarification ? "Clarify checklist" : draftingUpdate && drafted ? "Update draft" : "Send"}</span>
             <svg
               width="16"
               height="16"

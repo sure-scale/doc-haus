@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import path from "node:path"
-import { adviseQuestions, advisePrompt, checkAdvice } from "./advise"
+import { ADVISOR_FAILED, adviseQuestions, advisePrompt, checkAdvice } from "./advise"
 import { questionIssues } from "./change-checks"
 import { openItem } from "./quotes"
 import { runLean, stageInputSha } from "./runner"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, type StageSessionPort } from "./stages"
-import { keepAskedQuestions, readLeanState, readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
+import { keepAskedQuestions, readLeanState, readQuestions, writeLeanText, writeQuestions, type Question, type QuestionAdvice } from "./state"
+import { FIXED_PLAN, writeLeanPlan } from "./plan"
 import { confirmationQuestions, writeInstructionsFile } from "./instructions"
 import { AGENT, SOURCE, SOURCE_TEXT, cleanupMatters, matter, scriptedModel } from "./test-support"
 import { withWorkflowLimit } from "./model-concurrency-test-support"
@@ -18,7 +19,7 @@ const FILES: Question = { id: "requested-files-1", stage: "draft", question: "Yo
   options: [{ id: "o1", text: "As my words ask" }, { id: "o2", text: "As planned" }] }
 const BASIS = [{ source_id: SOURCE, quote: "within thirty days of the order date", relevance: "The supplied delivery terms state the period this note must reproduce." }]
 const OPTIONS = [{ text: "Thirty days from the order date" }, { text: "Fourteen days from the order date" }]
-const VALID = { options: OPTIONS, recommendation: { option: 0, rationale: "The supply terms set thirty days.", basis: BASIS } }
+const VALID = { options: OPTIONS, recommendation: { option: "Thirty days from the order date", rationale: "The supply terms set thirty days.", basis: BASIS } }
 const UNAVAILABLE = { unavailable: { reason: "The sources do not settle the period." } }
 const check = (reply: unknown, question = QUESTION) => checkAdvice(matter(), question, typeof reply === "string" ? reply : JSON.stringify(reply))
 const asks = (...questions: { question: string; kind?: string; context: string }[]) => () => JSON.stringify({ questions })
@@ -33,6 +34,22 @@ describe("advice checker", () => {
     } })
   })
 
+  test("option texts or a rationale naming an internal id are retried with how to say it, and kept in words on the last attempt", () => {
+    const directory = matter()
+    writeQuestions(directory, [{ id: "q-0a1b2c3d4e", stage: "intake", question: "Which delivery period applies?", context: "The period decides lateness.", status: "answered", kind: "judgment", answer: "Thirty days." }])
+    const reply = JSON.stringify({ options: [{ text: "Keep the answer to q-0a1b2c3d4e" }, OPTIONS[1]],
+      recommendation: { option: "Keep the answer to q-0a1b2c3d4e", rationale: "The answer to q-0a1b2c3d4e sets thirty days.", basis: BASIS } })
+    expect(checkAdvice(directory, QUESTION, reply)).toEqual({ issues: [
+      'options[0].text names the internal id "q-0a1b2c3d4e". The lawyer sees only words: name the question or answer by what it asked.',
+      'recommendation.rationale names the internal id "q-0a1b2c3d4e". The lawyer sees only words: name the question or answer by what it asked.',
+    ] })
+    const final = checkAdvice(directory, QUESTION, reply, { final: true })
+    expect(final.issues).toEqual([])
+    expect(JSON.stringify(final.advice)).not.toContain("q-0a1b2c3d4e")
+    expect(final.advice).toMatchObject({ recommendation: { option: "o1" } })
+    expect(final.advice && "recommendation" in final.advice ? final.advice.recommendation.rationale : "").toContain("Which delivery period applies")
+  })
+
   test("no supported option is kept as unavailable, with no options or with two to four", () => {
     expect(check(UNAVAILABLE)).toEqual({ issues: [], advice: UNAVAILABLE })
     expect(check({ options: OPTIONS, ...UNAVAILABLE }).advice).toEqual({ options: [{ id: "o1", text: OPTIONS[0]!.text }, { id: "o2", text: OPTIONS[1]!.text }], ...UNAVAILABLE })
@@ -41,6 +58,90 @@ describe("advice checker", () => {
   test("a question with its own options is recommended by their index, without options of the advisor's", () => {
     expect(check({ recommendation: { option: 1, rationale: "The request leaves the files to the plan.", basis: [{ source_id: "request", quote: "short supply note" }] } }, FILES))
       .toEqual({ issues: [], advice: { recommendation: { option: "o2", rationale: "The request leaves the files to the plan.", basis: [{ source_id: "request", quote: "short supply note" }] } } })
+  })
+
+  test("a generated-options recommendation resolves by its option text, not a slipped index", () => {
+    const options = [{ text: "Seven days" }, { text: "Fourteen days" }, { text: "Thirty days" }, { text: "Sixty days" }]
+    const advised = (option: unknown) => check({ options, recommendation: { ...VALID.recommendation, option } })
+    // Copied with other case, spacing and a trailing full stop, the text still names its option.
+    expect(advised("  thirty   DAYS. ").advice).toMatchObject({ recommendation: { option: "o3" } })
+    // A 1-based index for "Thirty days" would have named "Sixty days": an index is no longer read.
+    expect(advised(3).advice).toBeUndefined()
+    expect(advised(3).issues.join(" ")).toContain('"recommendation.option" must be the text of one of your options')
+  })
+
+  test("an unmatched recommendation text is a retry issue", () => {
+    const checked = check({ ...VALID, recommendation: { ...VALID.recommendation, option: "Thirty days from delivery" } })
+    expect(checked.advice).toBeUndefined()
+    expect(checked.issues).toEqual(['"recommendation.option" must be the text of one of your options, copied exactly: "Thirty days from the order date", "Fourteen days from the order date".'])
+  })
+
+  test("own-option questions keep the index", () => {
+    const basis = [{ source_id: "request", quote: "short supply note" }]
+    expect(check({ recommendation: { option: 1, rationale: "The request leaves the files to the plan.", basis } }, FILES).advice).toMatchObject({ recommendation: { option: "o2" } })
+    const byText = check({ recommendation: { option: "As planned", rationale: "The request leaves the files to the plan.", basis } }, FILES)
+    expect(byText.advice).toBeUndefined()
+    expect(byText.issues).toEqual(['"recommendation.option" must be the index, from 0, of one of the 2 options.'])
+    expect(advisePrompt(matter(), FILES)).toContain('where "option" is the index of one of the options above')
+    expect(advisePrompt(matter(), QUESTION)).toContain('"option" the text of the one recommended, copied exactly from your options')
+  })
+
+  const SCOPE: Question = { id: "q-scope", stage: "draft", question: 'The document plan leaves this instructed act without a document executed by the parties who must take it: "Confirm the delivery period", directed by "within thirty days of the order date" [source: supply-terms.docx]; to be taken by "Supplier" and "Buyer"; no planned document carries it. Should the package add a document, or change a planned one, so that those parties take it, or is it outside this request?', context: "Drafting waits for your answer.", status: "open", kind: "scope" }
+  const scopeReply = (carrier: string) => ({ options: [{ text: carrier }, { text: "A new letter executed by the supplier and the buyer" }, { text: "Outside this request" }],
+    recommendation: { option: "Outside this request", rationale: "The supply terms already set the period.", basis: BASIS } })
+
+  test("a scope option naming an uploaded source as carrier is a retry issue", () => {
+    const named = check(scopeReply("Add it to supply-terms.docx, executed by the supplier and the buyer"), SCOPE)
+    expect(named.advice).toBeUndefined()
+    expect(named.issues).toEqual(['Option "Add it to supply-terms.docx, executed by the supplier and the buyer" puts the act in "supply-terms.docx", an uploaded matter source the package does not write: offer a planned document, a new document, or "outside this request".'])
+    // A source's title alone is prose, such as an amendment to it.
+    expect(check(scopeReply("A new amendment to the supply-terms, signed by both"), SCOPE).issues).toEqual([])
+  })
+
+  test("a scope option naming a planned document whose title resembles a source passes", () => {
+    const labelled = { ...SCOPE, question: SCOPE.question.replace("no planned document carries it", 'planned in "Variation of supply-terms", executed by "Supplier"') }
+    expect(check(scopeReply("Variation of supply-terms, executed by the supplier and the buyer"), labelled).advice).toMatchObject({ recommendation: { option: "o3" } })
+    const directory = matter()
+    writeLeanPlan(directory, [{ title: "Supply-terms side letter", purpose: "Record the delivery period", parts: [{ heading: "Delivery", scope: "Delivery period" }] }])
+    expect(checkAdvice(directory, SCOPE, JSON.stringify(scopeReply("Put it in the supply-terms side letter, signed by both"))).issues).toEqual([])
+  })
+
+  test("a scope option on a saved plan names a planned document or puts the item outside this request; the plan step's unsaved question still offers a new document", () => {
+    const directory = matter()
+    writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record the delivery terms", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
+    // The gate's question, asked once the plan is saved, as the gate asks it.
+    const gate: Question = { id: "package-scope-gate", stage: "gate", status: "open", kind: "scope", mixed: true, context: "Delivery is not held for it.",
+      question: "The checklist check left this instruction open, so the package may not carry it:\nState when payment is due. Open decisions: whether payment is due on delivery.\nAnswer the open decisions above (supply any missing fact or approval they name). If the package should carry it, say which planned document carries it; otherwise say it is outside this request." }
+    const reply = (...texts: string[]) => JSON.stringify({ options: texts.map(text => ({ text })), recommendation: { option: texts[0], rationale: "The supply terms set payment on delivery.", basis: BASIS } })
+    const held = checkAdvice(directory, gate, reply("Hold the note in draft until the payment terms are confirmed", "Outside this request"))
+    expect(held.advice).toBeUndefined()
+    expect(held.issues).toEqual(['Option "Hold the note in draft until the payment terms are confirmed" neither names a planned document nor says the item is outside this request: the run can only carry it in a planned document or leave it out. Name the planned document that carries it, by its title or file ("Supply note", "supply-note.docx"), or say it is outside this request.'])
+    expect(checkAdvice(directory, gate, reply("Carry it in the supply note: payment is due on delivery", "Treat it as outside the scope of this request")).advice).toMatchObject({ recommendation: { option: "o1" } })
+    expect(checkAdvice(directory, gate, reply("Put it in supply-note.docx", "Outside this request")).issues).toEqual([])
+    // The plan step's recheck of a saved plan offers no new document either; the documents it labels count as planned.
+    const saved = { ...SCOPE, question: SCOPE.question.replace(/no planned document carries it\. Should .*$/, 'planned in "Side letter", executed by "Supplier". Which planned document, executed by those parties, should carry it, or is it outside this request?') }
+    expect(checkAdvice(directory, saved, reply("The side letter, executed by the supplier and the buyer", "Outside this request")).issues).toEqual([])
+    expect(checkAdvice(directory, saved, reply("A new letter executed by the supplier and the buyer", "Outside this request")).issues).toHaveLength(1)
+    // Before its plan is saved, the plan step's question offers a new document, which no list names.
+    expect(checkAdvice(matter(), SCOPE, reply("A new letter executed by the supplier and the buyer", "Outside this request")).issues).toEqual([])
+  })
+
+  const FACT: Question = { ...QUESTION, question: "Which delivery period should the note state, as the order form is silent?", kind: "fact" }
+  const factReply = (...texts: string[]) => JSON.stringify({ options: texts.map(text => ({ text })), recommendation: { option: texts[0], rationale: "The supply terms set thirty days.", basis: BASIS } })
+
+  test("any question's option naming an uploaded source as where its answer goes is a retry issue, before and after the plan", () => {
+    const issue = 'Option "Record thirty days in supply-terms.docx" puts it in "supply-terms.docx", an uploaded matter source the package does not write: put it in what <carriers> lists.'
+    expect(checkAdvice(matter(), FACT, factReply("Record thirty days in supply-terms.docx", "Fourteen days from the order date")).issues).toEqual([issue])
+    // Before the plan is saved, an option naming no source passes, whatever it calls the requested document.
+    expect(checkAdvice(matter(), FACT, factReply("State thirty days in the supply note", "Record the period as an open item")).issues).toEqual([])
+    const directory = matter()
+    writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record the delivery terms", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
+    expect(checkAdvice(directory, FACT, factReply("Record thirty days in supply-terms.docx", "Fourteen days from the order date")).issues).toEqual([issue])
+    expect(checkAdvice(directory, FACT, factReply("State thirty days in supply-note.docx", "Leave the period to the drafting notes")).advice).toMatchObject({ recommendation: { option: "o1" } })
+    // A source the question names is what it asks about, not where its answer goes.
+    const named = { ...FACT, question: "Should the note follow supply-terms.docx on the delivery period?" }
+    expect(checkAdvice(directory, named, factReply("Follow supply-terms.docx: thirty days", "Fourteen days from the order date")).issues).toEqual([])
+    expect(checkAdvice(directory, { ...named, question: "Which delivery period?", context: "Asked of supply-terms.docx." }, factReply("Follow supply-terms.docx: thirty days", "Fourteen days")).issues).toEqual([])
   })
 
   const rejected: [string, unknown, string, Question?][] = [
@@ -54,13 +155,13 @@ describe("advice checker", () => {
     ["options that are the same once normalised", { ...VALID, options: [{ text: "Thirty days" }, { text: "  thirty   DAYS " }] }, "differ"],
     ["options given for a question with its own", { ...VALID, recommendation: { ...VALID.recommendation, basis: [{ source_id: "request", quote: "supply note" }] } }, "its own options", FILES],
     ["a recommendation of no option", { ...VALID, recommendation: { ...VALID.recommendation, option: 2 } }, "recommendation.option"],
-    ["a recommendation not by index", { ...VALID, recommendation: { ...VALID.recommendation, option: "Thirty days from the order date" } }, "recommendation.option"],
     ["a blank rationale", { ...VALID, recommendation: { ...VALID.recommendation, rationale: " " } }, "rationale"],
     ["a blank reason", { unavailable: { reason: "" } }, "unavailable.reason"],
     ["no supporting passage", { ...VALID, recommendation: { ...VALID.recommendation, basis: [] } }, "at least one"],
     ["a passage from no allowed source", { ...VALID, recommendation: { ...VALID.recommendation, basis: [{ source_id: "memory", quote: "thirty days" }] } }, "source_id"],
     ["a blank quote", { ...VALID, recommendation: { ...VALID.recommendation, basis: [{ source_id: "request", quote: "  " }] } }, "non-empty"],
     ["a quote its source does not hold", { ...VALID, recommendation: { ...VALID.recommendation, basis: [{ source_id: SOURCE, quote: "within fourteen days" }] } }, "within fourteen days"],
+    ["a passage under a tag name, echoed with the names to use", { ...VALID, recommendation: { ...VALID.recommendation, basis: [{ source_id: "sources", quote: "thirty days" }] } }, `recommendation.basis[0].source_id "sources" is not a known source name. Use the exact name of a matter document, "request" for the request and the lawyer's answers, or an approved research URL.`],
   ]
   for (const [name, reply, issue, question] of rejected)
     test(`rejects ${name}`, () => {
@@ -68,6 +169,13 @@ describe("advice checker", () => {
       expect(checked.advice).toBeUndefined()
       expect(checked.issues.join(" ")).toContain(issue)
     })
+
+  test("a passage under an answered question's id is pointed to the name its words take", () => {
+    const directory = matter()
+    writeQuestions(directory, [{ ...QUESTION, status: "answered", answer: "Thirty days from the order date", answer_kind: "option", option_id: "o1" }])
+    const reply = JSON.stringify({ ...VALID, recommendation: { ...VALID.recommendation, basis: [{ source_id: "q-delivery", quote: "Thirty days" }] } })
+    expect(checkAdvice(directory, { ...QUESTION, id: "q-period" }, reply).issues).toEqual([`recommendation.basis[0].source_id "q-delivery" is not a known source name. Use the exact name of a matter document, "request" for the request and the lawyer's answers, or an approved research URL. "q-delivery" names question q-delivery; its answer is the lawyer's own: quote the lawyer's own answer under "request".`])
+  })
 })
 
 describe("advising asked questions", () => {
@@ -115,7 +223,7 @@ describe("advising asked questions", () => {
     // Advised afresh, the options would read otherwise under the same ids.
     const model = scriptedModel({ [AGENT.advise]: prompt => JSON.stringify(prompt.includes("As my words ask")
       ? { recommendation: { option: 1, rationale: "The request names no file.", basis: [{ source_id: "request", quote: "short supply note", relevance: "The request names the supplied note, not a file name." }] } }
-      : { ...VALID, options: [{ text: "Seven days" }, { text: "Ten days" }] }) })
+      : { options: [{ text: "Seven days" }, { text: "Ten days" }], recommendation: { ...VALID.recommendation, option: "Seven days" } }) })
     const advise = (...questions: Question[]) => adviseQuestions(directory, readLeanState(directory)!, "intake", { sessions: model.port }, questions)
     expect(await advise(QUESTION, FILES)).toEqual([{ ...QUESTION, advice: kept }, { ...FILES, advice: UNAVAILABLE }])
     expect(model.count(AGENT.advise)).toBe(0)
@@ -196,6 +304,40 @@ describe("advising asked questions", () => {
     }
   }, 120_000)
 
+  test("a preflight review whose advisor failed is advised again; a checked one is reused", async () => {
+    const directory = matter()
+    const key = (question: Question) => JSON.stringify([question.question, question.context, question.kind, question.document, question.pid])
+    const other: Question = { ...QUESTION, id: "q-notice", question: "Which notice period should the note state?" }
+    const reviewed = new Map<string, { advice?: QuestionAdvice; group?: string }>([
+      [key(QUESTION), { advice: { unavailable: { reason: ADVISOR_FAILED, reason_code: "advisor_failed" } } }],
+      [key(other), { advice: UNAVAILABLE, group: "Notice period" }],
+    ])
+    const model = scriptedModel({ [AGENT.advise]: () => JSON.stringify(VALID) })
+    const [retried, reused] = await adviseQuestions(directory, readLeanState(directory)!, "d1.draft", { sessions: model.port }, [QUESTION, other], reviewed)
+    expect(model.count(AGENT.advise)).toBe(1)
+    expect(retried!.advice).toMatchObject({ recommendation: { option: "o1", basis: BASIS } })
+    expect(reused).toMatchObject({ advice: UNAVAILABLE, group: "Notice period" })
+  })
+
+  test("questions on one change-plan group's paragraphs are advised in turn, seeing their siblings' advice, and share a topic", async () => {
+    const directory = matter()
+    const rows = ["p1", "p2", "p3"].map(pid => ({ pid, sha256: pid, text: `Paragraph ${pid} of the note.` }))
+    writeLeanText(directory, "d1/paragraphs.json", `${JSON.stringify(rows, null, 2)}\n`)
+    const group = (id: string, pids: string[]) => ({ id, pids, goal: "Remove the repeated lines.", sources: [], limitations: [] })
+    writeLeanText(directory, "d1/change-plan.json", JSON.stringify({ shared_decisions: [], groups: [group("spare-lines", ["p1", "p2"]), group("other-lines", ["p3"])], dismissed: [], questions: [] }))
+    const ask = (pid: string): Question => ({ id: `q-line-${pid}`, stage: "changes", question: `Should paragraph ${pid} stay?`, context: "", status: "open", kind: "judgment", pid, document: "d1" })
+    const keep = { options: [{ text: "Keep it" }, { text: "Remove it" }], recommendation: { option: "Keep it", rationale: "The terms rely on it.", basis: BASIS } }
+    const model = scriptedModel({ [AGENT.advise]: prompt => JSON.stringify({ ...keep, group: `Topic for ${/Should paragraph (p\d) stay/.exec(prompt)![1]}` }) })
+    const advised = await adviseQuestions(directory, readLeanState(directory)!, "d1.changes", { sessions: model.port }, ["p1", "p2", "p3"].map(ask))
+    const prompts = (pid: string) => model.prompts.filter(row => row.agent === AGENT.advise && row.text.includes(`Kind: judgment\nShould paragraph ${pid} stay?`))
+    const block = (text: string) => /<sibling_questions>\n([\s\S]*?)\n<\/sibling_questions>/.exec(text)?.[1]
+    expect(prompts("p1").map(row => block(row.text))).toEqual([undefined])
+    expect(block(prompts("p2")[0]!.text)).toBe("Question: Should paragraph p1 stay?\nRecommended: Keep it\nWhy: The terms rely on it.")
+    expect(prompts("p2")[0]!.text).toContain("Advise alike unless a source treats those paragraphs differently.")
+    expect(prompts("p3").map(row => block(row.text))).toEqual([undefined])
+    expect(advised.map(row => row.group)).toEqual(["Topic for p1", "Topic for p1", "Topic for p3"])
+  })
+
   test("six questions respect the configured concurrency limit", async () => withWorkflowLimit(3, async () => {
     const directory = matter()
     const model = scriptedModel({ [AGENT.intake]: asks(...["one", "two", "three", "four", "five", "six"].map(n => ({ ...LAW, question: `Question ${n}?` }))) })
@@ -266,4 +408,27 @@ test("advice reads the matter's dates, so a deadline option does not run from th
   expect(advisePrompt(directory, QUESTION)).not.toContain("<matter_dates>")
   writeLeanText(directory, "intake.json", JSON.stringify({ ready: true, dates: { document_date: { date: "2026-03-01", basis: "request", source_id: "request", quote: "dated 1 March 2026" }, operative_dates: [] } }))
   expect(advisePrompt(directory, QUESTION)).toContain("<matter_dates>\nDate the document 2026-03-01")
+})
+
+// A recommended option put its answer in a document the run does not deliver.
+test("the advisor's own options get what the run delivers: every requested document before the plan, the planned documents after", () => {
+  const directory = matter()
+  const fact = { ...QUESTION, kind: "fact" as const }
+  expect(advisePrompt(directory, fact)).toContain("<carriers>\nWhat the run delivers:\n- every document the request asks for\n- the drafting notes\n- an open item for the lawyer\n</carriers>")
+  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record the delivery terms", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] },
+    { title: "Cover memo", purpose: "Explain the note", parts: [{ heading: "Summary", scope: "What the note does" }] }])
+  expect(advisePrompt(directory, fact)).toContain("<carriers>\nWhat the run delivers:\n- Supply note (supply-note.docx)\n- Cover memo\n- the drafting notes\n- an open item for the lawyer\n</carriers>")
+  expect(advisePrompt(directory, { ...QUESTION, kind: "scope" })).not.toContain("<carriers>")
+  expect(advisePrompt(directory, FILES)).not.toContain("<carriers>")
+})
+
+// An option to discard a planned document and prepare another was recommended,
+// adopted and asked again until the repair cap: nothing can carry it out once
+// the plan is saved.
+test("once the plan is saved, advice on any but a package-scope question keeps the planned documents", () => {
+  const directory = matter()
+  expect(advisePrompt(directory, QUESTION)).not.toContain(FIXED_PLAN)
+  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record the delivery terms", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
+  expect(advisePrompt(directory, { ...QUESTION, stage: "change-plan", document: "d1", kind: "instruction" })).toContain(FIXED_PLAN)
+  expect(advisePrompt(directory, { ...QUESTION, kind: "scope" })).not.toContain(FIXED_PLAN)
 })

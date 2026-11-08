@@ -6,6 +6,8 @@ import { checklistProducerInputs } from "./checklist-source-context"
 import { runChecklistExtractionFlow } from "./checklist-flow"
 import type { StageSessionPort } from "./stages"
 import { checklistProducerInputSchema } from "./checklist-contract"
+import { readLeanPlan } from "./plan"
+import { writePlacement } from "./spine-placement"
 
 const directories: string[] = []
 const workspace = process.env.WORKSPACE_ROOT
@@ -48,6 +50,14 @@ test("one job per original source plus request uses exact source bytes and plann
   expect(jobs[0].input.targets[2].document).toBe("notes")
   for (const job of jobs) expect(checklistProducerInputSchema.safeParse(job.input).success).toBe(true)
   expect(JSON.stringify(jobs)).not.toContain('"pid"')
+})
+
+test("a planned form is part of the target's role, so a statement's purpose is read as the subjects it records", () => {
+  const { directory, put } = prepare()
+  put(".dochaus/lean/plan.json", JSON.stringify({ schema: "dochaus.lean.plan/2", documents: [
+    { id: "d1", title: "Witness statement", purpose: "Record the witness's account of the meeting", parts: [{ heading: "Meeting", scope: "What was said" }], file: "statement.docx", form: "statement" },
+  ] }))
+  expect(checklistProducerInputs(directory)[0].input.targets[0]).toEqual({ document: "d1", role: "Witness statement (Form: statement): Record the witness's account of the meeting. Parts: Meeting (What was said)" })
 })
 
 test("included lawyer updates and actual answers stay separate from original text and model questions", () => {
@@ -182,4 +192,17 @@ test("unavailable, invalid or empty selected playbooks surface explicit source c
   expect(() => checklistProducerInputs(directory)).toThrow("selected playbook has no text")
   put("matter.json", JSON.stringify({ playbook: "../other-guidance" }))
   expect(() => checklistProducerInputs(directory)).toThrow("Invalid bound playbook name")
+})
+
+test("a part's placed spine entries are its coverage too, so the role names them after its scope", () => {
+  const { directory, put } = prepare()
+  put(".dochaus/lean/spine-atoms.json", JSON.stringify({ entries: [
+    { kind: "requirement", detail: "Keep unconfirmed proposals open.", evidence: [{ source_id: "request", quote: "Keep unconfirmed proposals open." }], limitations: [] },
+    { kind: "fact", detail: "The proposal is unconfirmed.", evidence: [{ source_id: "instructions.txt", quote: "subject to confirmation" }], limitations: [] },
+  ], limitations: [] }))
+  writePlacement(directory, readLeanPlan(directory)!.documents, { entries: [{ entry: 0, level: "text", parts: ["d1/1"] }, { entry: 1, level: "text", parts: ["d1/1"] }], parts: [], issues: [] })
+  expect(checklistProducerInputs(directory)[0].input.targets.slice(0, 2)).toEqual([
+    { document: "d1", role: "Agreement: Record agreed terms. Parts: Terms (Terms; rests on: requirement: Keep unconfirmed proposals open. [source: request] | fact: The proposal is unconfirmed. [source: instructions.txt])" },
+    { document: "d2", role: "Advice: Explain decisions. Parts: Advice (Decisions)" },
+  ])
 })

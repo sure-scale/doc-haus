@@ -23,6 +23,8 @@ export type LeanEventName =
   | "stopped"
   /** The draft step's recorded plan coverage: its status as `outcome`, its issues. */
   | "coverage"
+  /** The draft step's recorded spine placement (spine-placement.ts): its status as `outcome`, its issues. */
+  | "placement"
   /** The draft step's recorded requested files: whether the lawyer's words state
    * them as `outcome` ("stated" or "not_stated"), the mismatches the outline
    * still leaves as `issues`, and the file names given to the plan as `reason`;
@@ -45,6 +47,22 @@ export type LeanEventName =
    * and how many VERIFY excluded or merged, and how many acts record a conflict
    * as `counts`, and whether each job passed its check as `jobs`. */
   | "act_record"
+  /** The spine step's split of its entries into atoms (spine-split.ts): how
+   * many entries it had, how many reused a saved split, were atomic, were
+   * split or kept as they were because their job never passed, and how many
+   * atoms spine-atoms.json holds, as `counts`. */
+  | "spine_split"
+  /** The spine step's check of its entries' absence claims (spine-absence.ts):
+   * how many entries it had, how many claims they made, how many jobs reused
+   * a saved answer or never passed, and how many claims stood or a source
+   * contradicted, as `counts`. */
+  | "spine_absence"
+  /** The discrepancy stage's record (discrepancy.ts), as `counts`: the
+   * differences listed, how many their verify jobs dropped as stating the
+   * point the same way and how many went unchecked; the gaps listed, how many
+   * their verify jobs found supplied, how many went unchecked and how many
+   * restated a difference. */
+  | "discrepancy_record"
 
 export type LeanEvent = {
   stage: StageID | "run"
@@ -68,7 +86,7 @@ export type LeanEvent = {
   /** Milliseconds of deterministic work: on checker events the reply's check, on
    * started and skipped events keying the step and deciding whether to skip it. */
   check_ms?: number
-  /** Act-record events: the record's counts. */
+  /** Act-record, spine-split, spine-absence and discrepancy-record events: the record's counts. */
   counts?: Record<string, number>
   /** Act-record events: each job's check, "passed", "failed" or, for WHO and
    * HOW with no listed act, "not_asked". */

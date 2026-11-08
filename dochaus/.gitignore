@@ -42,7 +42,10 @@ agent/*.md
 !agent/lean-files.md
 !agent/lean-instructions.md
 !agent/lean-intake.md
+!agent/lean-notes-evidence.md
 !agent/lean-package-review.md
+!agent/lean-placement.md
+!agent/lean-reader-check.md
 !agent/lean-research.md
 !agent/lean-research-review.md
 !agent/lean-review-playbook.md
@@ -51,6 +54,10 @@ agent/*.md
 !agent/lean-review-wording.md
 !agent/lean-review-client-disadvantage.md
 !agent/lean-spine.md
+!agent/lean-spine-absence.md
+!agent/lean-spine-absence-verify.md
+!agent/lean-spine-level.md
+!agent/lean-spine-split.md
 !agent/narrator.md
 !agent/legal-review.md
 !agent/obligations.md

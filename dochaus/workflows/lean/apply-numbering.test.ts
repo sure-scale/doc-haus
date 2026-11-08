@@ -5,9 +5,9 @@ import { DOMParser } from "@xmldom/xmldom"
 import { strFromU8, unzipSync } from "fflate"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { runApply, splitNumberingIssues, writeProjectedNumbers } from "./apply-stage"
-import { changeReviewPrompt, projectedChangeParagraphs } from "./change-pipeline"
+import { changeReviewPrompt, projectedChangeParagraphs, repairBodyText } from "./change-pipeline"
 import { readParagraphs, shownText, withoutListLabel, type ParagraphRow } from "./checks"
-import { writeLeanPlan } from "./plan"
+import { FIXED_PLAN, writeLeanPlan } from "./plan"
 import { paragraphRows } from "./stages"
 import { leanFile, readLeanJson, readLeanState, writeLeanBytes, writeLeanText } from "./state"
 import { cleanupMatters, matter } from "./test-support"
@@ -144,8 +144,28 @@ test("change review reads each amended paragraph's list number beside its text",
     { pid: at(rows, "Officers"), updated: "Officers. RESOLVED, that the officers are re-elected." },
   ])
   await writeProjectedNumbers(directory, "d1")
-  const changes = JSON.parse(/<reconciled_changes>\n([\s\S]*?)\n<\/reconciled_changes>/.exec(changeReviewPrompt(directory, "d1"))![1]!)
+  const prompt = changeReviewPrompt(directory, "d1")
+  const changes = JSON.parse(/<reconciled_changes>\n([\s\S]*?)\n<\/reconciled_changes>/.exec(prompt)![1]!)
   expect(changes.amendments).toEqual([expect.objectContaining({ updated: "Officers. RESOLVED, that the officers are re-elected.", list_label: "2." })])
+  // A finding that the document should not be prepared started repair rounds to the cap.
+  expect(prompt.split(FIXED_PLAN).length - 1).toBe(1)
+}, 60_000)
+
+// A split's later parts keep their initial paragraph's id until apply: the
+// reviewer reads each by the part coordinate read-document gives it, so no two
+// paragraphs show the same id.
+test("change review reads a split's later parts by their part, never under the paragraph's id again", async () => {
+  const directory = await draftResolutions(rows => [
+    { pid: at(rows, "Ratification"), operation: "split", updated: ["Ratification. RESOLVED, that the earlier actions are ratified.", "Effect. These resolutions take effect today.", "Notice. The secretary gives notice."] },
+  ])
+  const pid = at(readParagraphs(directory, "d1"), "Ratification")
+  const body = /<projected_full_body>\n([\s\S]*?)\n<\/projected_full_body>/.exec(changeReviewPrompt(directory, "d1"))![1]!
+  expect(body.split("\n\n").filter(row => row.includes(pid))).toEqual([
+    `[${pid}] 3. Ratification. RESOLVED, that the earlier actions are ratified.`,
+    `[${pid} proposed_part_index=1] Effect. These resolutions take effect today.`,
+    `[${pid} proposed_part_index=2] Notice. The secretary gives notice.`,
+  ])
+  expect(repairBodyText(directory, "d1", true)).toBe(body)
 }, 60_000)
 
 const SECTIONS = "# Supply Agreement\n\n## 1. Supply\n\n1.1 The Supplier shall supply the Goods.\n\n## 2. Price\n\n2.1 The price is fixed.\n\n2.2 Payment is due on delivery.\n\n## 3. Term\n\n3.1 This runs one year.\n"

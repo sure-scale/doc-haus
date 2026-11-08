@@ -1,6 +1,7 @@
 import { DOMParser } from "@xmldom/xmldom"
 import { strFromU8, unzipSync } from "fflate"
 import mammoth from "mammoth"
+import { writeLineBreaks } from "../../../dochaus/lib/docx-line-breaks"
 import { writeListLabels } from "../../../dochaus/lib/docx-list-labels"
 import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import type { DeskSourcePreview } from "../../../dochaus/lib/word-source-desk-contract"
@@ -81,7 +82,7 @@ export async function documentPreviewBlocks(fileName: string, bytes: Buffer, can
   try {
     // Keep this in lockstep with ingest.ts's DOCX extraction. In particular,
     // pending deletions/moves remain labelled evidence, never accepted text.
-    const prepared = markTrackedChanges(await writeListLabels(bytes))
+    const prepared = writeLineBreaks(markTrackedChanges(await writeListLabels(bytes)))
     const parts = unzipSync(prepared)
     if (!parts["word/document.xml"]) return
     const document = parse(parts["word/document.xml"])

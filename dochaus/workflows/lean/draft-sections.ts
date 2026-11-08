@@ -6,18 +6,17 @@ import { playbookSelectionIssues } from "./playbook-review"
 import { TOOL_SYNTAX_ISSUE, checkDraft, printedToolCall, readParagraphs } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { matterSourceIDs } from "./quotes"
-import { memoNotesFile } from "./deliverables"
 import {
-  LEAN_COVERAGE_SCHEMA, coveragePlacementPrompt, coveragePlanHash, coverageScopeQuestion, foldedCoverage, parseCoveragePlacement, planCoverageCurrent, planCoverageIssues, recordedActs, separateFileChosen,
+  LEAN_COVERAGE_SCHEMA, coveragePlacementPrompt, coveragePlanHash, coverageScopeQuestion, foldedCoverage, parseCoveragePlacement, planCoverageCurrent, planCoverageIssues, recordedActs, revisionCoverageIssues, separateFileChosen,
   type CoverageAct, type InstructedAct, type LeanCoverage,
 } from "./package-coverage"
 import { answeredScopeQuestion, openScopeQuestion } from "./package-scope"
 import {
-  LEAN_REQUESTED_FILES_SCHEMA, foldRequestedFiles, parseRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesQuestion, requestedFilesRevision, parseUnheldDocument, requestedFilesWords, unheldDocumentPrompt, unheldDocuments, withRequestedNames, withUnaskedDocuments, writeRequestedFiles,
+  LEAN_REQUESTED_FILES_SCHEMA, foldRequestedFiles, parseRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesQuestion, requestedFilesRevision, parseUnheldDocument, requestedFilesWords, unheldDocumentPrompt, unheldDocuments, unplannedFileIssues, withRequestedNames, withUnaskedDocuments, writeRequestedFiles,
   type RequestedFiles,
 } from "./requested-files"
 import {
-  FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, partInstrument, plannedDocument, readLeanPlan, runPosture, withDocumentIDs, writeLeanPlan,
+  FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, partInstrument, plannedDocument, readLeanPlan, runDateFormat, runPosture, withDocumentIDs, writeLeanPlan,
   type ActingFor, type DocID, type LeanOutline, type PlannedDocument, type StepID,
 } from "./plan"
 import { REVISION_PREFERENCE_SCOPE, actingForBlock, packageCompositionBlock, retryPrompt, stagePrompt } from "./prompts"
@@ -37,8 +36,15 @@ import { stageInputSha } from "./runner"
 import { frozenDates, intakeActingFor } from "./intake"
 import { outlineCoverageIssues, partCarries, plannedContract } from "./template-contract"
 import { draftStatusItems } from "./draft-status"
+import { READER_CHECK_PERMISSIONS, checkReaderParts, readerItems, readerParts } from "./reader-check"
 import { draftTemplateItems } from "./template-coverage"
 import { originalTables, originalTablesBlock, partTableIssues, tableParts } from "./original-tables"
+import { parallel } from "./checklist-flow"
+import {
+  PLAN_PLACEMENT_REVISIONS, documentGrounds, groundsBlock, parseEntryLevel, parseEntryPlacement, parsePartEntries, partEntriesKey, partEntriesPrompt, planPlacementCurrent, planPlacementIssues, readPartEntries,
+  readSpineLevels, savePartEntries, saveSpineLevel, spineEntries, spineLevelKey, spineLevelPrompt, spinePlacementPrompt, withPartEntries, writePlacement,
+  type EntryLevel, type EntryPlacement, type Ground, type PartPlacement, type Placement, type SpineEntry,
+} from "./spine-placement"
 
 // Sectioned draft step. A long document can need more tokens than one model
 // reply may carry, so the draft agent writes one part per reply in the same
@@ -59,16 +65,19 @@ import { originalTables, originalTablesBlock, partTableIssues, tableParts } from
 // instructed act is still left without a document its parties execute and no
 // answered package-scope question has shown it, the step saves no plan and
 // stops, blocked on one package-scope question for the lawyer about those acts
-// only; the answer joins the outline basis, so the plan is drawn up again with
-// it. An act an answered question showed is saved as uncovered and disclosed,
-// never asked about again. While the gate's
+// only; the outline reads the answer, so the plan is drawn up again with it.
+// An act an answered question showed is saved as uncovered and disclosed,
+// never asked about again nor sent back for a revision. While the gate's
 // package-scope question is open, the step asks none of its own: it saves the
 // plan, the act is disclosed, and the open question stays the one to answer. A
 // coverage reply that never passed its check (unchecked) does not stop the step,
 // nor does an act record that lists no act (no_acts).
 // When the outline plans a memo or more than one document and no package-scope
 // question stops the step, a files job in its own session then reads which
-// files the lawyer's words ask to receive (requested-files.ts). Where the plan
+// files the lawyer's words ask to receive (requested-files.ts). A file they ask
+// for that holds no planned document goes back to the outline session for one
+// revised outline (PLAN_UNPLANNED_REVISIONS), covered, placed and filed again;
+// a file still holding nothing is saved as asked and disclosed. Where the plan
 // does not deliver them so, the issues go back to the outline session for at
 // most PLAN_FILES_REVISIONS revised outlines, from which only the deliverables
 // and file names of the documents the issues concern are taken, and only while
@@ -88,6 +97,18 @@ import { originalTables, originalTablesBlock, partTableIssues, tableParts } from
 // carries only a small share of (template-coverage.ts), is an open item of the
 // step: the draft is never rewritten for it, the change cycle receives it as a
 // required repair, and the apply step records any gap left in the final body.
+// Once the coverage loop is done and no package-scope question stops the step,
+// each drafting-spine entry's level and placement jobs, side by side, find the
+// planned parts that rest on it (spine-placement.ts), each job in a session of
+// its own, the entries in parallel within the installation's limit; beside
+// them, each planned part's reverse job names the entries that part rests on,
+// which only add to the entries' parts. The parts
+// a placement names bind the entry at either level. A text entry, a fact too,
+// no part covers goes back to the outline session for one revised
+// outline (PLAN_PLACEMENT_REVISIONS), covered and placed again; what is left
+// is recorded in placement.json as unplaced and disclosed, never blocking. A
+// saved plan whose record is stale is placed again before the first document
+// is drafted, and each part prompt is told the entries placed in it.
 
 export type DraftOutline = Pick<PlannedDocument, "title" | "parts" | "form" | "mode" | "template">
 
@@ -97,12 +118,15 @@ export type DraftStageRun =
   | { status: "failed"; reason: string }
 
 type Checked<T> = { issues: string[]; value?: T }
-type Coverage = { acts?: CoverageAct[]; issues: string[] }
+// `feedback` is the issues an outline revision is asked to settle (revisionCoverageIssues).
+type Coverage = { acts?: CoverageAct[]; issues: string[]; feedback?: string[] }
 
 /** Revised outlines the coverage job's issues may ask for before the plan is saved. */
 export const PLAN_COVERAGE_REVISIONS = 2
 /** Revised outlines the files job's issues may ask for before the plan is saved. */
 export const PLAN_FILES_REVISIONS = 2
+/** Revised outlines a requested file that holds no planned document may ask for. */
+export const PLAN_UNPLANNED_REVISIONS = 1
 
 export async function runDraftStage(
   directory: string,
@@ -151,14 +175,21 @@ export async function runDraftStage(
   const failed = (label: string, issues: string[]): DraftStageRun =>
     ({ status: "failed", reason: `${step}: ${label}: checker failed after ${LEAN_MAX_RETRIES} retries: ${issues.join(" ")}` })
   // A coverage job's fresh session of its own, reported with the step's others.
-  const coverageSession = async (agent: string, label: string) => {
+  const coverageSession = async (agent: string, label: string, permissions = LEAN_CHILD_PERMISSIONS) => {
     const id = await deps.sessions.createSession({
-      directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, step, `draft: ${label}`), model: state.model, permissions: LEAN_CHILD_PERMISSIONS,
+      directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, step, `draft: ${label}`), model: state.model, permissions,
     })
     sessionIDs.push(id)
     progress({ ...(sessionIDs.length === 1 ? { session_id: id } : {}), session_ids: [...sessionIDs] })
     return id
   }
+  // Once the body's paragraphs exist, each drafted part's reader job reads
+  // that part alone in a fresh session of its own, side by side with the other
+  // parts' (reader-check.ts); a part settled before is not asked again. Its
+  // hits are the draft's "reader" items, repaired by the change cycle.
+  const readerAgent = LEAN_STAGE_AGENTS.reader
+  const readerCheck = async (plan: PlannedDocument) => readerItems("draft", document, await checkReaderParts(directory, document, readerParts(plan, readParagraphs(directory, document)),
+    async (label, text, check) => exchange({ id: await coverageSession(readerAgent, label, READER_CHECK_PERMISSIONS), agent: readerAgent })(label, text, check)))
   // The acts the instructions direct are the act record's (recordedActs), read
   // once per step: they serve every outline revision and the saved plan's
   // recheck. A record that is missing or never passed its listing check leaves
@@ -168,17 +199,24 @@ export async function runDraftStage(
   // The placement job reads the plan in a fresh session of its own for each
   // plan it checks, so the outline's reasoning does not steer it; with no act
   // listed it is not asked. Errors from the session calls, including a pause or
-  // restart, propagate and leave the plan unwritten.
+  // restart, propagate and leave the plan unwritten. The issues of an act an
+  // answered package-scope question settled are recorded but never sent back
+  // as revision feedback.
   const covering = async (documents: PlannedDocument[]): Promise<Coverage> => {
     const listed = listing()
     if (!listed.value) return { issues: listed.issues }
     const acts = listed.value
-    if (!acts.length) return { acts: [], issues: planCoverageIssues([], documents, directory) }
+    if (!acts.length) {
+      const issues = planCoverageIssues([], documents, directory)
+      return { acts: [], issues, feedback: issues }
+    }
     const coverageAgent = LEAN_STAGE_AGENTS.coverage
     const id = await coverageSession(coverageAgent, "coverage")
     const checked = await exchange({ id, agent: coverageAgent })("coverage", coveragePlacementPrompt(directory, documents, acts),
       (reply, final) => parseCoveragePlacement(reply, directory, documents, acts, { final }))
-    return checked.value ? { acts: checked.value, issues: planCoverageIssues(checked.value, documents, directory) } : { issues: checked.issues }
+    if (!checked.value) return { issues: checked.issues }
+    const issues = planCoverageIssues(checked.value, documents, directory)
+    return { acts: checked.value, issues, feedback: revisionCoverageIssues(issues, checked.value, documents, readQuestions(directory).filter(answeredScopeQuestion)) }
   }
   const writeCoverage = (documents: PlannedDocument[], actingFor: ActingFor | undefined, coverage: Coverage) => {
     const record: LeanCoverage = {
@@ -212,14 +250,97 @@ export async function runDraftStage(
     return { status: "blocked", outputs: ["coverage.json"], openItems: [], questions: [question],
       reason: `${step}: the document plan leaves an instructed act without a document its parties execute; drafting waits for your answer on the package's scope.` }
   }
+  // Each spine entry's level job reads that entry alone in a fresh session of
+  // its own, once per step for each content key; a level it settles is saved
+  // at once (spine-levels.json) and never asked again, so a re-run or resume
+  // skips it. A level reply that never passed its check counts the entry as
+  // text, so a requirement it leaves in no part still goes back to the outline.
+  const levelAgent = LEAN_STAGE_AGENTS.level
+  const levels = new Map<string, Promise<{ level: EntryLevel; unchecked?: true }>>()
+  const leveling = (entry: SpineEntry) => {
+    const key = spineLevelKey(entry)
+    const job = levels.get(key) ?? (async () => {
+      const saved = readSpineLevels(directory)[key]
+      if (saved) return { level: saved }
+      const id = await coverageSession(levelAgent, `level: entry ${entry.index}`)
+      const checked = await exchange({ id, agent: levelAgent })(`level entry ${entry.index}`, spineLevelPrompt(entry), reply => parseEntryLevel(reply))
+      if (!checked.value) return { level: "text" as const, unchecked: true as const }
+      saveSpineLevel(directory, key, checked.value)
+      return { level: checked.value }
+    })()
+    levels.set(key, job)
+    return job
+  }
+  // Each entry's placement job reads the plan in a fresh session of its own,
+  // started beside the entry's level job. It sees the parts' scopes, so the
+  // parts it names bind the entry whatever its level; the level only says
+  // whether an entry placed in no part is a gap. An entry whose placement
+  // reply never passed its check is recorded unchecked and raises no revision.
+  // Both jobs settle before an error from either propagates, so a level that
+  // passed is kept for the resume. Beside the entries' jobs, each planned part's
+  // reverse job reads that part and every entry in a fresh session of its own,
+  // once per step for each content key; the entries it settles are saved at
+  // once (part-entries.json), so a resume or a revised plan keeping the part
+  // does not ask it again. Its entries are added to their placements, never
+  // removing a part; a part whose reply never passed adds none. The two pools
+  // settle before an error from either propagates.
+  const partJobs = new Map<string, Promise<PartPlacement>>()
+  const placing = async (documents: PlannedDocument[]): Promise<Placement> => {
+    const entries = spineEntries(directory)
+    const placements: EntryPlacement[] = []
+    const placementAgent = LEAN_STAGE_AGENTS.placement
+    const reverse = (document: PlannedDocument, index: number) => {
+      const part = `${document.id}/${index + 1}`
+      const prompt = partEntriesPrompt(document, index, entries)
+      const key = partEntriesKey(prompt)
+      const job = partJobs.get(key) ?? (async (): Promise<PartPlacement> => {
+        const saved = readPartEntries(directory)[key]
+        if (saved) return { part, entries: saved }
+        const id = await coverageSession(placementAgent, `placement: part ${part}`)
+        const checked = await exchange({ id, agent: placementAgent })(`placement part ${part}`, prompt, (reply, final) => parsePartEntries(reply, entries, { final }))
+        if (!checked.value) return { part, entries: [], unchecked: true }
+        savePartEntries(directory, key, checked.value)
+        return { part, entries: checked.value }
+      })()
+      partJobs.set(key, job)
+      return job
+    }
+    const place = async (entry: SpineEntry): Promise<EntryPlacement> => {
+      const [levelled, placed] = await Promise.allSettled([leveling(entry), (async () => {
+        const id = await coverageSession(placementAgent, `placement: entry ${entry.index}`)
+        return exchange({ id, agent: placementAgent })(`placement entry ${entry.index}`, spinePlacementPrompt(documents, entry),
+          (reply, final) => parseEntryPlacement(reply, documents, { final }))
+      })()])
+      if (levelled.status === "rejected") throw levelled.reason
+      if (placed.status === "rejected") throw placed.reason
+      const { level, unchecked } = levelled.value
+      const row = { entry: entry.index, level, ...(unchecked ? { level_unchecked: true as const } : {}) }
+      return placed.value.value ? { ...row, parts: placed.value.value } : { ...row, parts: [], unchecked: true }
+    }
+    // With no entry there is nothing to place, so no part is asked.
+    const parts = entries.length ? documents.flatMap(document => document.parts.map((_, index) => ({ document, index }))) : []
+    const named: PartPlacement[] = []
+    const [placed, reversed] = await Promise.allSettled([
+      parallel(entries, async (entry, at) => { placements[at] = await place(entry) }),
+      parallel(parts, async ({ document, index }, at) => { named[at] = await reverse(document, index) }),
+    ])
+    if (placed.status === "rejected") throw placed.reason
+    if (reversed.status === "rejected") throw reversed.reason
+    const united = withPartEntries(documents, placements, named)
+    return { entries: united, parts: named, issues: planPlacementIssues(entries, united) }
+  }
+  const recordPlacement = (documents: PlannedDocument[], placement: Placement) => {
+    const record = writePlacement(directory, documents, placement)
+    if (record) appendLeanEvent(directory, { stage: "draft", document, event: "placement", step: "placement", outcome: record.status, issues: record.issues })
+  }
   // The files job, like the placement job, reads the plan in a fresh session of
-  // its own, and only when the plan has a memo or more than one document to
-  // put in files; undefined when it is not asked. A reply that never passed its
-  // check gives no files. A name refused on one attempt is carried, by quote,
+  // its own, and only when the plan has more than one document, the memo
+  // document included, to put in files; undefined when it is not asked. A
+  // reply that never passed its check gives no files. A name refused on one attempt is carried, by quote,
   // to the later ones (parseRequestedFiles). Errors from the session calls
   // propagate.
-  const filing = async (documents: PlannedDocument[], memo: string | undefined): Promise<Checked<RequestedFiles> | undefined> => {
-    if (memo === undefined && documents.length < 2) return
+  const filing = async (documents: PlannedDocument[], memo: DocID | undefined): Promise<Checked<RequestedFiles> | undefined> => {
+    if (documents.length < 2) return
     const filesAgent = LEAN_STAGE_AGENTS.files
     const id = await deps.sessions.createSession({
       directory, parentID: state.owner_session_id, agent: filesAgent, title: stepSessionTitle(directory, step, "draft: files"), model: state.model, permissions: LEAN_CHILD_PERMISSIONS,
@@ -227,18 +348,20 @@ export async function runDraftStage(
     sessionIDs.push(id)
     progress({ ...(sessionIDs.length === 1 ? { session_id: id } : {}), session_ids: [...sessionIDs] })
     const refused = new Map<string, string>()
-    return exchange({ id, agent: filesAgent })("files", requestedFilesPrompt(directory, documents, memo), (reply, final) => parseRequestedFiles(reply, directory, documents, memo, { final, refused }))
+    return exchange({ id, agent: filesAgent })("files", requestedFilesPrompt(directory, documents, memo), (reply, final) => parseRequestedFiles(reply, directory, documents, { final, refused }))
   }
-  // Whether the lawyer's words ask for each planned document the one
-  // requested file leaves out, each in a fresh session of its own; the ids of
-  // those they do not. A reply that never passed its check keeps its document
-  // as the files job placed it.
-  const unasked = async (requested: RequestedFiles, documents: PlannedDocument[]) => {
+  // Whether the lawyer's words ask to receive each planned document the one
+  // requested file leaves out as a file apart from it, each in a fresh session
+  // of its own; the ids of those they do not. A reply that never passed its
+  // check keeps its document as the files job placed it. The memo document is
+  // never asked about.
+  const unasked = async (requested: RequestedFiles, documents: PlannedDocument[], memo: DocID | undefined) => {
     const filesAgent = LEAN_STAGE_AGENTS.files
-    const verdicts = await Promise.all(unheldDocuments(requested, documents).map(async row => {
+    const [file] = requested.files
+    const verdicts = await Promise.all(unheldDocuments(requested, documents, memo).map(async row => {
       const id = await coverageSession(filesAgent, `files: ${row.id} asked`)
-      const checked = await exchange({ id, agent: filesAgent })(`files asked ${row.id}`, unheldDocumentPrompt(directory, row, requested.files[0]!), reply => parseUnheldDocument(reply, directory))
-      return checked.value === false ? [row.id as string] : []
+      const checked = await exchange({ id, agent: filesAgent })(`files asked ${row.id}`, unheldDocumentPrompt(directory, row, file!), reply => parseUnheldDocument(reply, directory, file!))
+      return checked.value?.apart === false ? [row.id as string] : []
     }))
     return verdicts.flat()
   }
@@ -254,8 +377,10 @@ export async function runDraftStage(
     // the sources.
     const client = matterClient(directory)
     const inferred = intakeActingFor(directory)
-    // The Posture the stages so far drafted to; the plan freezes it for the rest of the run.
+    // The Posture the stages so far drafted to, and the date style the sources
+    // gave them; the plan freezes both for the rest of the run.
     const posture = runPosture(directory)
+    const dateFormat = runDateFormat(directory)
     const best: { value?: LeanOutline } = {}
     const checkOutline = (reply: string): Checked<LeanOutline> => {
       const parsed = parsePlan(reply, request, inferred)
@@ -272,20 +397,42 @@ export async function runDraftStage(
     let value = outline.value ?? best.value
     if (!value) return failed("outline", outline.issues)
     let coverage = await covering(withDocumentIDs(value.documents))
-    // The coverage issues go back to the outline session as a revision request;
-    // a revision that yields no usable outline keeps the last one.
-    for (let revision = 1; coverage.acts && coverage.issues.length && revision <= PLAN_COVERAGE_REVISIONS; revision++) {
+    // The coverage feedback goes back to the outline session as a revision
+    // request; a revision that yields no usable outline keeps the last one.
+    for (let revision = 1, feedback = coverage.feedback ?? []; feedback.length && revision <= PLAN_COVERAGE_REVISIONS; revision++, feedback = coverage.feedback ?? []) {
       delete best.value
-      const revised = await ask<LeanOutline>(`outline revision ${revision}/${PLAN_COVERAGE_REVISIONS}`, retryPrompt("draft", coverage.issues), checkOutline, 0, coverage.issues)
+      const revised = await ask<LeanOutline>(`outline revision ${revision}/${PLAN_COVERAGE_REVISIONS}`, retryPrompt("draft", feedback), checkOutline, 0, feedback)
       const next = revised.value ?? best.value
       if (!next) continue
       value = next
       coverage = await covering(withDocumentIDs(value.documents))
     }
-    const covered = withDocumentIDs(value.documents)
+    // The text entries no part covers go back to the outline session as one
+    // revision request; the revised outline is covered and placed again. A
+    // plan the package-scope question stops is drawn up again, so not placed.
+    let placement: Placement | undefined
+    if (!scopeBlock(withDocumentIDs(value.documents), coverage)) {
+      placement = await placing(withDocumentIDs(value.documents))
+      for (let revision = 1; placement.issues.length && revision <= PLAN_PLACEMENT_REVISIONS; revision++) {
+        delete best.value
+        const revised = await ask<LeanOutline>(`outline placement revision ${revision}/${PLAN_PLACEMENT_REVISIONS}`, retryPrompt("draft", placement.issues), checkOutline, 0, placement.issues)
+        const next = revised.value ?? best.value
+        if (!next) continue
+        value = next
+        coverage = await covering(withDocumentIDs(value.documents))
+        placement = await placing(withDocumentIDs(value.documents))
+      }
+    }
+    let covered = withDocumentIDs(value.documents)
     recordCoverage(covered, value.acting_for, coverage)
+    if (placement) recordPlacement(covered, placement)
     const blocked = scopeBlock(covered, coverage)
     if (blocked) return blocked
+    // The outline plans the memo the request asks for as its last document
+    // (parsePlan); the files jobs hold it by that id, and it stays last, never
+    // folded into another file. Read from the outline as it stands, since an
+    // unplanned-file revision may add the memo.
+    const memoOf = (documents: unknown[]): DocID | undefined => value!.memo !== undefined ? `d${documents.length}` : undefined
     // The files the lawyer's words ask for are read from the covered outline.
     // Where its deliverables do not deliver them so, the issues a revision may
     // settle go back to the outline session as a revision request, unless the
@@ -304,19 +451,41 @@ export async function runDraftStage(
     // the files job left out of it goes in it too, unless the lawyer's words
     // ask for that document themselves (unasked) or the lawyer chose a file of
     // its own for one.
-    const filed = await filing(covered, value.memo)
+    let filed = await filing(covered, memoOf(covered))
+    // A file the lawyer's words ask for that holds no planned document goes back
+    // to the outline session as one revision request; the revised outline is
+    // covered, placed, checked for the package-scope question and filed again,
+    // as the outline was. A file still holding nothing is saved as asked and
+    // disclosed (requestedFilesItems); a revision with no usable outline keeps
+    // the one before.
+    for (let revision = 1, issues = filed?.value ? unplannedFileIssues(filed.value) : []; issues.length && revision <= PLAN_UNPLANNED_REVISIONS; revision++) {
+      delete best.value
+      const revised = await ask<LeanOutline>(`outline unplanned-file revision ${revision}/${PLAN_UNPLANNED_REVISIONS}`, retryPrompt("draft", issues), checkOutline, 0, issues)
+      const next = revised.value ?? best.value
+      if (!next) continue
+      value = next
+      covered = withDocumentIDs(value.documents)
+      coverage = await covering(covered)
+      placement = scopeBlock(covered, coverage) ? undefined : await placing(covered)
+      recordCoverage(covered, value.acting_for, coverage)
+      if (placement) recordPlacement(covered, placement)
+      const stopped = scopeBlock(covered, coverage)
+      if (stopped) return stopped
+      filed = await filing(covered, memoOf(covered))
+      issues = filed?.value ? unplannedFileIssues(filed.value) : []
+    }
     const separate = separateFileChosen(readQuestions(directory))
-    const asked = filed?.value && !separate ? withUnaskedDocuments(filed.value, await unasked(filed.value, covered)) : filed?.value
-    const fold = (outline: LeanOutline) => asked ? foldRequestedFiles(outline.documents, asked, separate) : undefined
+    const asked = filed?.value && !separate ? withUnaskedDocuments(filed.value, await unasked(filed.value, covered, memoOf(covered))) : filed?.value
+    const fold = (outline: LeanOutline) => asked ? foldRequestedFiles(outline.documents, asked, separate, memoOf(outline.documents)) : undefined
     let folded = fold(value)
     let requested = folded?.requested
     const held = () => folded?.documents ?? value!.documents
     const contents = (outline: LeanOutline) => JSON.stringify([outline.documents.map(row => normalizedHeading(row.title)), outline.memo ? normalizedHeading(outline.memo) : null])
     const delivered = ({ deliverable: _deliverable, ...row }: LeanOutline["documents"][number], revised: LeanOutline["documents"][number]) =>
       ({ ...row, ...(revised.deliverable ? { deliverable: revised.deliverable } : {}) })
-    let files = requested ? requestedFilesIssues(withDocumentIDs(held()), value.memo, requested).issues : []
+    let files = requested ? requestedFilesIssues(withDocumentIDs(held()), memoOf(held()), requested).issues : []
     const revising = () =>
-      requested && requestedFilesQuestion(directory, requested, withDocumentIDs(held()), files) ? requestedFilesRevision(directory, files) : undefined
+      requested && requestedFilesQuestion(directory, requested, withDocumentIDs(held()), files, memoOf(held())) ? requestedFilesRevision(directory, files) : undefined
     for (let revision = 1, revise = revising(); requested && revise && revision <= PLAN_FILES_REVISIONS; revision++, revise = revising()) {
       delete best.value
       const revised = await ask<LeanOutline>(`outline files revision ${revision}/${PLAN_FILES_REVISIONS}`, retryPrompt("draft", revise.feedback), checkOutline, 0, revise.feedback)
@@ -328,42 +497,50 @@ export async function runDraftStage(
       value = { ...value, documents: value.documents.map((row, index) => concerned.has(index) ? delivered(row, next.documents[index]!) : row) }
       folded = fold(value)
       requested = folded?.requested
-      files = requestedFilesIssues(withDocumentIDs(held()), value.memo, requested!).issues
+      files = requestedFilesIssues(withDocumentIDs(held()), memoOf(held()), requested!).issues
     }
     if (folded?.applied.length) {
       // The coverage record moves to the plan as held, so the saved plan's check stands.
-      writeCoverage(withDocumentIDs(folded.documents), value.acting_for, foldedCoverage(directory, coverage, folded.at, withDocumentIDs(folded.documents)))
+      const saved = withDocumentIDs(folded.documents)
+      writeCoverage(saved, value.acting_for, foldedCoverage(directory, coverage, folded.at, saved))
       value = { ...value, documents: folded.documents }
     }
     const documents = withDocumentIDs(value.documents)
     // A mismatch the revisions leave is the lawyer's call, asked once; once
     // asked, the plan is saved as it stands and the record discloses the files
     // it does not deliver as asked (requestedFilesItems).
-    const question = requested && requestedFilesQuestion(directory, requested, documents, files)
+    const question = requested && requestedFilesQuestion(directory, requested, documents, files, memoOf(documents))
     if (question) return { status: "blocked", outputs: ["coverage.json"], openItems: [], questions: [question],
       reason: `${step}: the document plan does not deliver the files the lawyer's words ask for; drafting waits for your answer on how they are delivered.` }
-    // A memo the request asks for is the run's notes, named for the request, and
-    // a file the lawyer's words name takes that name.
-    const memo = value.memo ? { name: value.memo, file: memoNotesFile(value.documents, value.memo) } : undefined
-    const named = requested && withRequestedNames(value.documents, memo, requested)
+    // A file the lawyer's words name for the memo alone is the memo document's.
+    const named = requested && withRequestedNames(value.documents, memoOf(value.documents), requested)
+    // The record names the saved plan's documents, the memo's included, as the
+    // later files check and its items read them.
+    const planned = named?.documents ?? value.documents
     if (requested && named) {
-      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, words: requestedFilesWords(directory), planned: requestedFilesPlanned(named.documents, value.memo), stated: requested.stated, files: requested.files })
+      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, words: requestedFilesWords(directory), planned: requestedFilesPlanned(planned, value.memo), stated: requested.stated, files: requested.files })
       const applied = [...folded?.applied ?? [], ...named.applied]
       appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: requested.stated ? "stated" : "not_stated", issues: files.map(row => row.issue),
         ...(applied.length ? { reason: applied.join("; ") } : {}) })
     } else if (filed) {
       // Disclosed from the record (requestedFilesItems), as an unchecked coverage record is.
-      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, words: requestedFilesWords(directory), planned: requestedFilesPlanned(value.documents, value.memo), status: "unchecked", stated: false, files: [] })
+      writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, words: requestedFilesWords(directory), planned: requestedFilesPlanned(planned, value.memo), status: "unchecked", stated: false, files: [] })
       appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: "unchecked",
         reason: "The files job's reply did not pass its check, so the files the lawyer asks to receive could not be confirmed; the plan delivers its files as outlined and the drafting notes say so." })
     } else rmSync(leanFile(directory, "requested-files.json"), { force: true })
-    writeLeanPlan(directory, named?.documents ?? value.documents, basis, value.acting_for, memo && { name: memo.name, file: named?.notes_file ?? memo.file }, posture, frozenDates(directory))
+    writeLeanPlan(directory, planned, basis, value.acting_for, value.memo ? { name: value.memo, document: `d${planned.length}` } : undefined, posture, frozenDates(directory), dateFormat)
   } else if (document === FIRST_DOCUMENT && !planCoverageCurrent(directory)) {
     const saved = readLeanPlan(directory)!
     const coverage = await covering(saved.documents)
     recordCoverage(saved.documents, saved.acting_for, coverage)
     const blocked = scopeBlock(saved.documents, coverage, true)
     if (blocked) return blocked
+  }
+  // A saved plan placed for another plan or spine (a plan the files job held
+  // as one file, a lawyer's edit, a new spine) is placed again before drafting.
+  if (document === FIRST_DOCUMENT && !planPlacementCurrent(directory)) {
+    const saved = readLeanPlan(directory)!
+    recordPlacement(saved.documents, await placing(saved.documents))
   }
   // A saved plan's accepted draft is final for the run (a new run starts from
   // an empty lean folder): a step re-run after a coverage refresh, after the
@@ -375,7 +552,8 @@ export async function runDraftStage(
   // recheck can leave the record without them.
   if (!outlined && draftOutputValid(directory, step) && state.stages[step]?.input_sha === stageInputSha(directory, step)) {
     await planned()
-    return { status: "done", outputs: stepOutputs(step), openItems: [...checkDraft(directory, readLeanText(directory, `${document}/draft.md`) ?? "").openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document)), ...draftStatusItems(directory, document, readParagraphs(directory, document), "draft")] }
+    const kept = plannedDocument(directory, document)
+    return { status: "done", outputs: stepOutputs(step), openItems: [...checkDraft(directory, readLeanText(directory, `${document}/draft.md`) ?? "").openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document)), ...draftStatusItems(directory, document, readParagraphs(directory, document), "draft"), ...(kept ? await readerCheck(kept) : [])] }
   }
   const plan = plannedDocument(directory, document)
   if (!plan) return { status: "failed", reason: `${step}: the run's plan has no document ${document}.` }
@@ -387,17 +565,21 @@ export async function runDraftStage(
   // A revised original's tables: each part is shown those its scope holds.
   const original = originalTables(directory, document)
   const scopes = original ? tableParts(directory, document, original.tables) : []
+  const grounds = documentGrounds(directory, document)
   const drafted: string[] = []
   for (const [index, part] of plan.parts.entries()) {
     const label = `part ${index + 1}/${plan.parts.length}`
     const carried = carries[index]
     const section = sectionPrompt(plan, index, contract && carried && (carried.carried.length || carried.left.length)
       ? { source: contract.source, parts: carried.carried.map(unit => unit.label), left: carried.left.map(unit => unit.label) }
-      : undefined)
+      : undefined, grounds[index])
     const brief = sectionHandoff(directory, document)
     const own = scopes.flatMap((parts, table) => parts.includes(index) ? [table] : [])
-    // The outline's session saw the run context before the plan named a memo.
-    const text = [...(index > 0 ? [] : outlined ? [actingForBlock(directory), packageCompositionBlock(directory, document)] : [stagePrompt(directory, step)]), originalTablesBlock(original, own), brief, section].filter(Boolean).join("\n\n")
+    // The outline's session saw the run context before the plan named a memo
+    // or took a side. Every later part is told the side again, so a long
+    // session does not drift from it.
+    const opening = index > 0 ? [actingForBlock(directory)] : outlined ? [actingForBlock(directory), packageCompositionBlock(directory, document)] : [stagePrompt(directory, step)]
+    const text = [...opening, originalTablesBlock(original, own), brief, section].filter(Boolean).join("\n\n")
     // The first reply the section check passes is checked once for an
     // original table it leaves out (partTableIssues); asked for it, the part
     // keeps that reply when no later one passes, so the table check never
@@ -431,10 +613,10 @@ export async function runDraftStage(
     `The Word body could not place the part "${row.heading}": its label stays as rendered, and its paragraphs count with the part before it when the draft is checked against a template.`) })
   // Recorded with the body, so a pause or restart before the step settles keeps it.
   progress({ input_sha: key })
-  return { status: "done", outputs: accepted.outputs, openItems: [...accepted.openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document)), ...draftStatusItems(directory, document, readParagraphs(directory, document), "draft")], questions: accepted.questions }
+  return { status: "done", outputs: accepted.outputs, openItems: [...accepted.openItems, ...draftTemplateItems(directory, document, readParagraphs(directory, document)), ...draftStatusItems(directory, document, readParagraphs(directory, document), "draft"), ...await readerCheck(plan)], questions: accepted.questions }
 }
 
-export function sectionPrompt(outline: DraftOutline, index: number, template?: { source: string; parts: string[]; left?: string[] }) {
+export function sectionPrompt(outline: DraftOutline, index: number, template?: { source: string; parts: string[]; left?: string[] }, grounds: Ground[] = []) {
   const part = outline.parts[index]!
   const names = (labels: string[]) => labels.map(name => `"${name}"`).join("; ")
   const original = outline.mode === "revise" ? "the original" : template ? `the template "${template.source}"` : undefined
@@ -462,6 +644,7 @@ export function sectionPrompt(outline: DraftOutline, index: number, template?: {
         ...(template.left?.length ? [`Leave out ${names(template.left)} of the template "${template.source}", as the outline records.`] : []),
       ].join(" ")]
       : []),
+    ...(grounds.length ? [groundsBlock(grounds)] : []),
     "",
     "Outline:",
     ...outline.parts.flatMap((row, at) => [
@@ -500,19 +683,23 @@ function sectionHandoff(directory: string, document: DocID) {
   ].join("\n\n")
 }
 
-/** Checks one part reply. The outlined heading is the authority for the part's
- * first line: a reply that starts straight into its text gets that heading.
- * The document title, where publication prints it (not in a letter), is
- * printed once, above the first part, and a part's display heading, or its
- * label where that is printed, from its first line: a part whose text opens
- * with a line repeating what is printed above it (openingRepeats) is retried,
- * and on the last attempt (`final`) kept without that line. */
+/** Checks one part reply. The part begins at its label, the line "## " plus
+ * its outlined heading: plain lines before it (a sentence announcing the
+ * part) are left out, and a reply without it is retried, so narration is
+ * never taken for the part's text. The document title, where publication
+ * prints it (not in a letter), is printed once, above the first part, and a
+ * part's display heading, or its label where that is printed, from its first
+ * line: a part whose text opens with a line repeating what is printed above
+ * it (openingRepeats) is retried, and on the last attempt (`final`) kept
+ * without that line. */
 export function checkSection(reply: string, outline: DraftOutline, index: number, final = false): Checked<string> {
   const { heading, display_heading: display } = outline.parts[index]!
   if (!reply.trim()) return { issues: [`The reply was empty. Reply with the text of the part "${heading}".`] }
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  const body = reply.trim().replace(/\r\n/g, "\n")
-  const drafted = /^#{1,2}\s/.test(body) ? body : `## ${heading}\n\n${body}`
+  const lines = reply.trim().replace(/\r\n/g, "\n").split("\n")
+  const label = lines.findIndex(line => /^##\s/.test(line) && normalizedHeading(line.replace(/^##\s+/, "")) === normalizedHeading(heading))
+  // A heading before the label is not narration; the checks below report it.
+  const drafted = (label > 0 && lines.slice(0, label).every(line => !/^#{1,6}\s/.test(line.trim())) ? lines.slice(label) : lines).join("\n")
   const opening = openingRepeats(drafted, {
     title: titleAbove(outline, index),
     heading: display === undefined ? heading : display || undefined,
@@ -521,10 +708,9 @@ export function checkSection(reply: string, outline: DraftOutline, index: number
   const [first = "", ...rest] = text.split("\n")
   const others = new Set(outline.parts.filter((_, at) => at !== index).map(part => normalizedHeading(part.heading)))
   const strays = rest.map(line => /^##\s+(.+)$/.exec(line.trim())?.[1]).filter((name): name is string => Boolean(name) && others.has(normalizedHeading(name!)))
+  const labelled = /^##\s/.test(first) && normalizedHeading(first.replace(/^##\s+/, "")) === normalizedHeading(heading)
   const issues = [
-    ...(normalizedHeading(first.replace(/^##\s+/, "")) !== normalizedHeading(heading) || !/^##\s/.test(first)
-      ? [`Begin the part with the line "## ${heading}".`]
-      : []),
+    ...(labelled ? [] : [`Begin the part with the line "## ${heading}".`]),
     ...(rest.some(line => /^#\s+\S/.test(line.trim()))
       ? ["The part contains a \"# \" title line. Only the document title uses \"# \"; use \"### \" or lower headings inside a part."]
       : []),
@@ -534,7 +720,8 @@ export function checkSection(reply: string, outline: DraftOutline, index: number
     ...(!strays.length && rest.some(line => /^##\s+\S/.test(line.trim()))
       ? ['The part contains a "## " heading in its body. Only its first line identifies the part; use "### " or lower headings inside it.']
       : []),
-    ...(!rest.some(line => line.trim() && !/^#{1,6}\s/.test(line.trim())) ? [`The part "${heading}" has no text under its heading.`] : []),
+    // A reply without its label is retried for the label; its text is not under a heading yet.
+    ...(labelled && !rest.some(line => line.trim() && !/^#{1,6}\s/.test(line.trim())) ? [`The part "${heading}" has no text under its heading.`] : []),
   ]
   const repeated = opening.issues
   if (issues.length) return { issues: [...repeated, ...issues] }
@@ -601,12 +788,13 @@ function titleAbove(outline: DraftOutline, index: number) {
 }
 
 /** How the draft stage presents the drafted parts in the Word body, when any
- * part prints other than its label: each part's label and the heading it
- * prints in its place (printedDisplayHeading). */
+ * part prints other than its label or is an attachment: each part's label, the
+ * heading it prints in its place (printedDisplayHeading) and, for an
+ * attachment, that it starts a new page. */
 export function draftPresentation(plan: DraftOutline, drafted: string[]) {
   const letter = isLetter(plan.form)
-  return letter || plan.parts.some(part => part.display_heading !== undefined || part.instrument)
-    ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: printedDisplayHeading(plan, part, text), part })), ...(letter ? { title: false as const } : {}) }
+  return letter || plan.parts.some(part => part.display_heading !== undefined || part.instrument || part.attachment)
+    ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: printedDisplayHeading(plan, part, text), part, ...(plan.parts[part]?.attachment && !plan.parts[part]!.instrument ? { attachment: true as const } : {}) })), ...(letter ? { title: false as const } : {}) }
     : undefined
 }
 

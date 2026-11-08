@@ -25,6 +25,7 @@ test.each([
   ["auth", EXPIRED],
   ["setup", { error: "Finish installation setup before generating.", code: "setup_required" }],
   ["model", { type: "provider.no-route", message: "Model unavailable: test/scripted" }],
+  ["credit", { type: "provider.quota", message: "Account credit is exhausted", status: 402 }],
 ] as const)("a %s failure stops the run with its own reason, and Continue resumes once it is fixed", async (kind, cause) => {
   const directory = matter()
   const broken = scriptedModel({ ...happyPath, [AGENT.discrepancy]: failing(cause) })
@@ -35,7 +36,8 @@ test.each([
   // The lawyer's fix only, never the provider's own payload.
   expect(stopped.stop_reason).toBe(`discrepancy: ${PROVIDER_STOP_MESSAGES[kind]}`)
   expect(stopped.stages.discrepancy?.status).toBe("failed")
-  expect(broken.prompts.map(row => row.agent)).toEqual([AGENT.instructions, AGENT.discrepancy])
+  // The discrepancy stage's differences and gaps jobs are asked together.
+  expect(broken.prompts.map(row => row.agent)).toEqual([AGENT.instructions, AGENT.discrepancy, AGENT.discrepancy])
 
   const fixed = scriptedModel(happyPath)
   const resumed = await runLean(directory, { sessions: fixed.port })
@@ -103,7 +105,8 @@ test("any other engine failure stops as a runtime error after the usual checker 
   const model = scriptedModel({ ...happyPath, [AGENT.discrepancy]: (prompt, index, session) => index ? transport(prompt, index, session) : "not a JSON reply" })
   const state = await runLean(directory, { sessions: model.port })
 
-  expect(model.count(AGENT.discrepancy)).toBe(2)
+  // The first job's reply is retried by its checker, then fails like the other job's first.
+  expect(model.count(AGENT.discrepancy)).toBe(3)
   expect(state.status).toBe("failed")
   expect(state.provider_stop).toBeUndefined()
   expect(state.stop_reason).toBe("discrepancy: stopped by a runtime error: The engine could not complete the turn.")

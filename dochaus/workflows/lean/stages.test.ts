@@ -1,6 +1,12 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { providerStopKind } from "../../lib/provider-stop"
+import { conflictQuestion } from "./answer-reconcile"
+import { PACKAGE_SCOPE_QUESTION } from "./package-scope"
+import { writeLeanPlan } from "./plan"
+import { stageInputSha } from "./runner"
 import { LEAN_CHILD_PERMISSIONS, engineSessionPort } from "./stages"
+import { writeQuestions, type Question } from "./state"
+import { cleanupMatters, matter } from "./test-support"
 
 // The engine session port runs through the real v2 adapter (engineV2Fetch and the
 // transcript projection). Only the engine is scripted: it stores what it is sent
@@ -30,23 +36,25 @@ function scriptedEngine(reply: { text: string; outcome: string; interrupted?: bo
     const url = new URL(typeof target === "string" || target instanceof URL ? target : target.url)
     const method = init?.method ?? "GET"
     if (url.pathname === "/api/dochaus/session" && method === "POST") {
-      created.push(JSON.parse(String(init?.body)))
+      const input = JSON.parse(String(init?.body))
+      created.push(input)
+      Object.assign(session, { ...input, location: { directory: DIRECTORY } })
       return Response.json({ data: session })
     }
-    if (url.pathname === "/api/session/ses_child" && method === "GET") return Response.json({ data: session })
-    if (url.pathname === "/api/session/ses_child/prompt" && method === "POST") {
+    if (url.pathname === `/api/session/${session.id}` && method === "GET") return Response.json({ data: session })
+    if (url.pathname === `/api/session/${session.id}/prompt` && method === "POST") {
       if (reply.refusal) return Response.json(reply.refusal.body, { status: reply.refusal.status })
       const body = JSON.parse(String(init?.body)) as { id: string; text: string; delivery: string }
       admitted.push(body)
       queued.push(body)
-      return Response.json({ data: { id: body.id, sessionID: "ses_child", type: "user", payload: { text: body.text }, delivery: body.delivery, time: { created: 5 } } })
+      return Response.json({ data: { id: body.id, sessionID: session.id, type: "user", payload: { text: body.text }, delivery: body.delivery, time: { created: 5 } } })
     }
-    if (url.pathname === "/api/session/ses_child/interrupt" && method === "POST") {
+    if (url.pathname === `/api/session/${session.id}/interrupt` && method === "POST") {
       interrupts.push(url.pathname)
       // The native interrupt answers without the v2 data envelope.
       return Response.json({ interrupted: true })
     }
-    if (url.pathname === "/api/session/ses_child/message" && method === "GET") {
+    if (url.pathname === `/api/session/${session.id}/message` && method === "GET") {
       if (url.searchParams.get("limit") === "1") reply.onIdlePoll?.()
       // The first idle poll still sees the earlier turn's idle record; the
       // queued prompt is promoted and answered before the second.
@@ -80,7 +88,7 @@ describe("lean engine session port", () => {
     })
     const reply = await port.prompt({ directory: DIRECTORY, sessionID, agent: "expander", text: "Draft it." })
 
-    expect(sessionID).toBe("ses_child")
+    expect(sessionID).toBe(engine.created[0]!.id as string)
     expect(engine.created[0]).toMatchObject({
       parentID: "ses_owner", agent: "expander", model: { providerID: "test", id: "scripted" },
       permissions: LEAN_CHILD_PERMISSIONS, metadata: { dochaus_role: "lean-drafting" },
@@ -131,7 +139,7 @@ describe("lean engine session port", () => {
     const engine = scriptedEngine({ text: "partial", outcome: "succeeded", interrupted: true, finalError: true })
     const port = engineSessionPort({ engineURL: "http://engine.test", fetch: engine.fetcher, pollMs: 1 })
     await expect(port.prompt({ directory: DIRECTORY, sessionID: "ses_child", agent: "expander", text: "Draft it." }))
-      .rejects.toThrow("The expander session ended succeeded: {\"type\":\"provider.transport\"")
+      .rejects.toThrow("The expander session ended succeeded: Decode error.")
   })
 
   test("a failed turn carries the native error's typed fields as its cause", async () => {
@@ -140,7 +148,8 @@ describe("lean engine session port", () => {
     const port = engineSessionPort({ engineURL: "http://engine.test", fetch: engine.fetcher, pollMs: 1 })
     const failure = await port.prompt({ directory: DIRECTORY, sessionID: "ses_child", agent: "expander", text: "Draft it." }).catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(Error)
-    expect((failure as Error).message).toBe(`The expander session ended failed: ${JSON.stringify(expired)}.`)
+    // The provider's one-line message, never its payload; the typed fields stay in the cause.
+    expect((failure as Error).message).toBe("The expander session ended failed: This API key has expired.")
     expect((failure as Error).cause).toEqual(expired)
   })
 
@@ -161,5 +170,46 @@ describe("lean engine session port", () => {
     expect((failure as Error).message).toBe("The engine refused the expander prompt (HTTP 503).")
     expect((failure as Error).cause).toEqual(refusal)
     expect(engine.admitted).toHaveLength(0)
+  })
+})
+
+describe("lean stage keys", () => {
+  afterEach(cleanupMatters)
+
+  test("an answer re-keys the step that asked it and the steps after it, never an earlier one: a document's question its document's later steps, a package-scope answer the document's steps only, an intake answer intake onward", () => {
+    const steps = ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.review", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review"] as const
+    const keys = (questions: Question[]) => {
+      const directory = matter()
+      writeLeanPlan(directory, [{ title: "Supply note", purpose: "Supply note", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
+      writeQuestions(directory, questions)
+      return Object.fromEntries(steps.map(step => [step, stageInputSha(directory, step)]))
+    }
+    const answered: Question = { id: "q-late", stage: "intake", question: "Should late delivery carry a remedy?", context: "The terms are silent.", status: "answered", answer: "No remedy.", kind: "judgment" }
+    const none = keys([])
+    const unchanged = (keyed: Record<string, string>, same: (step: typeof steps[number]) => boolean) => {
+      for (const step of steps) expect([step, keyed[step] === none[step]]).toEqual([step, same(step)])
+    }
+    // The changes step applies its own answer: the reviews, the change plan
+    // and the preparation before it never read it and keep their keys.
+    unchanged(keys([{ ...answered, stage: "changes", document: "d1" }]), step => step !== "d1.changes" && step !== "d1.change-review")
+    unchanged(keys([{ ...answered, stage: "change-plan", document: "d1" }]), step => !step.startsWith("d1.change"))
+    // Intake's own answer, whatever its kind, and a conflict question on
+    // intake's answers: the list and the discrepancy record never read them.
+    const preparation = (step: typeof steps[number]) => step === "instructions" || step === "discrepancy"
+    unchanged(keys([answered]), preparation)
+    unchanged(keys([{ ...answered, id: "q-site", kind: "fact", question: "Where are the goods delivered?", answer: "To the buyer's warehouse." }]), preparation)
+    const conflict = conflictQuestion([answered, { ...answered, id: "q-price" }], { questions: ["q-late", "q-price"], conflict: "One answer waives the remedy the other keeps." })
+    unchanged(keys([answered, { ...answered, id: "q-price" }, { ...conflict, status: "answered", answer: "Keep the remedy." }]), preparation)
+    // The plan step's package-scope answer carries the step's document, as the
+    // runner records every document step's questions: it re-keys the document's
+    // steps after its draft, not the act record or the spine. The plan step
+    // settles it itself from questions.json; it directs no act of its own.
+    const scope = keys([{ ...answered, id: `${PACKAGE_SCOPE_QUESTION}late`, stage: "draft", document: "d1", kind: "scope" }])
+    unchanged(scope, step => !step.startsWith("d1."))
+    // The gate's package-scope question carries no document and is asked once
+    // the plan is saved: its answer re-keys no preparation step, the act record
+    // included; the gate reads it itself and the document through its review.
+    const gate = keys([{ ...answered, id: `${PACKAGE_SCOPE_QUESTION}gate`, stage: "gate", kind: "scope", mixed: true }])
+    unchanged(gate, step => !step.startsWith("d1."))
   })
 })

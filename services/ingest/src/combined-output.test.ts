@@ -9,7 +9,7 @@ import { createDocxRevision } from "../../../dochaus/lib/docx-amendments"
 import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
 import * as deliverables from "../../../dochaus/workflows/lean/deliverables"
-import { memoNotesFile, readLeanDocuments, recordLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
+import { readLeanDocuments, recordLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
 import { writeLeanPlan, type PlannedDocument } from "../../../dochaus/workflows/lean/plan"
 import { initLeanState, readLeanState, writeLeanBytes, writeLeanState, writeLeanText } from "../../../dochaus/workflows/lean/state"
 import { leanFixtureMatter, scriptedLeanModel } from "../../../dochaus/workflows/lean/test-support"
@@ -46,7 +46,7 @@ async function deliveredMatter(documents: Document[] | null, memo = true) {
   const directory = leanFixtureMatter("dochaus-combined-", dir => openDb(dir).close())
   directories.push(directory)
   if (documents) {
-    writeLeanPlan(directory, documents, undefined, undefined, memo ? { name: "cover memo", file: memoNotesFile(documents, "cover memo") } : undefined)
+    writeLeanPlan(directory, documents, undefined, undefined, memo ? { name: "cover memo" } : undefined)
     for (const [index, document] of documents.entries()) {
       const body = (await renderMarkdownToDocx(document.title === SIDE.title ? SIDE_BODY : BODY)).bytes
       writeLeanBytes(directory, `d${index + 1}/body-applied.docx`, body)
@@ -170,7 +170,7 @@ function refused(f: { directory: string }) {
 
 test("combined output is reported once both parts are delivered, not from the plan alone", async () => {
   const f = await deliveredMatter(null)
-  writeLeanPlan(f.directory, [COMBINED], undefined, undefined, { name: "cover memo", file: memoNotesFile([COMBINED], "cover memo") })
+  writeLeanPlan(f.directory, [COMBINED], undefined, undefined, { name: "cover memo" })
   expect(leanDraftingStatus(f.directory)?.combined_output).toBeNull()
 
   const delivered = await deliveredMatter([COMBINED])
@@ -183,7 +183,7 @@ test("an earlier delivery under another plan is not reported as the combined fil
   const f = await deliveredMatter([{ ...COMBINED, deliverable: "body" }], false)
   expect(readLeanDocuments(f.directory)?.documents.map(row => row.deliverable))
     .toEqual(["supply-pack.docx", "supply-pack - redline.docx", "supply-pack - drafting notes.docx", null])
-  writeLeanPlan(f.directory, [COMBINED], undefined, undefined, { name: "cover memo", file: memoNotesFile([COMBINED], "cover memo") })
+  writeLeanPlan(f.directory, [COMBINED], undefined, undefined, { name: "cover memo" })
   refused(f)
   // Still refused after run 2 stops at its gate with the same body.
   await blockedRerun(f.directory, MEMO)
@@ -192,22 +192,20 @@ test("an earlier delivery under another plan is not reported as the combined fil
 
 test("a combined file renamed after delivery is not reported from the file delivered under the old name", async () => {
   const f = await deliveredMatter([COMBINED])
-  writeLeanPlan(f.directory, [{ ...COMBINED, file: "supply-final.docx" }], undefined, undefined, { name: "cover memo", file: memoNotesFile([COMBINED], "cover memo") })
-  refused(f)
   const renamed = [{ ...COMBINED, file: "supply-final.docx" }]
-  writeLeanPlan(f.directory, renamed, undefined, undefined, { name: "cover memo", file: memoNotesFile(renamed, "cover memo") })
+  writeLeanPlan(f.directory, renamed, undefined, undefined, { name: "cover memo" })
   refused(f)
 }, 60_000)
 
 test("parts delivered for a document the plan has since retitled or moved are not paired", async () => {
   // The same file and memo under another title: the body was drafted for the old one.
   const retitled = await deliveredMatter([COMBINED])
-  writeLeanPlan(retitled.directory, [{ ...COMBINED, title: "Supply schedule" }], undefined, undefined, { name: "cover memo", file: memoNotesFile([COMBINED], "cover memo") })
+  writeLeanPlan(retitled.directory, [{ ...COMBINED, title: "Supply schedule" }], undefined, undefined, { name: "cover memo" })
   refused(retitled)
   // The same document planned second: its parts were delivered as the first.
   const moved = await deliveredMatter([COMBINED])
   const plan = [SIDE, COMBINED]
-  writeLeanPlan(moved.directory, plan, undefined, undefined, { name: "cover memo", file: memoNotesFile(plan, "cover memo") })
+  writeLeanPlan(moved.directory, plan, undefined, undefined, { name: "cover memo" })
   refused(moved)
 }, 60_000)
 
@@ -224,7 +222,7 @@ test("a body planned under the combined file's name takes a free name and leaves
   const before = saved()
   recordRedline(f.directory, { docPath: "supply-pack.docx", docName: "supply-pack.docx", scope: "phrase", findText: "goods", oldText: "goods", newText: "products", author: "reviewer", reviewComment: "", anchorId: "p000000000001" })
   const body = [{ ...COMBINED, deliverable: "body" as const }]
-  writeLeanPlan(f.directory, body, undefined, undefined, { name: "cover memo", file: memoNotesFile(body, "cover memo") })
+  writeLeanPlan(f.directory, body, undefined, undefined, { name: "cover memo" })
   deliverables.forgetUnplannedDocuments(f.directory)
   await recordLeanDocuments(f.directory, { sessions: scriptedLeanModel().port, registerDeliverable: registerLeanDeliverable }, true)
   expect(saved()).toBe(before)
@@ -314,7 +312,7 @@ describe("combined file rebuild: lock, contention and ownership", () => {
   async function completedMatter(request: (route: string, init?: RequestInit) => Promise<Response>, documents: Document[] = [COMBINED]) {
     const matter = await (await request("/matters", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Combined accept" }) })).json() as { id: string; dir: string }
     initLeanState(matter.dir, { request: "Draft a short supply note from the supply terms.", ownerSessionID: "ses_owner", model: null })
-    writeLeanPlan(matter.dir, documents, undefined, undefined, { name: "cover memo", file: memoNotesFile(documents, "cover memo") })
+    writeLeanPlan(matter.dir, documents, undefined, undefined, { name: "cover memo" })
     for (const index of documents.keys()) {
       const rendered = (await renderMarkdownToDocx(BODY)).bytes
       writeLeanBytes(matter.dir, `d${index + 1}/body-applied.docx`, rendered)

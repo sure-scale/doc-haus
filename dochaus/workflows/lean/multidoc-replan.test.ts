@@ -5,9 +5,11 @@ import path from "node:path"
 import { checkChanges } from "./change-checks"
 import { readParagraphs } from "./checks"
 import { readLeanDocuments } from "./deliverables"
+import { focusedNotesInputs } from "./focused-notes"
 import { readLeanPlan } from "./plan"
 import { restoreLeanStage } from "./restore-stage"
 import { runLean } from "./runner"
+import { LEAN_MAX_RETRIES } from "./stages"
 import { answerQuestion, leanFile, readLeanJson, readOpenItems, readQuestions, writeQuestions, writeOpenItems, replaceStageQuestions, replaceStageOpenItems } from "./state"
 import {
   AGENT, APPLIED, DRAFT, DRAFTED, LETTER, QUESTION, SUPPORT, changesFirst, cleanupMatters, drafter, happyPath, listed, matter, noChanges, pidIn,
@@ -87,7 +89,17 @@ describe("lean drafting when a finished document's steps change", () => {
     const failed = await runLean(directory, { sessions: failing.port, registerDeliverable: deliverables.registerDeliverable })
     expect(failed.status).toBe("failed")
     // d1's review and changes are scoped by the planned documents, so dropping d2 re-reviews d1; its draft is kept.
-    expect(failing.counts()).toEqual([0, 1, 1, 4])
+    const notesJobs = failing.prompts.filter(prompt => prompt.agent === AGENT.finalize)
+    const sections = new Set(notesJobs.map(prompt => prompt.sessionID))
+    expect(sections.size).toBe(focusedNotesInputs(directory).length)
+    expect(failing.counts()).toEqual([0, 1, 1, sections.size * (LEAN_MAX_RETRIES + 1)])
+    for (const sessionID of sections) {
+      const attempts = notesJobs.filter(prompt => prompt.sessionID === sessionID)
+      expect(attempts).toHaveLength(LEAN_MAX_RETRIES + 1)
+      expect(attempts[0]!.text).toContain("<section_kind>")
+      attempts.slice(1).forEach(prompt => expect(prompt.text).toContain("Correct only this section's errors"))
+    }
+    notesJobs.forEach(prompt => expect(prompt.text).not.toContain('"document": "d2"'))
     expect(Object.keys(failed.stages)).toEqual(["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "checklist-check", "package-review", "gate"])
     expect(readOpenItems(directory).filter(item => item.ref.document === "d2")).toEqual([])
     expect(readLeanDocuments(directory)!.documents.map(row => row.document)).toEqual(["d1", "d1", null, null])
@@ -115,7 +127,10 @@ describe("lean drafting when a finished document's steps change", () => {
 
     // d1's entry is now the letter's, so its draft step drafts the letter's two parts from that entry; the plan is not outlined again.
     expect(state.status).toBe("completed")
-    expect(model.counts()).toEqual([2, 1, 1, 1])
+    expect(model.counts()).toEqual([2, 1, 1, focusedNotesInputs(directory).length])
+    const notesJobs = model.prompts.filter(prompt => prompt.agent === AGENT.finalize)
+    expect(notesJobs.some(prompt => prompt.text.includes('"id": "d1"') && prompt.text.includes('"title": "Covering letter"'))).toBe(true)
+    notesJobs.forEach(prompt => expect(prompt.text).not.toContain('"title": "Supply note"'))
     expect(model.prompts.some(prompt => prompt.text.includes("Reply now with the outline only"))).toBe(false)
     expect(readLeanPlan(directory)?.documents.map(row => [row.id, row.title])).toEqual([["d1", "Covering letter"]])
     expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toStartWith("# Covering letter\n")

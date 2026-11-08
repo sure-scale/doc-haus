@@ -1,17 +1,18 @@
 import { afterEach, expect, spyOn, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { acceptChangePlan, acceptChangeReview, checkChangePlan, checkChangeReview, projectedChangeParagraphs } from "./change-pipeline"
+import { acceptChangePlan, acceptChangeReview, changeReviewPrompt, checkChangePlan, checkChangeReview, projectedChangeParagraphs } from "./change-pipeline"
 import { checkChanges } from "./change-checks"
-import { readChangeList, readParagraphs } from "./checks"
+import { parseJsonObject, readChangeList, readParagraphs } from "./checks"
 import { readLeanEvents } from "./events"
 import { finalGate, type GateResult } from "./gate"
+import { openItem } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
-import { readRepairRound } from "./repairs"
+import { changesRepairSections, readRepairRound } from "./repairs"
 import { restoreLeanStage } from "./restore-stage"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, runLean, stageInputSha } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS, stageOutputValid } from "./stages"
 import * as leanState from "./state"
-import { answerQuestion, leanFile, readLeanJson, readLeanState, readLeanText, readOpenItems, readQuestions, updateLeanStage, writeLeanText, writeOpenItems } from "./state"
+import { answerQuestion, leanFile, readLeanJson, readLeanState, readLeanText, readOpenItems, readQuestions, updateLeanStage, writeLeanText, writeOpenItems, writeQuestions, type QuestionAdvice } from "./state"
 import { AGENT, DRAFT, SOURCE, SOURCE_TEXT, SUPPORT, changes, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
 
 afterEach(cleanupMatters)
@@ -75,6 +76,62 @@ test("independent groups prepare concurrently with focused context; full text is
   expect(readParagraphs(directory, "d1", "paragraphs-applied.json").map(row => row.text)).toContain(PAYMENT)
 }, 120_000)
 
+test("a preparation job returns amendments only for paragraphs that change, and a group with none still completes", async () => {
+  const directory = matter(), texts: string[] = []
+  const prepare = preparing()
+  const model = scriptedModel({ ...replies(),
+    [AGENT["change-prepare"]]: (prompt, index, sessionID) => {
+      if (prompt.includes("<group_goal_and_evidence>")) texts.push(prompt)
+      const value = JSON.parse(prepare(prompt, index, sessionID))
+      return JSON.stringify(value.amendments.some((row: { updated: string }) => row.updated === PAYMENT) ? { amendments: [], questions: [] } : value)
+    },
+    [AGENT.changes]: prompt => JSON.stringify({ amendments: [{ pid: pidOf(prompt, "The supplier shall deliver the goods."), updated: DELIVERY, reason: "States source delivery period.", sources: SUPPORT }], questions: [] }),
+  })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+  expect(texts).toHaveLength(2)
+  for (const text of texts) {
+    expect(text).toContain("Return an amendment only for a listed pid whose wording must change; omit the rest.")
+    expect(text).not.toContain("One explicit operation per initial pid")
+  }
+  const applied = readParagraphs(directory, "d1", "paragraphs-applied.json").map(row => row.text)
+  expect(applied).toContain(DELIVERY)
+  expect(applied).toContain("Payment timing remains to be agreed.")
+}, 120_000)
+
+test("a body review finding names a paragraph of its owning draft; a null pid counts as none and a change id is refused", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
+  const pid = readParagraphs(directory, "d1")[0]!.pid
+  const review = (finding: Record<string, unknown>) => ({ status: "changes-required", findings: [{ detail: "A material correction remains.", ...finding }], limitations: [] })
+  const missing = "Each body finding needs the pid of a paragraph in its owning document's initial draft: name the paragraph the correction amends or where the missing wording belongs."
+  expect(checkChangeReview(directory, "d1", review({ pid }))).toEqual([])
+  expect(checkChangeReview(directory, "d1", review({}))).toEqual([missing])
+  expect(checkChangeReview(directory, "d1", review({ pid: null, target: "body" }))).toEqual([missing])
+  expect(checkChangeReview(directory, "d1", review({ pid: "a4" }))).toEqual(['Finding pid "a4" is not a paragraph of its owning document\'s initial draft; a change id such as a4 is not a paragraph id.'])
+  expect(checkChangeReview(directory, "d1", review({ pid: "" }))[0]).toStartWith('Finding pid ""')
+  // Research needs no paragraph; its null pid is left out of the saved review.
+  expect(checkChangeReview(directory, "d1", review({ target: "research" }))).toEqual([])
+  expect(acceptChangeReview(directory, "d1", JSON.stringify(review({ pid: null, target: "research" }))).issues).toEqual([])
+  expect(readLeanJson(directory, "d1/change-review.json")).toEqual(review({ target: "research" }))
+  expect(acceptChangeReview(directory, "d1", JSON.stringify(review({ pid: null }))).issues).toEqual([missing])
+}, 120_000)
+
+// The writer repairs each listed item; the change review only checks whether
+// the previous review's findings are still present in the projected body.
+test("the change review reads repair items as findings to verify, without the writer's repair instructions or change list", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
+  const pid = readParagraphs(directory, "d1")[0]!.pid
+  const item = openItem("draft", "quote_miss", "The quoted figure is not in the supplied terms.", { document: "d1", pid })
+  leanState.replaceStageOpenItems(directory, "draft", "d1", [item])
+  const writer = changesRepairSections(directory, "d1").join("\n")
+  expect(writer).toContain(`<required_repairs>\nEach item is a defect the draft still has.`)
+  expect(writer).toContain("<previous_changes>")
+  const prompt = changeReviewPrompt(directory, "d1")
+  expect(prompt).toContain(`<previous_findings>\nFindings the previous review raised; verify each against the projected body and report only what is still present:\n- ${item.id} [${pid}]: ${item.detail}`)
+  for (const writing of ["<required_repairs>", "Each item is a defect the draft still has", "Fix each one with an amendment", "<previous_changes>"]) expect(prompt).not.toContain(writing)
+}, 120_000)
+
 test("canonical support and dependency admission reject only the mutated input", async () => {
   const directory = matter()
   expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
@@ -91,6 +148,47 @@ test("canonical support and dependency admission reject only the mutated input",
   expect(checkChangePlan(directory, "d1", value).join(" ")).toContain("more than one group")
 }, 120_000)
 
+test("a source name the change plan does not know is named with the names it accepts, and an adopted answer is quoted under its own name", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
+  // The lawyer delegated a question, so its recommended option was adopted.
+  const adopted = "Add no separate late-delivery remedy."
+  const advice: QuestionAdvice = { options: [{ id: "o1", text: adopted }, { id: "o2", text: "Reduce the price for late delivery." }], recommendation: { option: "o1", rationale: "The terms add no remedy.", basis: SUPPORT } }
+  writeQuestions(directory, [...readQuestions(directory), { id: "q-late", stage: "intake", question: "Should late delivery carry a remedy?", context: "The terms are silent.", status: "open", kind: "judgment", advice }])
+  answerQuestion(directory, "q-late", { adopt: true })
+  const value = structuredClone(readLeanJson(directory, "d1/change-plan.json")) as { groups: { sources: { source_id: string; quote: string }[] }[]; findings?: unknown[] }
+  expect(checkChangePlan(directory, "d1", value)).toEqual([])
+  const named = `"request" for the request and the lawyer's answers, "adopted:q-late" for an adopted answer, or an approved research URL.`
+  value.groups[0].sources[0].source_id = "terms.docx"
+  expect(checkChangePlan(directory, "d1", value)).toEqual([`groups[0].sources[0].source_id "terms.docx" is not a known source name. Use the exact name of a matter document, ${named}`])
+  value.groups[0].sources[0] = { source_id: SOURCE, quote: " " }
+  expect(checkChangePlan(directory, "d1", value)).toEqual(["groups[0].sources[0].quote must be non-empty."])
+  // Findings name their sources the same way.
+  value.groups[0].sources[0] = SUPPORT[0]
+  const finding = (source: { source_id: string; quote: string }) => ({ disposition: "deferred", kind: "information", detail: "The remedy for late delivery stays as adopted.", reason: "The lawyer delegated it.", documents: ["d1"], sources: [source], limitations: [] })
+  value.findings = [finding({ source_id: "terms.docx", quote: adopted })]
+  expect(checkChangePlan(directory, "d1", value)).toEqual([`findings[0].sources[0].source_id "terms.docx" is not a known source name. Use the exact name of a matter document, ${named}`])
+  // The adopted words are not the lawyer's: under "request" they are refused and pointed to their own name, without the generic copy advice.
+  value.findings = [finding({ source_id: "request", quote: adopted })]
+  const asRequest = checkChangePlan(directory, "d1", value).join(" ")
+  expect(asRequest).toContain(`Quote them under the source name "adopted:q-late".`)
+  expect(asRequest).not.toContain("read-document")
+  value.findings = [finding({ source_id: "adopted:q-late", quote: adopted })]
+  expect(checkChangePlan(directory, "d1", value)).toEqual([])
+  value.findings = [finding({ source_id: "adopted:q-late", quote: "Add a late-delivery remedy." })]
+  expect(checkChangePlan(directory, "d1", value).join(" ")).toContain("not in the recommendation adopted for that question")
+
+  // The change list's amendments accept the adopted answer the same way.
+  const list = readChangeList(directory, "d1")!, paragraphs = readParagraphs(directory, "d1")
+  const amended = (source: { source_id: string; quote: string }) => JSON.stringify({ amendments: [{ ...list.amendments[0], sources: [source] }], questions: [] })
+  expect(checkChanges(directory, amended({ source_id: "adopted:q-late", quote: adopted }), paragraphs).issues).toEqual([])
+  const changeIssues = checkChanges(directory, amended({ source_id: "request", quote: adopted }), paragraphs).issues.join(" ")
+  expect(changeIssues).toContain(`Quote them under the source name "adopted:q-late".`)
+  expect(changeIssues).not.toContain("read-document")
+  expect(checkChanges(directory, amended({ source_id: "terms.docx", quote: adopted }), paragraphs).issues)
+    .toContain(`amendments[0].sources[0].source_id "terms.docx" is not a known source name. Use the exact name of a matter document, ${named}`)
+}, 120_000)
+
 test("one wrapped JSON stage result is admitted without a formatting retry, with source checks unchanged", async () => {
   const directory = matter()
   expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
@@ -103,7 +201,9 @@ test("one wrapped JSON stage result is admitted without a formatting retry, with
   const unsupported = structuredClone(value)
   unsupported.groups[0].sources[0].quote = "absent from the canonical source"
   expect(acceptChangePlan(directory, "d1", `Source check complete.\n\`\`\`json\n${JSON.stringify(unsupported)}\n\`\`\``).issues.join(" ")).toContain("not in that document")
-  expect(acceptChangePlan(directory, "d1", `${wrapped}\n\`\`\`json\n${reply}\n\`\`\``).issues.length).toBeGreaterThan(0)
+  // A second block of the same shape is the model's final answer; one of another shape leaves the reply ambiguous.
+  expect(acceptChangePlan(directory, "d1", `${wrapped}\n\`\`\`json\n${reply}\n\`\`\``).issues).toEqual([])
+  expect(acceptChangePlan(directory, "d1", `${wrapped}\n\`\`\`json\n{}\n\`\`\``).issues.length).toBeGreaterThan(0)
   expect(acceptChangePlan(directory, "d1", JSON.stringify([value])).issues.length).toBeGreaterThan(0)
   expect(acceptChangePlan(directory, "d1", `Result:\n\`\`\`json\n${JSON.stringify([value])}\n\`\`\``).issues.length).toBeGreaterThan(0)
   expect(acceptChangePlan(directory, "d1", `Result:\n\`\`\`json\n[${reply}\n\`\`\``).issues.length).toBeGreaterThan(0)
@@ -111,17 +211,83 @@ test("one wrapped JSON stage result is admitted without a formatting retry, with
   expect(acceptChangePlan(directory, "d1", reply.slice(0, -1)).issues.length).toBeGreaterThan(0)
 }, 120_000)
 
+test("a question naming an internal id is retried with how to say it in words, and asked in words on the last attempt", async () => {
+  const directory = matter()
+  expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
+  const pid = readParagraphs(directory, "d1").find(row => row.text === "Payment timing remains to be agreed.")!.pid
+  const naming = { pid, question: `Should paragraph ${pid} keep its payment timing?`, kind: "instruction", context: "The answer changes d1." }
+  const plain = { pid, question: 'Should "Payment timing remains to be agreed." keep its payment timing?', kind: "instruction", context: "The answer changes the supply note." }
+  const value = readLeanJson(directory, "d1/change-plan.json") as Record<string, unknown>
+  const planned = (question: Record<string, unknown>) => JSON.stringify({ ...value, questions: [question] })
+  expect(acceptChangePlan(directory, "d1", planned(naming)).issues).toEqual([
+    `questions[0].question names the internal id "${pid}". The lawyer sees only words: name the paragraph by its heading or quote its words.`,
+    'questions[0].context names the internal id "d1". The lawyer sees only words: name the document by its title.',
+  ])
+  expect(acceptChangePlan(directory, "d1", planned(plain)).issues).toEqual([])
+  const last = acceptChangePlan(directory, "d1", planned(naming), { final: true })
+  expect(last.issues).toEqual([])
+  const saved = (readLeanJson(directory, "d1/change-plan.json") as { questions: { question: string; context: string }[] }).questions[0]!
+  for (const question of [last.questions![0]!, saved]) {
+    expect(`${question.question} ${question.context}`).not.toMatch(new RegExp(`${pid}|\\bd1\\b`))
+    expect(question.question).toContain("payment timing")
+  }
+
+  // The change list's questions are checked the same way, and on the last attempt (withholdUnverified) asked in words.
+  const paragraphs = readParagraphs(directory, "d1")
+  const changed = (question: Record<string, unknown>) => JSON.stringify({ amendments: [{ pid, updated: "Payment timing remains to be agreed. [open item: confirm the payment timing]", reason: "Payment timing needs the lawyer.", sources: [] }], questions: [question] })
+  expect(checkChanges(directory, changed(naming), paragraphs, { document: "d1" }).issues).toEqual([
+    `questions[0].question names the internal id "${pid}". The lawyer sees only words: name the paragraph by its heading or quote its words.`,
+    'questions[0].context names the internal id "d1". The lawyer sees only words: name the document by its title.',
+  ])
+  expect(checkChanges(directory, changed(plain), paragraphs, { document: "d1" }).issues).toEqual([])
+  const withheld = checkChanges(directory, changed(naming), paragraphs, { document: "d1", withholdUnverified: true })
+  expect(withheld.issues).toEqual([])
+  const asked = withheld.changes!.questions[0]!
+  expect(`${asked.question} ${asked.context}`).not.toMatch(new RegExp(`${pid}|\\bd1\\b`))
+  expect(asked.id).toBe(checkChanges(directory, changed(naming), paragraphs, { document: "d1", withholdUnverified: true }).changes!.questions[0]!.id)
+}, 120_000)
+
 test("a JSON syntax error is retried with where it is, so the model can find a stray bracket", () => {
   const directory = matter()
   const issue = (reply: string) => checkChanges(directory, reply, []).issues.join(" ")
   // One brace too many closes the object while its list is still open.
   expect(issue('{"amendments": [{"pid": "p1", "sources": [{"quote": "a"}]} }], "questions": []}'))
-    .toContain("at character 59: unexpected } before the list opened at character 15 is closed; near")
-  expect(issue('{"amendments": [{"pid": "p1", "sources": [{"quote": "a"}]} }], "questions": []}')).toContain(">>> }],")
-  expect(issue('{"amendments": [{"pid": "p1"}, "questions": []}')).toContain("unexpected } before the list opened at character 15 is closed")
-  expect(issue('{"amendments": [], "questions": [], "note": {"a": 1}')).toContain("the object opened at character 0 is never closed")
-  // Brackets inside strings are text, not structure.
-  expect(issue('{"amendments": [{"pid": "p1", "reason": "see [3} and \\"}\\""}], "questions": [] x}')).not.toContain("at character")
+    .toContain('at character 59, "]" was expected to close the "amendments" list opened at character 15, but "}" was found.')
+  expect(issue('{"amendments": [{"pid": "p1", "sources": [{"quote": "a"}]} }], "questions": []}')).toContain(">>>}],")
+  expect(issue('{"amendments": [{"pid": "p1"}, "questions": []}')).toContain('":" was found where it cannot stand')
+  expect(issue('{"amendments": [], "questions": [], "note": {"a": 1}')).toContain('the reply ends before "}" closes the object opened at character 0')
+  // Brackets inside strings are text, not structure: the break is the stray word after them.
+  const stray = '{"amendments": [{"pid": "p1", "reason": "see [3} and \\"}\\""}], "questions": [] x}'
+  expect(issue(stray)).toContain(`at character ${stray.indexOf(" x}") + 1}, "," was expected between two values, but "x" was found.`)
+  // Prose around the object does not move the place: it is counted in the reply.
+  expect(issue(`Here are the changes:\n${stray}`)).toContain(`at character ${stray.indexOf(" x}") + 23}, "," was expected`)
+})
+
+test("every stage reply is read as one object: bare, fenced or in prose, never an ambiguous one", () => {
+  const object = '{"amendments": [], "note": "kept"}'
+  const read = (reply: string) => parseJsonObject(reply)
+  for (const reply of [
+    object,
+    `Here is the result:\n\`\`\`json\n${object}\n\`\`\``,
+    `\`\`\`json\n${object}\n\`\`\`\nThat is all.`,
+    `\`\`\`JSON\n${object}\n\`\`\``,
+    `The result is ${object} as asked.`,
+  ]) expect(read(reply)).toEqual({ ok: true, value: { amendments: [], note: "kept" } })
+  const refused = (reply: string) => { const parsed = read(reply); return parsed.ok ? "" : parsed.error }
+  // A model that drafts its object and then corrects it leaves several blocks: the last is taken when every
+  // block has the last's keys and no brace stands outside the fences; any other several are refused.
+  const revised = '{"amendments": [{"pid": "p1"}], "note": "revised"}'
+  expect(read(`First:\n\`\`\`json\n${object}\n\`\`\`\nOn reflection:\n\`\`\`json\n${revised}\n\`\`\``)).toEqual({ ok: true, value: { amendments: [{ pid: "p1" }], note: "revised" } })
+  expect(refused(`\`\`\`json\n${object}\n\`\`\`\n\`\`\`json\n{}\n\`\`\``)).toContain("more than one fenced block")
+  expect(refused(`\`\`\`json\n${object}\n\`\`\`\nKeep {this} aside.\n\`\`\`json\n${revised}\n\`\`\``)).toContain("more than one fenced block")
+  expect(refused(`\`\`\`json\n${object}\n\`\`\`\n\`\`\`json\n${revised.slice(0, -1)}\n\`\`\``)).toContain("more than one fenced block")
+  expect(refused(`Keep {this} aside.\n\`\`\`json\n${object}\n\`\`\``)).toContain("ambiguous")
+  expect(refused(`Choose {"a": 1} or {"b": 2}.`)).toContain("not valid JSON")
+  expect(refused(`[${object}]`)).toContain("not an object")
+  expect(refused(`Result: [${object}]`)).toContain("not an object")
+  expect(refused("No object here.")).toBe("No JSON object was found in the reply.")
+  // A cut-off reply says where it ends.
+  expect(refused('{"amendments": [')).toContain("the reply ends before")
 })
 
 test("wrapped review results retain material findings and reject ambiguous alternatives", async () => {
@@ -218,12 +384,13 @@ test("projected repair retains prior amendment A while correcting missing effect
 
 test("material projected defects consume the shared bound, then are disclosed with a review draft rather than passing through limitations", async () => {
   const directory = matter()
-  const model = scriptedModel({ ...replies(), [AGENT["change-review"]]: () => JSON.stringify({ status: "changes-required", findings: [{ detail: "Material operative defect remains." }], limitations: ["Recorded in notes"] }) })
+  // The finding names the heading, a paragraph no amendment touches.
+  const model = scriptedModel({ ...replies(), [AGENT["change-review"]]: () => JSON.stringify({ status: "changes-required", findings: [{ pid: readParagraphs(directory, "d1")[0]!.pid, detail: "Material operative defect remains." }], limitations: ["Recorded in notes"] }) })
   const state = await runLean(directory, { sessions: model.port })
   expect(state.status).toBe("completed")
   expect(model.count(AGENT["change-review"])).toBe(LEAN_MAX_SUBSTANTIVE_REPAIRS + 1)
   expect(readRepairRound(directory)?.substantive_attempts).toBe(LEAN_MAX_SUBSTANTIVE_REPAIRS)
-  // The finding names no paragraph: nothing is withheld, and it stays open for the lawyer.
+  // No pending amendment is withheld for it, and it stays open for the lawyer.
   expect(readChangeList(directory, "d1")?.withheld ?? []).toEqual([])
   expect(readChangeList(directory, "d1")?.amendments).toHaveLength(2)
   const item = readOpenItems(directory).find(row => row.stage === "change-review")!
@@ -424,7 +591,7 @@ test("essential new authority issue from projected review revisits research befo
 test("pre-apply and package semantic failures consume one shared repair allowance", async () => {
   const directory = matter()
   const model = scriptedModel({ ...replies(),
-    [AGENT["change-review"]]: (_, index) => JSON.stringify(index ? { status: "pass", findings: [], limitations: [] } : { status: "changes-required", findings: [{ detail: "One material body correction." }], limitations: [] }),
+    [AGENT["change-review"]]: (_, index) => JSON.stringify(index ? { status: "pass", findings: [], limitations: [] } : { status: "changes-required", findings: [{ pid: readParagraphs(directory, "d1")[0]!.pid, detail: "One material body correction." }], limitations: [] }),
     [AGENT["package-review"]]: () => JSON.stringify({ status: "changes-required", delivery: [], findings: [{ target: "memo", detail: "Explanation still disagrees with final wording." }], limitations: [] }),
   })
   // The allowance used up, the package review's finding goes with a review draft.
@@ -461,7 +628,7 @@ test("a prior final gate pass cannot conceal a material projected-review rejecti
   expect((await runLean(directory, { sessions: scriptedModel(replies()).port })).status).toBe("completed")
   expect(finalGate(directory).status).toBe("pass")
   const key = stageInputSha(directory, "gate")
-  writeLeanText(directory, "d1/change-review.json", JSON.stringify({ status: "changes-required", findings: [{ detail: "Material resulting wording conflicts with an agreed condition." }], limitations: ["Disclosed in old notes"] }))
+  writeLeanText(directory, "d1/change-review.json", JSON.stringify({ status: "changes-required", findings: [{ pid: readParagraphs(directory, "d1")[0]!.pid, detail: "Material resulting wording conflicts with an agreed condition." }], limitations: ["Disclosed in old notes"] }))
   expect(stageInputSha(directory, "gate")).not.toBe(key)
   expect(finalGate(directory).status).toBe("blocked")
   expect(finalGate(directory).delivery).toBeNull()

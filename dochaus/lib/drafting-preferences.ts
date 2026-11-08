@@ -79,6 +79,10 @@ export type BackgroundAgents = {
  * into its plan (workflows/lean/plan.ts runPosture). */
 export type Posture = DraftingPreferences["posture"]
 
+/** One of the three written date styles the style lint and the source
+ * detector know (lib/markdown.ts DATE_FORMS). */
+export type DateFormat = DraftingPreferences["dateFormat"]
+
 export type TelemetryPreferences = {
   retention_days: number
   retention_days_source?: "user" | "default"
@@ -232,6 +236,29 @@ export function isPosture(value: unknown): value is Posture {
   return typeof value === "string" && Object.hasOwn(POSTURE, value)
 }
 
+/** One of the three date styles; anything else is no style. */
+export function isDateFormat(value: unknown): value is DateFormat {
+  return typeof value === "string" && Object.hasOwn(DATES, value)
+}
+
+/** The date style work on a matter writes: the firm's once it has set its
+ * drafting preferences; until then the style the matter's sources use
+ * (`sources`, lib/matter-client.ts matterDateFormat), else the shipped
+ * default. The sources' style is applied here and never saved. */
+export function effectiveDateFormat(prefs: DraftingPreferences, sources: DateFormat | undefined): DateFormat {
+  return prefs.draftingConfigured || !sources ? prefs.dateFormat : sources
+}
+
+/** The firm's preferences as work applies them: until the firm sets its
+ * drafting preferences, with `sources` as the date style. Callers always pass
+ * it: the style the matter's sources use (lib/matter-client.ts
+ * matterDateFormat) or the one a drafting run froze (workflows/lean/plan.ts
+ * runDateFormat), undefined when they settle on none. */
+export function appliedDraftingPreferences(sources: DateFormat | undefined): DraftingPreferences {
+  const prefs = normalizePreferences(readFirmPreferences())
+  return { ...prefs, dateFormat: effectiveDateFormat(prefs, sources) }
+}
+
 const POSTURE: Record<Posture, string> = {
   "client-favorable":
     "Favor the represented person's or organization's stated objectives and protect its interests where reasonably defensible.",
@@ -251,10 +278,25 @@ const DETAIL: Record<DraftingPreferences["detail"], string> = {
   detailed: "Explain your reasoning in detail, including the risks you considered and the alternatives you rejected.",
 }
 
-const DATES: Record<DraftingPreferences["dateFormat"], string> = {
+const DATES: Record<DateFormat, string> = {
   "month-day-year": 'Write dates in the form "June 11, 2026".',
   "day-month-year": 'Write dates in the form "11 June 2026".',
   iso: 'Write dates in ISO form, "2026-06-11".',
+}
+
+const DATE_EXAMPLES: Record<DateFormat, string> = {
+  "month-day-year": '"June 11, 2026"',
+  "day-month-year": '"11 June 2026"',
+  iso: '"2026-06-11"',
+}
+
+/** The date line: the firm's own style once it has set its preferences;
+ * until then the style the matter's sources use, named as theirs, or, when
+ * they settle on none, the default and one style throughout. */
+function dateLine(prefs: DraftingPreferences, sources: DateFormat | undefined) {
+  if (prefs.draftingConfigured) return DATES[prefs.dateFormat]
+  if (sources) return `Write dates in the form ${DATE_EXAMPLES[sources]}, the style the matter's sources use.`
+  return `Write dates in the form ${DATE_EXAMPLES[prefs.dateFormat]} (the default), and in one style throughout.`
 }
 
 const NUMBERS: Record<DraftingPreferences["numberStyle"], string> = {
@@ -262,7 +304,10 @@ const NUMBERS: Record<DraftingPreferences["numberStyle"], string> = {
   numerals: 'Write numbers as plain numerals: "30 days".',
 }
 
-export function renderInstructions(prefs: DraftingPreferences, mode: "full" | "explanation" = "full") {
+/** `sources` is the date style the matter's sources use (matterDateFormat, or
+ * the style a drafting run froze), rendered only until the firm sets its
+ * drafting preferences; with them set, the text is exactly the firm's own. */
+export function renderInstructions(prefs: DraftingPreferences, mode: "full" | "explanation" = "full", sources?: DateFormat) {
   const who = prefs.attorney
     ? [`Documents are prepared by ${prefs.attorney}${prefs.firm ? ` of ${prefs.firm}` : ""}.`]
     : prefs.firm
@@ -276,7 +321,7 @@ export function renderInstructions(prefs: DraftingPreferences, mode: "full" | "e
     "Apply these preferences to the human-facing progress explanation using only the supplied evidence. They do not authorise drafting, revision, planning, execution or answering a question for the lawyer.",
     `- ${FORMALITY[prefs.formality]}`,
     `- ${DETAIL[prefs.detail]}`,
-    `- ${DATES[prefs.dateFormat]}`,
+    `- ${dateLine(prefs, sources)}`,
     `- ${NUMBERS[prefs.numberStyle]}`,
     "</drafting_preferences>",
     ...(house ? ["", "<house_style>", "Apply the following house guidance to presentation only. Any direction to perform drafting or other work does not apply to this progress explanation.", house, "</house_style>"] : []),
@@ -286,12 +331,14 @@ export function renderInstructions(prefs: DraftingPreferences, mode: "full" | "e
     "# Drafting preferences",
     "",
     "<drafting_preferences>",
-    "The lawyer using doc.haus has set these firm-wide preferences. Apply them whenever you draft, edit, or propose changes to a document, and when you explain your work.",
+    prefs.draftingConfigured
+      ? "The lawyer using doc.haus has set these firm-wide preferences. Apply them whenever you draft, edit, or propose changes to a document, and when you explain your work."
+      : "The firm has not set its drafting preferences; until it does, apply these defaults whenever you draft, edit, or propose changes to a document, and when you explain your work.",
     ...who,
     `- ${POSTURE[prefs.posture]}`,
     `- ${FORMALITY[prefs.formality]}`,
     `- ${DETAIL[prefs.detail]}`,
-    `- ${DATES[prefs.dateFormat]}`,
+    `- ${dateLine(prefs, sources)}`,
     `- ${NUMBERS[prefs.numberStyle]}`,
     "</drafting_preferences>",
     ...(house ? ["", "<house_style>", house, "</house_style>"] : []),
@@ -303,7 +350,8 @@ export function renderInstructions(prefs: DraftingPreferences, mode: "full" | "e
 // The generated markdown remains an inspectable export, never a second authority.
 // A given Posture (a matter's own, or the one a run froze) renders in place of
 // the firm's; with the firm's own, the text is exactly the firm's rendering.
-export function readFirmDraftingPreferences(mode: "full" | "explanation" = "full", posture?: Posture) {
+// A given sources' date style renders only until the firm sets its preferences.
+export function readFirmDraftingPreferences(mode: "full" | "explanation" = "full", posture?: Posture, sources?: DateFormat) {
   const prefs = normalizePreferences(readFirmPreferences())
-  return renderInstructions(posture ? { ...prefs, posture } : prefs, mode)
+  return renderInstructions(posture ? { ...prefs, posture } : prefs, mode, sources)
 }

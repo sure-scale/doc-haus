@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { readFileSync, readdirSync } from "node:fs"
 import path from "node:path"
+import { focusedNotesInputs } from "./focused-notes"
 import { drainLeanRequests, enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, checklistRefinementSelections, isChecklistRefinement } from "./requests"
 import { runLean } from "./runner"
 import { quoteFound } from "./quotes"
-import { leanDir, readLeanJson, readLeanState, readLeanText, readQuestions, writeLeanText } from "./state"
+import { hashStageInputs, leanDir, readLeanJson, readLeanState, readLeanText, readQuestions, writeLeanBytes, writeLeanText, writeQuestions, type LeanStageState, type Question } from "./state"
+import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
+import { withFactOptions } from "./fact-answers"
+import { writeLeanPlan } from "./plan"
 import { AGENT, changes, cleanupMatters, draftingNotes, happyPath, matter, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // The lawyer request queue: POSTs append request files, the lean runner is the
@@ -13,6 +17,27 @@ import { AGENT, changes, cleanupMatters, draftingNotes, happyPath, matter, sameS
 afterEach(cleanupMatters)
 
 const requestsDir = (directory: string) => path.join(leanDir(directory), "requests")
+const stageKey = (directory: string, step: "gate" | "checklist-check") => hashStageInputs(step, LEAN_PROMPT_VERSION, stageInputs(directory, step))
+
+function blockedGateFixture() {
+  const directory = matter()
+  writeLeanPlan(directory, [{ title: "Storage notice", purpose: "Describe storage handling.", parts: [{ heading: "Storage", scope: "Container identification." }] }])
+  const offered = withFactOptions({ id: "q-label", stage: "intake", kind: "fact", status: "open", question: "What is the label design?", context: "The design is not supplied." })
+  const question: Question = { ...offered, status: "answered", answer_kind: "option", option_id: "o1", answer: offered.options![0]!.text, fact_status: "provisional" }
+  writeQuestions(directory, [question])
+  writeLeanBytes(directory, "d1/body-applied.docx", Buffer.from("synthetic Word version one"))
+  writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([{ pid: "p-label", text: "The label design remains unknown.", sha256: "synthetic" }]))
+  writeLeanText(directory, "gate.json", JSON.stringify({ status: "blocked", blocking: [{ id: "gate:label", stage: "gate", kind: "question", status: "open", detail: "The unknown design needs a visible marker.", ref: { document: "d1", pid: "p-label", question_id: question.id } }] }))
+  writeLeanText(directory, "repairs.json", JSON.stringify({ round: 5, substantive_attempts: 5, requested_at: "saved", items: [] }))
+  const original = readLeanState(directory)!
+  const checklist: LeanStageState = { ...original.stages["checklist-check"]!, status: "done", input_sha: stageKey(directory, "checklist-check") }
+  const gate: LeanStageState = { ...original.stages.gate!, status: "blocked", input_sha: stageKey(directory, "gate") }
+  const stopped = { ...original, status: "blocked" as const, stages: { ...original.stages,
+    "checklist-check": checklist,
+    gate,
+  } }
+  return { directory, stopped, question }
+}
 
 describe("lean request queue", () => {
   test("technical checklist refinement waits for settlement and does not become client instructions", () => {
@@ -49,10 +74,56 @@ describe("lean request queue", () => {
     expect(readLeanJson(directory, `requests/done/${refine.id}.json`)).toMatchObject({ outcome: { status: "rejected" } })
     expect(checklistRefinementSelections(directory)).toEqual([])
     // The same gate verdict, settled rather than paused, is a request for a repair round.
-    const { paused_at: _paused, ...settled } = paused
+    const { paused_at: _paused, ...unkeyed } = paused
+    const settled = { ...unkeyed, stages: { ...unkeyed.stages,
+      "checklist-check": { ...unkeyed.stages["checklist-check"]!, status: "done" as const, input_sha: stageKey(directory, "checklist-check") },
+      gate: { ...unkeyed.stages.gate!, status: "blocked" as const, input_sha: stageKey(directory, "gate") },
+    } }
     enqueueLeanRequest(directory, { kind: "continue" })
     expect(drainLeanRequests(directory, settled)).toMatchObject({ repairRound: true })
     expect(readLeanText(directory, "repairs.json")).not.toBe(repairs)
+  })
+
+  for (const stale of ["word", "answer", "verification-contract", "missing-gate-key", "pending-gate", "pending-checklist", "missing-checklist-key"] as const)
+    test(`a blocked gate Continue resumes current checks before repair when ${stale} is obsolete or unverifiable`, () => {
+      const { directory, stopped, question } = blockedGateFixture()
+      const repairs = readLeanText(directory, "repairs.json")
+      if (stale === "word") {
+        const gateBefore = stopped.stages.gate.input_sha
+        const checklistBefore = stopped.stages["checklist-check"].input_sha
+        if (typeof gateBefore !== "string" || typeof checklistBefore !== "string") throw new Error("The fixture needs current gate and checklist keys.")
+        writeLeanBytes(directory, "d1/body-applied.docx", Buffer.from("synthetic Word version two"))
+        // The gate's own input list reads paragraph records; its upstream
+        // checklist key is what notices changed accepted Word bytes.
+        expect(stageKey(directory, "gate")).toBe(gateBefore)
+        expect(stageKey(directory, "checklist-check")).not.toBe(checklistBefore)
+      }
+      if (stale === "answer") writeQuestions(directory, [{ ...question, answer: "No additional information is available; disclose the unresolved design." }])
+      if (stale === "verification-contract") {
+        for (const step of ["gate", "checklist-check"] as const) {
+          const inputs = stageInputs(directory, step)
+          expect(inputs.some(input => input.name === "provisional-fact-marker-contract")).toBe(true)
+          stopped.stages[step].input_sha = hashStageInputs(step, LEAN_PROMPT_VERSION, inputs.map(input => input.name === "provisional-fact-marker-contract" ? { ...input, bytes: "previous marker verification contract" } : input))
+        }
+      }
+      if (stale === "missing-gate-key") stopped.stages.gate.input_sha = null
+      if (stale === "pending-gate") stopped.stages.gate = { ...stopped.stages.gate, status: "pending" }
+      if (stale === "pending-checklist") stopped.stages["checklist-check"] = { ...stopped.stages["checklist-check"], status: "pending" }
+      if (stale === "missing-checklist-key") stopped.stages["checklist-check"].input_sha = null
+      const resume = enqueueLeanRequest(directory, { kind: "continue" })
+      expect(drainLeanRequests(directory, stopped)).toEqual({ answered: 0, updated: 0, repairRound: false })
+      expect(readLeanText(directory, "repairs.json")).toBe(repairs)
+      expect(readLeanJson(directory, `requests/done/${resume.id}.json`)).toMatchObject({ outcome: { status: "resume" } })
+    })
+
+  test("a genuinely current blocked gate still admits the existing manual repair under its allowance", () => {
+    const { directory, stopped } = blockedGateFixture()
+    writeLeanText(directory, "repairs.json", JSON.stringify({ round: 2, substantive_attempts: 2, requested_at: "saved", items: [] }))
+    stopped.stages.gate.input_sha = stageKey(directory, "gate")
+    const resume = enqueueLeanRequest(directory, { kind: "continue" })
+    expect(drainLeanRequests(directory, stopped)).toMatchObject({ repairRound: true })
+    expect(readLeanJson(directory, "repairs.json")).toMatchObject({ round: 3, substantive_attempts: 2 })
+    expect(readLeanJson(directory, `requests/done/${resume.id}.json`)).toMatchObject({ outcome: { status: "repair_round" } })
   })
 
   test("refinement rejects other stop points and malformed selections", () => {
@@ -101,7 +172,7 @@ for (let i = 0; i < 20; i++) enqueueLeanRequest(process.argv[1], { kind: "contin
     expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
     const questions = readQuestions(directory)
     expect(questions).toHaveLength(2)
-    expect(model.prompts.map(row => row.agent)).toEqual([AGENT.instructions, AGENT.discrepancy, AGENT.intake, AGENT.advise, AGENT.advise])
+    expect(model.prompts.map(row => row.agent)).toEqual([AGENT.instructions, AGENT.discrepancy, AGENT.discrepancy, AGENT.intake, AGENT.advise, AGENT.advise])
     expect(readLeanText(directory, "d1/draft.md")).toBeUndefined()
     expect(readLeanJson(directory, "plan.json")).toBeUndefined()
     enqueueLeanRequest(directory, { kind: "answer", question_id: questions[0]!.id, answer: "Singapore law." })
@@ -133,7 +204,11 @@ for (let i = 0; i < 20; i++) enqueueLeanRequest(process.argv[1], { kind: "contin
     const state = await runLean(directory, { sessions: model.port })
 
     expect(state.status).toBe("completed")
-    expect(model.counts()).toEqual([3, 1, 1, 1])
+    expect(model.counts().slice(0, 3)).toEqual([3, 1, 1])
+    // Continue does not repeat any accepted draft/review or focused notes assignment.
+    const notes = model.prompts.filter(prompt => prompt.agent === AGENT.finalize)
+    expect(notes.map(prompt => prompt.text).toSorted()).toEqual(focusedNotesInputs(directory).map(input => input.text).toSorted())
+    expect(new Set(notes.map(prompt => prompt.sessionID)).size).toBe(notes.length)
     expect(pendingLeanRequests(directory)).toEqual([])
     const done = readdirSync(path.join(requestsDir(directory), "done"))
     expect(done).toHaveLength(1)

@@ -4,10 +4,10 @@ import { OPEN_ITEM_PATTERN } from "../../lib/marker-patterns"
 import { normalize } from "../../lib/quote-verify"
 import { markerIssues } from "./change-markers"
 import { draftStatusAmendmentIssues } from "./draft-status"
-import { record, retypedLabelIssues, withoutListLabel, type ChangeList, type ParagraphRow, type StageCheck } from "./checks"
+import { inQuestionWords, parseJsonObject, record, questionWordIssues, retypedLabelIssues, withoutListLabel, type ChangeList, type ParagraphRow, type StageCheck } from "./checks"
 import { paragraphShowsOpenItem } from "./gate"
 import { approvedResearch } from "./research"
-import { REQUEST_SOURCE, excerpt, matterSourceIDs, openItem, proseQuoteIssues, quoteFound, quoteMissIssue } from "./quotes"
+import { REQUEST_SOURCE, adoptedSources, excerpt, matterSourceIDs, openItem, proseQuoteIssues, quoteFound, quoteMissIssue, sourceNameIssues } from "./quotes"
 import { FIRST_DOCUMENT, type DocID } from "./plan"
 import { questionKindIssues, readQuestions, shortHash, type Question, type QuestionKind } from "./state"
 
@@ -34,10 +34,10 @@ export function checkChanges(directory: string, content: string, paragraphs: Par
   StageCheck & { changes?: ChangeList } {
   const parsed = parseJsonObject(content)
   if (!parsed.ok)
-    return { issues: [`The reply must be one JSON object {"amendments": [...], "questions": [...]}: ${parsed.error}`], openItems: [] }
+    return { issues: [`The reply must be one JSON object {"amendments": [...], "questions": [...]}. ${parsed.error}`], openItems: [] }
   const value = parsed.value
   const rows = new Map(paragraphs.map(row => [row.pid, row]))
-  const sources = new Set([...matterSourceIDs(directory), REQUEST_SOURCE, ...approvedResearch(directory).map(row => row.url)])
+  const sources = new Set([...matterSourceIDs(directory), REQUEST_SOURCE, ...adoptedSources(directory), ...approvedResearch(directory).map(row => row.url)])
   const asked = new Map(readQuestions(directory).map(question => [question.id, question]))
   const amendments = Array.isArray(value.amendments) ? value.amendments : undefined
   const explanations = value.explanations === undefined ? [] : Array.isArray(value.explanations) ? value.explanations : undefined
@@ -78,11 +78,12 @@ export function checkChanges(directory: string, content: string, paragraphs: Par
   })).filter(row => row.issues.length)
   const proposed = askedQuestions(questions.filter(record), asked, options.document)
   const unmarked = proposed.flatMap((question, index) => question ? questionMarkerIssues(question, index, filled, rows) : [])
-  if ((unverified.length || unmarked.length) && !options.withholdUnverified)
-    return { issues: [...unverified.flatMap(row => row.issues), ...unmarked], openItems: [] }
+  const worded = questionWordIssues(directory, proposed)
+  if ((unverified.length || unmarked.length || worded.length) && !options.withholdUnverified)
+    return { issues: [...unverified.flatMap(row => row.issues), ...unmarked, ...worded], openItems: [] }
   const withheld = new Set(unverified.map(row => row.amendment.id))
   const kept = filled.filter(amendment => !withheld.has(amendment.id))
-  const questionList = proposed.filter((question): question is Question => Boolean(question))
+  const questionList = proposed.filter((question): question is Question => Boolean(question)).map(question => worded.length ? inQuestionWords(directory, question) : question)
   // A question whose paragraph only a withheld amendment would have marked: the
   // paragraph keeps its drafted text, so, like the withheld change, the
   // question is disclosed through the drafting notes.
@@ -123,9 +124,9 @@ function explanationIssues(directory: string, item: unknown, index: number, rows
     ...(typeof item.pid !== "string" || !rows.has(item.pid) ? [`${at}.pid is not a paragraph of the draft; select the paragraph explaining this initial revision.`] : []),
     ...(typeof item.reason !== "string" || !item.reason.trim() ? [`${at}.reason must explain the actual revision and its consequence.`] : []),
     ...(!Array.isArray(item.sources) ? [`${at}.sources must be a list of {source_id, quote}.`] : item.sources.flatMap((source, n) => {
-      if (!record(source) || typeof source.source_id !== "string" || !sources.has(source.source_id.trim()) || typeof source.quote !== "string" || !source.quote.trim())
-        return [`${at}.sources[${n}] must name a canonical source and a non-empty exact passage.`]
-      return quoteFound(directory, { source_id: source.source_id.trim(), quote: source.quote }) ? [] : [quoteMissIssue(directory, `${at}.sources[${n}]`, { source_id: source.source_id.trim(), quote: source.quote })]
+      const named = sourceNameIssues(`${at}.sources[${n}]`, trimmedSource(source), sources)
+      if (named.length || !record(source) || typeof source.source_id !== "string" || typeof source.quote !== "string") return named
+      return quoteFound(directory, { source_id: source.source_id.trim(), quote: source.quote }) ? [] : [quoteMissIssue(directory, `${at}.sources[${n}]`, { source_id: source.source_id.trim(), quote: source.quote }, "prose", { adopted: true })]
     })),
     ...(typeof item.reason === "string" ? proseQuoteIssues(directory, `${at}.reason`, item.reason) : []),
   ]
@@ -149,13 +150,13 @@ function amendmentIssues(item: unknown, index: number, rows: Map<string, Paragra
     ...(row && (updated || split) ? retypedLabelIssues(split ? `${at}.updated[0]` : `${at}.updated`, split ? String((item.updated as string[])[0]).trim() : updated, row.label, row.text) : []),
     ...(typeof item.reason !== "string" || !item.reason.trim() ? [`${at}.reason must say why the paragraph changes.`] : []),
     ...(!sourceList ? [`${at}.sources must be a list of {source_id, quote}.`] : []),
-    ...(sourceList ?? []).flatMap((source, sourceIndex) => {
-      const where = `${at}.sources[${sourceIndex}]`
-      if (!record(source) || typeof source.source_id !== "string" || !source.source_id.trim() || typeof source.quote !== "string" || !source.quote.trim())
-        return [`${where} must be {source_id, quote} with non-empty strings.`]
-      return sources.has(source.source_id.trim()) ? [] : [`${where}.source_id ${JSON.stringify(source.source_id)} is not a matter document or an approved research URL; use an exact source name, or \"${REQUEST_SOURCE}\" for the request and the lawyer's answers.`]
-    }),
+    ...(sourceList ?? []).flatMap((source, sourceIndex) => sourceNameIssues(`${at}.sources[${sourceIndex}]`, trimmedSource(source), sources)),
   ]
+}
+
+/** A source entry with its name trimmed, as the change list stores it. */
+function trimmedSource(source: unknown) {
+  return record(source) && typeof source.source_id === "string" ? { ...source, source_id: source.source_id.trim() } : source
 }
 
 /** Replacement text without a leading copy of its paragraph's own list label
@@ -178,7 +179,7 @@ function amendmentQuoteIssues(directory: string, amendment: Amendment, index: nu
   const at = `amendments[${index}] ([${amendment.pid}])`
   return [
     ...amendment.sources.filter(source => !quoteFound(directory, source))
-      .map(source => quoteMissIssue(directory, `${at}.sources`, source, "json")),
+      .map(source => quoteMissIssue(directory, `${at}.sources`, source, "json", { adopted: true })),
     ...proseQuoteIssues(directory, `${at}.updated`, amendmentText(amendment), { format: "plain" }),
   ]
 }
@@ -260,57 +261,4 @@ export function askedQuestions(items: Record<string, unknown>[], asked: Map<stri
 
 function given(value: unknown) {
   return value !== undefined && value !== null && value !== ""
-}
-
-export function parseJsonObject(content: string): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
-  // Prefer the whole value so an array containing an object cannot be mistaken
-  // for the stage's object contract. Never select one of multiple results.
-  try {
-    const value: unknown = JSON.parse(content.trim())
-    return record(value) ? { ok: true, value } : { ok: false, error: "the JSON value is not an object" }
-  } catch { /* A prose wrapper can still contain one complete JSON object. */ }
-  const start = content.indexOf("{")
-  const end = content.lastIndexOf("}")
-  if (start < 0 || end < start) return { ok: false, error: "no JSON object found" }
-  const blocks = [...content.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)]
-  if (blocks.length > 1) return { ok: false, error: "multiple fenced results found; return one JSON object" }
-  const candidate = blocks[0]?.[1]?.trim() ?? content.slice(start, end + 1)
-  if (!blocks.length && (content.slice(0, start).trimEnd().endsWith("[") || content.slice(end + 1).trimStart().startsWith("]")))
-    return { ok: false, error: "the JSON value is not an object" }
-  try {
-    const value: unknown = JSON.parse(candidate)
-    if (blocks.length && record(value) && content.slice(start, end + 1) !== candidate)
-      return { ok: false, error: "ambiguous content outside the fenced result; return one JSON object" }
-    return record(value) ? { ok: true, value } : { ok: false, error: "the JSON value is not an object" }
-  } catch (error) {
-    return { ok: false, error: `${error instanceof Error ? error.message : "invalid JSON"}${syntaxLocation(candidate)}` }
-  }
-}
-
-/** Where a JSON syntax error is, so a retry can fix it: the parser's own
- * message names no position. Finds the first bracket that closes the wrong
- * opener, or the opener left unclosed, outside strings. Reports only. */
-function syntaxLocation(text: string) {
-  const open: { char: string; at: number }[] = []
-  let quoted = false
-  for (let at = 0; at < text.length; at++) {
-    const char = text[at]!
-    if (quoted) {
-      if (char === "\\") at++
-      else if (char === '"') quoted = false
-      continue
-    }
-    if (char === '"') quoted = true
-    else if (char === "{" || char === "[") open.push({ char, at })
-    else if (char === "}" || char === "]") {
-      const opener = open.pop()
-      if (opener?.char !== (char === "}" ? "{" : "[")) return near(text, at, `unexpected ${char}${opener ? ` before the ${opener.char === "{" ? "object" : "list"} opened at character ${opener.at} is closed` : ""}`)
-    }
-  }
-  const unclosed = open.at(-1)
-  return unclosed ? near(text, text.length, `the ${unclosed.char === "{" ? "object" : "list"} opened at character ${unclosed.at} is never closed`) : ""
-}
-
-function near(text: string, at: number, problem: string) {
-  return ` (at character ${at}: ${problem}; near ${JSON.stringify(`${text.slice(Math.max(0, at - 60), at)} >>> ${text.slice(at, at + 20)}`)})`
 }

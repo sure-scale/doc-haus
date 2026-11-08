@@ -6,6 +6,7 @@ import { readChecklistAdjudicationCounterevidence, readEffectiveChecklistItems }
 import { checklistDeliveryEvidence } from "./checklist-document-context"
 import { normalize } from "../../lib/quote-verify"
 import { readChangeList, readParagraphs, type ApplyResult, type ParagraphRow } from "./checks"
+import { requestedMemo } from "./deliverables"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { excerpt, openItem, withSourceSnapshot } from "./quotes"
 import { hashStageInputs, isReviewStage, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText, type LeanState, type OpenItem } from "./state"
@@ -29,8 +30,9 @@ export type RepairRound = { round: number; requested_at: string; items: OpenItem
 // heading, is an omission (draftTemplateItems): the draft is not rewritten for
 // it, so the change cycle repairs it.
 // Draft-status wording in an agreement (draft-status.ts) is taken out by the
-// same cycle.
-const REPAIRABLE_DRAFT_KINDS = new Set<OpenItem["kind"]>(["quote_miss", "citation_unsupported", "omission", "draft_status"])
+// same cycle, and so is a sentence written for the lawyer rather than the
+// document's reader (reader-check.ts).
+const REPAIRABLE_DRAFT_KINDS = new Set<OpenItem["kind"]>(["quote_miss", "citation_unsupported", "omission", "draft_status", "reader"])
 
 export function readRepairRound(directory: string): RepairRound | undefined {
   const value = readLeanJson(directory, "repairs.json")
@@ -160,10 +162,21 @@ function documentRepairBasis(directory: string, document: DocID) {
     .filter(part => part.name !== "repairs"))
 }
 
+const REPAIR_INSTRUCTIONS = [
+  "Each item is a defect the draft still has. Fix each one with an amendment to the paragraph named:",
+  "quote the source exactly, remove the unsupported point, or replace it with a visible [open item: what is needed] marker.",
+  "For a template part missing or cut short in the draft, which names no paragraph, add the missing wording from the template: split the paragraph the part belongs after, or replace a paragraph of the part with its full wording. " +
+  "For one in the draft without its heading, split the part's first paragraph to put its heading before it: the template's, or the heading the instructions give it.",
+  "For an unanswered question, repeat it with its \"id\" and the \"pid\" of the paragraph it affects, and put a visible [open item: ...] marker in that paragraph.",
+  "For a sentence written for the lawyer rather than the document's reader, rewrite the paragraph for the reader, keeping what the sentence tells them; put the point for the lawyer in a visible [open item: ...] marker or leave it to the drafting notes.",
+]
+
 /** Prompt sections for one document's changes step beyond its findings: the
  * defects it must repair, the change list it replaces, and the questions
- * already asked. */
-export function changesRepairSections(directory: string, document: DocID) {
+ * already asked. The change review (audience "review") reads the same items as
+ * findings to verify against the projected body, not as defects the draft
+ * still has, and no change list to carry forward. */
+export function changesRepairSections(directory: string, document: DocID, { audience = "writer" }: { audience?: "writer" | "review" } = {}) {
   const paragraphs = readParagraphs(directory, document)
   const items = readOpenItems(directory).filter(item => ofDocument(item, document))
   const required = [
@@ -173,13 +186,10 @@ export function changesRepairSections(directory: string, document: DocID) {
   const checklistFindings = required.filter(item => item.stage === "checklist-check")
   const defects = required.filter(item => item.stage !== "checklist-check")
   const unverifiedFindings = items.filter(item => isReviewStage(item.stage) && item.kind === "quote_miss")
+  const review = audience === "review"
   return [
-    defects.length ? tagged("required_repairs", [
-      "Each item is a defect the draft still has. Fix each one with an amendment to the paragraph named:",
-      "quote the source exactly, remove the unsupported point, or replace it with a visible [open item: what is needed] marker.",
-      "For a template part missing or cut short in the draft, which names no paragraph, add the missing wording from the template: split the paragraph the part belongs after, or replace a paragraph of the part with its full wording. " +
-      "For one in the draft without its heading, split the part's first paragraph to put its heading before it: the template's, or the heading the instructions give it.",
-      "For an unanswered question, repeat it with its \"id\" and the \"pid\" of the paragraph it affects, and put a visible [open item: ...] marker in that paragraph.",
+    defects.length ? tagged(review ? "previous_findings" : "required_repairs", [
+      ...(review ? ["Findings the previous review raised; verify each against the projected body and report only what is still present:"] : REPAIR_INSTRUCTIONS),
       ...defects.map(item => `- ${item.id} ${pidLabel(item, paragraphs)}: ${item.detail}${quoteLabel(item)}`),
     ].join("\n")) : "",
     checklistFindings.length ? tagged("checklist_findings", [
@@ -190,7 +200,7 @@ export function changesRepairSections(directory: string, document: DocID) {
       "These quotations in the review were not found in the named source. Check the source before relying on the finding:",
       ...unverifiedFindings.map(item => `- "${excerpt(item.ref.quote ?? "")}" [source: ${item.ref.source_id ?? "unknown"}]`),
     ].join("\n")) : "",
-    previousChanges(directory, document, paragraphs),
+    review ? "" : previousChanges(directory, document, paragraphs),
     openQuestions(directory, document),
   ].filter(Boolean)
 }
@@ -278,7 +288,7 @@ export function checklistRepairItems(directory: string, skip: (item_id: string, 
     // add, as a visible open item; only a native annotation is out of reach.
     if (!["operative", "advice", "open_issue"].includes(record.item.target.treatment)) return []
     const matches = plan.documents.filter(document => document.id === record.item.target.document || document.file === record.item.target.document)
-    const notes = !matches.length && ["notes", plan.notes_file ?? "drafting-notes.docx"].includes(record.item.target.document)
+    const notes = !matches.length && ["notes", plan.record_file ?? requestedMemo(directory, plan)?.file ?? "drafting-notes.docx"].includes(record.item.target.document)
     // Code sets a delivered file's name, Word format and composition, so no
     // text repair can change them. A finding resting only on the delivery
     // rows supplied for its target stays disclosed with its class; one that

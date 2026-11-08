@@ -12,7 +12,7 @@ import { openDb } from "./db"
 import { readCurrentVersion } from "./document-versions"
 import { requirePendingWordProposal, wordProposalApplied } from "../../../dochaus/lib/word-edit-lease"
 import { authorWordChatAmendment, authorWordChatTableRow, authorWordChatTableRowDeletion, MAX_WORD_AMENDMENT_OOXML_BYTES, WordFormattingError } from "./word-chat-amendments"
-import { routeAgent, type ChatRouteTransport } from "../../../dochaus/lib/chat-routing"
+import { answerText, routeAgent, type ChatRouteTransport } from "../../../dochaus/lib/chat-routing"
 import { DOCUMENT_CHAT_ASSISTANTS } from "../../../dochaus/lib/conversation-assistants"
 import { generateConversationTitle } from "../../../dochaus/lib/chat-session-title"
 import { conversationAnswerContract, conversationResponseContract, suppliedConversationContext } from "../../../dochaus/lib/conversation-context"
@@ -112,7 +112,8 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
         const messages = await api(auth, `/api/session/${encodeURIComponent(id)}/message`)
         if (!Array.isArray(messages)) throw new WordChatError("Auto could not read its response. Try again.", 503)
         return messages.filter(record).filter(message => record(message.info)).map(message => ({ role: String((message.info as Record<string, unknown>).role),
-          text: Array.isArray(message.parts) ? message.parts.filter(record).filter(part => part.type === "text").map(part => part.text).join("") : "" }))
+          text: Array.isArray(message.parts) ? answerText(message.parts.filter(record).filter(part => part.type === "text" && typeof part.text === "string")
+            .map(part => ({ text: part.text as string, phase: record(part.native) ? part.native.phase : undefined }))) : "" }))
       },
       interrupt: async id => { await check(id); await api(auth, `/api/session/${encodeURIComponent(id)}/interrupt?resume=false`, "POST") },
       remove: async id => { await check(id); await api(auth, `/api/session/${encodeURIComponent(id)}`, "DELETE") },

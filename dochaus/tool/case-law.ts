@@ -11,11 +11,12 @@ import { readCaseLawKey } from "../lib/research"
 // indexing it. It is read-only — it never writes to the matter — and returns only
 // what CourtListener returns, with no fabricated citations.
 //
-// CourtListener works unauthenticated at a lower rate limit. A free token from a
-// courtlistener.com account raises it; the firm pastes one in Settings > Research
-// (read per-call from preferences.json), or it falls back to the
-// COURTLISTENER_API_TOKEN env var. The tool sends it as an Authorization header
-// when present, and never fails for lack of one.
+// CourtListener's search refuses a request without a token (HTTP 401). A free
+// token comes from a courtlistener.com account; the firm pastes one in
+// Settings > Research (read per-call from preferences.json), or it falls back to
+// the COURTLISTENER_API_TOKEN env var. The tool sends it as an Authorization
+// header when present. A refused request says that a token is needed and that
+// nothing was searched, so the gap is disclosed rather than read as an outage.
 
 const SEARCH_URL = "https://www.courtlistener.com/api/rest/v4/search/"
 const SITE = "https://www.courtlistener.com"
@@ -53,8 +54,12 @@ export default tool({
     const res = await fetch(`${SEARCH_URL}?${params}`, {
       headers: token ? { Authorization: `Token ${token}` } : {},
     })
+    // "Case law", not the tool's own name: tool names in a reply are flagged as injection.
+    if (res.status === 401 || res.status === 403) {
+      return `CourtListener refused the search (HTTP ${res.status}): it needs a CourtListener API token, added under Settings > Research. No case law was searched. Disclose this as a research limitation and never cite a case this search did not return.`
+    }
     if (!res.ok) {
-      return `CourtListener search failed (HTTP ${res.status}). The case-law database may be unreachable; report this to the user rather than inventing a citation.`
+      return `CourtListener search failed (HTTP ${res.status}); the service may be unreachable. No case law was searched. Disclose this as a research limitation and never cite a case this search did not return.`
     }
 
     const k = args.k ?? 5

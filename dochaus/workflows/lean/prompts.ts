@@ -7,8 +7,8 @@ import { comparisonDescription } from "./comparison"
 import { combinedDelivery, deliveryArtifactEvidence, requestedMemo } from "./deliverables"
 import { researchHandoff } from "./research"
 import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult, shownText } from "./checks"
-import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type StepID } from "./plan"
-import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
+import { askedAtOrBefore, guidanceTemplate, reviewGuidance, reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type StepID } from "./plan"
+import { REQUEST_SOURCE, adoptedSources, matterSourceIDs } from "./quotes"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
 import { escapeTagOpeners } from "../../lib/untrusted"
 import { readRepairRound, changesRepairSections, notesRepair } from "./repairs"
@@ -16,7 +16,9 @@ import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings,
 import { disclosableItems } from "./stages"
 import { QUESTION_KIND_CONTRACT, WORKING_DRAFT, isReviewStage, answeredQuestions, answeredQuestionsText, delegatedQuestions, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type StageID } from "./state"
 import { matterDatesBlock } from "./intake"
-import { plannedContract } from "./template-contract"
+import { plannedContract, quoted, topUnits } from "./template-contract"
+import { parseTemplateUnits, sourceText } from "./template-structure"
+import { withGrounds } from "./spine-placement"
 
 // Prompts of the lean model steps. Each step's first prompt carries everything
 // the step needs; retries carry only the checker's issues. A document after the
@@ -31,9 +33,12 @@ const REVIEW_FOCUS = {
   "review-wording": "Problematic wording: identify ambiguity, inconsistency or imprecision that changes how a provision operates. Explain the competing readings and their material effect. Separately assess supplied date/number preference warnings as presentation feedback, preserving exact quotations and expressly retained wording.",
   "review-client-disadvantage": "Client disadvantage: assess concrete adverse effects on the stated client's position within the requested purpose. Distinguish a defect from an agreed allocation of risk and an optional negotiating improvement. When no side is determined, assess the parties even-handedly without selecting one.",
 }
+/** Added to the guidance review's focus when the document is drafted from a template. */
+const TEMPLATE_FOCUS = "The template's positions are the provisions its text carries and every note or bracketed direction to the drafter; a position this document leaves out needs the outline's \"Left out:\" reason or a finding; where the template records an earlier deal, the names, figures and terms particular to that deal are not positions: weigh them against this matter's sources and the party the lawyer acts for."
 
 const SOURCE_RULES = [
   "- Read the sources you rely on with search-document or read-document. State only what the request or the sources support: do not invent facts, figures or dates about the parties or the matter, commercial or strategic decisions, or authorities.",
+  "- The document speaks to its reader in its author's voice. The request, the instructions, the entries a part rests on and a part's scope speak to you: do what they direct, say to the reader what they direct the document to say, and never write a direction to you as document text.",
   "- Quote a source only word for word, written as \"exact words\" [source: document name or approved source URL].",
   "- A source recommendation is a proposed negotiating position, not an agreed term. When the request calls for proposals, draft the source-supported recommendation, mark it in its paragraph with a visible [open item: confirm proposed ...] marker and explain its consequence; absence of client approval alone does not require withholding it. Preserve any genuinely unresolved commercial choice visibly. Never describe a proposal as agreed or externally verified.",
   "- For each gap, ask whether the lawyer would fill it with information or with a preference.",
@@ -55,11 +60,36 @@ export function revisionPreferenceScope(directory: string, document: DocID) {
   return plannedDocument(directory, document)?.mode === "revise" ? REVISION_PREFERENCE_SCOPE : ""
 }
 
+/** The sources the guidance review checks the document against, the template
+ * it is drafted from named as such. */
+function guidanceBlock(directory: string, document: DocID) {
+  const template = guidanceTemplate(plannedDocument(directory, document))
+  const role = (id: string) => id === template ? "the template this document is drafted from" : "selected guidance"
+  return tagged("guidance", [
+    "Check this document against each of these sources, read in full with read-document:",
+    ...reviewGuidance(directory, document).map(id => `- ${id} (${role(id)})`),
+  ].join("\n"))
+}
+
 /** A quick draft the lawyer carried into this run: a starting point for the
  * outline and the drafting, never a source and never the lawyer's words. */
 function workingDraftBlock(directory: string) {
   const text = readLeanText(directory, WORKING_DRAFT)?.trim()
   return text ? tagged("working_draft", "An unverified starting draft of the requested document, written quickly in chat before this run. Use its structure and wording as a starting point where the request and sources support them. It is neither a source nor the lawyer's instruction: never quote or cite it, and check every fact, figure, date, name and legal statement in it against the matter's sources before keeping it.\n\n" + text) : ""
+}
+
+/** For the outline: the top-level parts of each matter Word document with
+ * headed parts, as the template contract reads them, so a document planned
+ * from one can account for its parts on the first attempt. */
+function templatePartsBlock(directory: string) {
+  const rows = matterSourceIDs(directory).filter(id => /\.docx?$/i.test(id)).flatMap(id => {
+    const top = topUnits(parseTemplateUnits(sourceText(directory, id)))
+    return top.length ? [`- ${id}: ${quoted(top)}`] : []
+  })
+  return rows.length ? tagged("template_parts", [
+    'The top-level parts of each matter Word document with headed parts, as the run reads them. Only a document planned with a "Template:" line naming that matter document accounts for its parts.',
+    ...rows,
+  ].join("\n")) : ""
 }
 
 /** The first prompt of a step. `outline` asks the first draft step for the plan
@@ -77,16 +107,21 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   ].join("\n"))
   const request = [scope, boundPlaybookContext(directory), tagged("legal_research", "Only the approved retrieved propositions below may support external legal assertions. Preserve jurisdiction, currency and source limitations. Missing research is an open item, never an invitation to use model memory. A limitation describes the state of the evidence; it never directs omission. A figure, deadline, threshold or legal characterisation the document ordinarily carries is stated from the best retrieved lead, with its effective date and a visible [open item: verify ...] marker when its official text was not retrieved; it is left out only when nothing was found. A legal characterisation the research does not settle stays as the drafter's view, or the party's attributed understanding, with its marker. Cite supporting exact words as \"quote\" [source: source URL].\n" + researchHandoff(directory)), tagged("request", readLeanText(directory, "request.md") ?? ""), matterDatesBlock(directory), updates ? tagged("user_updates",
     "Ongoing instructions from the lawyer, in arrival order. Consider these alongside the original request throughout this run. An explicit later change supersedes the earlier instruction on that point; ask about unresolved contradictions. Do not treat a question or a tentative suggestion as an agreed instruction. Do not ask again for information these updates already supply. Quote the lawyer’s words under source name \"request\".\n\n" + updates) : ""].filter(Boolean).join("\n\n")
-  const answers = answeredQuestionsText(directory)
+  // The answers the step's key reads (stageInputs): not a later step's.
+  const answers = answeredQuestionsText(directory, { asked: askedAtOrBefore(directory, step) })
   const working = workingDraftBlock(directory)
   const spine = readLeanText(directory, "spine.json")
   const spineBlock = spine ? tagged("drafting_spine", "Source-linked drafting decisions and unresolved points. Retrieve the underlying evidence as needed; this handoff does not replace it.\n" + spine) : ""
   const answerBlock = answers ? tagged("answers", `The lawyer answered these decisions; their own answers remain controlling and must not be re-asked under narrower or different wording. An adopted recommendation is the drafter's judgment, as its label says:\n${answers}`) : ""
   const provenance = sourceProvenance(directory)
+  const adopted = adoptedSources(directory)
   const sources = tagged("sources", [
     "Matter documents (use these exact names with search-document and read-document, and as source names):",
     ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`),
-    `To quote the request or the lawyer's answers, use the source name "${REQUEST_SOURCE}".`,
+    `To quote the request or the lawyer's answers, including an option the lawyer chose, use the source name "${REQUEST_SOURCE}".`,
+    ...adopted.map(name => `To quote the recommendation adopted for question ${name.slice("adopted:".length)}, which the lawyer delegated, use the source name "${name}"; its words are the drafter's judgment, not the lawyer's.`),
+    ...adopted.length ? [`Only those question ids take an "adopted:" name; every other answer is quoted under "${REQUEST_SOURCE}".`] : [],
+    "Tag names only label the sections of this prompt and are never source names. Cite a source by its exact name with no section suffix, research by its URL, and a quote taken from a group's evidence under the source_id given beside it.",
   ].join("\n"))
   if (step === "finalize") return draftingNotesSections(directory, request).filter(Boolean).join("\n\n")
   const document = stepDocument(step) ?? FIRST_DOCUMENT
@@ -97,23 +132,26 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const adjudicated = stage === "changes" ? readChangePlan(directory, document) : undefined
   const named = title ? ` of "${title}"` : ""
   const template = stage === "draft" || stage === "changes" ? plannedContract(directory, document)?.source : undefined
+  const reviewTemplate = stage === "review-playbook" ? guidanceTemplate(plannedDocument(directory, document)) : undefined
   const acting = actingForBlock(directory)
   const actingFor = planActingFor(directory)
   const planned = plannedDocumentsBlock(directory, document)
   const composition = packageCompositionBlock(directory, document)
   // What the scope guards say other output owns: another planned document, the memo.
   const assigned = [planned ? "another planned document" : "", composition ? "the accompanying memo" : ""].filter(Boolean).join(" or ")
-  const outline = tagged("document_outline", JSON.stringify(operativeDocument(plannedDocument(directory, document))))
+  // Each part names the spine entries it rests on (spine-placement.ts), as its part prompt was told.
+  const operative = operativeDocument(plannedDocument(directory, document))
+  const outline = tagged("document_outline", JSON.stringify(operative && withGrounds(directory, document, operative)))
   const preferenceScope = revisionPreferenceScope(directory, document)
   if (options.contextOnly) return [request, spineBlock, acting, answerBlock, sources, planned, composition, outline, preferenceScope, finished].filter(Boolean).join("\n\n")
   const sections: Partial<Record<StageID, string[]>> = {
     draft: options.outline ? [
       "This is a lean drafting run. Plan the substantive document bodies to draft, then draft each in parts. The workflow generates delivery artifacts from those bodies.",
-      request, working, spineBlock, answerBlock, sources,
+      request, working, spineBlock, answerBlock, sources, templatePartsBlock(directory),
       tagged("output_contract", [
         ...SOURCE_RULES,
-        "- Delivery capabilities: for every planned body the workflow renders the final Word document, with the firm's draft line and legend on every page from its settings, and generates its tracked redline; one final drafting-notes memo, listing the open points, accompanies the package. A request for a redline/comparison or ordinary drafting notes is fulfilled by those generated artifacts, not by another planned body. Set Compare against on the revised body to select a supplied original for comparison. Plan a separate substantive memo only when the request requires its own distinct audience, purpose or analysis beyond the accompanying drafting notes; a different delivery format does not create another substantive document. Do not draft simulated tracked text as a separate comparison document.",
-        "- Write one line \"Memo: <its name in the request's own words>\" before the first \"# \" title only when the request asks for a memo or note to accompany the documents; otherwise leave it out. Do not also plan the memo it names as a \"# \" document.",
+        "- Delivery capabilities: for every planned body the workflow renders the final Word document, with the firm's draft line and legend on every page from its settings, and generates its tracked redline; one final drafting-notes memo, listing the open points, accompanies the package. A request for a redline/comparison or ordinary drafting notes is fulfilled by those generated artifacts, not by another planned body. Set Compare against on the revised body to select a supplied original for comparison. A different delivery format does not create another substantive document. Do not draft simulated tracked text as a separate comparison document.",
+        "- When the request asks for a memo or note alongside the documents, whatever its subject, write one line \"Memo: <its name in the request's own words>\" before the first \"# \" title and plan that memo as a \"# \" document with that title and \"Form: advice\"; plan its parts as for any document. Otherwise leave the line out.",
         "- These rules apply to every part you draft later.",
         "- Begin the outline with one line \"Acting for: <party>\" when the request says which party the lawyer acts for, naming that party; " +
         "otherwise write \"Acting for: not stated\". The run takes the side from the matter and its sources itself.",
@@ -123,17 +161,24 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
         "Do not draft the text yet.",
         "- Under each title write its form: \"Form: agreement\" for an instrument its parties execute to create, vary or end rights or obligations, " +
         "\"Form: advice\" for legal analysis or advice set out as a memorandum or note rather than correspondence, \"Form: advice letter\" for a letter " +
-        "giving the client legal advice, \"Form: letter\" for other correspondence addressed to a recipient and signed by the sender, otherwise \"Form: other\".",
+        "giving the client legal advice, \"Form: letter\" for other correspondence addressed to a recipient and signed by the sender, " +
+        "\"Form: statement\" for a record of facts given by a named person under their signature, otherwise \"Form: other\".",
+        "- A document's purpose line says what that document is for in its own right; what another document relies on it for belongs in that other document's scope. " +
+        "The parts of a \"Form: statement\" cover every subject within the declarant's knowledge that its purpose names, not only what other documents rely on.",
         "- Only when the request asks for a page header legend on a document, write under its title \"Legend: <the legend in the request's own words>\"; " +
         "only when it asks for a document without page numbers, \"Page numbers: none\".",
         "- Under each title write \"Executed by: <party>; <party>\" naming each party who executes that document, as the request or sources name them, or \"Executed by: none\" for a document that takes no legal act. Leave the line out when neither says who executes it. " +
         "Plan no document the instructions leave out of this package. For each legal act the instructions direct, unless they leave out the document of the party who can take it, " +
-        "plan the act in a document that party executes, adding a companion document where none is planned.",
+        "plan the act in a document that party executes; plan a companion document for it only where the request or an answer names or clearly implies one. " +
+        "Where none fits, leave the act: whether to add a document is the lawyer's call, which the run asks before drafting.",
         "- An answer that leaves a point undecided keeps the instructions as they stand: plan every act they direct. It does not license narrowing the package. " +
         "An instruction or answer that moves an act to another document keeps that document in this package: plan it, unless the instructions say it is prepared outside this package.",
-        "- Under each title write \"Mode: revise\" when revising a supplied original, otherwise \"Mode: new\". For a revision, name the supplied original with Compare against and retain it as the drafting foundation. Also write \"Deliverable: redline\" when the requested named artifact is an annotated markup/comparison, \"Deliverable: combined\" when the request asks for this document and its memo in one named file, otherwise \"Deliverable: body\"; combined needs the \"Memo:\" line. These select the requested artifact role; filenames do not determine it.",
+        "- Under each title write \"Mode: revise\" when revising a supplied original, otherwise \"Mode: new\". For a revision, name the supplied original with Compare against and retain it as the drafting foundation. Also write \"Deliverable: redline\" when the requested named artifact is an annotated markup/comparison, \"Deliverable: combined\" when the request asks for this document and its memo in one named file, otherwise \"Deliverable: body\"; combined needs the \"Memo:\" line and goes under that document, not under the memo. These select the requested artifact role; filenames do not determine it.",
         '- Inspect the supplied documents and bound library guidance before outlining. Decide which are playbooks or drafting guidance from their contents, scope and the request, not filenames alone. Under each title add Playbook review: {"sources":[{"source_id":"exact canonical guidance source","quote":"exact source words establishing its scope or a relevant position"}],"reason":"why this guidance applies to this body"}. Select all applicable guidance, and use sources: [] with a reason when none applies. An uploaded playbook stays a matter source; do not publish it to the shared library. This schedules a dedicated check after drafting only for selected bodies. Read the whole guidance later; these quotes select sources, not an exhaustive position list.',
-        "- Titles become document text. Each part's ## label identifies the drafting job and is not printed; the part's text carries the document's own headings in its style. To print a heading in a label's place, add Display heading: <publication heading> immediately under that label. For a letter whose text uses headings, write \"Headings: shown\" under its title to print its labels as its headings. Choose presentation suited to the requested document. For a revision preserve the original heading structure unless the instructions require a structural change; print a heading they change as its part's Display heading. Put internal source mappings and planning explanations in scope notes, not in visible headings or operative wording. Keep client advice in its own appropriate explanatory artifact rather than appending it to an operative agreement.",
+        "- Titles become document text. Each part's ## label identifies the drafting job and is not printed; the part's text carries the document's own headings in its style. To print a heading in a label's place, add Display heading: <publication heading> immediately under that label. For a letter whose text uses headings, write \"Headings: shown\" under its title to print its labels as its headings. Choose presentation suited to the requested document. For a revision preserve the original heading structure unless the instructions require a structural change; print a heading they change as its part's Display heading. A part's scope line says what the part tells the reader; a marking the lawyer asked for goes in its document's \"Legend:\" line, never in a part. Put internal source mappings in scope notes, not in visible headings or operative wording. Keep client advice in its own appropriate explanatory artifact rather than appending it to an operative agreement.",
+        "- An attachment the document's text will refer to (a schedule, exhibit, annex, form of order or notice) is planned as a trailing \"## \" part of that document, after its other parts, labelled as the attachment is headed, its kind and number first; that label prints as its heading on a new page. " +
+        "When the attachment is executed by a party who does not execute the document, plan it instead as its own \"# \" document, a separate instrument. " +
+        "An attachment a template part already carries is planned once, as that template part (Template below). No document or part refers to an attachment the outline does not plan.",
         "- Where the request gives the file name a document is to be delivered under, add the line \"File: <file name as the request gives it>\" " +
         "under that document's title. File and Deliverable map the requested output artifact; Compare against and Template identify inputs. A source filename mentioned for revision is not itself an output naming instruction. The \"# \" line is the document's own title as it will read in the document: no file name and no Markdown.",
         "- Where the request expressly asks to revise a supplied original and deliver a comparison against it, add \"Compare against: <exact matter DOCX document name>\" under the title. This is the redline baseline, separate from a reusable Template; do not infer it from template use alone.",
@@ -158,9 +203,9 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
     ],
     review: [
       `This is a lean drafting run. Independently review the draft${named} below against the lawyer's request and the matter's sources.`,
-      tagged("review_focus", isReviewStage(stage) ? REVIEW_FOCUS[stage] : ""),
-      request, spineBlock, acting, answerBlock, sources, planned, composition, outline, preferenceScope, finished, paragraphs,
-      ...(stage === "review-wording" ? [draftingStyleWarningsBlock(styleScopedRows(directory, document, readParagraphs(directory, document)))] : []),
+      tagged("review_focus", isReviewStage(stage) ? [REVIEW_FOCUS[stage], ...(stage === "review-playbook" && reviewTemplate ? [TEMPLATE_FOCUS] : [])].join(" ") : ""),
+      request, spineBlock, acting, answerBlock, sources, ...(stage === "review-playbook" ? [guidanceBlock(directory, document)] : []), planned, composition, outline, preferenceScope, finished, paragraphs,
+      ...(stage === "review-wording" ? [draftingStyleWarningsBlock(directory, styleScopedRows(directory, document, readParagraphs(directory, document)))] : []),
       tagged("output_contract", [
         "- Check the draft against the request and the sources (search-document, read-document, verify-quote).",
         ...(planned ? ["- Where a problem concerns another planned document rather than this one, report it with that document's id as its document; the run carries it to that document. Content the request assigns to another planned document is not missing from this one."] : []),
@@ -196,8 +241,9 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
       spineBlock, acting, answerBlock, sources, planned, composition, outline, preferenceScope, finished,
       tagged("output_contract", [
         "Reply with exactly one JSON object and nothing else:",
-        '{"amendments":[{"pid":"<pid from the draft>","updated":"<full new text of that paragraph>","reason":"<why it changes>","sources":[{"source_id":"<exact document name, or request>","quote":"<words copied exactly from that source>"}]}],"questions":[{"id":"<id of an open question you are repeating; omit for a new one>","pid":"<pid of the paragraph whose text depends on the answer>","question":"<what only the lawyer can decide>","kind":"<fact|instruction|judgment>","context":"<why it matters>"}]}',
+        '{"amendments":[{"pid":"<pid from the draft>","updated":"<full new text of that paragraph>","reason":"<why it changes>","sources":[{"source_id":"<exact document name, or request>","quote":"<words copied exactly from that source>"}]}],"questions":[{"id":"<id of an open or answered question you are repeating; omit for a new one>","pid":"<pid of the paragraph whose text depends on the answer>","question":"<what only the lawyer can decide>","kind":"<fact|instruction|judgment>","context":"<why it matters>"}]}',
         `- ${QUESTION_KIND_CONTRACT}`,
+        `- ${QUESTION_WORDS}`,
         '- Also return "explanations":[{"pid":"initial draft paragraph where the change is explained","reason":"actual source-to-initial-draft substantive change, rationale and consequence","sources":[{"source_id":"canonical source or request","quote":"exact supporting words"}]}]. Review the supplied original against the initial draft and explain every material initial revision, including omissions. These are separate comment records, not body text or amendments; never submit an identical replacement merely to create a comment. Anchor a removed provision’s explanation to its related surviving paragraph and explicitly identify the omission. Retain still-valid explanations during repair and correct them against the projected final text. Where no initial source comparison exists, this array may be empty.',
         "- One amendment replaces the whole text of one existing paragraph and stays one paragraph. To add wording, extend the most closely related paragraph. To remove a whole paragraph, use operation delete with an empty updated string and supporting source or settled-instruction passages. To split one initial paragraph into several, use operation split with updated as an array of at least two complete nonempty single-paragraph strings. Keep the initial pid as the operation target; the runner supplies distinct final pids. Empty replacement strings never imply deletion. Unsupported or uncertain deletion retains the wording with a new [open item: confirm ...] marker instead. Do not collapse a split or discard any accepted effect. " + SPLIT_NUMBERING,
         ...(finished ? ["- Amend only paragraphs of the draft below. The finished documents are shown for agreement and cannot be amended here."] : []),
@@ -206,7 +252,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
         "- Where no passage supports the change, or the change goes beyond what its passage says, it rests on drafting judgment or a view of the law: its updated paragraph must carry a new visible [open item: confirm ...] marker saying what the lawyer is to confirm. Sources may then be empty.",
         ...(template ? [`- Where an amendment takes out or shortens text the draft carries from its template "${template}", its reason says why.`] : []),
         adjudicated ? "- Reconcile prepared group candidates into one cumulative change list. Check their combined effects against adjudicated goals, source context and settled decisions. Give one explicit operation per initial pid incorporating all accepted corrections and preserving unaffected text. Correct unsupported candidates rather than copying them; do not silently drop an accepted goal or still-supported previous amendment." : "- Reconcile all independent reviews into one change list. Consolidate duplicate findings and resolve conflicting suggestions against the request, sources and answers. An exact quotation confirms its words, not the reviewer's conclusion: verify that the passage supports the proposed legal or commercial effect before amending. Reviewer agreement alone is not evidence.",
-        adjudicated ? "- Adjudication has resolved the review findings and essential questions. Apply the current answers. Ask a newly discovered indispensable decision only when actual evidence shows it remains unanswered; never assume an answer or reopen a settled decision. Questions pause before application, each decision once, with the affected pid and a visible paragraph open-item marker. Explain why it is essential in context." : "- Independently assess the review findings against scope_and_decisions and the current answers; a reviewer's suggested question is not automatically a blocker. Leave out findings that need no change or seek optional expansion beyond the requested purpose. Questions pause the run: ask only unresolved decisions needed to fulfil an essential requested requirement, not optional refinements or routine details that can safely remain disclosed placeholders. Put in \"questions\" only information the request, the sources and the answers do not give and only the lawyer can supply; do not guess it. Ask each decision once, even where several paragraphs depend on it. Word each question so the lawyer can answer it without the draft open: one decision per question, in plain words, with abbreviations spelled out and no [pid] or other internal reference; put why it matters in \"context\". Give each question the \"pid\" of the paragraph whose text depends on the answer and, if that paragraph does not already show an open item, amend it so it shows a visible [open item: ...] marker.",
+        adjudicated ? "- Adjudication has resolved the review findings and essential questions. Apply the current answers. Ask a newly discovered indispensable decision only when actual evidence shows it remains unanswered; never assume an answer or reopen a settled decision. Questions pause before application, each decision once, with the affected pid and a visible paragraph open-item marker. Explain why it is essential in context." : "- Independently assess the review findings against scope_and_decisions and the current answers; a reviewer's suggested question is not automatically a blocker. Leave out findings that need no change or seek optional expansion beyond the requested purpose. Questions pause the run: ask only unresolved decisions needed to fulfil an essential requested requirement, not optional refinements or routine details that can safely remain disclosed placeholders. Put in \"questions\" only information the request, the sources and the answers do not give and only the lawyer can supply; do not guess it. Ask each decision once, even where several paragraphs depend on it, one decision per question, and put why it matters in \"context\". Give each question the \"pid\" of the paragraph whose text depends on the answer and, if that paragraph does not already show an open item, amend it so it shows a visible [open item: ...] marker.",
         "- A change that supplies what an open-item marker in the paragraph asks for removes that marker.",
         "- Read-only tools are available; file-writing and redline tools are unavailable. Your final reply is parsed as the change list.",
       ].join("\n")),
@@ -214,6 +260,11 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   }
   return (sections[isReviewStage(stage) ? "review" : stage] ?? []).filter(Boolean).join("\n\n")
 }
+
+/** The plain-words rule for every job that writes a question for the lawyer
+ * (the changes, change-plan and intake contracts); checked by
+ * lawyerTextIDIssues (checks.ts). */
+export const QUESTION_WORDS = "The lawyer sees only words: word each question and its context so the lawyer can answer without the draft open, in plain words with abbreviations spelled out, naming a paragraph by its heading or quoted words, an answer by what it asked and a document by its title, never by a pid or other internal id."
 
 /** How the list numbers a split paragraph's parts once applied (apply-stage.ts renumberApplied). */
 export const SPLIT_NUMBERING = "In a split of a numbered paragraph, the first paragraph keeps its number; a later one is numbered only when it opens with the number the list shows next at the split paragraph's level or deeper, and is otherwise unnumbered. So add a numbered paragraph as a later paragraph opening with that next number, split from a paragraph at its own or a higher level; a new section splits a section heading."
@@ -249,7 +300,7 @@ export function actingForBlock(directory: string) {
   return tagged("acting_for", actingFor.basis === "inferred"
     ? `The lawyer acts for: ${actingFor.party}. This side is taken from what the requested document does and whom the sources show instructing it${actingFor.reason ? ` (${actingFor.reason})` : ""}, as the request names none. Draft for that party; the drafting notes disclose this once, for the lawyer to confirm.`
     : actingFor.basis !== "none"
-    ? `The lawyer acts for: ${actingFor.party}.`
+    ? `The lawyer acts for: ${actingFor.party}. Draft for that party.`
     : "The request does not say whom the lawyer acts for, and no side was taken. Work even-handedly: where the parties' interests diverge, draft wording balanced between them " +
       "marking only a new substantive choice not already settled by instructions or answers for confirmation, rather than favouring either party. " +
       "Ask the lawyer only for information the request and the sources do not give.")
@@ -288,7 +339,7 @@ function plannedDocumentsBlock(directory: string, document: DocID) {
 export function completedDocumentsText(directory: string, document: DocID) {
   return earlierDocuments(directory, document)
     .map(row => {
-      const guidanceReview = row.playbook_review?.sources.length ? reviewText(directory, row.id, "review-playbook", { strip: true }) : undefined
+      const guidanceReview = reviewStages(directory, row.id).includes("review-playbook") ? reviewText(directory, row.id, "review-playbook", { strip: true }) : undefined
       return `<document title="${attribute(row.title)}">\n${finalBodyParagraphs(directory, row.id).map(shownText).join("\n\n")}\n<accepted_change_explanations>\n${JSON.stringify(appliedChangeEvidence(directory, row.id).map(change => ({
       change_origin: change.change_origin, operation: change.operation, deleted_text: change.deleted_text, result_text: change.result_paragraphs.map(row => row.text), reason: change.reason, sources: change.sources, evidence_basis: change.evidence_basis,
       final_text: (paragraph => paragraph ? shownText(paragraph) : "")(finalBodyParagraphs(directory, row.id).find(paragraph => paragraph.pid === change.pid)),
@@ -350,12 +401,12 @@ function draftingNotesSections(directory: string, request: string) {
       "- delivery_artifacts projects the bodies, comparisons and generated drafting-notes Word file from the same naming logic registration uses. planned_file, planned_role and planned_filename are the model's selections, not proof of what the user requested; compare them with the instructions. The notes file is the output you are writing, so its pending rendering is normal. A generated note can fulfill an explanatory-note request when its audience, content and naming fit that instruction; a distinct client advice function must be fulfilled by its own appropriate body. Do not describe an explanatory artifact as missing merely because it has no separately planned body. Registration may suffix names to preserve existing matter documents.",
       "- The final body is clean accepted text; native_export describes the separate comparison file, the naming plan and how many review changes were and were not applied. Use that record to check which files are delivered and which changes were not made, and keep source support and legal effect separate. The lawyer reads the documents, not the workflow: describe the files and the changes themselves, never the workflow's counts, record names or steps; naming files happens after the notes and is not an open item. Do not infer export absence from clean body text or fabricate application status from an empty list of explanatory records.\n- Describe each delivered redline only by its stated comparison baseline below. Identify any requested comparison not covered by that baseline as outstanding.",
       "- Explain what each drafted document does. Use change_origin to distinguish source-to-initial-draft revisions from later review amendments; an initial revision is not a change made during review.",
-      "- State whom the documents were drafted for. Where acting_for says the side was taken from the sources, say so once, with that evidence, and that the lawyer must confirm it. Where it says no side was taken, say that the request did not say whom the lawyer acts for and the drafting is even-handed.",
+      "- State whom the documents were drafted for. Only where acting_for expressly labels the side inferred, disclose that inference once with its evidence for the lawyer to confirm. A side stated by the lawyer or recorded on the matter is settled. Where no side was taken, say that the request did not say whom the lawyer acts for and the drafting is even-handed.",
       ...(memo ? ["- These notes are the requested memo; title it as that memo. Lead with the discrepancies found and the choices made, then give the recommendations and the open points, in plain language. The memo carries only what these records show."] : []),
-      "- Say what each open item is and what the lawyer needs to do about it, and end that statement with the item's exact id as a trailing \"[ref: <id>]\". Write internal ids only in these markers, and name each document by its title or file name, never by its internal id; describe each change by what it does, never by its change id.",
+      "- Say what each open item is and what the lawyer needs to do about it, and end that statement with the item's marker copied whole, exactly as open_items lists it, as a trailing \"[ref: <id>]\". Write internal ids only in these markers, and name each document by its title or file name, never by its internal id; describe each change by what it does, never by its change id.",
       "- For each marked drafted default, say what was chosen and that the lawyer must confirm it.",
-      ...(delegated ? ['- delegated_decisions lists the questions the lawyer delegated to the drafter\'s judgment or did not answer. Give them a section of their own. For each decision taken, say in words what was decided, why, the evidence it rests on and the alternatives not taken, that the lawyer delegated it, and that it is for the lawyer to confirm. Where the final documents depart from it, say what they do instead and why. For each with no decision taken, say that the point stays open, why, and what the lawyer needs to do. End each statement with the question\'s exact id as "[ref: <id>]".'] : []),
-      "- Use applied_changes.evidence_basis and the actual sources array to describe a change’s evidential basis. application_mode describes only how text was applied; code or already_applied says nothing about source support. Where source passages are provided, assess them before claiming support or a gap. For no-source-passage changes, disclose drafting judgment or a view of the law and the required lawyer confirmation. Do not invent an open-item marker or confirmation requirement that the final body and evidence do not show.",
+      ...(delegated ? ['- delegated_decisions lists the questions the lawyer delegated to the drafter\'s judgment or did not answer. Give them a section of their own. For each decision taken, say in words what was decided, why, the evidence it rests on and the alternatives not taken, and that the lawyer delegated it. An adopted judgment is settled unless contrary evidence prevents it; do not ask for confirmation again. Where the final documents depart from it, say what they do instead and why. For each with no decision taken, say that the point stays open, why, and what the lawyer needs to do. Delegation supplies neither a missing fact nor human release approval. End each statement with the question\'s exact id as "[ref: <id>]".'] : []),
+      "- Use applied_changes.evidence_basis and the actual sources array to describe a change’s evidential basis. application_mode describes only how text was applied; code or already_applied says nothing about source support. Where source passages are provided, assess them before claiming support or a gap. For no-source-passage changes, disclose drafting judgment or a view of the law and any actual remaining verification. A settled drafting choice needs no renewed confirmation. Do not invent an open-item marker or confirmation requirement that the final body and evidence do not show.",
       "- operation describes the requested amendment, the only one for its paragraph; result_paragraphs reports the paragraph's actual final wording, and an empty result records deletion. Describe the actual result and disclose unresolved explanations honestly.",
       "- Quote sources only word for word as \"exact words\" [source: document name], and cite only authority supported by matter sources or the approved legal research handoff.",
       "- Reply with the drafting notes in Markdown only, beginning with a \"# \" title.",
@@ -373,14 +424,14 @@ export function delegatedDecisionsText(directory: string) {
   return delegatedQuestions(directory).map(question => [`- [${question.id}] Q: ${question.question}`, ...delegatedLines(question).map(line => `  ${line}`)].join("\n")).join("\n")
 }
 
-function delegatedLines(question: Question) {
+export function delegatedLines(question: Question) {
   const words = question.lawyer_words ?? (question.answer_kind === "adopted" ? undefined : question.answer)
   const who = question.answer_class === "declined" ? "Not answered by the lawyer" : "Delegated by the lawyer"
   const attribution = words === undefined ? `${who}.` : `${who}, in their words: "${words}"`
   const advice = question.advice
   if (question.answer_kind === "adopted") {
     const recommendation = advice && "recommendation" in advice ? advice.recommendation : undefined
-    return [attribution, `Decision taken, for the lawyer to confirm: ${question.answer}`,
+    return [attribution, `Decision taken under the delegated judgment: ${question.answer}`,
       ...(recommendation ? [`Reason: ${recommendation.rationale}`, ...recommendation.basis.map(row => `Evidence: "${row.quote}" [source: ${row.source_id}]`)] : []),
       ...questionOptions(question).filter(option => option.id !== question.option_id).map(option => `Alternative not taken: ${option.text}`)]
   }
@@ -391,6 +442,29 @@ function delegatedLines(question: Question) {
   return [attribution, `No decision taken: ${why}`]
 }
 
+/** One prose assignment. Reference markers and section ordering belong to the
+ * coordinator; this writer receives only the evidence for its own question. */
+export function focusedNotesPrompt(input: { kind: string; question: string; context: { name: string; text: string }[]; repairs: string[] }) {
+  return [
+    tagged("assignment", `Write one section of the lawyer's drafting notes. ${input.question}`),
+    tagged("section_kind", input.kind),
+    ...input.context.map(row => tagged(row.name, escapeTagOpeners(row.text))),
+    ...(input.repairs.length ? [tagged("required_repairs", input.repairs.map(text => `- ${escapeTagOpeners(text)}`).join("\n"))] : []),
+    tagged("evidence_and_decisions", [
+      "The actual final wording controls statements about what was added, omitted, changed or retained. Proposed wording and review findings are history, not proof of application. Inspect relevant dependencies with the read tools before asserting their effect.",
+      "Explicit instructions, later updates and human answers settle their drafting decisions. An adopted delegated judgment is settled unless contrary evidence prevents it; explain the choice, delegation, reason, evidence and alternatives without asking for confirmation again. Delegation supplies neither a missing fact nor human release approval. Keep those unresolved where the records do.",
+      'Quote only exact source words as "exact words" [source: exact document name or approved URL]. Cite only matter sources or approved research; retrieve the relevant research-review.json/research.json passages before asserting law. A record or summary is a navigation aid, never authority.',
+      "Use targeted read-record, search-document and read-document retrieval for the assigned evidence and material dependencies. Current accepted text is available through read-document view=current_body, with document set to the provided document id; source is the original upload. Do not review unrelated documents or history. The instructions are in .dochaus/lean/request.md, updated-notes.md and instructions.md; current answers are in questions.json. Retrieve only the passages needed for this assignment and preserve their qualifications.",
+    ].join("\n")),
+    tagged("output_contract", [
+      "Follow the lawyer's explanation-detail, formality and house-style preferences. Explain the practical effect and source basis in plain words, naming documents by title or file name. Keep material limitations, unresolved action and proposal status.",
+      "Write only the prose for this assignment, in Markdown. The coordinator supplies the notes title, section headings and exact reference markers. Do not write reference markers, internal ids, coverage lists or another section. Do not ask the lawyer to repair internal mechanics. Read-only tools are available; do not write files.",
+      "Translate records into what the documents and comparisons contain, what changed and what remains to do. Never copy field names, raw paths, workflow counts or stage status into the notes. Distinguish drafting judgment from source-supported content and a drafting decision from approval to release.",
+      "A checker retry applies only to this section. Return its complete corrected prose, preserving its supported explanation; do not rewrite accepted sections or supply bookkeeping.",
+    ].join("\n")),
+  ].join("\n\n")
+}
+
 function documentSections(directory: string, document: DocID, items: OpenItem[]) {
   const list = readChangeList(directory, document)
   const amendments = new Map((list?.amendments ?? []).map(amendment => [amendment.id, amendment]))
@@ -399,7 +473,7 @@ function documentSections(directory: string, document: DocID, items: OpenItem[])
     tagged("comparison_baseline", comparisonDescription(directory, document)),
     tagged("native_export", JSON.stringify(nativeExportEvidence(directory, document), null, 2)),
     tagged("final_body", finalBodyParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")),
-    draftingStyleWarningsBlock(styleScopedRows(directory, document, finalBodyParagraphs(directory, document)), true),
+    draftingStyleWarningsBlock(directory, styleScopedRows(directory, document, finalBodyParagraphs(directory, document)), true),
     tagged("applied_changes", JSON.stringify(appliedChangeEvidence(directory, document), null, 2)),
     tagged("review_dispositions", reviewDispositionText(directory, document)),
     tagged("unapplied_changes", [
@@ -410,11 +484,13 @@ function documentSections(directory: string, document: DocID, items: OpenItem[])
   ]
 }
 
-/** Open items as their blocks list them. An item's detail can carry a review
- * finding no plan adjudicated, the other side's words included, so every "<"
- * in it is escaped (escapeTagOpeners) and cannot close the block. */
+/** Open items as their blocks list them. Each line leads with the marker the
+ * notes must copy: an id is itself joined by colons, so "id: detail" let a
+ * model take only its last part for the id. An item's detail can carry a
+ * review finding no plan adjudicated, the other side's words included, so
+ * every "<" in it is escaped (escapeTagOpeners) and cannot close the block. */
 function openItemLines(items: OpenItem[]) {
-  return items.map(item => `- ${item.id}: ${escapeTagOpeners(item.detail)}`).join("\n")
+  return items.map(item => `- [ref: ${item.id}] ${escapeTagOpeners(item.detail)}`).join("\n")
 }
 
 function attribute(text: string) {

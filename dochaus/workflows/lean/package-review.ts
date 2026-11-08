@@ -6,7 +6,7 @@ import { appliedChangeEvidence, nativeExportEvidence } from "./review-evidence"
 import { comparisonDescription } from "./comparison"
 import { combinedDelivery, deliveryArtifactEvidence, plannedRegistration, requestedMemo } from "./deliverables"
 import { finalBodyParagraphs, findingTextUnchanged, shownText, withTextSha } from "./checks"
-import { readLeanPlan, type DocID } from "./plan"
+import { guidanceTemplate, readLeanPlan, reviewStages, type DocID } from "./plan"
 import { excerpt, matterSourceIDs, openItem } from "./quotes"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
 import { researchHandoff } from "./research"
@@ -68,7 +68,7 @@ export function packageReviewPrompt(directory: string) {
     `<delivery_artifacts>\n${JSON.stringify(deliveryArtifactEvidence(directory), null, 2)}\n</delivery_artifacts>`,
     `<legal_research>\n${researchHandoff(directory)}\n</legal_research>`,
     ...documents.map(row => `<final_document id="${row.id}" title="${row.title.replaceAll('"', "'")}">\nPurpose: ${row.purpose ?? "See request"}\n${comparisonDescription(directory, row.id)}\n${finalBodyParagraphs(directory, row.id).map(paragraph => `[${paragraph.pid}] ${shownText(paragraph)}`).join("\n\n")}\n</final_document>`),
-    ...documents.filter(row => row.playbook_review?.sources.length).map(row => `<playbook_review document="${row.id}">\nSelection: ${JSON.stringify(row.playbook_review)}\n${reviewText(directory, row.id, "review-playbook") ?? "Not available"}\n</playbook_review>`),
+    ...documents.filter(row => reviewStages(directory, row.id).includes("review-playbook")).map(row => `<playbook_review document="${row.id}">\n${row.playbook_review ? `Selection: ${JSON.stringify(row.playbook_review)}\n` : ""}${guidanceTemplate(row) ? `Template: ${guidanceTemplate(row)}\n` : ""}${reviewText(directory, row.id, "review-playbook") ?? "Not available"}\n</playbook_review>`),
     "For documents with selected playbook guidance, verify its applicable positions against the actual final body and settled instructions. Earlier coverage is a navigation aid, not approval. Confirm corrections were incorporated or accurately disclosed as unresolved; preserve justified overrides and inapplicable positions. Do not treat a memo recommendation as completed proposed wording when the request requires that wording.",
     ...documents.map(row => `<review_dispositions document="${row.id}">\n${reviewDispositionText(directory, row.id)}\n</review_dispositions>`),
     "Check material review dispositions against the resulting package. Deferred information or research must remain visible with its practical consequence and remaining action; it is not verified evidence. Relevant optional recommendations must reach the requested advice or notes as proposals. Affected document ids identify scope, not permission to omit advice about the originating document. Reject a material omission from requested advice, while allowing justified rejections and optional protections to stay out of operative wording. Legacy decisions and unadjudicated review history are navigation; check their actual basis rather than assuming resolution. Do not reopen a supported rejection without contrary evidence.",
@@ -101,9 +101,12 @@ export function checkPackageReview(directory: string, value: unknown): string[] 
     const item = finding as Record<string, unknown>
     if (typeof item.detail !== "string" || !item.detail.trim()) return ["Each finding must state a specific detail."]
     if (item.target !== undefined && !["body", "memo", "research"].includes(String(item.target))) return ["Finding target must be body, memo or research."]
-    if (item.target === "body" && item.document === undefined) return ["A body finding needs the affected document id."]
-    if (item.document !== undefined && !documents.some(document => document.id === item.document)) return ["Finding names an unknown document; use a final document id or omit it for a package/memo finding."]
-    if (item.pid !== undefined && (typeof item.document !== "string" || !finalBodyParagraphs(directory, item.document as DocID).some(paragraph => paragraph.pid === item.pid))) return ["Finding pid must belong to its named final document."]
+    // null or "" reads as omitted, as packageReviewItem reads it.
+    const document = item.document === null || item.document === "" ? undefined : item.document
+    const pid = item.pid === null || item.pid === "" ? undefined : item.pid
+    if (item.target === "body" && document === undefined) return ["A body finding needs the affected document id."]
+    if (document !== undefined && !documents.some(row => row.id === document)) return [`Finding names an unknown document ${JSON.stringify(document)}; use a final document id (${documents.map(row => row.id).join(", ")}), or omit the field (or give null) for a package or memo finding.`]
+    if (pid !== undefined && (typeof document !== "string" || !finalBodyParagraphs(directory, document as DocID).some(paragraph => paragraph.pid === pid))) return ["Finding pid must belong to its named final document; omit it (or give null) when no paragraph is affected."]
     return []
   })]
   if (row.status === "pass" && row.findings.length) issues.push("A pass cannot contain unresolved correction findings; use changes-required.")

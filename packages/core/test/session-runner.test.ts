@@ -20,6 +20,7 @@ import { OpenAIChat } from "@opencode/ai/protocols/openai-chat"
 import { AnthropicMessages, OpenAIResponses } from "@opencode/ai/protocols"
 import { TestLLM, compileRequest } from "@opencode/ai/testing"
 import { RequestExecutor } from "@opencode/ai/route"
+import { FetchHttpClient, HttpClientRequest } from "effect/http"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Database } from "@opencode/core/database/database"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
@@ -84,7 +85,7 @@ import { Location } from "@opencode/core/location"
 import { Provider } from "@opencode/core/provider"
 import { Cause, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Queue, Schema, Scope, Stream } from "effect"
 import { TestClock } from "effect/testing"
-import { asc, desc, eq, sql } from "drizzle-orm"
+import { and, asc, desc, eq, sql } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 import { promptLocationNode } from "./fixture/prompt-location"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
@@ -6214,6 +6215,184 @@ describe("SessionRunnerLLM", () => {
       { type: "synthetic", text: INCOMPLETE_STREAM_CONTINUATION },
       Expected.assistant({ finish: "stop" }, [Expected.text(" continuation")]),
     ])
+  })
+
+  scenario("keeps sustained soft capacity Retry and Continue waits in one admitted native task", function* (s) {
+    const admitted = yield* s.admit("Finish the admitted handover explanation")
+    for (let i = 0; i < 12; i++) {
+      yield* s.llm.push(i % 2 === 0 ? Stream.fail(rateLimited(20_000)) : TestLLM.failAfter(
+        rateLimited(20_000),
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: `capacity-partial-${i}` }),
+        LLMEvent.textDelta({ id: `capacity-partial-${i}`, text: `Retained piece ${i}.` }),
+      ))
+    }
+    yield* s.llm.push(TestLLM.text("Finished from retained work", "capacity-finished"))
+
+    const scheduled = yield* subscribeRetries(s)
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    const assistantIDs: SessionMessage.ID[] = []
+    for (let i = 0; i < 12; i++) {
+      assistantIDs.push(yield* Queue.take(scheduled))
+      expect(s.requests).toHaveLength(i + 1)
+      yield* TestClock.adjust("20 seconds")
+    }
+    yield* Fiber.join(run)
+
+    expect(s.requests).toHaveLength(13)
+    // A pre-output Retry keeps its assistant; a partial Continue starts the
+    // next assistant while retaining the previous accepted stream fragments.
+    for (let i = 0; i < 12; i += 2) expect(assistantIDs[i]).toBe(assistantIDs[i + 1])
+    expect(new Set(assistantIDs).size).toBe(6)
+    const users = yield* s.db.select({ id: SessionMessageTable.id }).from(SessionMessageTable)
+      .where(and(eq(SessionMessageTable.session_id, sessionID), eq(SessionMessageTable.type, "user")))
+      .all().pipe(Effect.orDie)
+    expect(users).toEqual([{ id: admitted.id }])
+    expect(yield* s.inbox).toEqual([])
+    const context = yield* s.context
+    expect(context.filter(message => message.type === "synthetic")).toHaveLength(6)
+    for (let i = 1; i < 12; i += 2) {
+      const partial = context.find(message => message.type === "assistant" && message.content.some(part => part.type === "text" && part.text === `Retained piece ${i}.`))
+      expect(partial).toMatchObject(Expected.assistant({ finish: "error", error: { type: "provider.rate-limit" } }, [Expected.text(`Retained piece ${i}.`)]))
+    }
+    expect(context.at(-1)).toMatchObject(Expected.assistant({ finish: "stop" }, [Expected.text("Finished from retained work")]))
+    expect((yield* recordedEventTypes(sessionID)).filter(type => type === "session.retry.scheduled.1")).toHaveLength(12)
+    yield* replaySessionProjection(sessionID)
+    expect(yield* s.context).toMatchObject(context)
+  })
+
+  for (const channel of ["typed", "raw-fetch"] as const) scenario(`keeps ${channel} socket reset Retry and Continue waits in one admitted native task without replaying tools`, function* (s) {
+    const admitted = yield* s.admit("Finish the admitted task after the recorded read")
+    yield* s.llm.push(TestLLM.toolCall("connection-read-once", "echo", { text: "recorded read before connection loss" }))
+    for (let i = 0; i < 12; i++) {
+      const operation = i % 2 === 0 ? "request" : "read"
+      const failure = channel === "raw-fetch" ? yield* Effect.gen(function* () {
+        const cause = Object.assign(new Error("The socket connection was closed unexpectedly"), { code: "ECONNRESET" })
+        const fetch = Object.assign(async () => {
+          if (operation === "request") throw cause
+          return new Response(new ReadableStream({ start(controller) { controller.error(cause) } }))
+        }, { preconnect: globalThis.fetch.preconnect })
+        const error = yield* Effect.gen(function* () {
+          const executor = yield* RequestExecutor.Service
+          return yield* RequestExecutor.stream(executor, HttpClientRequest.post("https://provider.test/native-reset")).pipe(Stream.runDrain, Effect.flip)
+        }).pipe(
+          Effect.provide(RequestExecutor.fetchLayer),
+          Effect.provideService(FetchHttpClient.Fetch, fetch),
+        )
+        expect(error.reason).toMatchObject({ _tag: "Transport", operation, code: "ECONNRESET" })
+        expect(error.reason.cause).toBe(cause)
+        return error
+      }) : new AIError({ reason: new TransportError({
+        message: "The socket connection was closed unexpectedly",
+        transport: "http",
+        operation,
+        code: "ECONNRESET",
+      }) })
+      yield* s.llm.push(i % 2 === 0 ? Stream.fail(failure) : TestLLM.failAfter(
+        failure,
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: `connection-partial-${i}` }),
+        LLMEvent.textDelta({ id: `connection-partial-${i}`, text: `Retained connection piece ${i}.` }),
+      ))
+    }
+    yield* s.llm.push(TestLLM.text("Finished from retained connection work", "connection-finished"))
+
+    const scheduled = yield* subscribeRetries(s)
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    const assistantIDs: SessionMessage.ID[] = []
+    // Advancing a bounded number of gaps also lets the pre-fix runner finish
+    // with an exhausted fault budget, rather than hanging on a missing event.
+    yield* TestClock.adjust("3 minutes")
+    yield* Fiber.join(run)
+    while ((yield* Queue.size(scheduled)) > 0) assistantIDs.push(yield* Queue.take(scheduled))
+
+    // One successful tool step, then twelve failed requests and request 13 succeeds.
+    expect(s.requests).toHaveLength(14)
+    expect(assistantIDs).toHaveLength(12)
+    for (let i = 0; i < 12; i += 2) expect(assistantIDs[i]).toBe(assistantIDs[i + 1])
+    expect(new Set(assistantIDs).size).toBe(6)
+    expect(s.executions).toEqual(["recorded read before connection loss"])
+    const users = yield* s.db.select({ id: SessionMessageTable.id }).from(SessionMessageTable)
+      .where(and(eq(SessionMessageTable.session_id, sessionID), eq(SessionMessageTable.type, "user")))
+      .all().pipe(Effect.orDie)
+    expect(users).toEqual([{ id: admitted.id }])
+    expect(yield* s.inbox).toEqual([])
+    const context = yield* s.context
+    expect(context.filter(message => message.type === "synthetic")).toHaveLength(6)
+    for (let i = 1; i < 12; i += 2) {
+      const partial = context.find(message => message.type === "assistant" && message.content.some(part => part.type === "text" && part.text === `Retained connection piece ${i}.`))
+      expect(partial).toMatchObject(Expected.assistant({ finish: "error", error: { type: "provider.transport" } }, [Expected.text(`Retained connection piece ${i}.`)]))
+    }
+    expect(context.at(-1)).toMatchObject(Expected.assistant({ finish: "stop" }, [Expected.text("Finished from retained connection work")]))
+    expect(JSON.stringify(s.requests.at(-1))).toContain("recorded read before connection loss")
+    yield* replaySessionProjection(sessionID)
+    expect(yield* s.context).toMatchObject(context)
+    expect(s.executions).toEqual(["recorded read before connection loss"])
+  })
+
+  scenario("interrupts a native socket reset wait without another request or lost partial output", function* (s) {
+    yield* s.admit("Pause the admitted task during connection loss")
+    const failure = new AIError({ reason: new TransportError({
+      message: "The socket connection was closed unexpectedly",
+      transport: "http",
+      operation: "read",
+      code: "ECONNRESET",
+    }) })
+    yield* s.llm.push(TestLLM.failAfter(
+      failure,
+      LLMEvent.stepStart({ index: 0 }),
+      LLMEvent.textStart({ id: "connection-paused-partial" }),
+      LLMEvent.textDelta({ id: "connection-paused-partial", text: "Retained connection work before pause" }),
+    ), TestLLM.text("Must not run", "connection-unused"))
+    const scheduled = yield* subscribeRetries(s)
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    yield* Queue.take(scheduled)
+    yield* s.session.interrupt(sessionID)
+    const exit = yield* Fiber.await(run)
+    expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true)
+    yield* TestClock.adjust("1 hour")
+    expect(s.requests).toHaveLength(1)
+    expect(yield* s.context).toMatchObject([
+      Expected.user("Pause the admitted task during connection loss"),
+      Expected.assistant({ finish: "error", error: { type: "provider.transport" } }, [Expected.text("Retained connection work before pause")]),
+    ])
+    const events = yield* recordedEventTypes(sessionID)
+    expect(events.filter(type => type === "session.retry.scheduled.1")).toHaveLength(1)
+    expect(events).not.toContain("session.synthetic.1")
+  })
+
+  scenario("does not reinterpret a provider stream defect mentioning a socket reset as a transport failure", function* (s) {
+    const defect = new TypeError("Unexpected internal state while handling ECONNRESET")
+    yield* s.admit("Keep internal defects visible")
+    yield* s.llm.push(Stream.die(defect), TestLLM.text("Must not run", "defect-unused"))
+    expect(yield* s.resume.pipe(Effect.catchDefect(Effect.succeed))).toBe(defect)
+    expect(s.requests).toHaveLength(1)
+    expect((yield* recordedEventTypes(sessionID)).filter(type => type === "session.retry.scheduled.1")).toHaveLength(0)
+  })
+
+  scenario("interrupts a native soft capacity wait without another request or lost partial output", function* (s) {
+    yield* s.admit("Pause the pending handover explanation")
+    yield* s.llm.push(TestLLM.failAfter(
+      rateLimited(60_000),
+      LLMEvent.stepStart({ index: 0 }),
+      LLMEvent.textStart({ id: "capacity-interrupted-partial" }),
+      LLMEvent.textDelta({ id: "capacity-interrupted-partial", text: "Retained before pause" }),
+    ), TestLLM.text("Must not run", "capacity-unused"))
+    const scheduled = yield* subscribeRetries(s)
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    yield* Queue.take(scheduled)
+    yield* s.session.interrupt(sessionID)
+    const exit = yield* Fiber.await(run)
+    expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true)
+    yield* TestClock.adjust("1 hour")
+    expect(s.requests).toHaveLength(1)
+    expect(yield* s.context).toMatchObject([
+      Expected.user("Pause the pending handover explanation"),
+      Expected.assistant({ finish: "error", error: { type: "provider.rate-limit" } }, [Expected.text("Retained before pause")]),
+    ])
+    const events = yield* recordedEventTypes(sessionID)
+    expect(events.filter(type => type === "session.retry.scheduled.1")).toHaveLength(1)
+    expect(events).not.toContain("session.synthetic.1")
   })
 
   scenario("continues after an unrecognized mid-stream provider failure", function* (s) {

@@ -65,9 +65,32 @@ test("admission is causal for evidence, scope, uncertainty and duplicate disposi
   const noLimitation = plan()
   noLimitation.findings![0].limitations = []
   expect(checkChangePlan(directory, "d1", noLimitation).join(" ")).toContain("evidence limitation")
+  // A question's kind on a finding is named, with the kinds a finding takes.
+  const questionKind = plan()
+  questionKind.findings![0].kind = "judgment" as never
+  expect(checkChangePlan(directory, "d1", questionKind).join(" ")).toContain('Its kind is "judgment"; use "information", "research" or "suggestion".')
+  // Each malformed field is named with the shape it takes.
+  const unnamed = plan()
+  delete (unnamed.findings![1] as Partial<ReviewDisposition>).reason
+  unnamed.findings![1].limitations = "Recipient not supplied." as never
+  const message = checkChangePlan(directory, "d1", unnamed).join(" ")
+  expect(message).toContain("Its reason is missing; give nonempty text.")
+  expect(message).toContain("Its limitations is the wrong shape; give a list of nonempty text, possibly empty.")
+  expect(message).not.toContain("Its detail")
+  const group = { ...plan(), groups: [{ id: "delivery", pids: [], goal: "Keep the period.", sources: SUPPORT, limitations: [] }] }
+  expect(checkChangePlan(directory, "d1", group).join(" ")).toContain("Its pids is the wrong shape; give a nonempty list of initial draft pids.")
   const duplicated = plan([...findings, { ...findings[0], detail: `  ${findings[0].detail.toUpperCase()} `, documents: ["d2"] }])
   expect(checkChangePlan(directory, "d1", duplicated).join(" ")).toContain("consolidate duplicate findings")
   expect(checkChangePlan(directory, "d1", plan())).toEqual([])
+})
+
+test("a finding without affected documents is routed to the document whose review raised it", () => {
+  const directory = setup()
+  const unrouted = plan()
+  unrouted.findings![1].documents = []
+  delete (unrouted.findings![2] as Partial<ReviewDisposition>).documents
+  expect(acceptChangePlan(directory, "d2", JSON.stringify(unrouted)).issues).toEqual([])
+  expect(readChangePlan(directory, "d2")?.findings?.map(row => row.documents)).toEqual([["d1"], ["d2"], ["d2"], ["d1"]])
 })
 
 test("changed dispositions invalidate dependent consumers while leaving every draft stable", () => {

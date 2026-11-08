@@ -1,12 +1,12 @@
 import { normalize, normalizeWithMap, sourceReadings } from "../../lib/quote-verify"
-import { TOOL_SYNTAX_ISSUE, printedToolCall, record, replyJson } from "./checks"
+import { TOOL_SYNTAX_ISSUE, parseJsonObject, printedToolCall, record } from "./checks"
 import { readActRecord, signerFlags, type ActRecord } from "./act-record"
 import { FIRST_DOCUMENT, nameKey, namedIn, readLeanPlan, type ActingFor, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { approvedResearch, researchHandoff } from "./research"
-import { EXCERPT, REQUEST_SOURCE, adoptedSources, excerpt, lawyerWords, matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
+import { EXCERPT, REQUEST_SOURCE, adoptedSources, excerpt, lawyerWords, matterSourceIDs, openItem, questionSourceNote, quoteFound, quoteMissIssue } from "./quotes"
 import { answeredScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows, type ScopeParties } from "./package-scope"
-import { answeredQuestionsText, hashStageInputs, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type QuestionOption } from "./state"
+import { answeredQuestionsText, hashStageInputs, questionOptions, readLeanJson, readLeanText, readQuestions, undecidedQuestion, type AnswerReader, type OpenItem, type Question, type QuestionOption } from "./state"
 import { sourceText } from "./template-structure"
 
 // Package coverage: an instructed act needs an instrument executed by the
@@ -14,10 +14,12 @@ import { sourceText } from "./template-structure"
 // (act-record.ts, acts.json), read blind to the plan so that the plan does not
 // anchor it: each act the lawyer's instructions direct, verified against the
 // matter, with the parties whose approval authorises it and those who carry it
-// out (recordedActs). A focused job places each recorded act in the planned
-// document that carries it; parseCoveragePlacement holds every act to one
-// placement and parseCoverage verifies the placed acts (each document a planned
-// id, any excluded_by the lawyer's own words). planCoverageIssues then holds
+// out, or, where the record states a conflict between the instructions and the
+// authority, the signatories the instructions direct (recordedActs). A focused
+// job places each recorded act in the planned document that carries it;
+// parseCoveragePlacement holds every act to one placement and parseCoverage
+// verifies the placed acts (each document a planned id, any excluded_by the
+// lawyer's own words). planCoverageIssues then holds
 // the plan to them, as retry feedback for the outline. Nothing here judges the
 // legal substance or supplies a party: an act
 // whose parties the record does not settle lists none, and a plan-declared
@@ -36,7 +38,7 @@ import { sourceText } from "./template-structure"
 // act. Each act whose instrument, as the act record reads it, is not executed
 // by every party whose authority the act needs (signerFlags), and each conflict
 // the act record states between the instructions and the authority, is
-// disclosed for the lawyer to confirm or decide.
+// disclosed for the lawyer to confirm or decide; a conflict never gates the plan.
 // What the saved plan still leaves open reaches the lawyer as open items derived
 // from that record (coverageItems), never stored. The gate reads the same record
 // (coverageCarries) to tell an instruction the plan carries from one it may
@@ -65,14 +67,19 @@ export type LeanCoverage = {
 /** The acts the run's act record lists, as placement reads them, each with the
  * parties who must take it: those whose approval authorises it (WHO
  * "authorised_by") when the record names any, otherwise those who carry it out
- * ("performed_by"), otherwise none. [] when the record lists no act. A missing
- * or unreadable record, or one whose listing never passed its check, gives its
- * issues and no acts, as an unchecked listing. */
+ * ("performed_by"), otherwise none. An act whose HOW records a conflict
+ * between the instructions and the authority is taken by the signatories the
+ * instructions direct (HOW "executed_by", none when HOW does not settle them):
+ * the package follows the instructions, and the authority's objection reaches
+ * the lawyer as the conflict's disclosed item (actRecordItems), never as a
+ * coverage issue. [] when the record lists no act. A missing or unreadable
+ * record, or one whose listing never passed its check, gives its issues and no
+ * acts, as an unchecked listing. */
 export function recordedActs(directory: string): Checked<InstructedAct[]> {
   const record = readActRecord(directory)
   if (!record || record.status === "unchecked") return { issues: record?.issues.find(row => row.job === "what")?.issues ?? ["The act record (acts.json) is missing or unreadable."] }
-  return { issues: [], value: record.acts.map(({ act, source, quote, who }) => ({
-    act, source, quote, parties: who?.authorised_by.length ? who.authorised_by : who?.performed_by ?? [],
+  return { issues: [], value: record.acts.map(({ act, source, quote, who, how }) => ({
+    act, source, quote, parties: how?.conflict ? how.executed_by : who?.authorised_by.length ? who.authorised_by : who?.performed_by ?? [],
   })) }
 }
 
@@ -82,10 +89,11 @@ const COVERAGE_SHAPE = 'Reply with the JSON object only: {"acts":[{"act":"...","
 const PLACEMENT_SHAPE = 'Reply with the JSON object only: {"placements":[{"act":0,"document":"planned id or null"}]}.'
 const READ_ONLY = "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply."
 
-/** The lawyer's instructions the coverage and act-record jobs read: the request, the later updates and the answers. */
-export function instructionSections(directory: string) {
+/** The lawyer's instructions the coverage and act-record jobs read: the request, the later updates and the answers
+ * `options` reads (the act record's: actRecordAnswers). */
+export function instructionSections(directory: string, options: AnswerReader = {}) {
   const updates = readLeanText(directory, "updated-notes.md")?.trim()
-  const answers = answeredQuestionsText(directory)
+  const answers = answeredQuestionsText(directory, options)
   return [
     tagged("request", readLeanText(directory, "request.md") ?? ""),
     updates ? tagged("user_updates", `Later instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n${updates}`) : "",
@@ -136,7 +144,7 @@ export function listedActIssues(directory: string, where: string, act: Instructe
   const issues: string[] = []
   const sources = [REQUEST_SOURCE, ...adoptedSources(directory), ...matterSourceIDs(directory)]
   if (!sources.includes(act.source))
-    issues.push(`${where} gives the source "${act.source}", which is not a matter document. Use one of ${sources.map(name => `"${name}"`).join(", ")}.`)
+    issues.push(`${where} gives the source "${act.source}", which is not a matter document. Use one of ${sources.map(name => `"${name}"`).join(", ")}. ${questionSourceNote(act.source, new Set(sources), directory)}`.trimEnd())
   else if (!quoteFound(directory, { quote: act.quote, source_id: act.source }))
     issues.push(quoteMissIssue(directory, where, { quote: act.quote, source_id: act.source }, "json", { adopted: true }))
   for (const party of act.parties.filter(party => !texts().some(text => namedIn(text, party))))
@@ -167,8 +175,10 @@ export function mergeCoverageActs<T extends { source: string; quote: string }>(.
  * including on the last attempt (`final`). */
 export function parseCoveragePlacement(reply: string, directory: string, documents: PlannedDocument[], acts: InstructedAct[], { final = false } = {}): Checked<CoverageAct[]> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  const value = replyJson(reply)
-  if (!record(value) || !Array.isArray(value.placements)) return { issues: [PLACEMENT_SHAPE] }
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok) return { issues: [`${PLACEMENT_SHAPE} ${parsed.error}`] }
+  const value = parsed.value
+  if (!Array.isArray(value.placements)) return { issues: [PLACEMENT_SHAPE] }
   const issues: string[] = []
   const placed = new Map<number, Record<string, unknown>>()
   const again = new Set<number>()
@@ -215,8 +225,10 @@ export function parseCoveragePlacement(reply: string, directory: string, documen
  * last attempt. */
 export function parseCoverage(reply: string, directory: string, documents: PlannedDocument[], { final = false } = {}): Checked<CoverageAct[]> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  const value = replyJson(reply)
-  if (!record(value) || !Array.isArray(value.acts)) return { issues: [COVERAGE_SHAPE] }
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok) return { issues: [`${COVERAGE_SHAPE} ${parsed.error}`] }
+  const value = parsed.value
+  if (!Array.isArray(value.acts)) return { issues: [COVERAGE_SHAPE] }
   const ids = documents.map(document => document.id)
   let texts: string[] | undefined
   const issues: string[] = []
@@ -554,13 +566,14 @@ const FILE_NAME = /[^\s`'"“”‘’()[\]<>,;:*]+\.\p{L}[\p{L}\p{N}]{1,4}(?![\
 const LIST_GAP = /^[\s\p{P}\p{S}\p{N}]*(?:\p{L}+[\s\p{P}\p{S}\p{N}]*)?$/u
 const NO_WORD = /^[\s\p{P}\p{S}\p{N}]*$/u
 
-/** Whether `words` only list file names: after any label up to a ":" and
+/** Whether `words` only list file names: after a neutral delivery label and
  * without code or emphasis marks, one or more FILE_NAMEs with no word before
  * the first or after the last and at most one word between two. Such words
  * name what is delivered ("Output: `a.docx` and `b.docx`."); they never say
- * that an act's document is left out of the package. */
+ * that an act's document is left out of the package. Other words before a
+ * colon are kept: they may themselves say which files are excluded. */
 function onlyFileNames(words: string) {
-  const parts = words.replace(/[`*_]/g, "").replace(/^[^:]*:/, "").split(FILE_NAME)
+  const parts = words.replace(/[`*_]/g, "").replace(/^\s*(?:output(?:\s+files)?|files|deliverables)\s*:/iu, "").split(FILE_NAME)
   return parts.length > 1 && NO_WORD.test(parts[0]!) && NO_WORD.test(parts.at(-1)!) && parts.slice(1, -1).every(gap => LIST_GAP.test(gap))
 }
 
@@ -626,6 +639,11 @@ function serialList(entries: string[]) {
   return entries.length > 1 ? `${entries.slice(0, -1).join(", ")}, and ${entries.at(-1)}` : entries.join("")
 }
 
+/** A revision of the outline moves an act into a planned document; adding a
+ * document the lawyer has not asked for is theirs to decide, so where none
+ * fits, the package-scope question asks them (coverageScopeQuestion). */
+export const NO_NEW_DOCUMENT = "A revision adds no document the lawyer's request or answers do not name: if no planned document fits, change nothing for this act; the run asks the lawyer whether to add one."
+
 /** `act`'s issues against the planned documents; `acts` is the whole record. */
 function actIssues(act: CoverageAct, documents: PlannedDocument[], acts: CoverageAct[]): string[] {
   const directed = `"${act.act}" ("${excerpt(act.quote)}" [source: ${act.source}])`
@@ -637,15 +655,15 @@ function actIssues(act: CoverageAct, documents: PlannedDocument[], acts: Coverag
     return [`The check read the instructions as leaving out of this package the document for ${directed}, which must be taken by ${who}, but ${planned}, ` +
       (leftOut.length > 1 ? `are planned and carry no instructed act. ${LEFT_OUT_DOCUMENTS_FIX}` : `is planned and carries no instructed act. ${LEFT_OUT_DOCUMENT_FIX}`)]
   }
-  const move = (verb: string) => `${verb} the act to a document executed by ${who}, or add a companion document executed by ${who}.`
+  const move = (verb: string) => `${verb} the act into a planned document executed by ${who}. ${NO_NEW_DOCUMENT}`
   const carrier = documents.find(document => document.id === act.document)
   if (!carrier) return [`The instructions direct ${directed}, but no planned document carries it. ` + (act.parties.length
-    ? `Plan it in a document executed by ${who}, adding one when none is planned.`
-    : "Plan it in the document that should carry it, adding a document when none is planned.")]
+    ? `Plan it in a planned document executed by ${who}. ${NO_NEW_DOCUMENT}`
+    : `Plan it in the planned document that should carry it. ${NO_NEW_DOCUMENT}`)]
   const executing = carrier.executed_by
   if (!act.parties.length) return executing?.length === 0 ? [`${directed} is carried by ${label(carrier)}, which is executed by no party (Executed by: none). ` +
-    'Plan the act in a document a party executes, naming that party as the request or sources name it; only when the record does not name who executes the document, leave its "Executed by:" line out instead of writing "none". ' +
-    "Never supply a party the record does not name."] : []
+    'Plan the act in a planned document a party executes, naming that party as the request or sources name it; only when the record does not name who executes the document, leave its "Executed by:" line out instead of writing "none". ' +
+    `Never supply a party the record does not name. ${NO_NEW_DOCUMENT}`] : []
   if (!executing) return [`${directed} must be taken by ${who}, and ${label(carrier)} carries it but has no "Executed by:" line. ` +
     `Add that line naming the parties who execute it, separated by ";". If they do not include ${who}, ${move("move")}`]
   const missing = act.parties.filter(party => !executing.some(name => nameKey(name) === nameKey(party)))
@@ -700,13 +718,29 @@ export function coverageScopeQuestion(acts: CoverageAct[], documents: PlannedDoc
       ...open.map(act => actLine(act, documents, excerpt(act.quote))),
       options.saved
         ? `${several ? "For each, which" : "Which"} planned document, executed by those parties, should carry it, or is it outside this request?`
-        : `${several ? "For each, should" : "Should"} the package add a document, or change a planned one, so that those parties take it, or is it outside this request? If the package should carry it, say in which document and who executes it.`].join(" "),
+        : `${several ? "For each, should" : "Should"} ${NEW_DOCUMENT_OFFER}, so that those parties take it, or is it outside this request? If the package should carry it, say in which document and who executes it.`].join(" "),
     context: options.saved
       ? 'Drafting waits for your answer. The saved document plan, including any edits to it, is kept as it stands: to add a document, stop this draft with "Stop draft", then start a new one, which plans the package from the start.'
       : "Drafting waits for your answer. The document plan is drawn up with your answer before any part is drafted.",
     status: "open",
     kind: "scope",
   }
+}
+
+/** The plan's coverage `issues` (planCoverageIssues of `acts`) an outline
+ * revision is asked to settle: all but those of acts one of the `answered`
+ * package-scope questions settled, read as the plan step's question reads them
+ * (actScopeAnswers), since a revision never overrides the lawyer's answer. An
+ * issue another act still raises stays. The record keeps every issue;
+ * coverageItems reads the same answers and leaves out an act one the lawyer
+ * decided settled. */
+export function revisionCoverageIssues(issues: string[], acts: CoverageAct[], documents: PlannedDocument[], answered: Question[]) {
+  const open = acts.filter(act => !act.excluded_by && actIssues(act, documents, acts).length)
+  const settled = actScopeAnswers(open, answered, acts)
+  const issuesOf = (rows: CoverageAct[]) => new Set(rows.flatMap(act => actIssues(act, documents, acts)))
+  const dropped = issuesOf(open.filter(act => settled.by(act).length))
+  const kept = issuesOf(acts.filter(act => !open.includes(act) || !settled.by(act).length))
+  return issues.filter(issue => !dropped.has(issue) || kept.has(issue))
 }
 
 /** Where a document carrying the plan step's uncovered acts goes when the
@@ -756,11 +790,14 @@ export function foldedCoverage(directory: string, coverage: { acts?: CoverageAct
  * of listing it as outstanding, and asks the lawyer to confirm whether it is to
  * be dealt with there or outside this package. "uncovered"
  * also gives one item per other act still without a document executed by the
- * parties who must take it, noting a package-scope question the lawyer
- * answered (never its answer) when that question settled the act
+ * parties who must take it, unless a package-scope question the lawyer
+ * answered, or whose recommendation they adopted, settled the act
  * (actScopeAnswers: it showed the act (showsAct), or has the id the plan step
- * would ask with), and
- * one per other recorded issue; "unchecked" gives one item saying the check
+ * would ask with): the plan follows that answer, so the act is not an
+ * omission. One the lawyer left open (undecidedQuestion) settles nothing, so
+ * the act's item stays and says so, naming no question. The issues of a
+ * settled act never return as other recorded issues. One item per other
+ * recorded issue; "unchecked" gives one item saying the check
  * gave no usable result. Either single item asks the lawyer to confirm
  * coverage. They belong to the drafting notes, so a repair goes to the
  * notes writer and a re-run of the draft step, which replaces draft-stage
@@ -787,10 +824,8 @@ export function coverageItems(directory: string): OpenItem[] {
   // the left-out words were verified against the lawyer's own words only.
   const lawyerQuote = (words: string) => `"${words.replace(/\s+/g, " ").trim()}"` + (matterSourceIDs(directory).includes(REQUEST_SOURCE) ? "" : ` [source: ${REQUEST_SOURCE}]`)
   const settled = actScopeAnswers(open, readQuestions(directory).filter(answeredScopeQuestion), coverage.acts)
-  const after = (act: CoverageAct) => {
-    const asked = settled.by(act).map(question => question.id)
-    return asked.length ? ` The lawyer answered the package-scope question ${asked.join(", ")}; the plan still leaves this act so.` : ""
-  }
+  const decided = (act: CoverageAct) => settled.by(act).some(question => !undecidedQuestion(question))
+  const after = (act: CoverageAct) => settled.by(act).length ? " The lawyer was asked where this act belongs and left the point open." : ""
   const stillPlanned = (act: CoverageAct) => {
     const planned = leftOutDocuments(act, plan.documents, coverage.acts).map(document => `${label(document)}, which is executed by ${quotedList(document.executed_by!)}`)
     return planned.length > 1 ? ` The lawyer should also confirm whether each of ${serialList(planned)}, should be in this package; none of them carries an instructed act.`
@@ -809,7 +844,7 @@ export function coverageItems(directory: string): OpenItem[] {
   const items = [
     ...coverage.acts.filter(act => act.excluded_by).map(act => item(`Plan coverage: the check of the document plan against the instructions read the lawyer's words ${lawyerQuote(act.excluded_by!)} ` +
       excludedReading(act, act.quote.replace(/\s+/g, " ").trim()) + stillPlanned(act))),
-    ...open.map(act => item("Plan coverage: the document plan leaves this instructed act without a document executed by the parties who must take it: " +
+    ...open.filter(act => !decided(act)).map(act => item("Plan coverage: the document plan leaves this instructed act without a document executed by the parties who must take it: " +
       actLine(act, plan.documents, act.quote.replace(/\s+/g, " ").trim()) + after(act))),
     ...coverage.issues.filter(issue => !tied.has(issue)).map(issue => item("Plan coverage: the check of the document plan against the instructions left this open: " +
       withoutOutlineFix(issue))),
@@ -969,16 +1004,17 @@ function actLine(act: CoverageAct, documents: PlannedDocument[], quote: string, 
     ? scopeField(quotedList(act.parties)) : "parties the instructions and sources do not name"}; ${scopeField(where)}.`
 }
 
-/** Where the plan has an act: the document that carries it and who executes that document. */
+/** Where the plan has an act: the document that carries it, by its title (the
+ * lawyer reads this line), and who executes that document. */
 function plannedIn(act: CoverageAct, documents: PlannedDocument[]) {
   const carrier = documents.find(document => document.id === act.document)
   if (!carrier) return "no planned document carries it"
   const executing = carrier.executed_by
-  return `planned in ${label(carrier)}, executed by ${!executing ? "parties the plan does not name" : executing.length ? quotedList(executing) : "no party"}`
+  return `planned in "${carrier.title}", executed by ${!executing ? "parties the plan does not name" : executing.length ? quotedList(executing) : "no party"}`
 }
 
-/** What the placement job reads of a planned document: no delivery or review fields. */
-function coverageView(document: PlannedDocument) {
+/** What the placement jobs read of a planned document: no delivery or review fields. */
+export function coverageView(document: PlannedDocument) {
   return {
     id: document.id, title: document.title, purpose: document.purpose, executed_by: document.executed_by ?? null,
     parts: document.parts.map(part => ({ heading: part.heading, scope: part.scope, ...(part.instrument ? { instrument: part.instrument } : {}) })), ...(document.left_out?.length ? { left_out: document.left_out } : {}),
@@ -1023,6 +1059,23 @@ const savedAct = (row: unknown) => record(row) && ["act", "source", "quote"].eve
   (row.document === null || typeof row.document === "string") && (row.excluded_by === undefined || (typeof row.excluded_by === "string" && row.document === null))
 
 const label = (document: PlannedDocument) => `${document.id} "${document.title}"`
+
+/** The titles of the planned documents a package-scope question shows (plannedIn). */
+export function scopeQuestionTitles(question: Pick<Question, "question">) {
+  return [...question.question.matchAll(/\bplanned in "([^"]*)"/g)].map(match => match[1]!)
+}
+
+/** The words with which the plan step's package-scope question, asked before
+ * its plan is saved, offers a new document (coverageScopeQuestion). */
+const NEW_DOCUMENT_OFFER = "the package add a document, or change a planned one"
+
+/** Whether a package-scope question offers a new document: only the plan
+ * step's, asked before its plan is saved. Asked about a saved plan, by the plan
+ * step or the gate, it offers only a planned document or outside this request:
+ * a document is added only by a new drafting request. */
+export function scopeQuestionOffersNewDocument(question: Pick<Question, "question">) {
+  return question.question.includes(NEW_DOCUMENT_OFFER)
+}
 
 /** The one act an entry describes: what is to be done, ignoring spacing and
  * case, and its parties by nameKey. */

@@ -64,7 +64,7 @@ describe("acceptChangePlan", () => {
     writeLeanText(directory, "d1/review.json", JSON.stringify({ findings: findings.map((id, index) => ({ id, document: "d1", origin: "drafting", finding: `Finding ${index + 1}.`, sources: [] })) }))
     return directory
   }
-  const reply = (patch: Partial<Record<keyof ChangePlan, unknown>>) => JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], findings: [], questions: [], ...patch })
+  const reply = (patch: Partial<Record<keyof ChangePlan, unknown>>) => JSON.stringify({ shared_decisions: [], groups: [], findings: [], questions: [], ...patch })
   const ask = (text: string, resolves?: string[]) => ({ pid: PID, question: text, kind: "fact", context: "Why it matters.", ...(resolves ? { resolves } : {}) })
 
   test("a question's resolves are saved in the change plan only; the questions to ask carry none", () => {
@@ -74,6 +74,15 @@ describe("acceptChangePlan", () => {
     expect(accepted.questions).toHaveLength(1)
     expect(accepted.questions![0]).not.toHaveProperty("resolves")
     expect((readLeanJson(directory, "d1/change-plan.json") as ChangePlan).questions[0]!.resolves).toEqual([OWN])
+  })
+
+  test("a plan without dismissed is accepted, and each list of the wrong shape is named with the shape it takes", () => {
+    const directory = reviewed(OWN)
+    const findings = [disposition("Kept open.", [OWN])]
+    expect(acceptChangePlan(directory, "d1", reply({ findings })).issues).toEqual([])
+    const shaped = acceptChangePlan(directory, "d1", reply({ shared_decisions: [{ decision: "Keep the term." }], dismissed: [{ finding_id: OWN, reason: "Not needed." }], findings }))
+    expect(shaped.issues).toEqual(["Return one JSON object with shared_decisions, groups, findings and questions lists. Its shared_decisions is the wrong shape; give a list of nonempty text, possibly empty. Its dismissed is the wrong shape; give a list of text, or leave it out."])
+    expect(acceptChangePlan(directory, "d1", JSON.stringify({ shared_decisions: [], findings, questions: [] })).issues).toEqual(["Return one JSON object with shared_decisions, groups, findings and questions lists. Its groups is missing; give a list of change groups, possibly empty."])
   })
 
   test("an id that names no listed finding is dropped without a retry", () => {

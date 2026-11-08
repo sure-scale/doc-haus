@@ -11,6 +11,15 @@ export type ChatRouteTransport = {
   subscribe?(sessionID: string, signal: AbortSignal, onConnected: () => void, onDelta: (text: string) => void): Promise<void>
 }
 
+// A reply's answer text, for transports that read a router reply. Providers with
+// phased replies (OpenAI's Responses API) also send working notes as separate
+// text marked `commentary`; those notes are not the reply and can hold stray
+// JSON. A reply whose text is all commentary is read whole.
+export function answerText(parts: { text: string; phase?: unknown }[]) {
+  const answer = parts.filter(part => part.phase !== "commentary")
+  return (answer.length ? answer : parts).map(part => part.text).join("")
+}
+
 // Pick the chat's "Auto" assistant by asking the engine's small model which real
 // assistant should answer. Routing runs entirely through OpenCode, so it adapts
 // to whatever provider the small model lives on — Vertex, Bedrock, Azure, OpenAI,

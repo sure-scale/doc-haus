@@ -1,10 +1,11 @@
+import { Database } from "bun:sqlite"
 import { afterAll, beforeEach, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { LegalPlugin } from "../plugin/legal/policy"
 import { recordSessionAgent } from "../plugin/legal/session"
-import { DEFAULT_DRAFTING, LEGEND_MAX_LENGTH, normalizeLegend, normalizePreferences, renderInstructions } from "../lib/drafting-preferences"
+import { DEFAULT_DRAFTING, LEGEND_MAX_LENGTH, normalizeLegend, normalizePreferences, readFirmDraftingPreferences, renderInstructions } from "../lib/drafting-preferences"
 import { writeLeanPlan } from "../workflows/lean/plan"
 
 const previous = process.env.WORKSPACE_ROOT
@@ -62,6 +63,63 @@ test("a drafting run's stages take the Posture frozen in its plan; other work on
     expect(await systemFor("legal-review")).toContain(CONSERVATIVE)
   } finally {
     rmSync(path.join(directory, "matter.json"), { force: true })
+    rmSync(path.join(directory, ".dochaus"), { recursive: true, force: true })
+  }
+})
+
+test("until the firm sets its drafting preferences, dates follow the style the matter's sources use, else the default; once set, the firm's own text as before", async () => {
+  const SET = "The lawyer using doc.haus has set these firm-wide preferences. Apply them whenever you draft, edit, or propose changes to a document, and when you explain your work."
+  const UNSET = "The firm has not set its drafting preferences; until it does, apply these defaults whenever you draft, edit, or propose changes to a document, and when you explain your work."
+  const SOURCES = 'Write dates in the form "11 June 2026", the style the matter\'s sources use.'
+  const DEFAULT = 'Write dates in the form "June 11, 2026" (the default), and in one style throughout.'
+  // The index ingest keeps the sources' canonical text in the matter's legal.db; each rewrite is dated apart.
+  let rewrites = 0
+  const index = (text: string) => {
+    const file = path.join(directory, ".dochaus", "legal.db")
+    mkdirSync(path.dirname(file), { recursive: true })
+    const db = new Database(file)
+    db.run("CREATE TABLE IF NOT EXISTS chunks (doc_name TEXT, section TEXT, text TEXT, char_start INTEGER, char_end INTEGER)")
+    db.run("DELETE FROM chunks")
+    db.query("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)").run("terms.docx", "1", text, 0, text.length)
+    db.close()
+    utimesSync(file, 1_800_000_000 + ++rewrites, 1_800_000_000 + rewrites)
+  }
+  try {
+    for (const agent of ["lean-body", "legal-review"]) {
+      rmSync(path.join(directory, ".dochaus"), { recursive: true, force: true })
+      // No sources yet: the default, named as one.
+      const fresh = await systemFor(agent)
+      expect(fresh).toContain(UNSET)
+      expect(fresh).toContain(DEFAULT)
+      expect(fresh).not.toContain("has set")
+      index("The term starts on 11 June 2026 and ends on 10 June 2027. Notice runs from 1 July 2026.")
+      const unconfigured = await systemFor(agent)
+      expect(unconfigured).toContain(UNSET)
+      expect(unconfigured).toContain(SOURCES)
+      expect(unconfigured).not.toContain("has set")
+      expect(unconfigured).not.toContain(DEFAULT)
+      // Sources that settle on no one style: the default again.
+      index("The term starts on 11 June 2026 and ends on June 10, 2027.")
+      expect(await systemFor(agent)).toContain(DEFAULT)
+      index("The term starts on 11 June 2026 and ends on 10 June 2027. Notice runs from 1 July 2026.")
+      expect(await systemFor(agent)).toContain(SOURCES)
+    }
+    // The firm's own setting wins over the sources' style, in exactly its own words.
+    save({ draftingConfigured: true, dateFormat: "month-day-year" })
+    for (const agent of ["lean-body", "legal-review"]) {
+      const configured = await systemFor(agent)
+      expect(configured).toContain(SET)
+      expect(configured).toContain('Write dates in the form "June 11, 2026".')
+      expect(configured).not.toContain("sources use")
+      expect(configured).not.toContain("the default")
+    }
+    expect(readFirmDraftingPreferences("full", undefined, "day-month-year")).toBe(readFirmDraftingPreferences())
+    expect(readFirmDraftingPreferences()).toBe(renderInstructions(normalizePreferences({ draftingConfigured: true, dateFormat: "month-day-year" })))
+    // A firm that set day-month-year keeps it whatever the sources write.
+    save({ draftingConfigured: true, dateFormat: "day-month-year" })
+    index("Paid June 1, 2026. Paid June 2, 2026.")
+    expect(await systemFor()).toContain('Write dates in the form "11 June 2026".')
+  } finally {
     rmSync(path.join(directory, ".dochaus"), { recursive: true, force: true })
   }
 })

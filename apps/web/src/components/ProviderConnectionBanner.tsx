@@ -1,23 +1,53 @@
-import { useEffect, useRef, useSyncExternalStore } from "react"
-import { providerHealth } from "../api/opencode/provider-health"
+import { useEffect, useRef, useState, useSyncExternalStore } from "react"
+import { providerHealth, type ModelConnection } from "../api/opencode/provider-health"
+
+// Only rejected credentials or an unusable model need the locked recovery Settings. Credit and
+// network trouble (`unavailable`) cannot be fixed there, so it gets a calm banner instead.
+export function recoveryConnection(connections: readonly ModelConnection[]) {
+  return connections.find(item => item.status === "auth") ?? connections.find(item => item.status === "model")
+}
+
+const failureKey = (item?: ModelConnection) => item && `${item.providerID}/${item.modelID}/${item.status}/${item.reason ?? ""}`
 
 export default function ProviderConnectionBanner({ enabled, onOpenSettings }: { enabled: boolean; onOpenSettings: (providerID: string) => void }) {
   const connections = useSyncExternalStore(providerHealth.subscribe, providerHealth.getSnapshot)
   useEffect(() => { if (enabled && providerHealth.getSnapshot().length === 0) void providerHealth.check() }, [enabled])
   const active = useRef(enabled)
   active.current = enabled
-  const failed = connections.find(item => item.status === "auth") ?? connections.find(item => item.status === "model")
-    ?? connections.find(item => item.status === "unavailable")
+  // The unavailable failure a recheck has confirmed; it shows the banner and stops further automatic rechecks.
+  const [settled, setSettled] = useState<ModelConnection>()
+  const [checking, setChecking] = useState(false)
+  const failed = recoveryConnection(connections) ?? connections.find(item => item.status === "unavailable")
+  const key = failureKey(failed)
+  const settledKey = failureKey(settled)
+  const settle = () => {
+    if (!active.current) return
+    const snapshot = providerHealth.getSnapshot()
+    const recovery = recoveryConnection(snapshot)
+    if (recovery) onOpenSettings(recovery.providerID)
+    else setSettled(snapshot.find(item => item.status === "unavailable"))
+  }
   useEffect(() => {
-    if (!enabled || !failed) return
-    const timer = window.setTimeout(() => {
-      void providerHealth.check(true).then(() => {
-        if (!active.current) return
-        const remaining = providerHealth.getSnapshot().find(item => ["auth", "model", "unavailable"].includes(item.status))
-        if (remaining) onOpenSettings(remaining.providerID)
-      })
-    }, 1000)
+    if (connections.length > 0 && connections.every(item => item.status === "ready")) setSettled(undefined)
+  }, [connections])
+  useEffect(() => {
+    if (!enabled || !failed || key === settledKey) return
+    const timer = window.setTimeout(() => { void providerHealth.check(true).then(settle) }, 1000)
     return () => window.clearTimeout(timer)
-  }, [enabled, failed?.providerID, failed?.modelID, failed?.status, onOpenSettings])
-  return null
+  }, [enabled, key, settledKey, onOpenSettings])
+  if (!enabled || !(checking || (failed?.status === "unavailable" && key === settledKey))) return null
+  const retry = () => {
+    setChecking(true)
+    void providerHealth.check(true).then(settle).finally(() => setChecking(false))
+  }
+  return <div className="provider-connection-banner" role="status" aria-live="polite">
+    <div>
+      {settled?.reason === "credit"
+        ? <><strong>Your AI account has run out of credit.</strong><p>Add credit with your provider, then check again.</p></>
+        : <><strong>The AI model can’t be reached right now.</strong><p>Check your network or your AI account’s credit. Your work is saved.</p></>}
+    </div>
+    <div className="provider-connection-actions">
+      <button type="button" disabled={checking} onClick={retry}>{checking ? "Checking…" : "Check again"}</button>
+    </div>
+  </div>
 }

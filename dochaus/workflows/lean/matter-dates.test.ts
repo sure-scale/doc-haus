@@ -5,7 +5,7 @@ import { stagePrompt } from "./prompts"
 import { researchPrompt } from "./research"
 import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES, stageInputs } from "./stages"
-import { readLeanJson, writeLeanText, type OpenItem } from "./state"
+import { readLeanJson, readLeanText, writeLeanText, type OpenItem } from "./state"
 import { AGENT, SOURCE, cleanupMatters, happyPath, matter, scriptedModel, type Reply } from "./test-support"
 
 // The dates the work turns on: fixed by intake from the lawyer's words or the
@@ -33,9 +33,27 @@ describe("the matter's dates", () => {
 
     expect(readLeanPlan(directory)?.dates).toEqual({ document_date: SENT, operative_dates: [ORDERED] })
     const dated = 'Date the document 2026-03-01, the date the sources fix for it ("to be sent on 1 March 2026"'
-    for (const agent of [AGENT.research, AGENT.spine, AGENT.draft, AGENT.review, AGENT.changes, AGENT.finalize, AGENT["package-review"]]) {
+    for (const agent of [AGENT.research, AGENT.spine, AGENT.draft, AGENT.review, AGENT.changes, AGENT["package-review"]]) {
       expect([agent, promptsOf(model, agent)[0]]).toEqual([agent, expect.stringContaining(dated)])
       expect(promptsOf(model, agent)[0]).toContain(RULE)
+    }
+    // Every independent explanation has the controlling frozen dates, including
+    // operative dates whose periods must not be computed from the system clock.
+    const notes = [...promptsOf(model, AGENT.finalize), ...promptsOf(model, AGENT.notesEvidence)]
+    expect(notes.length).toBeGreaterThan(1)
+    const linking = notes.filter(prompt => prompt.includes("<current_target_lookup>"))
+    const prose = notes.filter(prompt => prompt.includes("<section_kind>"))
+    expect(linking.length).toBeGreaterThan(0)
+    expect(prose.length).toBeGreaterThan(1)
+    expect(linking.length + prose.length).toBe(notes.length)
+    for (const prompt of linking) {
+      expect(prompt).toContain("<assigned_point>")
+      expect(prompt).toContain('"targets":[')
+    }
+    for (const prompt of notes) {
+      expect(prompt).toContain(dated)
+      expect(prompt).toContain('- Goods ordered: 2026-02-10 ("ordered on 10 February 2026"')
+      expect(prompt).toContain(RULE)
     }
     expect(promptsOf(model, AGENT.review)[0]).toContain('- Goods ordered: 2026-02-10 ("ordered on 10 February 2026"')
     expect(promptsOf(model, AGENT.intake)[0]).not.toContain("<matter_dates>")
@@ -43,7 +61,12 @@ describe("the matter's dates", () => {
     const items = gateItems(directory).filter(item => item.kind === "drafted_default")
     expect(items).toHaveLength(1)
     expect(items[0]).toMatchObject({ status: "disclosed", detail: expect.stringContaining("dated 2026-03-01, the date the sources fix for them") })
-    expect(promptsOf(model, AGENT.finalize)[0]).toContain(items[0]!.id)
+    const defaults = prose.flatMap(prompt => {
+      const block = /<open_point>\n([\s\S]*?)\n<\/open_point>/.exec(prompt)?.[1]
+      return block ? [JSON.parse(block)] : []
+    }).filter(point => point.kind === "drafted_default")
+    expect(defaults).toEqual([{ kind: items[0]!.kind, detail: items[0]!.detail, location: items[0]!.ref }])
+    expect(readLeanText(directory, "drafting-notes.md")!.split(`[ref: ${items[0]!.id}]`)).toHaveLength(2)
   }, 120_000)
 
   test("a date whose quotation is not in its source is retried, and on the last attempt the documents bear the drafting day", async () => {

@@ -574,13 +574,14 @@ function producedFiles(directory: string, delivered = false, deliveryPlan = read
     stem: deliveryStem(row),
   }))
   const notes = delivered && existsSync(leanFile(directory, DELIVERED_NOTES.docx)) ? DELIVERED_NOTES : { docx: "drafting-notes.docx", markdown: "drafting-notes.md" }
+  const memo = requestedMemo(directory, deliveryPlan)
   return [
     ...plan.flatMap((row): Produced[] => [
       { kind: "body", document: row.id, title: row.title, file: `${row.id}/body-applied.docx`, name: (row.deliverable ?? "body") === "body" ? row.stem : `${row.stem} - clean`, requested: Boolean(row.file) && (row.deliverable ?? "body") === "body" },
       { kind: "redline", document: row.id, title: row.title, file: `${row.id}/redline.docx`, name: row.deliverable === "redline" ? row.stem : `${row.stem} - redline`, requested: Boolean(row.file) && row.deliverable === "redline" },
     ]),
     // A reviewed note can receive its requested name; otherwise use the usual default.
-    { kind: "drafting_notes", document: null, title: null, file: notes.docx, name: deliveryPlan?.notes_file ? fileNameStem(deliveryPlan.notes_file.replace(/\.docx$/i, "")) : `${plan[0]?.stem ?? "Draft"} - drafting notes`, requested: Boolean(deliveryPlan?.notes_file) },
+    { kind: "drafting_notes", document: null, title: null, file: notes.docx, name: deliveryPlan?.record_file ? fileNameStem(deliveryPlan.record_file.replace(/\.docx$/i, "")) : memo ? fileNameStem(memo.file.replace(/\.docx$/i, "")) : `${plan[0]?.stem ?? "Draft"} - drafting notes`, requested: Boolean(deliveryPlan?.record_file || memo) },
     { kind: "drafting_notes_markdown", document: null, title: null, file: notes.markdown, name: null },
   ]
 }
@@ -751,12 +752,13 @@ export function memoAnchor<T extends { file?: string; deliverable?: string }>(do
 }
 
 /** The memo the notes are written as, when the request asks for one: the notes
- * file it is delivered as and the outline's name for it, both from the plan.
- * A notes file without a memo name (a delivery selection's rename) is no memo.
- * `plan` is the saved plan unless given. */
+ * file it is delivered as (the memo document's own file when the plan names
+ * one, else memoNotesFile after the other documents) and the outline's name
+ * for it. `plan` is the saved plan unless given. */
 export function requestedMemo(directory: string, plan = readLeanPlan(directory)): { file: string; name: string } | undefined {
-  if (!plan?.notes_file || !plan.memo) return
-  return { file: plan.notes_file, name: plan.memo }
+  if (!plan?.memo) return
+  const file = plan.documents.find(row => row.id === plan.memo_document)?.file
+  return { file: file ?? memoNotesFile(plan.documents.filter(row => row.id !== plan.memo_document), plan.memo), name: plan.memo }
 }
 
 /** The one file a combined document is delivered as with the requested memo:

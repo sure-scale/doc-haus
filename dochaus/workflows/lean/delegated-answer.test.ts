@@ -1,11 +1,15 @@
 import { afterEach, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { checkAnswerClass, classifyAnswers } from "./answer-class"
 import { checkDraftingNotes } from "./checks"
 import { OutputLimitError } from "./native-stage-result"
 import { finalGate, type GateResult } from "./gate"
+import { factOpenItems } from "./fact-answers"
 import { writeLeanPlan } from "./plan"
 import { delegatedDecisionsText, stagePrompt } from "./prompts"
-import { derivedRecordNote, openItem, quoteFound } from "./quotes"
+import { derivedRecordNote, openItem, quoteFound, quoteMissIssue } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
 import type { StageSessionPort } from "./stages"
@@ -21,7 +25,14 @@ import { AGENT, cleanupMatters, happyPath, matter, NO_FINDINGS, noChanges, scrip
 // drafting notes list each delegated decision with its reason, evidence and
 // attribution. Synthetic matter; only the model is scripted.
 
-afterEach(cleanupMatters)
+const workspace = process.env.WORKSPACE_ROOT
+const roots: string[] = []
+afterEach(() => {
+  if (workspace === undefined) delete process.env.WORKSPACE_ROOT
+  else process.env.WORKSPACE_ROOT = workspace
+  roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true }))
+  cleanupMatters()
+})
 
 const DELEGATION = "No further information or documents are available. Proceed on your own professional judgment and disclose any unresolved points."
 const RECOMMENDED = "Add no separate late-delivery remedy."
@@ -75,6 +86,43 @@ test("a class is recorded once, only on the words that were read; later words of
   for (const key of ["answer_kind", "option_id", "answer_class", "lawyer_words"]) expect(replaced).not.toHaveProperty(key)
 })
 
+test("words quoted as the lawyer's that are the answers record or the firm's drafting preferences are named as such, without the advice to copy them", () => {
+  const directory = matter()
+  writeQuestions(directory, [ASKED, { ...ASKED, id: "q-law", question: "Which law governs the note?", kind: "instruction" }])
+  answerQuestion(directory, "q-law", { text: "Singapore law." })
+  answerQuestion(directory, "q-late", { adopt: true })
+  const miss = (quote: string, format: "json" | "prose", options = {}) => quoteMissIssue(directory, "sources[0]", { source_id: "request", quote }, format, options)
+  // The record's question is the run's, not the lawyer's: their own answer is pointed to.
+  expect(derivedRecordNote(directory, "Which law governs the note?")).toBe(`Those words are the run's record of question q-law, not the lawyer's words; quote the lawyer's own answer under "request".`)
+  // An adopted question's record points to the adopted answer only where the check accepts that name.
+  expect(derivedRecordNote(directory, QUESTION, { adopted: true })).toBe(`Those words are the run's record of question q-late, not the lawyer's words; quote the adopted answer under "adopted:q-late".`)
+  expect(derivedRecordNote(directory, `A (${ADOPTED_ANSWER})`)).toBe("Those words are the run's record of question q-late, not the lawyer's words; quote the lawyer's request or the matter sources that support the point instead.")
+  for (const format of ["json", "prose"] as const) {
+    const issue = miss("Which law governs the note?", format)
+    expect(issue).toBe(`sources[0] quotes "Which law governs the note?" as from "request", but those words are not in the request, user updates or any one of the lawyer's answers. Those words are the run's record of question q-law, not the lawyer's words; quote the lawyer's own answer under "request".`)
+    expect(miss(QUESTION, format, { adopted: true })).not.toContain("read-document")
+  }
+  // The lawyer's own answer is still accepted as theirs.
+  expect(quoteFound(directory, { source_id: "request", quote: "Singapore law." })).toBe(true)
+
+  // The firm's saved drafting preferences are not a source: a presentation change cites nothing.
+  const root = mkdtempSync(path.join(tmpdir(), "dh-lean-preferences-"))
+  roots.push(root)
+  process.env.WORKSPACE_ROOT = root
+  mkdirSync(path.join(root, ".preferences"))
+  writeFileSync(path.join(root, ".preferences/preferences.json"), JSON.stringify({ houseStyle: "Put each defined term in bold where it is defined." }))
+  const preferences = "Those words are the firm's drafting preferences, not a source. A presentation change needs no supporting quote: leave its sources empty and say that it applies the saved preferences, in its limitations or, where it has none, its reason."
+  expect(derivedRecordNote(directory, "Put each defined term in bold")).toBe(preferences)
+  for (const format of ["json", "prose"] as const) {
+    const issue = miss("Put each defined term in bold", format)
+    expect(issue).toEndWith(preferences)
+    expect(issue).not.toContain("read-document")
+  }
+  // Words found nowhere keep the generic advice.
+  expect(derivedRecordNote(directory, "Deliver the goods by sea.")).toBe("")
+  expect(miss("Deliver the goods by sea.", "json")).toContain("read-document")
+})
+
 test("a delegated decision reaches every stage as Decide for me does, marked as delegated; only the notes' input names the lawyer's words", () => {
   const keys = (record: (directory: string) => void) => {
     const directory = matter()
@@ -95,8 +143,9 @@ test("a delegated decision reaches every stage as Decide for me does, marked as 
   const { finalize: adoptedNotes, ...adoptedSteps } = adopted
   const { finalize: delegatedNotes, ...delegatedSteps } = delegated
   expect(delegatedSteps).toEqual(adoptedSteps)
-  // Every step reads the decision as delegated, not as the lawyer's own words.
-  for (const step of Object.keys(typedSteps)) expect([step, adoptedSteps[step] === typedSteps[step]]).toEqual([step, false])
+  // Every step from intake on reads the decision as delegated, not as the
+  // lawyer's own words; the discrepancy record, before intake, reads no answer.
+  for (const step of Object.keys(typedSteps)) expect([step, adoptedSteps[step] === typedSteps[step]]).toEqual([step, step === "discrepancy"])
   // The notes are also given the lawyer's own delegating words.
   expect(new Set([typedNotes, adoptedNotes, delegatedNotes]).size).toBe(3)
 })
@@ -122,7 +171,7 @@ test("the drafting notes' input gives each delegated question its attribution an
   const decided = (id: string, how: string) => [
     `- [${id}] Q: ${QUESTION}`,
     `  ${how}`,
-    `  Decision taken, for the lawyer to confirm: ${RECOMMENDED}`,
+    `  Decision taken under the delegated judgment: ${RECOMMENDED}`,
     `  Reason: ${RATIONALE}`,
     `  Evidence: "within thirty days of the order date" [source: ${SOURCE}]`,
     `  Alternative not taken: ${OTHER}`,
@@ -214,7 +263,7 @@ test("a question delegated in the lawyer's own words runs through the queue as a
     [AGENT.intake]: (_prompt, index) => index === 0
       ? JSON.stringify({ questions: [{ question: QUESTION, kind: "judgment", context: "The supplied terms are silent on late delivery." }] })
       : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms", acting_for: { party: "", basis: "none" }, dates: { document_date: { date: "", basis: "today" }, operative_dates: [] } }),
-    [AGENT.advise]: () => JSON.stringify({ options: [{ text: RECOMMENDED }, { text: OTHER }], recommendation: { option: 0, rationale: RATIONALE, basis: BASIS } }),
+    [AGENT.advise]: () => JSON.stringify({ options: [{ text: RECOMMENDED }, { text: OTHER }], recommendation: { option: RECOMMENDED, rationale: RATIONALE, basis: BASIS } }),
     [AGENT.answer]: prompt => JSON.stringify({ class: prompt.includes(DELEGATION) ? "delegated" : "answered" }),
   })
   const run = () => runLean(directory, { sessions: model.port })
@@ -232,15 +281,20 @@ test("a question delegated in the lawyer's own words runs through the queue as a
   expect(prompts.filter(prompt => prompt.agent === AGENT.answer)).toHaveLength(1)
   // Bound: every stage reads the decision as a delegated one, never the delegating words.
   const line = `- [${id}] Q: ${QUESTION}\n  A (${ADOPTED_ANSWER}): ${RECOMMENDED}`
-  for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT.spine, AGENT.draft, AGENT.review, AGENT["change-plan"], AGENT.changes, AGENT["package-review"]])
+  expect(prompts.some(prompt => prompt.agent === AGENT.discrepancy)).toBe(false)
+  for (const agent of [AGENT.intake, AGENT.research, AGENT.spine, AGENT.draft, AGENT.review, AGENT["change-plan"], AGENT.changes, AGENT["package-review"]])
     expect([agent, prompts.some(prompt => prompt.agent === agent && prompt.text.includes(line))]).toEqual([agent, true])
-  for (const prompt of prompts.filter(prompt => prompt.agent !== AGENT.answer && prompt.agent !== AGENT.finalize))
+  for (const prompt of prompts.filter(prompt => prompt.agent !== AGENT.answer && prompt.agent !== AGENT.finalize && prompt.agent !== AGENT.notesCheck && prompt.agent !== AGENT.notesEvidence))
     expect([prompt.agent, prompt.text.includes(DELEGATION)]).toEqual([prompt.agent, false])
+  // The independent notes check reads the section's assigned explanation,
+  // including the original delegation it must describe faithfully.
+  expect(prompts.some(prompt => prompt.agent === AGENT.notesCheck && prompt.text.includes(DELEGATION) && prompt.text.includes("<assigned_writer_packet>"))).toBe(true)
   // Disclosed: the notes are given the decision with its attribution, reason and evidence, and list it.
-  const notesPrompt = prompts.findLast(prompt => prompt.agent === AGENT.finalize)!.text
-  expect(notesPrompt).toContain(`<delegated_decisions>\n- [${id}] Q: ${QUESTION}\n  Delegated by the lawyer, in their words: "${DELEGATION}"\n  Decision taken, for the lawyer to confirm: ${RECOMMENDED}\n  Reason: ${RATIONALE}`)
-  // The notes' list of questions points to that section rather than calling it answered.
-  expect(notesPrompt).toContain(`- (delegated; see delegated_decisions) ${QUESTION}\n`)
+  const notesPrompt = prompts.find(prompt => prompt.agent === AGENT.finalize && prompt.text.includes("<section_kind>\ndelegated\n"))!.text
+  expect(notesPrompt).toContain(`<decision>\nDelegated by the lawyer, in their words: "${DELEGATION}"\nDecision taken under the delegated judgment: ${RECOMMENDED}\nReason: ${RATIONALE}`)
+  // The focused job receives the actual choice and attribution; code owns its id.
+  expect(notesPrompt).toContain(`<question>\n${QUESTION}\n`)
+  expect(notesPrompt).not.toContain(id)
   expect(notesPrompt).not.toContain(`Answer: ${RECOMMENDED}`)
   expect(readLeanJson(directory, "state.json")).toMatchObject({ status: "completed" })
   const notes = readLeanJson(directory, "gate.json") as GateResult
@@ -259,7 +313,7 @@ test("a question delegated in the lawyer's own words runs through the queue as a
   expect(model.prompts.length).toBe(settled)
 }, 180_000)
 
-test("a delegated question no decision could take stays open for the lawyer at the gate, never answered by them", () => {
+test("an explicit factual delegation permits a marked review draft while a declined judgment keeps its existing disclosure", () => {
   const directory = matter()
   const fact = { ...ASKED, id: "q-sign", kind: "fact" as const, question: "Who signs for the buyer?" }
   const unsure = { ...ASKED, id: "q-title", question: "Should title pass on delivery?" }
@@ -267,64 +321,58 @@ test("a delegated question no decision could take stays open for the lawyer at t
   writeQuestions(directory, [answered(ASKED), answered(fact), answered(unsure, "I do not know."), answered(asked)])
   recordAnswerClasses(directory, new Map([
     ["q-late", { words: DELEGATION, answer_class: "delegated" as const }],
-    ["q-sign", { words: DELEGATION, answer_class: "delegated" as const }],
+    ["q-sign", { words: DELEGATION, answer_class: "delegated" as const, fact_status: "provisional" as const }],
     ["q-title", { words: "I do not know.", answer_class: "declined" as const }],
-    ["q-risk", { words: DELEGATION, answer_class: "delegated" as const }],
+    ["q-risk", { words: DELEGATION, answer_class: "delegated" as const, fact_status: "provisional" as const }],
   ]))
-  // A later stage's item for one of them is settled, not repeated.
-  const changesItem = openItem("changes", "question", "Question for the lawyer: When does risk pass?", { question_id: "q-risk" })
-  writeOpenItems(directory, [changesItem])
+  // The fixture's permission says to proceed and disclose unresolved points.
+  // It supplies neither the signatory nor the risk-transfer fact.
+  const facts = factOpenItems(directory)
+  const risk = facts.find(item => item.ref.question_id === "q-risk")!
+  const changesItem = openItem("changes", "question", "Question for the lawyer: When does risk pass?", { question_id: "q-risk", placeholder: risk.ref.placeholder })
+  writeOpenItems(directory, [changesItem, ...facts.filter(item => item.ref.question_id !== "q-risk")])
   const items = () => finalGate(directory).items.filter(item => item.kind === "question")
-  // Stages read the undecided ones as open, in the lawyer's words, and as
-  // already asked: intake re-asked a reworded delegated fact question otherwise.
-  expect(answeredQuestionsText(directory)).toContain(`- [q-sign] Q: Who signs for the buyer?\n  A (delegated by the lawyer, but it needs the lawyer's own answer, so it stays open: every paragraph that depends on it keeps a visible [open item: what the lawyer must supply or confirm] marker, also where its wording is drafted from the sources; never remove that marker or treat the point as settled, and do not ask it again): ${DELEGATION}`)
+  expect(answeredQuestionsText(directory)).toContain("the fact remains unknown; the lawyer permits a review draft")
+  expect(answeredQuestionsText(directory)).toContain(`- [q-sign] Q: Who signs for the buyer?`)
   expect(answeredQuestionsText(directory)).toContain(`- [q-title] Q: Should title pass on delivery?\n  A (not answered by the lawyer, so it stays open: every paragraph that depends on it keeps a visible [open item: what the lawyer must supply or confirm] marker, also where its wording is drafted from the sources; never remove that marker or treat the point as settled, and do not ask it again): I do not know.`)
 
   writeLeanText(directory, "drafting-notes.md", "# Notes\n\nNothing listed.\n")
-  expect(items().map(item => [item.ref.question_id, item.status, item.detail])).toEqual([
-    ["q-risk", "open", changesItem.detail],
-    ["q-sign", "open", "You asked us to decide, but this needs your answer: Who signs for the buyer?"],
-    ["q-title", "open", "You did not answer this question, and it needs your answer: Should title pass on delivery?"],
+  expect(items().map(item => [item.ref.question_id, item.status])).toEqual([
+    ["q-risk", "open"], ["q-sign", "open"], ["q-title", "open"],
   ])
-  for (const item of items()) expect(item.resolution).not.toContain("answered by the lawyer")
   expect(finalGate(directory).status).toBe("blocked")
-
   writeLeanText(directory, "drafting-notes.md", "# Notes\n\nStill needs the signatory [ref: q-sign]. Title [ref: q-title]. Risk [ref: q-risk].\n")
-  expect(items().map(item => [item.ref.question_id, item.status, item.resolution])).toEqual([
-    ["q-risk", "disclosed", "you asked us to decide, but this needs your answer; named in the drafting notes"],
-    ["q-sign", "disclosed", "you asked us to decide, but this needs your answer; named in the drafting notes"],
-    ["q-title", "disclosed", "not answered; this needs your answer; named in the drafting notes"],
+  // Notes alone do not make an unknown fact honest in the document body.
+  expect(items().map(item => [item.ref.question_id, item.status])).toEqual([
+    ["q-risk", "open"], ["q-sign", "open"], ["q-title", "disclosed"],
+  ])
+  writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([{ pid: "p-open", sha256: "0", text: facts.map(item => item.ref.placeholder).join("\n") }]))
+  expect(items().map(item => [item.ref.question_id, item.status])).toEqual([
+    ["q-risk", "disclosed"], ["q-sign", "disclosed"], ["q-title", "disclosed"],
   ])
   expect(finalGate(directory)).toMatchObject({ status: "pass", delivery: "review_draft" })
 })
 
-test("a delegated point only the lawyer can settle is checked for its paragraph's marker as an unanswered question is, and never blocks once the notes name it", () => {
+test("a provisional factual reply requires its affected paragraph marker and notes until the lawyer supplies the fact", () => {
   const directory = matter()
   const fact = { ...ASKED, id: "q-sign", kind: "fact" as const, question: "Who signs for the buyer?", pid: "p-sign" }
   writeQuestions(directory, [answered(fact)])
-  recordAnswerClasses(directory, new Map([["q-sign", { words: DELEGATION, answer_class: "delegated" as const }]]))
-  // Every stage is told the point stays open with a marker in its paragraph,
-  // including where a source supplies a value, and that the delegation settles nothing.
-  expect(answeredQuestionsText(directory)).toContain("keeps a visible [open item: what the lawyer must supply or confirm] marker")
-  expect(answeredQuestionsText(directory)).toContain("never remove that marker or treat the point as settled")
+  recordAnswerClasses(directory, new Map([["q-sign", { words: DELEGATION, answer_class: "delegated" as const, fact_status: "provisional" as const }]]))
+  expect(answeredQuestionsText(directory)).toContain("a visible open-item marker in every dependent paragraph and disclosure in the notes")
   expect(stagePrompt(directory, "d1.change-plan", { contextOnly: true })).toContain("An answer whose label says the point stays open settles nothing: keep its visible open-item marker.")
   writeOpenItems(directory, [openItem("changes", "question", "Question for the lawyer: Who signs for the buyer?", { question_id: "q-sign", pid: "p-sign" })])
   writeLeanText(directory, "drafting-notes.md", "# Notes\n\nStill needs the signatory [ref: q-sign].\n")
   const body = (text: string) => writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([{ pid: "p-sign", sha256: "0", text }]))
   const item = () => finalGate(directory).items.find(row => row.kind === "question" && row.ref.question_id === "q-sign")
-
   body("Signed for the buyer by the director [open item: confirm who signs for the buyer].")
-  expect(item()).toMatchObject({ status: "disclosed", resolution: "you asked us to decide, but this needs your answer; marked in the body and named in the drafting notes" })
-  expect(finalGate(directory)).toMatchObject({ status: "pass" })
-
-  // A value picked from the sources with the marker dropped is recorded, not blocked.
+  expect(item()).toMatchObject({ status: "disclosed", resolution: "the fact remains unknown; marked in the body and named in the drafting notes" })
+  expect(finalGate(directory)).toMatchObject({ status: "pass", delivery: "review_draft" })
   body("Signed for the buyer by the director.")
-  expect(item()).toMatchObject({ status: "disclosed", resolution: "you asked us to decide, but this needs your answer; named in the drafting notes, but its paragraph shows no open-item marker" })
-  expect(finalGate(directory)).toMatchObject({ status: "pass" })
-
-  // The lawyer's own answer settles it: no marker is asked for.
+  expect(item()).toMatchObject({ status: "open", resolution: "the fact remains unknown; its body placeholder is missing" })
+  expect(finalGate(directory)).toMatchObject({ status: "blocked" })
+  // The lawyer's actual factual answer settles it; the earlier permission did not.
   answerQuestion(directory, "q-sign", { text: "The director signs." })
-  recordAnswerClasses(directory, new Map([["q-sign", { words: "The director signs.", answer_class: "answered" as const }]]))
+  recordAnswerClasses(directory, new Map([["q-sign", { words: "The director signs.", answer_class: "answered" as const, fact_status: "supplied" as const }]]))
   expect(item()).toMatchObject({ status: "resolved", resolution: "answered by the lawyer" })
   expect(answeredQuestionsText(directory)).not.toContain("open item")
 })

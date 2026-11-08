@@ -27,7 +27,8 @@ import { readDocxCommentParagraphs, readDocxComments, readDocxRevisionText } fro
 import { recordLeanDocuments } from "../../../dochaus/workflows/lean/deliverables"
 import { runLean } from "../../../dochaus/workflows/lean/runner"
 import { initLeanState, readLeanState, writeLeanState } from "../../../dochaus/workflows/lean/state"
-import { FIXTURE_SOURCE, FIXTURE_SOURCE_TEXT, scriptedLeanModel } from "../../../dochaus/workflows/lean/test-support"
+import { FIXTURE_SOURCE, FIXTURE_SOURCE_TEXT, happyLeanReplies, scriptedLeanModel } from "../../../dochaus/workflows/lean/test-support"
+import { LEAN_STAGE_AGENTS } from "../../../dochaus/workflows/lean/stages"
 import { registerLeanDeliverable } from "./lean-deliverables"
 import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
 import { UNTRUSTED_DOCUMENT_NOTICE } from "../../../dochaus/lib/untrusted"
@@ -2931,7 +2932,7 @@ test("a same-paragraph sibling goes stale and stays pending and visible while pl
 
 // A completed lean run in an isolated ingest matter: the real coordinator with a
 // scripted model registers "Supply note.docx", its redline and its drafting notes.
-async function completedLeanRun(directory:string) {
+async function completedLeanRun(directory:string,notesProse?:(prompt:string) => string) {
   const db = openDb(directory)
   try {
     const docPath = path.join(directory,FIXTURE_SOURCE)
@@ -2940,7 +2941,8 @@ async function completedLeanRun(directory:string) {
       .run(id.id,docPath,FIXTURE_SOURCE,"1",0,FIXTURE_SOURCE_TEXT,0,FIXTURE_SOURCE_TEXT.length,new Uint8Array(4))
   } finally {db.close()}
   initLeanState(directory,{request:"Draft a short supply note from the supply terms.",ownerSessionID:"ses_owner",model:null})
-  const deps = {sessions:scriptedLeanModel().port,registerDeliverable:registerLeanDeliverable}
+  const replies = notesProse ? {...happyLeanReplies(),[LEAN_STAGE_AGENTS.finalize]:notesProse} : happyLeanReplies()
+  const deps = {sessions:scriptedLeanModel(replies).port,registerDeliverable:registerLeanDeliverable}
   expect((await runLean(directory,deps)).status).toBe("completed")
   return deps
 }
@@ -2961,7 +2963,23 @@ function withTextlessRevision(bytes:Uint8Array,kind:"formatting" | "paragraph_ma
 }
 const notesHeading = "Changes accepted after these notes were prepared"
 const notesIntro = "These changes were accepted in Word after the final check. The final check was not re-run on them. Changes accepted while the notes could not be updated are not listed."
-const preparedNotes = ["Drafting notes","The draft states the delivery period from the supply terms."]
+// Each focused job supplies its own prose; only the change section contains the
+// delivery-period quote the notes amendment targets. The real notes stage still
+// checks, assembles, renders and registers these notes.
+const acceptedChangeNotes = [
+  {kind:"package",heading:"Documents and audience",prose:"These drafting notes accompany the supply note."},
+  {kind:"document",heading:"Supply note",prose:"The supply note records the supplied delivery and payment terms."},
+  {kind:"passage",heading:"Supply note — Passage 1",prose:"The supply note states delivery and payment obligations."},
+  {kind:"change",heading:"Changes made",prose:"The draft states the delivery period from the supply terms."},
+  {kind:"disposition",heading:"Review decisions and recommendations",prose:"The review suggestion was not pursued as a separate change."},
+]
+const acceptedChangeNotesProse = (prompt:string) => {
+  const kind = /<section_kind>\s*([^<]+)\s*<\/section_kind>/.exec(prompt)?.[1]?.trim()
+  const section = acceptedChangeNotes.find(row => row.kind === kind)
+  if (!section) throw new Error(`Unexpected notes assignment: ${kind}`)
+  return section.prose
+}
+const preparedNotes = ["Drafting notes",...acceptedChangeNotes.flatMap(({heading,prose}) => [heading,prose])]
 const supplyChanges = [
   {before_quote:"thirty days",replacement:"forty-five days",target_context:"delivery period",reason:"Buyer asked for a longer delivery window."},
   {before_quote:"on delivery",replacement:"within fourteen days of delivery",target_context:"payment timing",reason:"Agreed payment terms"},
@@ -3002,7 +3020,7 @@ test("accepted changes to a completed run's body are appended to its drafting no
   try {
     await ingest.start("only")
     const matter = await ingest.matter("Notes after accepted changes")
-    const deps = await completedLeanRun(matter.dir)
+    const deps = await completedLeanRun(matter.dir,acceptedChangeNotesProse)
     const body = path.join(matter.dir,"Supply note.docx")
     const notes = path.join(matter.dir,"Supply note - drafting notes.docx")
     const prepare = async (name:string) => (await (await ingest.request(`${matter.route}/documents/amendments`,{method:"POST",headers:{"content-type":"application/json"},
@@ -3032,7 +3050,7 @@ test("accepted changes to a completed run's body are appended to its drafting no
 
     // Accepting a change to the notes themselves adds no addendum entry.
     expect(await matter.acceptResult(onNotes)).toEqual({status:200,body:{ok:true}})
-    expect(await notesText(notes)).toEqual(["Drafting notes","The draft states the agreed delivery period from the supply terms.",
+    expect(await notesText(notes)).toEqual([...preparedNotes.map(text => text.replace("the delivery period","the agreed delivery period")),
       notesHeading,notesIntro,...supplyEntries])
     expect([first,second,rejected,onNotes].map(matter.status)).toEqual(["accepted","accepted","rejected","accepted"])
 
@@ -3056,7 +3074,7 @@ test("Accept all records every accepted body change in one notes revision, dated
   try {
     await ingest.start("only",{TZ:offsetZone})
     const matter = await ingest.matter("Notes after Accept all")
-    await completedLeanRun(matter.dir)
+    await completedLeanRun(matter.dir,acceptedChangeNotesProse)
     const notes = path.join(matter.dir,"Supply note - drafting notes.docx")
     expect((await (await ingest.request(`${matter.route}/documents/amendments`,{method:"POST",headers:{"content-type":"application/json"},
       body:JSON.stringify({name:"Supply note.docx",instructions:"Update the stated terms."})})).json() as {proposed:number}).proposed).toBe(2)

@@ -15,6 +15,7 @@ import { canonicalArtifactIdentity, withArtifactMutationLocksAsync } from "../..
 import { chunkText } from "../../../dochaus/lib/chunk-text"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { writeListLabels } from "../../../dochaus/lib/docx-list-labels"
+import { writeLineBreaks } from "../../../dochaus/lib/docx-line-breaks"
 import { readDocxMarkup, type DocxMarkup } from "../../../dochaus/lib/docx-markup"
 import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
@@ -510,8 +511,9 @@ function emailFacts(email: ParsedEmail): ExtractionFacts {
 }
 
 // Pull plain text from a source document. DOCX goes through mammoth, with Word's
-// list numbers written in first (see dochaus/lib/docx-list-labels.ts) and then
-// pending tracked changes labelled (dochaus/lib/docx-tracked-text.ts); PDF through
+// list numbers written in first (see dochaus/lib/docx-list-labels.ts), then
+// pending tracked changes labelled (dochaus/lib/docx-tracked-text.ts), then line
+// breaks written as newlines (dochaus/lib/docx-line-breaks.ts); PDF through
 // LiteParse/markitdown/unpdf with an OCR fallback for flat scans (see pdf.ts). Always
 // normalized (see sanitize.ts) so every consumer — indexing, the document/template
 // text routes, and through them the agents' read-document tool — sees the same
@@ -539,7 +541,7 @@ async function extractRawText(fileName: string, buffer: Buffer): Promise<{ text:
   }
   if (lower.endsWith(".xlsx")) return xlsxToText(buffer)
   if (lower.endsWith(".zip")) return { text: zipToText(buffer), facts: { format: "archive" } }
-  return { text: (await mammoth.extractRawText({ buffer: markTrackedChanges(await writeListLabels(buffer)) })).value, facts: { format: "docx" } }
+  return { text: (await mammoth.extractRawText({ buffer: writeLineBreaks(markTrackedChanges(await writeListLabels(buffer))) })).value, facts: { format: "docx" } }
 }
 
 // Spreadsheet sources (cap tables, waterfalls, payout models) are zip-based but

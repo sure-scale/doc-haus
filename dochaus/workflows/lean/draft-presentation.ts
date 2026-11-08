@@ -6,7 +6,7 @@ import { visibleInlineText } from "../../lib/markdown-visible-text"
 
 /** `title: false` leaves the planned title out of publication: a letter reads
  * as one letter, not as a titled document. */
-export type DraftPresentation = { source: string; parts: { heading: string; display_heading?: string; part?: number }[]; title?: false }
+export type DraftPresentation = { source: string; parts: { heading: string; display_heading?: string; part?: number; attachment?: true }[]; title?: false }
 
 /** Keep drafting boundaries out of publication while retaining their existing
  * paragraph pointers for template coverage. A hidden label ("") is removed and
@@ -26,7 +26,8 @@ export type DraftPresentation = { source: string; parts: { heading: string; disp
  * attributed to the part before it.
  *
  * A Heading 1 after the first is a separate instrument's title (assembleDraft)
- * and starts a new page. */
+ * and starts a new page, as does the heading of a part the plan marks as an
+ * attachment (a schedule, exhibit …). */
 export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"], title = true, headingSpacing = true) {
   const entries = unzipSync(bytes)
   const document = new DOMParser().parseFromString(strFromU8(entries["word/document.xml"]!), "application/xml")
@@ -81,7 +82,7 @@ export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"
       run.appendChild(value)
       paragraph.appendChild(run)
     }
-    if (style === "Heading1" && at > firstTitle) pageBreakBefore(paragraph)
+    if ((style === "Heading1" && at > firstTitle) || boundary?.attachment) pageBreakBefore(paragraph)
     const owner = owners[at]
     const shift = owner === undefined ? 0 : shifts[owner]!
     if (!boundary && shift && /^Heading[3-6]$/.test(style ?? "")) {

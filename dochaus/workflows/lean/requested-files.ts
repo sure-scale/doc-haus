@@ -1,9 +1,9 @@
 import path from "node:path"
 import { sha256File } from "../../lib/lineage"
 import { normalize } from "../../lib/quote-verify"
-import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
+import { TOOL_SYNTAX_ISSUE, parseJsonObject, printedToolCall, record } from "./checks"
 import { readWorkingDocx } from "../../lib/working-docx"
-import { combinedDelivery, combinedFileItems, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, present, readLeanDocuments, redlineOfBody, requestedMemo } from "./deliverables"
+import { combinedDelivery, combinedFileItems, deliveryArtifactEvidence, deliveryStem, plannedRegistration, present, readLeanDocuments, redlineOfBody } from "./deliverables"
 import { OTHER_FORMAT, formatStem, spelledNames } from "./delivery-selection"
 import { nameKey, normalizedHeading, plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
@@ -11,12 +11,13 @@ import { REQUEST_SOURCE, excerpt, instructionFound, lawyerWords, matterSourceIDs
 import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, shortHash, writeLeanText, type OpenItem, type Question } from "./state"
 
 // Requested files: which files the lawyer asks to receive, and which planned
-// documents and the memo go in each. One focused job reads the lawyer's words
-// (request, updates and answers) beside the planned documents' ids and titles
-// and the memo; parseRequestedFiles grounds each file in the lawyer's exact
-// words, its name in the lawyer's own text where those words stand and its
-// contents in the plan. The record is the lawyer's packaging, never the plan's,
-// and holds the planned titles and memo it was read for. Code does not rewrite
+// documents go in each. A requested memo is a planned document (the plan's
+// memo_document) and is held by its id like any other. One focused job reads
+// the lawyer's words (request, updates and answers) beside the planned
+// documents' ids and titles; parseRequestedFiles grounds each file in the
+// lawyer's exact words, its name in the lawyer's own text where those words
+// stand and its contents in the plan. The record is the lawyer's packaging,
+// never the plan's, and holds the planned titles and memo it was read for. Code does not rewrite
 // the plan's delivery shape: requestedFilesIssues gives the outline revision
 // feedback in the outline's own terms, with the planned documents each issue
 // concerns, and requestedFilesQuestion asks the lawyer about a mismatch the
@@ -29,26 +30,29 @@ import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, short
 // documents the lawyer's words put in one file are held as one document, the
 // others its separate instruments (foldRequestedFiles), before any of this
 // reads the plan. When the lawyer's words ask for one file only, each planned
-// document it leaves out is asked about in a focused job of its own
+// document other than the memo it leaves out is asked about in a focused job of its own
 // (unheldDocumentPrompt), and those the words do not ask for go in that file
-// (withUnaskedDocuments). A shape the run cannot build (several documents in one file
-// that cannot be held so, or the memo after its document) is no revision issue; like any
+// (withUnaskedDocuments). A file the lawyer's words ask for that holds no
+// planned document goes back to the outline as one revision issue of its own
+// (unplannedFileIssues). A shape the run cannot build (several documents in one file
+// that cannot be held so, the memo after its document, or a file no planned
+// document fills) is no files revision issue; like any
 // file the final plan does not deliver as asked, it reaches the lawyer as an
 // open item derived from the record (requestedFilesItems), never stored. A job
 // whose reply never passed its check is recorded as unchecked, and disclosed
 // the same way.
 
-export const LEAN_REQUESTED_FILES_SCHEMA = "dochaus.lean.requested-files/1"
+export const LEAN_REQUESTED_FILES_SCHEMA = "dochaus.lean.requested-files/3"
 
-/** One file the lawyer asks to receive: the planned ids, and "memo" for the
- * memo, it holds, in the lawyer's order or, where the lawyer's words set none,
- * with the memo first; its name in the lawyer's own spelling, or null; and the
+/** One file the lawyer asks to receive: the planned ids it holds, in the
+ * lawyer's order or, where the lawyer's words set none, with the memo
+ * document first, none when no planned document is what it holds; its name in the lawyer's own spelling, or null; and the
  * lawyer's exact words that ask for it. A name a reply gave for these words but
  * the lawyer's words did not confirm, or that gives a format other than Word's,
  * is kept as `refused_name`, beside a null name, for disclosure only. */
 export type RequestedFile = { holds: string[]; name: string | null; quote: string; refused_name?: string }
 /** `stated` is false, with no files, when the lawyer's words do not say how the
- * planned documents and memo are delivered as files. */
+ * planned documents are delivered as files. */
 export type RequestedFiles = { stated: boolean; files: RequestedFile[] }
 /** The record of the plan whose basis is `basis`, read for the planned titles
  * and memo name in `planned` (requestedFilesPlanned) and the lawyer's words in
@@ -65,12 +69,10 @@ type Checked<T> = { issues: string[]; value?: T }
  * mismatch that goes to the lawyer with no revision. */
 export type FilesIssue = { issue: string; documents: DocID[]; ask: boolean }
 
-const MEMO = "memo"
 const RECORD_FILE = "requested-files.json"
 const QUESTION_ID = "requested-files-"
 
-const filesShape = (memo: boolean) =>
-  `Reply with the JSON object only: {"stated":true,"files":[{"holds":["${memo ? "planned id or memo" : "planned id"}"],"name":"file name or null","quote":"..."}]}.`
+const FILES_SHAPE = 'Reply with the JSON object only: {"stated":true,"files":[{"holds":["planned id"],"name":"file name or null","quote":"..."}]}.'
 const STATED_WITH_FILES = '"stated" is false, but "files" lists files. Give "stated": true with the files the lawyer\'s words ask for, or "stated": false with "files": [].'
 const STATED_WITHOUT_FILES = '"stated" is true, but "files" is empty. List each file the lawyer\'s words ask for, or reply {"stated":false,"files":[]} when they do not say.'
 
@@ -91,26 +93,25 @@ function wordsBlocks(directory: string) {
   ]
 }
 
-/** The job's one question, over the lawyer's words and the planned documents and memo. */
-export function requestedFilesPrompt(directory: string, documents: PlannedDocument[], memo: string | undefined) {
-  const contents = memo ? "the planned documents and the memo" : "the planned documents"
+/** The job's one question, over the lawyer's words and the planned documents.
+ * `memo`, the memo document's id, only sets the default order in a file. */
+export function requestedFilesPrompt(directory: string, documents: PlannedDocument[], memo: DocID | undefined) {
   return [
-    `This is a lean drafting run. Read the lawyer's words for one question: which files the lawyer asks to receive, and which of ${contents} go in each.`,
+    "This is a lean drafting run. Read the lawyer's words for one question: which files the lawyer asks to receive, and which of the planned documents go in each.",
     ...wordsBlocks(directory),
     tagged("planned_documents", "The documents the run drafts, by id. Their titles are the plan's own choices, not the lawyer's words.\n" +
       JSON.stringify(documents.map(document => ({ id: document.id, title: document.title })), null, 2)),
-    memo ? tagged("planned_memo", `The run also writes the memo the lawyer asks for, planned as "${memo}". In "holds", write it as "memo".`) : "",
     tagged("output_contract", [
       "- Answer from the request, the lawyer's updates and answers only.",
       `- When those words say which files the lawyer wants to receive, what goes in each file or what a file is named, reply "stated": true and list each file they ask for. When they do not, reply {"stated":false,"files":[]}.`,
-      `- For each file give "holds": the ids of the planned documents${memo ? ' and "memo" for the memo' : ""} that the lawyer's words put in that file` +
-      `${memo ? ', in the order the words place them in the file, with "memo" first when the words set no order' : ""}; ` +
+      `- For each file give "holds": the ids of the planned documents that the lawyer's words put in that file` +
+      `${memo ? `, in the order the words place them in the file, with "${memo}" first when the words set no order` : ""}, or [] when no planned document is what the file holds; ` +
       "\"name\": the file name exactly as the lawyer writes it, or null when the lawyer gives no name; " +
       "\"quote\": the lawyer's exact words that ask for this file, copied verbatim, including the words that give its name.",
-      `- Put each planned document${memo ? " and the memo" : ""} in one file at most. List only the files the lawyer's words ask for, and in each only what those words put in it.`,
+      "- Put each planned document in one file at most. List only the files the lawyer's words ask for, and in each only what those words put in it.",
       "- A file the lawyer's words name as the output of the whole request holds everything the run drafts for it, including each planned document the plan adds to carry the request out; a file they name for one document holds only that document. " +
-      `Put a planned document${memo ? " or the memo" : ""} in a file only where the lawyer's words place it.`,
-      `- ${filesShape(Boolean(memo))}`,
+      "Put a planned document in a file only where the lawyer's words place it.",
+      `- ${FILES_SHAPE}`,
       "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply.",
     ].join("\n")),
   ].filter(Boolean).join("\n\n")
@@ -119,9 +120,9 @@ export function requestedFilesPrompt(directory: string, documents: PlannedDocume
 /** Reads the job's reply and grounds each file: its quote in the lawyer's own
  * words (instructionFound), a name as a plain Word file name the lawyer's text
  * gives where the quote stands (nameGrounded), kept in the lawyer's spelling,
- * its holds as planned ids or "memo" when a memo is planned, each in one file
- * at most. A name given without another format's extension (OTHER_FORMAT) is a
- * Word file's: code adds ".docx". A name the lawyer spells with its extension
+ * its holds as planned ids, each in one file at most (the memo document by its
+ * planned id; "memo" is no id). A name given without another format's
+ * extension (OTHER_FORMAT) is a Word file's: code adds ".docx". A name the lawyer spells with its extension
  * is a name, though its words also name a format. Word's own format given as a
  * name (wordFormat) names nothing: the file is a Word file, as the run delivers
  * it. No retry makes a format a Word file's name, so a name the lawyer writes
@@ -135,22 +136,23 @@ export function requestedFilesPrompt(directory: string, documents: PlannedDocume
  * attempts, by quote and contents: a later reply that gives that file no name
  * keeps the refused one for disclosure, until a reply gives it a name that
  * passes. */
-export function parseRequestedFiles(reply: string, directory: string, documents: PlannedDocument[], memo: string | undefined,
+export function parseRequestedFiles(reply: string, directory: string, documents: PlannedDocument[],
   { final = false, refused = new Map<string, string>() }: { final?: boolean; refused?: Map<string, string> } = {}): Checked<RequestedFiles> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  const shape = filesShape(memo !== undefined)
-  let value: unknown
-  try { value = JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {}
-  if (!record(value) || typeof value.stated !== "boolean" || !Array.isArray(value.files)) return { issues: [shape] }
+  const shape = FILES_SHAPE
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok) return { issues: [`${shape} ${parsed.error}`] }
+  const value = parsed.value
+  if (typeof value.stated !== "boolean" || !Array.isArray(value.files)) return { issues: [shape] }
   if (!value.stated) return value.files.length ? { issues: [STATED_WITH_FILES] } : { issues: [], value: { stated: false, files: [] } }
   if (!value.files.length) return { issues: [STATED_WITHOUT_FILES] }
   const issues: string[] = []
   const rows: { index: number; file: RequestedFile }[] = []
   value.files.forEach((row: unknown, index) => {
     const where = `files[${index}]`
-    if (!record(row) || !Array.isArray(row.holds) || !row.holds.length || !row.holds.every(id => typeof id === "string" && id.trim()) ||
+    if (!record(row) || !Array.isArray(row.holds) || !row.holds.every(id => typeof id === "string" && id.trim()) ||
       !(row.name == null || typeof row.name === "string") || typeof row.quote !== "string" || !row.quote.trim())
-      return void issues.push(`${where} needs "holds" as a nonempty list of planned ids${memo !== undefined ? ' or "memo"' : ""}, "name" as a file name or null, and a nonempty "quote" string. ${shape}`)
+      return void issues.push(`${where} needs "holds" as a list of planned ids ([] when no planned document is what the file holds), "name" as a file name or null, and a nonempty "quote" string. ${shape}`)
     const given = typeof row.name === "string" ? row.name.trim() : ""
     const name = !given ? null : /\.docx$/i.test(given) || OTHER_FORMAT.test(given) ? given : `${given}.docx`
     const file: RequestedFile = { holds: [...new Set((row.holds as string[]).map(id => id.trim()))], name, quote: row.quote.trim() }
@@ -180,12 +182,11 @@ export function parseRequestedFiles(reply: string, directory: string, documents:
   const ids = documents.map(document => document.id as string)
   const places = new Map<string, number[]>()
   for (const { index, file } of rows) for (const id of file.holds) {
-    if (id === MEMO && memo === undefined) issues.push(`files[${index}] holds "memo", but no memo is planned. Use the planned ids ${ids.join(", ")}.`)
-    else if (id !== MEMO && !ids.includes(id)) issues.push(`files[${index}] holds "${id}", which is not planned. Use the planned ids ${ids.join(", ")}${memo !== undefined ? ' or "memo"' : ""}.`)
+    if (!ids.includes(id)) issues.push(`files[${index}] holds "${id}", which is not planned. Use the planned ids ${ids.join(", ")}.`)
     places.set(id, [...places.get(id) ?? [], index])
   }
   for (const [id, at] of places) if (at.length > 1)
-    issues.push(`"${id}" is in ${serialList(at.map(index => `files[${index}]`))}. Put each planned document${memo !== undefined ? " and the memo" : ""} in one file at most, as the lawyer's words place it.`)
+    issues.push(`"${id}" is in ${serialList(at.map(index => `files[${index}]`))}. Put each planned document in one file at most, as the lawyer's words place it.`)
   if (issues.length) return { issues }
   return { issues, value: rows.length ? { stated: true, files: rows.map(row => row.file) } : { stated: false, files: [] } }
 }
@@ -210,32 +211,34 @@ function nameGrounded(directory: string, quote: string, name: string) {
   for (const raw of lawyerWords(directory)) for (const spelled of spelledNames(raw, quote, nameStem(name), extension)) return spelled
 }
 
-/** What a recorded file asks of the plan: the memo with one document, the memo
- * first; one document alone; or the memo alone. Undefined for a shape no plan
- * builds: several documents in one file, or the memo after its document. */
-function fileShape(file: RequestedFile): { document?: DocID; memo: boolean } | undefined {
-  const documents = file.holds.filter(id => id !== MEMO) as DocID[]
-  const memo = file.holds.includes(MEMO)
-  if (documents.length > 1 || (memo && documents.length && file.holds[0] !== MEMO)) return
-  return { document: documents[0], memo }
+/** What a recorded file asks of the plan, `memo` being the memo document's id:
+ * the memo with one document, the memo first; one document alone; or the memo
+ * alone. Undefined for a shape no plan builds: several other documents in one
+ * file, the memo after its document, or nothing planned (unplannedFileIssues). */
+function fileShape(file: RequestedFile, memo: DocID | undefined): { document?: DocID; memo: boolean } | undefined {
+  if (!file.holds.length) return
+  const documents = file.holds.filter(id => id !== memo) as DocID[]
+  const held = memo !== undefined && file.holds.includes(memo)
+  if (documents.length > 1 || (held && documents.length && file.holds[0] !== memo)) return
+  return { document: documents[0], memo: held }
 }
 
 /** A recorded file's shape (fileShape) when an outline with these document ids
- * and memo (`memo`: whether one is planned) can build it: its document planned
- * and its memo planned. Undefined otherwise. */
-function buildable(file: RequestedFile, ids: string[], memo: boolean) {
-  const shape = fileShape(file)
-  return shape && (!shape.document || ids.includes(shape.document)) && (!shape.memo || memo) ? shape : undefined
+ * can build it: its document planned. Undefined otherwise. */
+function buildable(file: RequestedFile, ids: string[], memo: DocID | undefined) {
+  const shape = fileShape(file, memo)
+  return shape && (!shape.document || ids.includes(shape.document)) ? shape : undefined
 }
 
-/** A recorded file against an outline's documents and memo (`memo`: whether one
- * is planned): unsupported when the plan cannot build it (buildable);
+/** A recorded file against an outline's documents, `memo` being the memo
+ * document's id: unsupported when the plan cannot build it (buildable);
  * otherwise, when the plan's deliverables do not deliver it as asked, the
  * outline revision `issue` and how the plan delivers it instead (`planned`). */
-function fileCheck(file: RequestedFile, documents: PlannedDocument[], memo: boolean): { unsupported: true } | { unsupported: false; issue?: FilesIssue; planned?: string } {
+function fileCheck(file: RequestedFile, documents: PlannedDocument[], memo: DocID | undefined): { unsupported: true } | { unsupported: false; issue?: FilesIssue; planned?: string } {
   const shape = buildable(file, documents.map(document => document.id), memo)
   if (!shape) return { unsupported: true }
   const target = shape.document && documents.find(document => document.id === shape.document)
+  const memoTitle = memoTitled(documents, memo)
   const words = `The lawyer's words "${excerpt(file.quote)}"`
   const combined = documents.filter(document => document.deliverable === "combined" && document !== target)
   const body = (document: PlannedDocument) => `"Deliverable: body" under "${document.title}"`
@@ -245,44 +248,52 @@ function fileCheck(file: RequestedFile, documents: PlannedDocument[], memo: bool
     // document planned as a redline is delivered so instead is the lawyer's call.
     if (target.deliverable === "redline") return {
       unsupported: false,
-      issue: { issue: `${words} ask for the memo and "${target.title}" in one file; the plan delivers "${target.title}" as a redline, which cannot be joined with the memo.`, documents: [], ask: true },
-      planned: `"${target.title}" as a redline and the memo ${combined.length ? `in one file with ${titles(combined)}` : "as a file of its own"}`,
+      issue: { issue: `${words} ask for ${memoTitle} and "${target.title}" in one file; the plan delivers "${target.title}" as a redline, which cannot be joined with the memo.`, documents: [], ask: true },
+      planned: `"${target.title}" as a redline and ${memoTitle} ${combined.length ? `in one file with ${titles(combined)}` : "as a file of its own"}`,
     }
     const changed = [...(target.deliverable !== "combined" ? [target] : []), ...combined]
     return !changed.length ? { unsupported: false } : {
       unsupported: false,
-      issue: revise(`${words} ask for the memo and "${target.title}" in one file. ` +
+      issue: revise(`${words} ask for ${memoTitle} and "${target.title}" in one file. ` +
         `Write ${serialList([...(target.deliverable !== "combined" ? [`"Deliverable: combined" under "${target.title}"`] : []), ...combined.map(body)])}.`, changed),
-      planned: target.deliverable === "combined" ? `the memo in one file with ${titles(combined)} as well`
-        : combined.length ? `the memo in one file with ${titles(combined)}, and "${target.title}" as a file of its own` : `the memo and "${target.title}" as separate files`,
+      planned: target.deliverable === "combined" ? `${memoTitle} in one file with ${titles(combined)} as well`
+        : combined.length ? `${memoTitle} in one file with ${titles(combined)}, and "${target.title}" as a file of its own` : `${memoTitle} and "${target.title}" as separate files`,
     }
   }
   if (target) return target.deliverable !== "combined" ? { unsupported: false } : {
     unsupported: false,
-    issue: revise(`${words} ask for "${target.title}" in a file of its own, without the memo. Write "Deliverable: body" under "${target.title}" in place of "Deliverable: combined".`, [target]),
-    planned: `"${target.title}" in one file with the memo`,
+    issue: revise(`${words} ask for "${target.title}" in a file of its own, without ${memoTitle}. Write "Deliverable: body" under "${target.title}" in place of "Deliverable: combined".`, [target]),
+    planned: `"${target.title}" in one file with ${memoTitle}`,
   }
   return !combined.length ? { unsupported: false } : {
     unsupported: false,
-    issue: revise(`${words} ask for the memo in a file of its own. Write ${serialList(combined.map(body))} in place of "Deliverable: combined".`, combined),
-    planned: `the memo in one file with ${titles(combined)}`,
+    issue: revise(`${words} ask for ${memoTitle} in a file of its own. Write ${serialList(combined.map(body))} in place of "Deliverable: combined".`, combined),
+    planned: `${memoTitle} in one file with ${titles(combined)}`,
   }
+}
+
+/** The memo document by its quoted title, or "the memo" for a plan that names
+ * no memo document. */
+const memoTitled = (documents: { id: string; title: string }[], memo: DocID | undefined) => {
+  const document = memo && documents.find(row => row.id === memo)
+  return document ? `"${document.title}"` : "the memo"
 }
 
 /** Outline revision feedback holding the outline's deliverables to the
  * recorded files, in the outline's own terms, quoting the lawyer's words and
- * naming documents by title: the memo with one document needs that document
+ * naming documents by title, `memo` being the memo document's id: the memo
+ * with one document needs that document
  * combined and no other; one document alone, or the memo alone, needs no
  * document combined with the memo. Each issue carries the planned documents
  * whose deliverables it asks to change. The memo with a document planned as a
  * redline is an issue for the lawyer only (`ask`). A file the plan cannot build
  * gives no issue, since no revision builds it; its index is in `unsupported`,
  * for disclosure. Nothing when the lawyer's words do not state the files. */
-export function requestedFilesIssues(documents: PlannedDocument[], memo: string | undefined, requested: RequestedFiles) {
+export function requestedFilesIssues(documents: PlannedDocument[], memo: DocID | undefined, requested: RequestedFiles) {
   const issues: FilesIssue[] = []
   const unsupported: number[] = []
   if (requested.stated) requested.files.forEach((file, index) => {
-    const check = fileCheck(file, documents, memo !== undefined)
+    const check = fileCheck(file, documents, memo)
     if (check.unsupported) unsupported.push(index)
     else if (check.issue) issues.push(check.issue)
   })
@@ -304,46 +315,68 @@ export function requestedFilesRevision(directory: string, issues: FilesIssue[]) 
   return { feedback: [FILES_REVISION_SCOPE, ...revisable.map(row => row.issue)], documents: new Set(revisable.flatMap(row => row.documents)) }
 }
 
-/** The planned documents no file holds when the lawyer's words ask for one
- * file only, the file they might go in (unheldDocumentPrompt); none otherwise. */
-export function unheldDocuments(requested: RequestedFiles, documents: PlannedDocument[]) {
-  const [only, ...others] = requested.files
-  if (!requested.stated || !only || others.length) return []
-  return documents.filter(document => !only.holds.includes(document.id))
+/** The outline revision issues for the recorded files that hold no planned
+ * document: one per file, asking the outline to plan the document that file
+ * holds. None when the lawyer's words do not state the files. */
+export function unplannedFileIssues(requested: RequestedFiles) {
+  return !requested.stated ? [] : requested.files.flatMap(file => file.holds.length ? []
+    : [`The lawyer's words "${excerpt(file.quote)}" ask for ${asked(file, () => undefined)}, but no planned document is in it. Plan the document this file holds as a document of its own: its "# " title line, then its lines such as "Form:", then its "## " parts.`])
 }
 
-/** One focused question per planned document the one requested file leaves
- * out: whether the lawyer's words ask for that document themselves. A document
- * the plan adds to carry the request out is not asked for, so it goes in the
- * one file the lawyer asks to receive (withUnaskedDocuments). */
+/** The planned documents no file holds when the lawyer's words ask for one
+ * file only, the file they might go in (unheldDocumentPrompt); none otherwise,
+ * nor when that one file holds no planned document, since the lawyer's words
+ * then ask for a document the plan does not have, not for the plan's documents
+ * in one file. The memo document (`memo`) is never added to a file it is not
+ * asked in. */
+export function unheldDocuments(requested: RequestedFiles, documents: PlannedDocument[], memo?: DocID) {
+  const [only, ...others] = requested.files
+  if (!requested.stated || !only?.holds.length || others.length) return []
+  return documents.filter(document => document.id !== memo && !only.holds.includes(document.id))
+}
+
+/** One focused decision per planned document the one requested file leaves
+ * out: whether the lawyer's words ask to receive that document as a file apart
+ * from that one file. A document the plan adds to carry the request out is
+ * not asked for apart, so it goes in the one file the lawyer asks to receive
+ * (withUnaskedDocuments). The quote comes first, so the decision rests on it. */
 export function unheldDocumentPrompt(directory: string, document: PlannedDocument, file: RequestedFile) {
   return [
-    "This is a lean drafting run. Read the lawyer's words for one question: whether they ask for one planned document themselves.",
+    "This is a lean drafting run. Read the lawyer's words for one decision: whether they ask to receive one planned document as a file apart from the one file in <file>.",
     ...wordsBlocks(directory),
     tagged("planned_document", `The plan drafts this document. Its title and purpose are the plan's own choices, not the lawyer's words.\n${JSON.stringify({ title: document.title, purpose: document.purpose })}`),
-    tagged("requested_file", `The lawyer asks for one file${file.name ? `, ${file.name}` : ""}, in these words: "${file.quote}"`),
+    tagged("file", `The one file the lawyer asks to receive${file.name ? `, ${file.name}` : ""}, in these words: "${file.quote}"`),
     tagged("output_contract", [
       "- Answer from the request, the lawyer's updates and answers only.",
-      "- The plan may add a document the lawyer's words do not ask for, to carry out what they ask. Such a document is not asked for, though it carries out an act or term the words ask for.",
-      '- When the words ask for this document themselves, by its name or its kind, reply {"asked":true,"quote":"..."}, with the lawyer\'s exact words that ask for it, copied verbatim. When they do not, reply {"asked":false}.',
+      "- The plan may add a document the lawyer's words do not ask for, to carry out what they ask; it then goes in the file in <file>. Words that ask for an act or term the document carries out, or for the file in <file>, do not ask for this document apart.",
+      '- "quote": the lawyer\'s exact words, copied verbatim, that ask to receive this document as a file apart from the file in <file>, or null when no words do.',
+      '- "apart": true when "quote" gives such words; false when it is null.',
+      `- ${APART_SHAPE}`,
       "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply.",
     ].join("\n")),
   ].filter(Boolean).join("\n\n")
 }
 
-const ASKED_SHAPE = 'Reply with the JSON object only: {"asked":true,"quote":"..."} or {"asked":false}.'
+const APART_SHAPE = 'Reply with the JSON object only, "quote" first: {"quote":"..." or null,"apart":true or false}.'
 
-/** Reads the reply to unheldDocumentPrompt: true with a quote that is the
- * lawyer's words (instructionFound), or false. Every other reply is retried. */
-export function parseUnheldDocument(reply: string, directory: string): Checked<boolean> {
+/** Reads the reply to unheldDocumentPrompt. "apart" true needs a quote that is
+ * the lawyer's words (instructionFound) and not words of the one file's own
+ * quote, which ask for that file; false stands with any quote. Every other
+ * reply is retried, and one that never passes leaves the document unchecked. */
+export function parseUnheldDocument(reply: string, directory: string, file: RequestedFile): Checked<{ quote: string | null; apart: boolean }> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  let value: unknown
-  try { value = JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {}
-  if (!record(value) || typeof value.asked !== "boolean") return { issues: [ASKED_SHAPE] }
-  if (!value.asked) return { issues: [], value: false }
-  if (typeof value.quote !== "string" || !value.quote.trim()) return { issues: [`"asked" is true, but "quote" is missing. ${ASKED_SHAPE}`] }
-  if (!instructionFound(directory, value.quote)) return { issues: [quoteMissIssue(directory, "quote", { quote: value.quote.trim(), source_id: REQUEST_SOURCE }, "json")] }
-  return { issues: [], value: true }
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok) return { issues: [`${APART_SHAPE} ${parsed.error}`] }
+  const value = parsed.value
+  if (!(value.quote === null || typeof value.quote === "string") || typeof value.apart !== "boolean") return { issues: [APART_SHAPE] }
+  const quote = typeof value.quote === "string" && value.quote.trim() ? value.quote.trim() : null
+  if (!value.apart) return { issues: [], value: { quote, apart: false } }
+  if (quote === null) return { issues: [`"apart" is true, but "quote" is null. Quote the lawyer's words that ask for this document as a file apart, or reply {"quote":null,"apart":false} when no words do.`] }
+  if (!instructionFound(directory, quote)) return { issues: [quoteMissIssue(directory, "quote", { quote, source_id: REQUEST_SOURCE }, "json")] }
+  const flat = (words: string) => normalize(words).toLowerCase()
+  if (flat(file.quote).includes(flat(quote)))
+    return { issues: [`"quote" gives "${excerpt(quote)}", which is words of the one file's own request "${excerpt(file.quote)}": they ask for that file, not for this document apart from it. Quote the lawyer's words that ask for this document as a file apart, or reply {"quote":null,"apart":false} when no words do.`] }
+  return { issues: [], value: { quote, apart: true } }
 }
 
 /** `requested` with each document in `unasked` (by id) added to the lawyer's
@@ -355,29 +388,28 @@ export function withUnaskedDocuments(requested: RequestedFiles, unasked: string[
 }
 
 /** The plan's file names with each grounded name the record gives: a file of
- * one document, alone or after the memo, names that document's file; a file of
- * the memo alone names the notes file. Names are compared as registration
- * compares them (deliveryStem, lowercased). The lawyer's name displaces another
- * document's outline file name, which then falls back to its title, and says
- * so. It is skipped, and noted, when a name the plan does not choose has it: a
- * document's title-derived name or the notes file's (unless the memo's own file
- * is named); every name asked for twice is skipped. A file the plan cannot
- * build (buildable) names nothing. Without a name of its own, a notes file
- * still named after its document (memoNotesFile) is named again after the
- * named documents. Documents are identified by position (withDocumentIDs). */
+ * one document, alone or after the memo document (`memo`, its id), names that
+ * document's file; a file of the memo document alone names the memo
+ * document's. Names are compared as registration compares them (deliveryStem,
+ * lowercased). The lawyer's name displaces another document's outline file
+ * name, which then falls back to its title, and says so. It is skipped, and
+ * noted, when a name the plan does not choose has it: a document's
+ * title-derived name; every name asked for twice is skipped. A file the plan
+ * cannot build (buildable) names nothing. Documents are identified by
+ * position (withDocumentIDs). */
 export function withRequestedNames<T extends { title: string; file?: string; deliverable?: string }>(
-  documents: T[], memo: { name: string; file: string } | undefined, requested: RequestedFiles,
-): { documents: T[]; notes_file: string | undefined; applied: string[] } {
-  type Target = number | typeof MEMO
+  documents: T[], memo: DocID | undefined, requested: RequestedFiles,
+): { documents: T[]; applied: string[] } {
   const ids = documents.map((_, index) => `d${index + 1}`)
-  const wanted = requested.stated ? requested.files.flatMap((file): { target: Target; name: string }[] => {
-    const shape = buildable(file, ids, memo !== undefined)
-    return !shape || file.name === null ? [] : [{ target: shape.document ? ids.indexOf(shape.document) : MEMO, name: file.name }]
+  const wanted = requested.stated ? requested.files.flatMap((file): { target: number; name: string }[] => {
+    const shape = buildable(file, ids, memo)
+    const target = shape && ids.indexOf(shape.document ?? memo ?? "")
+    return target === undefined || target < 0 || file.name === null ? [] : [{ target, name: file.name }]
   }) : []
   const key = (name: string) => deliveryStem({ title: "", file: name }).toLocaleLowerCase()
   const skipped = new Set(wanted.filter(row => wanted.some(other => other !== row && key(other.name) === key(row.name))))
-  // Each skip can restore an outline name or change the notes file's, so the
-  // names are worked out again until no given name clashes.
+  // Each skip can restore an outline name, so the names are worked out again
+  // until no given name clashes.
   for (;;) {
     const given = wanted.filter(row => !skipped.has(row))
     const holder = (name: string) => given.find(row => key(row.name) === key(name))
@@ -388,28 +420,22 @@ export function withRequestedNames<T extends { title: string; file?: string; del
       const { file: _file, ...rest } = document
       return rest as T
     })
-    const name = given.find(row => row.target === MEMO)?.name
-    const notes = name ?? (!memo ? `${deliveryStem(named[0] ?? { title: "Draft" })} - drafting notes.docx`
-      : memo.file === memoNotesFile(documents, memo.name) ? memoNotesFile(named, memo.name) : memo.file)
-    const fixed = [
-      ...named.flatMap((document, index) => document.file ? [] : [{ target: index as Target, key: deliveryStem({ title: document.title }).toLocaleLowerCase() }]),
-      ...(name ? [] : [{ target: MEMO as Target, key: key(notes) }]),
-    ]
+    const fixed = named.flatMap((document, index) => document.file ? [] : [{ target: index, key: deliveryStem({ title: document.title }).toLocaleLowerCase() }])
     const clashes = given.filter(row => fixed.some(other => other.target !== row.target && other.key === key(row.name)))
     if (clashes.length) {
       for (const row of clashes) skipped.add(row)
       continue
     }
-    const label = (target: Target) => target === MEMO ? "the memo" : `"${documents[target]!.title}"`
+    const label = (target: number) => `"${documents[target]!.title}"`
     const applied = [
       ...wanted.flatMap(row => skipped.has(row) ? [`"${row.name}" not given to ${label(row.target)}: another planned file has that name`]
-        : row.name !== (row.target === MEMO ? memo?.file : documents[row.target]!.file) ? [`${label(row.target)}: file "${row.name}"`] : []),
+        : row.name !== documents[row.target]!.file ? [`${label(row.target)}: file "${row.name}"`] : []),
       ...documents.flatMap((document, index) => {
         const by = document.file && !given.some(row => row.target === index) ? holder(document.file) : undefined
         return by ? [`"${document.title}": outline file "${document.file}" dropped, as the lawyer's words give that name to ${label(by.target)}`] : []
       }),
     ]
-    return { documents: named, notes_file: memo ? notes : undefined, applied }
+    return { documents: named, applied }
   }
 }
 
@@ -423,18 +449,21 @@ export function withRequestedNames<T extends { title: string; file?: string; del
  * with its instrument's title; a label printed as the heading keeps its text as
  * its display heading. The records' files hold the ids the documents then have.
  * Only new documents drafted without a template, comparison, left-out parts or
- * playbook to review against fold, none delivered as a redline and only the host combined
- * with the memo; a file holding any other stays as recorded, a shape the run
- * cannot build (requestedFilesItems). With `separate` (the lawyer chose a file
+ * playbook to review against fold, none planned as advice or delivered as a
+ * redline and only the host combined with the memo; a file holding any other
+ * stays as recorded, a shape the run cannot build (requestedFilesItems). A
+ * document planned as advice never folds, as host or instrument: advice is
+ * not an instrument of the parties. The memo document (`memo`, its id) never
+ * folds: it is joined with a document only as the combined file. With `separate` (the lawyer chose a file
  * of its own for an instrument: separateFileChosen) nothing folds. `at` gives,
  * for each outline document, the index of the document now holding it; `from`,
  * for each document of the result, its outline index. */
-export function foldRequestedFiles<T extends Omit<PlannedDocument, "id">>(documents: T[], requested: RequestedFiles, separate = false) {
+export function foldRequestedFiles<T extends Omit<PlannedDocument, "id">>(documents: T[], requested: RequestedFiles, separate = false, memo?: DocID) {
   const at = documents.map((_, index) => index)
   const foldable = (document: T, host: boolean) => (document.mode ?? "new") === "new" && !document.template && !document.comparison && !document.playbook_review?.sources.length &&
-    !document.left_out?.length && document.deliverable !== "redline" && (host || document.deliverable !== "combined") && !document.parts.some(part => part.instrument)
+    !document.left_out?.length && document.form !== "advice" && document.deliverable !== "redline" && (host || document.deliverable !== "combined") && !document.parts.some(part => part.instrument)
   if (requested.stated && !separate) for (const file of requested.files) {
-    const held = [...new Set(file.holds.filter(id => id !== MEMO).map(id => Number(id.slice(1)) - 1))].filter(index => documents[index]).toSorted((a, b) => a - b)
+    const held = [...new Set(file.holds.filter(id => id !== memo).map(id => Number(id.slice(1)) - 1))].filter(index => documents[index]).toSorted((a, b) => a - b)
     const [host, ...rest] = held
     if (host === undefined || !rest.length || held.some(index => at[index] !== index) || !foldable(documents[host]!, true) || rest.some(index => !foldable(documents[index]!, false))) continue
     for (const index of rest) at[index] = host
@@ -464,7 +493,7 @@ export function foldRequestedFiles<T extends Omit<PlannedDocument, "id">>(docume
     return { ...document, parts, ...(executing ? { executed_by: executing } : {}) }
   })
   const position = at.map(host => hosts.indexOf(host))
-  const holds = (file: RequestedFile) => [...new Set(file.holds.map(id => id === MEMO ? id : `d${position[Number(id.slice(1)) - 1]! + 1}`))]
+  const holds = (file: RequestedFile) => [...new Set(file.holds.map(id => `d${position[Number(id.slice(1)) - 1]! + 1}`))]
   return {
     documents: folded, at: position, from: hosts, applied,
     requested: applied.length ? { ...requested, files: requested.files.map(file => ({ ...file, holds: holds(file) })) } : requested,
@@ -512,22 +541,21 @@ function answeredFiles(directory: string) {
 
 /** The lawyer's question on files the outline's revisions still do not
  * deliver as the record asks (`issues`, from requestedFilesIssues on the same
- * documents): the lawyer's words, what they ask for, by title, "the memo" and
- * file name, and how the plan delivers it instead. It is asked once for the
+ * documents and memo document `memo`): the lawyer's words, what they ask for,
+ * by title and file name, and how the plan delivers it instead. It is asked once for the
  * lawyer's words as they stand (questionID): undefined when there is no issue
  * or that question is already open or answered, since a later job may quote
  * the same words differently. A file whose words an answered question listed
  * (answeredFiles) is not asked about again, even once an update changes the
  * lawyer's words, a later outline renames its document or a later job gives or
  * drops its name. */
-export function requestedFilesQuestion(directory: string, requested: RequestedFiles, documents: PlannedDocument[], issues: FilesIssue[]): Question | undefined {
+export function requestedFilesQuestion(directory: string, requested: RequestedFiles, documents: PlannedDocument[], issues: FilesIssue[], memo: DocID | undefined): Question | undefined {
   if (!issues.length) return
   const id = questionID(directory)
   if (readQuestions(directory).some(question => question.id === id)) return
   const answered = answeredFiles(directory)
-  // Issues arise only for files whose memo is planned.
   const listed = requested.files.flatMap(file => {
-    const check = fileCheck(file, documents, true)
+    const check = fileCheck(file, documents, memo)
     const what = asked(file, id => documents.find(document => document.id === id))
     return check.unsupported || !check.planned || answered.listing(file, requested.files, what) ? []
       : [{ ask: Boolean(check.issue?.ask), line: `Your words "${excerpt(file.quote)}" ask for ${what}, but the document plan delivers ${check.planned}.` }]
@@ -546,10 +574,11 @@ export function requestedFilesQuestion(directory: string, requested: RequestedFi
   }
 }
 
-/** What a recorded file asks for, in the lawyer's terms: its contents by title
- * and "the memo", in the lawyer's order, and how they are to be delivered. */
+/** What a recorded file asks for, in the lawyer's terms: its contents by
+ * title, in the lawyer's order, and how they are to be delivered. */
 function asked(file: RequestedFile, planned: (id: string) => { title: string } | undefined) {
-  const parts = file.holds.map(id => id === MEMO ? "the memo" : planned(id) ? `"${planned(id)!.title}"` : "a document no longer planned")
+  if (!file.holds.length) return file.name ? `a file named "${file.name}"` : "a file"
+  const parts = file.holds.map(id => planned(id) ? `"${planned(id)!.title}"` : "a document no longer planned")
   const how = file.name ? (parts.length > 1 ? `in one file named "${file.name}"` : `as a file named "${file.name}"`) : parts.length > 1 ? "in one file" : "as a file of its own"
   return `${serialList(parts)} ${how}`
 }
@@ -575,8 +604,8 @@ export function readRequestedFiles(directory: string): LeanRequestedFiles | unde
   return value as LeanRequestedFiles
 }
 
-const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && row.holds.length > 0 &&
-  row.holds.every(id => id === MEMO || (typeof id === "string" && /^d[1-9]\d*$/.test(id))) && (row.name === null || typeof row.name === "string") && typeof row.quote === "string" &&
+const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) &&
+  row.holds.every(id => typeof id === "string" && /^d[1-9]\d*$/.test(id)) && (row.name === null || typeof row.name === "string") && typeof row.quote === "string" &&
   (row.refused_name === undefined || typeof row.refused_name === "string")
 
 /** The open items for recorded files the saved plan does not deliver as the
@@ -587,8 +616,9 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) && r
  * titles and the memo is still checked against the lawyer's words. An
  * unchecked record gives one item, as the coverage check's does: the run could
  * not confirm which files the lawyer's words ask to receive. A file the run
- * cannot build (fileShape) always gives one, as does the memo asked for with a
- * document planned as a redline. Otherwise each file is compared with the
+ * cannot build (fileShape) always gives one, a file that holds no planned
+ * document included, as does the memo asked for with a document planned as a
+ * redline. Otherwise each file is compared with the
  * names registration gives the plan's files (plannedRegistration): the memo
  * with one document must be that document's combined file (combinedDelivery),
  * one document alone must not be combined, the memo alone must be delivered
@@ -645,7 +675,7 @@ function requestedFilesRaised(directory: string, told?: OpenItem[]): { item: Ope
     [`${row.kind}:${row.document}`, "download_filename" in row ? row.download_filename : row.planned_filename]))
   const rows = readLeanDocuments(directory)?.documents ?? []
   const combined = combinedDelivery(directory, plan)
-  const memo = requestedMemo(directory, plan)
+  const memo = plan.memo !== undefined ? plan.memo_document : undefined
   const title = (id: string) => plan.documents.find(row => row.id === id)?.title
   // The file the run delivers `kind` of `document` as, by its registered name
   // and spelling, in the order registration tries names (registerOnce): the
@@ -699,18 +729,18 @@ function requestedFilesRaised(directory: string, told?: OpenItem[]): { item: Ope
     if (earlier && runs(earlier)) return { kind, title: titled, name: earlier.toLocaleLowerCase(), spelled: held ? null : earlier, held }
     return held ? { kind, title: titled, name: null, spelled: null, held } : { kind, title: titled, name: row.name, spelled, held }
   }
-  // The memo and the combined document go in one file unless registration will
-  // not save it (combinedFileItems, whose item says so): then each is delivered
-  // as its own file, its part as registered. Read once, when first needed.
+  // The memo document and the combined document go in one file unless
+  // registration will not save it (combinedFileItems, whose item says so):
+  // then each is delivered as its own file, its part as registered. Read once,
+  // when first needed.
   let joined: boolean | undefined
   const together = () => joined ??= combinedFileItems(directory).length === 0
   const deliveredIn = (id: string) => {
-    if (id === MEMO) return !memo ? null : combined && together() ? delivery("combined", combined.document) : delivery("drafting_notes", null)
     const document = plan.documents.find(row => row.id === id)
-    return !document ? null : combined?.document === document.id && together() ? delivery("combined", document.id) : delivery(document.deliverable === "redline" ? "redline" : "body", document.id)
+    return !document ? null : (combined?.document === document.id || (combined && id === memo)) && together() ? delivery("combined", combined!.document) : delivery(document.deliverable === "redline" ? "redline" : "body", document.id)
   }
   const describe = (file: NonNullable<ReturnType<typeof delivery>>) => {
-    const what = file.kind === "combined" ? `the memo and "${file.title}"` : file.kind === "drafting_notes" ? "the memo" : `"${file.title}"${file.kind === "redline" ? " as a redline" : ""}`
+    const what = file.kind === "combined" ? `${memoTitled(plan.documents, memo)} and "${file.title}"` : `"${file.title}"${file.kind === "redline" ? " as a redline" : ""}`
     const where = file.spelled === null ? "a file of another name" : file.kind === "combined" ? `one file named "${file.spelled}"` : `"${file.spelled}"`
     return `${what} in ${where}${file.held ? `, since a file already in the matter holds the name "${file.held}"` : ""}`
   }
@@ -724,9 +754,9 @@ function requestedFilesRaised(directory: string, told?: OpenItem[]): { item: Ope
   return saved.files.flatMap((file, index) => {
     if (firsts.get(entry(file)) !== index) return []
     if (told && file.name === null && !told.some(item => item.ref.requested_file === index)) return []
-    const check = fileCheck(file, plan.documents, memo !== undefined)
-    const shape = fileShape(file)
-    const target = shape && deliveredIn(shape.document ?? MEMO)
+    const check = fileCheck(file, plan.documents, memo)
+    const shape = fileShape(file, memo)
+    const target = shape && deliveredIn(shape.document ?? memo!)
     // A name the run could not confirm never counts as delivered as named, nor
     // does one file asked for without a name while a kept file holds the name
     // the run gives it.
@@ -737,9 +767,11 @@ function requestedFilesRaised(directory: string, told?: OpenItem[]): { item: Ope
       const delivered = deliveredIn(held)
       if (delivered) files.set(`${delivered.kind}:${delivered.title}`, delivered)
     }
-    const phrases = [...[...files.values()].map(describe), ...(file.holds.includes(MEMO) && !memo ? ["no memo"] : [])]
-    const delivers = phrases.length ? serialList(phrases) : "none of them"
-    const reason = !shape ? file.holds.filter(held => held !== MEMO).length > 1 ? " The run puts several documents in one file only when it drafts each as a new document, with no template, comparison or playbook review, and none as a redline."
+    const phrases = [...files.values()].map(describe)
+    // A file holding no planned document, left so by the outline's revision.
+    const unplanned = !file.holds.length
+    const delivers = unplanned ? "no such file" : phrases.length ? serialList(phrases) : "none of them"
+    const reason = unplanned ? " The plan has no document for it." : !shape ? file.holds.filter(held => held !== memo).length > 1 ? " The run puts several documents in one file only when it drafts each as a new document, with no template, comparison or playbook review, and none as a redline."
       : " The run can join the memo and a document in one file only with the memo first."
       : !check.unsupported && check.issue?.ask ? " The run cannot join the memo with a redline." : ""
     const refused = file.name === null ? file.refused_name : undefined
@@ -748,7 +780,8 @@ function requestedFilesRaised(directory: string, told?: OpenItem[]): { item: Ope
     const format = refused !== undefined && (OTHER_FORMAT.test(refused) || formatStem(nameStem(refused)))
     const what = asked(file, held => plan.documents.find(row => row.id === held))
     const listed = answered.listing(file, saved.files, what)
-    const closing = listed && !check.unsupported && check.planned === listed.planned
+    const closing = unplanned ? " The lawyer should confirm what that file is to hold."
+      : listed && !check.unsupported && check.planned === listed.planned
       ? ` The lawyer answered the question about ${listed.same ? "these files" : `the files the words ${lawyerQuote(listed.words)} ask for`}; ` +
         "the plan drawn up with that answer still delivers them so."
       : " The lawyer should confirm how these files are to be delivered."

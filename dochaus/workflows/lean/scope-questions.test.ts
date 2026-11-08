@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { writeLeanPlan } from "./plan"
+import { FIXED_PLAN, writeLeanPlan } from "./plan"
 import { changePlanPrompt } from "./change-pipeline"
 import { DIRECTED_BLANK, stagePrompt } from "./prompts"
 import { writeLeanText, writeQuestions } from "./state"
@@ -50,4 +50,11 @@ test("a blank the instructions say to leave is the lawyer's; other blanks are fi
   expect(DIRECTED_BLANK).toContain("expressly direct be left for the lawyer or client stays as directed until the lawyer's later instruction or answer fills it")
   expect(DIRECTED_BLANK).toContain("offered in the drafting notes as a candidate, never inserted or presented as decided")
   expect(DIRECTED_BLANK).toContain("Fill every other blank or bracket, including a template's own, from the sources as usual.")
+})
+
+test("a saved plan fixes which documents a draft prepares: change-plan questions keep them", () => {
+  const directory = matter()
+  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Operative terms", parts: [{ heading: "Price", scope: "The price" }] }])
+  expect(changePlanPrompt(directory, "d1").split(FIXED_PLAN).length - 1).toBe(1)
+  expect(FIXED_PLAN).toContain("no question, option or finding may add, drop or replace a planned document")
 })

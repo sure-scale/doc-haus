@@ -581,11 +581,74 @@ function lowerChars(text: string) {
 /** Where a quotation's elided passages (elidedParts) sit in the one named
  * document, an indexed matter document or the bound playbook (elisionGap). */
 export function locateElidedQuote(args: { directory: string; parts: string[]; document: string }) {
-  const playbook = boundPlaybook(args.directory)
-  const texts = args.document.startsWith("playbook:")
-    ? playbook?.text && args.document === playbook.source_id ? [playbook.text] : []
-    : indexedText(args.directory, args.document)
-  return nearestGap(texts.flatMap(raw => sourceReadings(args.document).map(reading => elisionGap(raw, args.parts, reading))))
+  return nearestGap(documentTexts(args.directory, args.document).flatMap(raw => sourceReadings(args.document).map(reading => elisionGap(raw, args.parts, reading))))
+}
+
+/** The most source text nearSpan shows. */
+export const NEAR_SPAN = 600
+
+/** Quotation marks (as normalize folds them or not) nearSpan reads past. */
+const QUOTE_MARK = /["'‘’“”]/
+
+/** Retry help for a quotation of the one named document (as
+ * locateElidedQuote names it) that verifyQuote does not find: the passage of
+ * that document it nearly is, as the document writes it, for the writer to
+ * copy. Beyond what verification already reads past (normalize and
+ * sourceReadings) it reads past only a change of case (quotePlaces,
+ * ignoreCase), quotation marks not between two letters (so an apostrophe
+ * stays) and sentence punctuation at either end of the quotation; nothing
+ * else, so "10.5" never meets "105". The passage begins and ends on whole
+ * words (insideWord), takes in a quotation mark beside it that pairs one it
+ * holds, and is shown whole: undefined when it is longer than NEAR_SPAN, when
+ * the quotation is shorter than SHORT_QUOTE, or when nothing is near. It is
+ * never a match: verification stays exact and the passage is never put in
+ * place of the quotation. */
+export function nearSpan(args: { directory: string; quote: string; document: string }): string | undefined {
+  const needle = withoutQuoteMarks(normalize(args.quote)).text.replace(/^[\s.,;:!?]+|[\s.,;:!?]+$/g, "")
+  if (needle.length < SHORT_QUOTE) return
+  for (const raw of documentTexts(args.directory, args.document))
+    for (const reading of sourceReadings(args.document)) {
+      const normalized = normalizeWithMap(raw, reading)
+      const folded = withoutQuoteMarks(normalized.text)
+      const { places, length } = quotePlaces(folded.text, needle, { ignoreCase: true })
+      const place = places.map(at => ({ from: folded.at[at]!, to: folded.at[at + length - 1]! + 1 }))
+        .find(({ from, to }) => !insideWord(normalized.text, from) && !insideWord(normalized.text, to))
+      if (!place) continue
+      let { from, to } = place
+      let marks = 0
+      for (let at = from; at < to; at++) if (folded.removed.has(at)) marks++
+      if (marks % 2) {
+        if (folded.removed.has(from - 1)) from--
+        else if (folded.removed.has(to)) to++
+      }
+      const span = raw.slice(normalized.map[from], normalized.end[to - 1])
+      return span.length <= NEAR_SPAN ? span : undefined
+    }
+}
+
+/** `text` without its quotation marks that are not between two letters, with
+ * the offset in `text` of each character kept and of each mark removed. */
+function withoutQuoteMarks(text: string) {
+  const letter = (at: number) => /\p{L}/u.test(text[at] ?? "")
+  let out = ""
+  const at: number[] = [], removed = new Set<number>()
+  for (let index = 0; index < text.length; index++) {
+    if (QUOTE_MARK.test(text[index]!) && !(letter(index - 1) && letter(index + 1))) {
+      removed.add(index)
+      continue
+    }
+    out += text[index]
+    at.push(index)
+  }
+  return { text: out, at, removed }
+}
+
+/** The text of the one named document: an indexed matter document or the bound playbook. */
+function documentTexts(directory: string, document: string): string[] {
+  const playbook = boundPlaybook(directory)
+  return document.startsWith("playbook:")
+    ? playbook?.text && document === playbook.source_id ? [playbook.text] : []
+    : indexedText(directory, document)
 }
 
 function indexedText(directory: string, document: string): string[] {

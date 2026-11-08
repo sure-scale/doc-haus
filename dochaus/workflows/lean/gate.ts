@@ -1,7 +1,7 @@
 import type { ChecklistFindingClass } from "./checklist-classify"
 import type { ChecklistFinding, ChecklistItem } from "./checklist-contract"
 import { CHECKLIST_COVERAGE_ISSUES, type ChecklistCoverageIssue } from "./checklist-flow"
-import { checklistOutputState, type ChecklistOpenFinding, type ChecklistUnresolvedFinding, type ChecklistUnresolvedParent } from "./stages"
+import { checklistOutputState, LEAN_PROMPT_VERSION, stageInputs, type ChecklistOpenFinding, type ChecklistUnresolvedFinding, type ChecklistUnresolvedParent } from "./stages"
 import { changeReviewItem, readChangeReview, reviewWithheldFinding, deferredFindingItems } from "./change-pipeline"
 import { renderNotesCoverage } from "../../lib/notes-coverage-report"
 import { hasOpenItemMarker } from "../../lib/open-items"
@@ -17,10 +17,13 @@ import { citationSources, readerCitations, sourceName } from "./reader-citations
 import { answeredScopeQuestion, GATE_EXCERPT, keyedQuestionID, openScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows } from "./package-scope"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, repairedChecklistItems } from "./repairs"
 import { requestedFilesItems } from "./requested-files"
+import { placementItems } from "./spine-placement"
 import { draftedDefaultItems } from "./drafted-defaults"
 import { combinedFileItems } from "./deliverables"
 import { withheldChecklistRepair } from "./requests"
-import { isReviewStage, currentOpenItems, readLeanText, readLeanJson, readLeanState, readQuestions, undecidedQuestion, type LeanState, type OpenItem, type Question } from "./state"
+import { isReviewStage, currentOpenItems, hashStageInputs, readLeanText, readLeanJson, readLeanState, readQuestions, undecidedQuestion, type LeanState, type OpenItem, type Question } from "./state"
+import { currentFactDisposition } from "./fact-answers"
+import { provisionalFactMarkerItems } from "./provisional-fact-markers"
 
 // Final legal gate: the only place an open item blocks delivery. It covers every
 // planned document; each item is settled against the final body of the
@@ -96,6 +99,7 @@ type SettleContext = {
   documents: Map<DocID, FinalBody>
   notes: string
   questions: Map<string, Question>
+  markerFindings?: ChecklistOpenFinding[]
 }
 
 export function finalGate(directory: string): GateResult {
@@ -149,14 +153,18 @@ export function finalGate(directory: string): GateResult {
   const leanState = readLeanState(directory)
   const checklistState = leanState?.stages["checklist-check"]
   const checked = checklistState && (checklistState.status !== "pending" || readLeanJson(directory, "checklist/extraction.json") !== undefined)
-    ? checklistOutputState(directory) : undefined
+    ? checklistOutputState(directory, { includeCurrentFindings: true }) : undefined
+  // Reuse the existing focused semantic checks only when the entire current
+  // checklist succeeded on unchanged inputs. No separate marker receipt exists.
+  if (checked?.valid && checklistState?.status === "done" && checklistState.input_sha === hashStageInputs("checklist-check", LEAN_PROMPT_VERSION, stageInputs(directory, "checklist-check")))
+    context.markerFindings = checked.currentFindings
   const conflict = checked?.valid ? checklistConflictQuestion(conflictItemPairs(checked.unresolved)) : undefined
   // Adverse checklist findings lead: the lawyer's list of items may be capped.
   const unresolved = checked?.valid ? [...checked.unresolved.map(row => checklistUnresolvedItem(directory, leanState, row, conflict?.id)),
     ...checked.unresolvedParents.map(row => checklistUnresolvedParentItem(directory, row))] : []
   // A file name in the instructions the package review withheld is disclosed with the
   // draft, never blocking it: the notes were written before that review.
-  const items = [...unresolved, ...[...current.filter(item => item.stage !== "package-review"), ...undecidedQuestionItems(context.questions, current), ...deferredFindingItems(directory), ...coverageItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory), ...draftedDefaultItems(directory)].map(item => settle(item, context)),
+  const items = [...unresolved, ...[...current.filter(item => item.stage !== "package-review"), ...undecidedQuestionItems(context.questions, current), ...deferredFindingItems(directory), ...coverageItems(directory), ...placementItems(directory), ...requestedFilesItems(directory), ...combinedFileItems(directory), ...draftedDefaultItems(directory)].map(item => settle(item, context)),
     ...semantic, ...projected, ...withheldDeliveryItems(directory)]
   if (checked && !checked.valid) items.push(openItem("checklist-check", "omission", "Effective checklist findings or source-unit coverage are incomplete or stale, or a check or its reinspection failed; see checklist/report.md.", {}))
   // Focused checks can correctly preserve a source-dependent open issue
@@ -828,6 +836,19 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
     // A question asked again by a later document points into that document; the
     // item's own paragraph is in the document it was found in.
     const pid = item.ref.pid ?? ((question?.document ?? FIRST_DOCUMENT) === document ? question?.pid : undefined)
+    const fact = question?.kind === "fact" && question.stage === "intake"
+      ? currentFactDisposition(context.directory, question) ?? (question.status === "answered" ? "unknown" : undefined)
+      : undefined
+    if (question && fact && fact !== "supplied") {
+      if (fact !== "provisional") return open("the fact remains unknown and the lawyer has not authorised drafting while it is missing")
+      if (!named && !context.notes.includes(question.id)) return open("the fact remains unknown; the drafting notes do not disclose it")
+      const unscoped = !item.ref.document && !question.document && !pid
+      const visible = pid ? marked(final, pid) : unscoped
+        ? [...context.documents.values()].some(body => inBody(body, item.ref.placeholder, undefined))
+        : inBody(final, item.ref.placeholder, undefined)
+      return visible || !pid && checklistFactMarked(context, question, document, unscoped) ? disclosed("the fact remains unknown; marked in the body and named in the drafting notes")
+        : open("the fact remains unknown; its body placeholder is missing")
+    }
     if (question && undecidedQuestion(question)) {
       const why = question.answer_class === "declined" ? "not answered; this needs your answer" : "you asked us to decide, but this needs your answer"
       if (!named && !context.notes.includes(question.id)) return open(`${why}; the drafting notes do not name it`)
@@ -852,11 +873,42 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
     return named ? disclosed("placeholder in the body; named in the drafting notes") : open("the drafting notes do not name this placeholder")
   if (item.kind === "draft_status")
     return named ? disclosed("draft-status wording left in the agreement; named in the drafting notes") : open("the drafting notes do not name this draft-status wording")
+  if (item.kind === "reader")
+    return named ? disclosed("a sentence for the lawyer left in the document; named in the drafting notes") : open("the drafting notes do not name this sentence written for the lawyer")
   if (named && item.ref.pid && marked(final, item.ref.pid))
     return disclosed("marked in the body and named in the drafting notes")
   return open(named
     ? "named in the notes, but its paragraph has no visible open-item marker"
     : "neither marked in its paragraph nor named in the drafting notes")
+}
+
+/** Descriptive markers require this exact question's product handling checks,
+ * never a broader source duty sharing its answer. Current expected items are
+ * reconstructed from permission and scope, not trusted from saved output. */
+function checklistFactMarked(context: SettleContext, question: Question, document: DocID, unscoped: boolean) {
+  if (!context.markerFindings) return false
+  const duties = provisionalFactMarkerItems(context.directory, question.id)
+  let marked = false
+  const complete = duties.length > 0 && duties.every(expected => {
+    const rows = context.markerFindings!.filter(row => row.item_id === expected.id)
+    if (rows.length !== 1) return false
+    const { item, finding } = rows[0]!
+    const target = checklistDocument(context.directory, expected.item)
+    if (JSON.stringify(item) !== JSON.stringify(expected.item) || !target || !unscoped && target !== document ||
+      finding.open_decisions === undefined || finding.open_decisions.length ||
+      !expected.item.source_refs.every(ref => finding.source_refs.some(actual => actual.document === ref.document && actual.locator === ref.locator &&
+        normalize(actual.quote) === normalize(ref.quote)))) return false
+    const final = context.documents.get(target)
+    const body = finding.evidence.filter(row => row.kind === "body")
+    const current = !!final && body.length > 0 && body.every(row => plannedID(context.directory, row.document) === target &&
+      final.rows.some(paragraph => normalize(paragraph.text) === normalize(row.text)))
+    if (!current) return false
+    if (finding.status === "not_applicable" && finding.action_status === "not_applicable") return unscoped
+    if (finding.status !== "satisfied" || finding.action_status !== "fulfilled" || !body.every(row => paragraphShowsOpenItem(row.text))) return false
+    marked = true
+    return true
+  })
+  return complete && marked
 }
 
 function inBody(final: FinalBody, text: string | undefined, pid: string | undefined) {

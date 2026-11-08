@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { factContext } from "./fact-answers"
 import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, unlinkSync, writeSync } from "node:fs"
 import path from "node:path"
 import { readDurableJson } from "../../lib/durable-json"
@@ -66,8 +67,9 @@ export function queuedAnswerIDs(directory: string) {
 
 /** Processes pending requests in order. Answers are always applied. A Continue
  * is processed only when `stopped` is the run's settled state: on a blocked gate
- * it starts one repair round; otherwise, including after a pause, it simply
- * resumes. While a pass is in progress a Continue stays queued until the pass
+ * it starts one repair round only when that verdict and its checklist inputs
+ * remain current; otherwise, including after a pause, it simply resumes.
+ * While a pass is in progress a Continue stays queued until the pass
  * settles. */
 export function drainLeanRequests(directory: string, stopped?: LeanState): DrainOutcome {
   const pending = pendingLeanRequests(directory)
@@ -115,7 +117,9 @@ function processRequest(directory: string, request: unknown, stopped: LeanState 
   }
   if (isAnswer(request)) {
     try {
-      answerQuestion(directory, request.question_id, "answer" in request ? { text: request.answer } : "option_id" in request ? { option_id: request.option_id } : { adopt: true })
+      const received = "id" in request && typeof request.id === "string" && "received_at" in request && typeof request.received_at === "string"
+        ? { id: request.id, at: request.received_at } : undefined
+      answerQuestion(directory, request.question_id, "answer" in request ? { text: request.answer } : "option_id" in request ? { option_id: request.option_id } : { adopt: true }, factContext(directory), received)
       return { status: "answered" }
     } catch (error) {
       if (error instanceof LeanQuestionError) return { status: "rejected", detail: `${error.code}: ${error.message}` }
@@ -145,7 +149,21 @@ function processRequest(directory: string, request: unknown, stopped: LeanState 
     }
     return { status: "resume", ...(withheld ? { detail: withheld.trim() } : {}) }
   }
-  const blocking = verdict?.status === "blocked" ? blockedGateItems(directory) : []
+  const gate = verdict?.status === "blocked" ? verdict.stages.gate : undefined
+  const checklist = verdict?.stages["checklist-check"]
+  if (gate?.status !== "blocked" || !gate.input_sha || checklist?.status !== "done" || !checklist.input_sha)
+    return { status: "resume" }
+  try {
+    // Mirror the runner's existing gate boundary: the gate key alone does not
+    // include Word bytes, whose current inspection belongs to the checklist.
+    // Recheck obsolete or unverifiable verdicts before admitting a body repair.
+    if (gate.input_sha !== hashStageInputs("gate", LEAN_PROMPT_VERSION, stageInputs(directory, "gate")) ||
+      checklist.input_sha !== hashStageInputs("checklist-check", LEAN_PROMPT_VERSION, stageInputs(directory, "checklist-check")))
+      return { status: "resume" }
+  } catch {
+    return { status: "resume" }
+  }
+  const blocking = blockedGateItems(directory)
   if (!blocking.length) return { status: "resume" }
   const round = startRepairRound(directory, blocking)
   return { status: "repair_round", detail: `round ${round.round}: ${blocking.length} item(s)` }

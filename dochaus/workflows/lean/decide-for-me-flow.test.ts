@@ -42,7 +42,7 @@ test("an adopted recommendation runs through the queue as the lawyer's answer, r
       ] })
       : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms", acting_for: { party: "", basis: "none" }, dates: { document_date: { date: "", basis: "today" }, operative_dates: [] } }),
     [AGENT.advise]: prompt => prompt.includes(QUESTION)
-      ? JSON.stringify({ options: [{ text: CHOSEN }, { text: OTHER }], recommendation: { option: 0, rationale: "The terms fix the delivery period and add no remedy.", basis: BASIS } })
+      ? JSON.stringify({ options: [{ text: CHOSEN }, { text: OTHER }], recommendation: { option: CHOSEN, rationale: "The terms fix the delivery period and add no remedy.", basis: BASIS } })
       : JSON.stringify({ unavailable: { reason: "The sources name no governing law." } }),
   })
   const run = () => runLean(directory, { sessions: model.port })
@@ -64,14 +64,17 @@ test("an adopted recommendation runs through the queue as the lawyer's answer, r
   const line = `- [${late.id}] Q: ${QUESTION}\n  A (${ADOPTED_ANSWER}): ${CHOSEN}`
   expect(answeredQuestionsText(directory)).toContain(line)
   const prompts = model.prompts.slice(start)
-  for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.acts, AGENT.spine, AGENT.draft,
+  // The discrepancy record, made before intake asked, is not run again.
+  expect(prompts.some(prompt => prompt.agent === AGENT.discrepancy)).toBe(false)
+  for (const agent of [AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.acts, AGENT.spine, AGENT.draft,
     AGENT.review, AGENT["review-independent"], AGENT["review-wording"], AGENT["review-client-disadvantage"], AGENT["change-plan"], AGENT.changes, AGENT["package-review"]])
     expect([agent, prompts.some(prompt => prompt.agent === agent && prompt.text.includes(line))]).toEqual([agent, true])
-  const notes = prompts.find(prompt => prompt.agent === AGENT.finalize)!.text
-  expect(notes).toContain(`- (delegated; see delegated_decisions) ${QUESTION}\n`)
+  const notes = prompts.find(prompt => prompt.agent === AGENT.finalize && prompt.text.includes("<section_kind>\ndelegated\n"))!.text
+  expect(notes).toContain(`<question>\n${QUESTION}\n`)
   expect(notes).not.toContain(`Answer: ${CHOSEN}`)
   expect(notes).not.toContain(`A: ${CHOSEN}`)
-  expect(notes).toContain(`<delegated_decisions>\n- [${late.id}] Q: ${QUESTION}\n  Delegated by the lawyer.\n  Decision taken, for the lawyer to confirm: ${CHOSEN}\n  Reason: The terms fix the delivery period and add no remedy.`)
+  expect(notes).toContain(`<decision>\nDelegated by the lawyer.\nDecision taken under the delegated judgment: ${CHOSEN}\nReason: The terms fix the delivery period and add no remedy.`)
+  expect(notes).not.toContain(late.id)
   for (const prompt of prompts) {
     expect([prompt.agent, LEFT_TO_DRAFTER.exec(prompt.text)?.[0], BUTTON.exec(prompt.text)?.[0]]).toEqual([prompt.agent, undefined, undefined])
     expect([prompt.agent, prompt.text.includes("A: undefined")]).toEqual([prompt.agent, false])

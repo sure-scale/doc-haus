@@ -22,7 +22,7 @@ const UNGROUNDED = [
 ]
 const withheld = (file: string, reason = "no naming instruction in the lawyer's words") => `${file}: ${reason}; the planned name stands`
 const NOT_QUOTED = { cause: "not_quoted", reason: "no naming instruction in the lawyer's words", asked: false } as const
-function twoDocuments(request = REQUEST, options: { basis?: string; memo?: { name: string; file: string }; file?: string } = {}) {
+function twoDocuments(request = REQUEST, options: { basis?: string; memo?: { name: string }; file?: string } = {}) {
   const directory = matter()
   writeLeanText(directory, "request.md", request)
   writeLeanPlan(directory, [{ title: "Supply note", purpose: "Operative terms", parts: [{ heading: "Terms", scope: "Preserve" }] },
@@ -114,14 +114,16 @@ test("a prose preamble before one package review object does not cost an attempt
   const accepted = await acceptStageReply(directory, "package-review", `Based on my review of the package, here is my assessment.\n\n${review([])}`)
   expect(accepted.issues).toEqual([])
   expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], limitations: ["A disclosed gap."], delivery: [] })
-  expect((await acceptStageReply(directory, "package-review", "No JSON here.")).issues).toEqual(["Reply with the package review JSON only."])
+  expect((await acceptStageReply(directory, "package-review", "No JSON here.")).issues).toEqual(["Reply with the package review JSON only. No JSON object was found in the reply."])
 })
 
 test("a reply of two objects is retried, on the last attempt too, never read as its last object", async () => {
   const directory = twoDocuments()
   const later = review([], { status: "changes-required", findings: [{ target: "memo", detail: "The notes misdescribe the delivery period." }] })
   for (const final of [false, true]) {
-    expect((await acceptStageReply(directory, "package-review", `${review([])}\n${later}`, { final })).issues).toEqual(["Reply with the package review JSON only."])
+    const [issue] = (await acceptStageReply(directory, "package-review", `${review([])}\n${later}`, { final })).issues
+    expect(issue).toStartWith("Reply with the package review JSON only. The reply is not valid JSON:")
+    expect(issue).toContain("the JSON value has already ended, so nothing may follow it")
     expect(readLeanText(directory, "package-review.json")).toBeUndefined()
   }
 })
@@ -156,15 +158,18 @@ test("a duplicate grounded delivery row is kept once on the last attempt, with n
 })
 
 test("on the last attempt a grounded row is kept beside a grounded row that takes the memo's name", async () => {
-  const directory = twoDocuments(`${REQUEST} Save the covering letter as Points to resolve.docx. Save the supply note as Points memo.docx.`,
-    { memo: { name: "points memo", file: "Points memo.docx" } })
-  const kept = { document: "d2", role: "body", file: "Points to resolve.docx", instruction_quote: "Save the covering letter as Points to resolve.docx" } as const
-  const clash = { document: "d1", role: "body", file: "Points memo.docx", instruction_quote: "Save the supply note as Points memo.docx" }
+  // The memo's notes are named after the first document with a file (memoNotesFile).
+  const directory = matter()
+  writeLeanText(directory, "request.md", `${REQUEST} Save the supply note as Supply terms.docx. Save the covering letter as Supply terms - points memo.docx.`)
+  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Operative terms", file: "Supply terms.docx", parts: [{ heading: "Terms", scope: "Preserve" }] },
+    { title: "Covering letter", purpose: "Points to resolve", parts: [{ heading: "Points", scope: "List" }] }], undefined, undefined, { name: "points memo" })
+  const kept = { document: "d1", role: "body", file: "Supply terms.docx", instruction_quote: "Save the supply note as Supply terms.docx" } as const
+  const clash = { document: "d2", role: "body", file: "Supply terms - points memo.docx", instruction_quote: "Save the covering letter as Supply terms - points memo.docx" }
   expect((await acceptStageReply(directory, "package-review", review([kept, clash]))).issues.length).toBeGreaterThan(0)
   expect((await acceptStageReply(directory, "package-review", review([kept, clash]), { final: true })).issues).toEqual([])
-  expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], delivery: [kept], limitations: ["A disclosed gap.", withheld("Points memo.docx", "the notes already have that file name")],
-    withheld_delivery: [{ document: "d1", role: "body", file: "Points memo.docx", cause: "notes_name", reason: "the notes already have that file name", asked: true, asked_file: "Points memo.docx", asked_spelling: "Points memo.docx" }] })
-  expect(withheldDeliveryItems(directory).map(item => item.detail)).toEqual([`Your instructions mention the name "Points memo.docx", but it was not applied: "Supply note" keeps its planned file name because the memo already has the name.`])
+  expect(readPackageReview(directory)).toEqual({ status: "pass", findings: [], delivery: [kept], limitations: ["A disclosed gap.", withheld("Supply terms - points memo.docx", "the notes already have that file name")],
+    withheld_delivery: [{ document: "d2", role: "body", file: "Supply terms - points memo.docx", cause: "notes_name", reason: "the notes already have that file name", asked: true, asked_file: "Supply terms - points memo.docx", asked_spelling: "Supply terms - points memo.docx" }] })
+  expect(withheldDeliveryItems(directory).map(item => item.detail)).toEqual([`Your instructions mention the name "Supply terms - points memo.docx", but it was not applied: "Covering letter" keeps its planned file name because the memo already has the name.`])
 })
 
 test("a rename the lawyer's words never give stays a limitation, with no item for the lawyer", async () => {
@@ -574,4 +579,16 @@ test("memo and semantic review inspect the final body rather than initial or pro
   expect(stagePrompt(directory, "finalize")).not.toContain("Initial wording")
   expect(packageReviewPrompt(directory)).toContain("Actual final operative wording")
   expect(checkPackageReview(directory, { status: "changes-required", delivery: [], findings: [{ document: "d1", pid: "p111111111111", detail: "Wrong baseline" }], limitations: [] }).join(" ")).toContain("named final document")
+})
+
+test("a package review finding may give null for an omitted document or pid", () => {
+  const directory = matter()
+  writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record agreed supply terms", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }])
+  writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([{ pid: "p222222222222", sha256: "final", text: "Final wording" }]))
+  const review = (finding: Record<string, unknown>) => checkPackageReview(directory, { status: "changes-required", delivery: [], findings: [{ detail: "A specific correction", ...finding }], limitations: [] })
+  expect(review({ target: "memo", document: null, pid: null })).toEqual([])
+  expect(review({ target: "memo", document: "", pid: "" })).toEqual([])
+  expect(review({ target: "body", document: null })).toEqual(["A body finding needs the affected document id."])
+  expect(review({ target: "body", document: "d9" }).join(" ")).toContain('unknown document "d9"; use a final document id (d1)')
+  expect(review({ target: "body", document: "d1", pid: null })).toEqual([])
 })

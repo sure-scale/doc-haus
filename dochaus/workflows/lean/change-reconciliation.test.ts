@@ -2,8 +2,9 @@ import { afterEach, expect, test } from "bun:test"
 import { paragraphSha256 } from "../../lib/drafting-amendment"
 import { reconciliationWork, reconciliationPrompt, runChangeReconciliation } from "./change-reconciliation"
 import { type ChangePlan, type ChangePreparation } from "./change-pipeline"
-import { type ChangeList, readChangeList } from "./checks"
+import { type ChangeList, readChangeList, readParagraphs } from "./checks"
 import { checkChanges } from "./change-checks"
+import { appliedChangeEvidenceFromRecords } from "./review-evidence"
 import { writeLeanPlan } from "./plan"
 import { packageCompositionBlock } from "./prompts"
 import { LEAN_QUESTIONS_SCHEMA, readLeanState, writeLeanText } from "./state"
@@ -350,6 +351,32 @@ test("a deferred change's reported reasons name other paragraphs by their openin
  const result=await reconcile(dir,model.port),reason=readChangeList(dir,"d1")!.withheld![0]!.issues[0]!
  expect(result.status).toBe("done");expect(reason).not.toMatch(/p[0-9a-f]{12}/)
  expect(reason).toContain('Reason given: Term must match the paragraph beginning "Initial provision 40. The supplier keeps the delivery…"; Cross-reference to the paragraph beginning "Initial provision 39. The supplier keeps the delivery…" moves.')
+})
+
+test("a reconciled reason cannot cite a list id: candidates are shown without ids, and the final ids key apply and review evidence", async () => {
+  // Prior a2 removed a phrase from p3; prepared group "one" (local a1) re-edits p3; group "two" edits p2 untouched by the prior list.
+  const dir = setup(), input = inputs([{ id: "one", pids: [p3] }, { id: "two", pids: [p2] }], [changes([amendment(p3, "Prepared third correction.")]), changes([amendment(p2, "Independent second correction.")])])
+  writeLeanText(dir, "d1/changes.json", JSON.stringify({ ...changes([{ ...amendment(p1, "Earlier first correction."), id: "a1" }, { ...amendment(p3, "Earlier removal of the unsupported phrase."), id: "a2" }]), explanations: [{ id: "i1", pid: p3, reason: "Earlier initial revision explanation.", sources: support }] }))
+  save(dir, input)
+  // The job echoes every id it is shown, as the live job did with the prepared group's local a1.
+  const model = scriptedModel({ "lean-changes": prompt => {
+    const own = tagged(prompt, "competing_operations_and_explanations") as ChangeList
+    const cited = [...own.amendments, ...(own.explanations ?? []), ...(own.withheld ?? []).map(row => row.amendment)].map(row => (row as { id?: string }).id).filter((id): id is string => Boolean(id))
+    const carrying = cited.length ? ` carrying ${cited.join(" and ")}` : ""
+    return JSON.stringify({ amendments: [{ pid: p3, updated: "Reconciled third correction.", reason: `Combined supported effect${carrying}.`, sources: support }], explanations: [{ pid: p3, reason: `Initial revision explanation, corrected${carrying}.`, sources: support }], questions: [], dependencies: [] })
+  } })
+  const result = await reconcile(dir, model.port)
+  expect(result.status).toBe("done"); expect(model.prompts).toHaveLength(1)
+  const prompt = model.prompts[0]!.text
+  expect(prompt).toContain("never cite an amendment id in a reason or explanation")
+  expect(/<competing_operations_and_explanations>\n(.*)\n<\/competing_operations_and_explanations>/s.exec(prompt)![1]).not.toContain('"id"')
+  const accepted = readChangeList(dir, "d1")!
+  expect(accepted.amendments.map(row => [row.id, row.pid, row.updated])).toEqual([["a1", p1, "Earlier first correction."], ["a2", p2, "Independent second correction."], ["a3", p3, "Reconciled third correction."]])
+  expect(accepted.explanations!.map(row => [row.id, row.pid, row.reason])).toEqual([["i1", p3, "Initial revision explanation, corrected."]])
+  for (const reason of [...accepted.amendments, ...accepted.explanations!].map(row => row.reason)) expect(reason).not.toMatch(/\b[aiw]\d+\b/)
+  const rows = readParagraphs(dir, "d1")
+  const evidence = appliedChangeEvidenceFromRecords(accepted, { applied: accepted.amendments.map(row => ({ id: row.id, pid: row.pid, mode: "code" })), unapplied: [] }, rows, rows)
+  expect(evidence.map(row => [row.id, row.pid, row.reason])).toEqual([["a1", p1, "Carry supplied instruction."], ["a2", p2, "Carry supplied instruction."], ["a3", p3, "Combined supported effect."], ["i1", p3, "Initial revision explanation, corrected."]])
 })
 
 test("an earlier change that fails the combined check is withheld and disclosed, not a failed stage", async () => {

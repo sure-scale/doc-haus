@@ -512,8 +512,10 @@ describe("provider errors", () => {
   // A throwaway router session whose every turn ends the way the engine records
   // it: the reply carries `reply` (an error or text) and the idle marker follows.
   // The first `late` turns finish only after `lateMs`, past a short deadline.
-  // `replies` instead gives each attempt its own reply, in order.
-  function routerClient(reply: { error?: Record<string, unknown>; text?: string }, late = 0, lateMs = 200, replies?: { error?: Record<string, unknown>; text?: string }[]) {
+  // `replies` instead gives each attempt its own reply, in order. `commentary`
+  // precedes the reply as a phased provider's working-notes text.
+  type RouterReply = { error?: Record<string, unknown>; text?: string; commentary?: string }
+  function routerClient(reply: RouterReply, late = 0, lateMs = 200, replies?: RouterReply[]) {
     const prompts: string[] = []
     const removed: string[] = []
     const client = {
@@ -542,7 +544,10 @@ describe("provider errors", () => {
               type: "assistant",
               id: "msg_reply",
               agent: "router",
-              content: reply.text ? [{ type: "text", text: reply.text }] : [],
+              content: [
+                ...(reply.commentary ? [{ type: "text", text: reply.commentary, native: { phase: "commentary" } }] : []),
+                ...(reply.text ? [{ type: "text", text: reply.text, native: { phase: "final_answer" } }] : []),
+              ],
               ...(reply.error ? { finish: "error", error: reply.error } : { finish: "stop" }),
               time: { created: 2, completed: 3 },
             },
@@ -688,6 +693,17 @@ describe("provider errors", () => {
     // No event stream at all (the default fake): routing is unaffected.
     const { client } = routerClient({ text: json })
     expect(await routeAgent({ client, smallModel: "opencode-go/small", candidates: CHAT_ASSISTANTS, history: [], text: "x", onAck: () => {} })).toEqual({ name: "redliner" })
+  })
+
+  test("Auto reads the final answer past a phased provider's commentary", async () => {
+    const scope = { documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few", revises: "no" } as const
+    const reply = JSON.stringify({ route: "draft", ...scope })
+    const { client, prompts } = routerClient({ commentary: `${reply}<|end|>`, text: `On it — I'll review the lease.\n${reply}` })
+    expect(await route(client)).toEqual({ name: "draft", scope, ack: "On it — I'll review the lease." })
+    expect(prompts).toEqual(["opencode-go/small"])
+    // A reply with only commentary text is read whole.
+    const notes = routerClient({ commentary: reply })
+    expect(await route(notes.client)).toEqual({ name: "draft", scope })
   })
 
   test("Auto keeps the could-not-choose message for an empty router reply", async () => {

@@ -79,7 +79,7 @@ const build = await Bun.build({ entrypoints: [entry], target: "browser", define:
 assert.equal(build.success, true, build.logs.join("\n"))
 const script = await build.outputs.find(output => output.kind === "entry-point")!.text()
 const css = (await Promise.all([
-  "styles.css", "narration.css", "narration-live.css", "styles/primitives.css", "styles/upload.css",
+  "styles.css", "narration.css", "styles/primitives.css", "styles/upload.css",
   "styles/shell.css", "styles/chat-log.css", "styles/drafting.css", "styles/drafting-items.css",
   "styles/run-summary.css", "styles/motion.css", "styles/design-system.css", "styles/design-shell.css",
   "styles/design-documents.css", "styles/design-conversation.css", "styles/design-library.css", "styles/design-review.css",

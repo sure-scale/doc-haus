@@ -1,17 +1,20 @@
 import { boundPlaybookContext } from "../../lib/playbook-source"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
-import { parseJsonObject } from "./change-checks"
-import { excerpt, isAnswerSource, lawyerQuoteSource, matterSourceIDs, quoteFound, quoteMissIssue, REQUEST_SOURCE } from "./quotes"
+import { parseJsonObject } from "./checks"
+import { excerpt, isAnswerSource, lawyerQuoteSource, matterSourceIDs, questionSourceNote, quoteFound, quoteMissIssue, REQUEST_SOURCE } from "./quotes"
 import type { StageAcceptance } from "./stages"
-import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, shortHash, writeLeanText, type Question } from "./state"
+import { askedAtOrBefore, type StepID } from "./plan"
+import { readLeanJson, readLeanText, readQuestions, shortHash, writeLeanText, type AnswerReader, type Question } from "./state"
 
 // The lawyer's instructions for this work as a concise list, made before any
-// question is asked (the instructions step). One focused job lists them, each
-// with the exact words it rests on, which code verifies. A matter document's
-// directions are the lawyer's instructions only when the request, a later
-// instruction or an answer says to follow that document, or the lawyer
-// confirms it at intake (confirmationQuestions); until then they are listed as
-// awaiting confirmation and remain evidence. Question stages and the advisor
+// question is asked (the instructions step), from the request and the later
+// instructions alone: the job reads no answer, and a new direction arrives as
+// a later instruction, which lists them again. One focused job lists them,
+// each with the exact words it rests on, which code verifies. A matter
+// document's directions are the lawyer's instructions only when the request
+// or a later instruction says to follow that document, or the lawyer confirms
+// it when asked at the end of the step (confirmationQuestions); until then
+// they are listed as awaiting confirmation and remain evidence. Question stages and the advisor
 // read the list; a question one of these instructions decides is settled by it
 // rather than asked (settleByInstructions).
 
@@ -34,15 +37,14 @@ const EVIDENCE = { id: "o2", text: "Treat it as evidence only" }
 
 export function instructionsPrompt(directory: string) {
   const provenance = sourceProvenance(directory)
-  const contract = '{"items":[{"text":"one concise instruction in plain words","source_id":"request, or the exact name of a document listed in documents","quote":"the exact words it rests on"}],"documents":[{"source_id":"exact matter source name","from":"who gives these directions and in what role, as the document states","quote":"exact words showing it gives directions for this work","designated_by":"exact words of the request, a later instruction or an answer saying to follow this document, or omit"}]}'
+  const contract = '{"items":[{"text":"one concise instruction in plain words","source_id":"request, or the exact name of a document listed in documents","quote":"the exact words it rests on"}],"documents":[{"source_id":"exact matter source name","from":"who gives these directions and in what role, as the document states","quote":"exact words showing it gives directions for this work","designated_by":"exact words of the request or a later instruction saying to follow this document, or omit"}]}'
   return [
     boundPlaybookContext(directory),
     "List the lawyer's instructions for this work as a concise list. Each item is one requirement, decision, limit or preference the lawyer has given: what to prepare, for whom, with which terms, and how. Use plain words, keep every condition, figure and exception the instruction states, and never add, infer or resolve anything it does not say. Rest each item on the exact words it comes from.",
-    "Sources of instructions: the original request, the lawyer's later instructions and the lawyer's answers below (source_id \"request\"), and any matter document that gives the drafter directions for this work, such as an instruction letter or email from the client or a supervising lawyer. Read the matter sources with search-document and read-document to find such documents. A document only describing a deal, a draft, a form, a term sheet or a counterparty's position gives no directions for this work: it is evidence, and none of its terms is an instruction. A draft or form whose comments or notes tell the drafter what to do in this work does give directions, in those comments or notes: list it, which only asks the lawyer whether to follow it. List each document that does give directions in documents, with who gives them and in what role, and list its directions as items with that document's name as source_id. When the request, a later instruction or an answer says to follow that document, quote those words in designated_by. Only words that single out that document designate it; words about the attached documents or materials as a whole do not, and such a document is listed without designated_by.",
+    "Sources of instructions: the original request and the lawyer's later instructions (source_id \"request\"), and any matter document that gives the drafter directions for this work, such as an instruction letter or email from the client or a supervising lawyer. Read the matter sources with search-document and read-document to find such documents. A document only describing a deal, a draft, a form, a term sheet or a counterparty's position gives no directions for this work: it is evidence, and none of its terms is an instruction. A draft or form whose comments or notes tell the drafter what to do in this work does give directions, in those comments or notes: list it, which only asks the lawyer whether to follow it. List each document that does give directions in documents, with who gives them and in what role, and list its directions as items with that document's name as source_id. When the request or a later instruction says to follow that document, quote those words in designated_by. Only words that single out that document designate it; words about the attached documents or materials as a whole do not, and such a document is listed without designated_by.",
     "An explicit later instruction supersedes an earlier one on that point: list only the current instruction. Do not list questions, suggestions or open points as instructions.",
     "Original request:", readLeanText(directory, "request.md") ?? "",
     "Later instructions in arrival order:", readLeanText(directory, "updated-notes.md") || "None.",
-    "Lawyer's answers:", answeredQuestionsText(directory, { settled: false }) || "None.",
     "Matter source names (use these exact names with search-document and read-document):", ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`),
     `Reply with one JSON object only: ${contract}. documents is empty when no matter document gives directions for this work.`,
   ].filter(Boolean).join("\n\n")
@@ -65,6 +67,7 @@ export function checkInstructions(directory: string, value: unknown): { issues: 
     if (!quoteFound(directory, { source_id: row.source_id, quote: row.quote })) issues.push(quoteMissIssue(directory, `${at}.quote`, { source_id: row.source_id, quote: row.quote }, "json"))
     const designated = typeof row.designated_by === "string" && row.designated_by.trim() ? row.designated_by : undefined
     if (row.designated_by !== undefined && !designated) issues.push(`${at}.designated_by must be the exact words saying to follow the document, or omitted.`)
+    // The lawyer's words: the job reads no answer, so no adopted recommendation designates.
     if (designated && !quoteFound(directory, { source_id: REQUEST_SOURCE, quote: designated }))
       issues.push(quoteMissIssue(directory, `${at}.designated_by`, { source_id: REQUEST_SOURCE, quote: designated }, "json"))
     documents.push({ source_id: row.source_id, from: row.from.trim(), quote: row.quote, ...(designated ? { designated_by: designated } : {}) })
@@ -80,7 +83,10 @@ export function checkInstructions(directory: string, value: unknown): { issues: 
     if (row.text.trim().length > MAX_TEXT) issues.push(`${at}.text must be one concise instruction of at most ${MAX_TEXT} characters.`)
     const document = documents.some(document => document.source_id === row.source_id)
     if (row.source_id !== REQUEST_SOURCE && !isAnswerSource(row.source_id) && !document) {
-      issues.push(`${at}.source_id must be "request" or a document listed in documents.`)
+      const listed = documents.map(document => `"${document.source_id}"`)
+      issues.push(names.has(row.source_id)
+        ? `${at}.source_id "${row.source_id}" is a matter document not listed in documents. List it there first, with who gives its directions and the words showing it does; an item then uses its name.`
+        : `${at}.source_id ${JSON.stringify(row.source_id)} is not a source name here. Use "${REQUEST_SOURCE}" for the lawyer's words${listed.length ? `, or ${listed.join(", ")} for a listed document` : ""}. ${questionSourceNote(row.source_id, new Set([REQUEST_SOURCE]), directory)}`.trimEnd())
       continue
     }
     // The lawyer's words are cited where they are: the request (or an
@@ -95,7 +101,7 @@ export function checkInstructions(directory: string, value: unknown): { issues: 
 
 export function acceptInstructionsReply(directory: string, reply: string): StageAcceptance {
   const parsed = parseJsonObject(reply)
-  if (!parsed.ok) return { issues: [`Reply with one JSON object: ${parsed.error}.`], outputs: [], openItems: [] }
+  if (!parsed.ok) return { issues: [`Reply with one JSON object. ${parsed.error}`], outputs: [], openItems: [] }
   const checked = checkInstructions(directory, parsed.value)
   if (!checked.list) return { issues: checked.issues, outputs: [], openItems: [] }
   writeLeanText(directory, SAVED, `${JSON.stringify(checked.list, null, 2)}\n`)
@@ -121,6 +127,14 @@ export function confirmationQuestionID(source_id: string) {
  * a confirmation question (confirmationQuestions). */
 export function confirmationDocument(directory: string, questionID: string): InstructionDocument | undefined {
   return readInstructionList(directory)?.documents.find(document => confirmationQuestionID(document.source_id) === questionID)
+}
+
+/** The answers `step` reads (askedAtOrBefore) less the confirmation
+ * questions, whose answer is a label the document's standing reads
+ * (documentStanding), not words to quote or designate a document by: what the
+ * evidence stages read as the lawyer's answers. */
+export function withoutConfirmations(directory: string, step: StepID): AnswerReader {
+  return { asked: askedAtOrBefore(directory, step), except: question => confirmationDocument(directory, question.id) !== undefined }
 }
 
 /** Each listed document's standing: followed when the lawyer's words
@@ -161,20 +175,21 @@ export function instructionsText(directory: string) {
   const list = readInstructionList(directory)
   if (!list) return ""
   const items = currentInstructions(directory)
-  const line = (item: Instruction) => `- [${item.id}] ${item.text} (${item.source_id}: "${excerpt(item.quote, 160)}")`
+  // The lawyer's answers are quoted under "request", as every stage cites them; the saved list keeps the answer's own name.
+  const line = (item: Instruction) => `- [${item.id}] ${item.text} (${isAnswerSource(item.source_id) ? REQUEST_SOURCE : item.source_id}: "${excerpt(item.quote, 160)}")`
   const followed = items.filter(item => item.standing !== "confirm")
   const awaiting = list.documents.filter(document => documentStanding(directory, document) === "confirm")
   return [
     "# The lawyer's instructions",
     "",
-    "Each item is from the lawyer's words (request: the request or a later instruction; answer:<question id>: the lawyer's answer to that question), or a document the lawyer said to follow, quoted after it. An explicit later instruction supersedes an earlier one on that point.",
+    "Each item is from the lawyer's words (request: the request, a later instruction or the lawyer's answer to a question), or a document the lawyer said to follow, quoted after it. An explicit later instruction supersedes an earlier one on that point.",
     "",
     ...(followed.length ? followed.map(line) : ["- None beyond the request."]),
     ...awaiting.flatMap(document => [
       "",
       `## Awaiting the lawyer's confirmation: ${document.source_id}`,
       "",
-      `${document.source_id} gives directions for this work (${document.from}). Whether the drafting follows them is asked with intake's questions; until the lawyer answers, they are read as evidence.`,
+      `${document.source_id} gives directions for this work (${document.from}). The lawyer is asked whether the drafting follows them; until the lawyer answers, they are read as evidence.`,
       "",
       ...items.filter(item => item.source_id === document.source_id).map(line),
     ]),
@@ -186,8 +201,11 @@ export function writeInstructionsFile(directory: string) {
   if (text && readLeanText(directory, INSTRUCTIONS_FILE) !== text) writeLeanText(directory, INSTRUCTIONS_FILE, text)
 }
 
-/** One code-written question per document awaiting confirmation, asked with
- * intake's questions, never before them. */
+/** One code-written question per document awaiting confirmation, asked at
+ * the end of the instructions step (runner.ts), before the list is read, so
+ * the one list every later step reads is the confirmed one. Each carries
+ * intake's stage: intake and the steps after it read its answer
+ * (askedAtOrBefore); the list and the discrepancy record never do. */
 export function confirmationQuestions(directory: string): Question[] {
   const list = readInstructionList(directory)
   if (!list) return []
@@ -212,7 +230,9 @@ export function confirmationQuestions(directory: string): Question[] {
  * instruction, which the lawyer can change, and one a document awaiting
  * confirmation decides is left to that confirmation, asked with it; if the
  * document is read as evidence, intake asks the point again. A fact, a
- * confirmation and a code-written question are always asked. */
+ * confirmation and a code-written question are always asked, unless it
+ * repeats a question already answered: the changes check drops that repeat,
+ * a fact's included, before it is advised (askedQuestions). */
 export function settleByInstructions(directory: string, questions: Question[]): Question[] {
   const items = new Map(currentInstructions(directory).map(item => [item.id, item]))
   const confirming = new Set(questions.filter(question => question.status === "open").map(question => question.id))

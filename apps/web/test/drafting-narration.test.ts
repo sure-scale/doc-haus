@@ -338,6 +338,16 @@ test("a technical stop reads as a calm pause, and Continue reads as a resume", (
   expect(runTransition(running, running)).toBeUndefined()
 })
 
+test("the instructions stage reads in words while running, done and paused", () => {
+  const row = { status: "running" as const, attempts: 1, started_at: "2026-10-12T10:00:00.000Z", finished_at: null }
+  const later = { finalize: { ...row, status: "pending" as const, started_at: null }, gate: { ...row, status: "pending" as const, started_at: null } }
+  const status = lean({ ...running, stages: { instructions: row, ...later } })
+  expect(stageMilestones(status).map(line => line.text)).toEqual(["Listing your instructions for this work"])
+  expect(stageMilestones(lean({ ...status, stages: { instructions: { ...row, status: "done", finished_at: "2026-10-12T10:01:00.000Z" }, ...later } })).map(line => line.text)).toEqual(["Your instructions listed"])
+  const fault = lean({ ...stopped, stop_reason: "instructions: stopped by a runtime error: provider unavailable", stages: { instructions: { ...row, status: "failed", finished_at: "2026-10-12T10:01:00.000Z" }, ...later } })
+  expect(stageMilestones(fault).map(line => line.text)).toEqual(["Paused while listing your instructions for this work after a technical problem"])
+})
+
 test("a provider or setup stop names the fix in Settings, and Continue resumes it", () => {
   const expired = lean({ ...stopped, stop_reason: `d1.draft: ${PROVIDER_STOP_MESSAGES.auth}`, provider_stop: "auth" })
   expect(runOutcome(expired)).toEqual({ tone: "attention", text: PROVIDER_STOP_MESSAGES.auth })
@@ -347,6 +357,16 @@ test("a provider or setup stop names the fix in Settings, and Continue resumes i
   const excerpt = buildExcerpt({ status: expired, plan: { keys: [runKey], focus: runKey, reason: "checkpoint" }, activity: [], now: 0 })
   expect(excerpt).toContain("Run state: paused until Settings are fixed; the work so far is kept.")
   expect(excerpt).toContain(`- The run settled: ${PROVIDER_STOP_MESSAGES.auth}`)
+})
+
+test("a credit stop asks for credit with the provider, not a fix in Settings", () => {
+  const spent = lean({ ...stopped, stop_reason: `d1.draft: ${PROVIDER_STOP_MESSAGES.credit}`, provider_stop: "credit" })
+  expect(runOutcome(spent)).toEqual({ tone: "attention", text: PROVIDER_STOP_MESSAGES.credit })
+  expect(stageMilestones(spent).at(-1)).toMatchObject({ state: "paused", text: "Paused while drafting: the AI account needs credit" })
+  const runKey = `run:failed:${spent.updated_at}`
+  const excerpt = buildExcerpt({ status: spent, plan: { keys: [runKey], focus: runKey, reason: "checkpoint" }, activity: [], now: 0 })
+  expect(excerpt).toContain("Run state: paused until the AI account has credit; the work so far is kept.")
+  expect(excerpt).not.toContain("Settings")
 })
 
 test("checkpoints cover finished stages, the plan, open questions and the run settling", () => {
@@ -623,7 +643,7 @@ test("evidence stages narrate actual work", () => {
   const row = { status: "running" as const, attempts: 1, started_at: "2026-10-12T10:00:00.000Z", finished_at: null }
   const status = lean({ ...running, stages: { discrepancy: row, spine: row, "d1.review-independent": row, "package-review": row, finalize: { ...row, status: "pending", started_at: null }, gate: { ...row, status: "pending", started_at: null } } })
   expect(stageMilestones(status).map(line => line.text)).toEqual([
-    "Assessing discrepancies in the source materials", "Building the source-backed drafting spine",
+    "Assessing discrepancies in the source materials", "Listing the points the draft must cover, with their sources",
     "Independently checking function and fidelity", "Reviewing final semantics and the document package",
   ])
 })

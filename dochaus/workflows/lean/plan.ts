@@ -1,8 +1,11 @@
-import { isPosture, normalizeLegend, type Posture } from "../../lib/drafting-preferences"
-import { effectivePosture } from "../../lib/matter-client"
+import { isDateFormat, isPosture, normalizeLegend, type DateFormat, type Posture } from "../../lib/drafting-preferences"
+import { OPEN_ITEM_PATTERN } from "../../lib/marker-patterns"
+import { effectivePosture, matterDateFormat } from "../../lib/matter-client"
 import { DOCUMENT_FORMS, type DocumentForm } from "../../lib/page-furniture"
 import { TOOL_SYNTAX_ISSUE, printedToolCall } from "./checks"
-import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type ReviewStageID, type StageID } from "./state"
+import { attachmentHead } from "./consistency"
+import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type Question, type ReviewStageID, type StageID } from "./state"
+import { templateSource } from "./template-contract"
 
 // The run's plan: every document the request asks for, in drafting order, each
 // with its top-level parts. It comes from the draft agent's outline reply (one
@@ -31,8 +34,10 @@ export type StepID = `${DocID}.${DocStage}` | "instructions" | "discrepancy" | "
  * part unheaded. `instrument` marks the first part of a separate instrument
  * the document's file also holds (foldRequestedFiles): it and the parts after
  * it, up to the next such part, are that instrument's, printed under its own
- * title on a new page. */
-export type PlannedPart = { heading: string; scope: string; display_heading?: string; instrument?: PlannedInstrument }
+ * title on a new page. `attachment` marks a part headed as a schedule, annex,
+ * appendix, exhibit or attachment ("Exhibit A", consistency.ts attachmentHead):
+ * it trails the document, its heading prints and it starts on a new page. */
+export type PlannedPart = { heading: string; scope: string; display_heading?: string; instrument?: PlannedInstrument; attachment?: true }
 /** A separate instrument held in another document's file: its own title, what
  * it is for, the parties who execute it and its form, as its outline entry
  * gave them. */
@@ -75,15 +80,25 @@ export type ActingFor = { party: string; basis: ActingForBasis; reason?: string 
 export type DocumentDateBasis = "request" | "sources" | "today"
 export type MatterDate = { label: string; date: string; source_id: string; quote: string }
 export type MatterDates = { document_date: { date: string; basis: DocumentDateBasis; source_id?: string; quote?: string }; operative_dates: MatterDate[] }
-/** `memo` is the name of the memo the request asks for and `notes_file` the
- * file the notes are delivered as; both are delivery metadata. */
-export type LeanPlan = { schema: "dochaus.lean.plan/2"; documents: PlannedDocument[]; acting_for?: ActingFor; posture?: Posture; basis?: string; memo?: string; notes_file?: string; dates?: MatterDates }
+/** `memo` is the request's own words for the memo it asks for, a naming input
+ * only; `memo_document` is the planned document that is that memo.
+ * `record_file` is the lawyer's file name for the drafting record, set only by
+ * a delivery selection's notes row (selectedDeliveryPlan); it never asks for a
+ * memo. `date_format` is the date style the matter's sources used when the
+ * outline was built (runDateFormat), absent when they settled on none; the
+ * run writes it until the firm sets its own. */
+export type LeanPlan = { schema: "dochaus.lean.plan/2"; documents: PlannedDocument[]; acting_for?: ActingFor; posture?: Posture; basis?: string; memo?: string; memo_document?: DocID; record_file?: string; dates?: MatterDates; date_format?: DateFormat }
 /** `memo` is the request's own words for a memo that accompanies the documents,
- * from a "Memo:" line; the run writes and names the drafting notes as that memo. */
+ * from a "Memo:" line; with it, the last document is that memo (parsePlan). */
 export type LeanOutline = { documents: Omit<PlannedDocument, "id">[]; acting_for: ActingFor; memo?: string }
 
 export const LEAN_PLAN_SCHEMA = "dochaus.lean.plan/2"
 export const FIRST_DOCUMENT: DocID = "d1"
+/** Once saved, the plan fixes which documents a draft prepares: a question,
+ * option or finding that adds, drops or swaps one is one nothing can carry
+ * out, and asking it again cannot settle it. The lawyer changes the plan only
+ * by stopping the draft (coverageScopeQuestion's context says how). */
+export const FIXED_PLAN = "Which documents this draft prepares is fixed by its saved document plan: no question, option or finding may add, drop or replace a planned document."
 export const NOT_STATED: ActingFor = { party: "", basis: "none" }
 const ACTING_FOR_BASES: ActingForBasis[] = ["stated", "matter", "inferred", "none"]
 
@@ -96,9 +111,46 @@ export function leanSteps(directory: string): StepID[] {
   return ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", ...ids.flatMap(id => DOC_STAGES.filter(stage => stage !== "review-playbook" || reviewStages(directory, id).includes(stage)).map((stage): StepID => `${id}.${stage}`)), "finalize", "checklist-check", "package-review", "gate"]
 }
 
+/** Which answered questions `step` reads: those the step asked itself and
+ * those asked by the steps before it in walk order, never a later step's,
+ * which that step applies and an earlier step's output cannot depend on. A
+ * run-level question (one with no document) is asked by its stage's step; a
+ * document's question by that document's step of its stage, or, when its
+ * stage is no document step (the gate's package-scope question, a conflict
+ * question on one document's answers), by the first document step, so no
+ * preparation step reads it. A question whose asking step is not in the walk
+ * is read by every step. The step's prompt and its key read the same, so
+ * neither changes for an answer the step never reads. */
+export function askedAtOrBefore(directory: string, step: StepID) {
+  const order = leanSteps(directory), at = order.indexOf(step)
+  const documents = order.findIndex(row => stepDocument(row) !== null)
+  return (question: Question) => {
+    if (at < 0) return true
+    const asker = question.document ? Math.max(order.indexOf(`${question.document}.${question.stage}` as StepID), documents)
+      : question.stage === "gate" ? documents
+      : order.indexOf(question.stage as StepID)
+    return asker < 0 || asker <= at
+  }
+}
+
 /** Planning selects guidance per body; legacy and unassigned bodies retain the ordinary reviews. */
 export function reviewStages(directory: string, document: DocID): ReviewStageID[] {
-  return [...REVIEW_STAGES, ...(plannedDocument(directory, document)?.playbook_review?.sources.length ? ["review-playbook" as const] : [])]
+  return [...REVIEW_STAGES, ...(reviewGuidance(directory, document).length ? ["review-playbook" as const] : [])]
+}
+
+/** The template a new document is drafted from, which its guidance review
+ * checks it against. A revision's original is its baseline, not guidance: the
+ * instructions may remove its provisions. */
+export function guidanceTemplate(entry: Pick<PlannedDocument, "mode" | "template" | "comparison"> | undefined) {
+  return entry?.mode === "revise" ? undefined : templateSource(entry)
+}
+
+/** The sources the guidance review checks a document against: the playbook
+ * sources planning selected for it and the template a new document is drafted from. */
+export function reviewGuidance(directory: string, document: DocID): string[] {
+  const planned = plannedDocument(directory, document)
+  const template = guidanceTemplate(planned)
+  return [...new Set([...(planned?.playbook_review?.sources.map(source => source.source_id) ?? []), ...(template ? [template] : [])])]
 }
 
 export function stepStage(step: StepID): StageID {
@@ -139,15 +191,20 @@ function planIssue(value: unknown): string | undefined {
   if (invalid >= 0) return `document ${invalid + 1} is not a valid planned document`
   const memo = (value as LeanPlan).memo
   if (memo !== undefined && (typeof memo !== "string" || !memo.trim())) return "its memo is not a name"
+  const memoDocument = (value as LeanPlan).memo_document
+  if (memoDocument !== undefined && !documents.some(document => document.id === memoDocument)) return "its memo document is not a planned document"
+  const recordFile = (value as LeanPlan).record_file
+  if (recordFile !== undefined && (typeof recordFile !== "string" || !recordFile.trim())) return "its record file is not a name"
 }
 
-/** A requested memo is saved as its name and the notes file it is delivered
- * as; a plan without one carries neither key, nor a plan without a Posture
- * the Posture key. */
-export function writeLeanPlan(directory: string, documents: Omit<PlannedDocument, "id">[], basis?: string, actingFor?: ActingFor, memo?: { name: string; file: string }, posture?: Posture, dates?: MatterDates): LeanPlan {
+/** A requested memo is saved as its name and the planned document that is the
+ * memo; a plan without one carries neither key, nor a plan without a Posture
+ * the Posture key, nor one whose sources settled on no date style the
+ * date_format key. */
+export function writeLeanPlan(directory: string, documents: Omit<PlannedDocument, "id">[], basis?: string, actingFor?: ActingFor, memo?: { name: string; document?: DocID }, posture?: Posture, dates?: MatterDates, dateFormat?: DateFormat): LeanPlan {
   const plan: LeanPlan = {
     schema: LEAN_PLAN_SCHEMA, documents: withDocumentIDs(documents), acting_for: actingFor, posture, basis,
-    ...(memo ? { memo: memo.name, notes_file: memo.file } : {}), dates,
+    ...(memo ? { memo: memo.name, ...(memo.document ? { memo_document: memo.document } : {}) } : {}), dates, date_format: dateFormat,
   }
   writeLeanText(directory, "plan.json", `${JSON.stringify(plan, null, 2)}\n`)
   return plan
@@ -174,7 +231,7 @@ export function operativeDocument(document: PlannedDocument | undefined) {
 
 export function operativePlan(plan: LeanPlan | undefined) {
   if (!plan) return null
-  const { notes_file, memo, ...operative } = plan
+  const { memo, record_file, ...operative } = plan
   return { ...operative, documents: plan.documents.map(operativeDocument) }
 }
 
@@ -201,6 +258,18 @@ export function runPosture(directory: string): Posture {
   return isPosture(posture) ? posture : effectivePosture(directory)
 }
 
+/** The date style the matter's sources use, which the run writes until the
+ * firm sets its own: the style the outline froze into the plan, none when
+ * the plan records none (the sources settled on none, or a plan saved before
+ * styles were frozen). Before the outline, the style the sources and the
+ * request use, read live. Every lean stage renders its drafting preferences
+ * with it; the firm's own style, once set, is rendered instead. */
+export function runDateFormat(directory: string): DateFormat | undefined {
+  const plan = readLeanPlan(directory)
+  if (plan) return isDateFormat(plan.date_format) ? plan.date_format : undefined
+  return matterDateFormat(directory, readLeanText(directory, "request.md") ?? "")
+}
+
 /** The documents planned before `id`, in drafting order. */
 export function earlierDocuments(directory: string, id: DocID): PlannedDocument[] {
   const documents = readLeanPlan(directory)?.documents ?? []
@@ -215,15 +284,26 @@ export function earlierDocuments(directory: string, id: DocID): PlannedDocument[
  * "Executed by:" line the parties who execute it, "none" for none), and
  * each "## " line under it is a part with the lines below as its scope note. A
  * "Left out:" line anywhere under a title records a template part left out on
- * purpose and why. Only mechanical defects are
- * issues; how many documents the request needs is the model's judgment. A
+ * purpose and why. A "###" or deeper heading line is a scope line of the
+ * current part, its heading text kept. A document's own line ("Form:", "File:"
+ * and the others below) after its first part is read as nothing and named as
+ * an issue: a line misplaced so must not pass silently as scope text. Only
+ * mechanical defects are
+ * issues; how many documents the request needs is the model's judgment. Every
+ * defect is named in one pass; a shape defect (no title, a document without
+ * parts, a repeated title or part heading) withholds the outline. A
  * missing "Acting for:" line is retried, and on the last attempt the outline
  * stands as not stated. With the request text, a stated party must be named in
  * the request; a party the request does not name is retry feedback and, if it
  * stands, not stated. A requested file name is held to the same standard: it
  * must be one the request gives, and a title must not carry a file name or
  * Markdown; both are retry feedback, and on the last attempt a file name the
- * request does not give is dropped and the title kept without Markdown code marks.
+ * request does not give is dropped and the title kept without Markdown code
+ * marks; a title that is only a file name stands as that name's words
+ * (plannedTitle).
+ * A part's scope describes the part; a scope carrying an open-item marker is
+ * retry feedback, and on the last attempt stands as the marker's words
+ * (scopeWords), since the drafter sets the marker.
  * A missing "Executed by:" line is not an issue; the package-coverage check
  * holds the parties it names to the request and sources.
  * A "Form:" line under each title gives the document's form, one of
@@ -231,22 +311,37 @@ export function earlierDocuments(directory: string, id: DocID): PlannedDocument[
  * attempt the document stands with no form, as a legacy plan does. A part's
  * label names a drafting job, not a heading of the document: every part is
  * planned unheaded, except a part with its own "Display heading:" line, unless
- * a "Headings: shown" line under its title keeps that document's labels.
+ * a "Headings: shown" line under its title keeps that document's labels. A part
+ * headed as an attachment ("Schedule 1 …", "Exhibit A …") is marked as one and
+ * prints its heading (plannedPart), except in a document drafted from a
+ * template, whose own attachments are its template parts.
  * Optional "Legend:" and "Page numbers: none" lines under a title give what the
  * request asks of that document's page furniture; the first of each stands. A
  * legend must be the request's own words and is shown with the firm's, and
  * "Legend: none" asks nothing: a request never removes the firm's legend. An
  * ungrounded legend or another page numbers value is retry feedback and, on the
  * last attempt, dropped.
- * An optional "Memo:" line before the first title names, in the request's own
- * words, a memo the request asks to accompany the documents. It must be words
+ * An optional "Memo:" line names, in the request's own words, a memo the
+ * request asks to accompany the documents. The prompt asks for it before the
+ * first title; it is read wherever it stands, so a memo named late is still
+ * planned under the rules below. It must be words
  * the request uses and fit in a file name; otherwise it is retry feedback and,
- * on the last attempt, dropped, so the run keeps its ordinary drafting notes.
- * A document whose title repeats the memo is retry feedback too; on the last
- * attempt the memo is dropped and the document kept.
+ * on the last attempt, dropped, so the run plans no memo.
+ * The memo is a planned document: the Memo line must name exactly one planned
+ * document, the one whose title is the memo (repeatsMemo). That document is the
+ * workflow's memo (memoDocument): Form: advice, executed by no one, drafted
+ * last. It keeps its own "## " parts under the ordinary display rule; planned
+ * without parts, it takes the cover-memo skeleton MEMO_PARTS. A Memo line
+ * naming no planned document, or more than one, is retry feedback; on the last
+ * attempt, of several, the one planned as advice, else the last, is the memo;
+ * of none, the one document planned as advice or titled a memo, if only one
+ * is, else the memo is added as its own document. With no Memo line standing,
+ * the one document planned as advice, when no other is and another document is
+ * planned, is the memo whatever its title: a memo accompanies something.
  * "Deliverable: combined" puts one document and that memo in one file: it needs
- * the memo and only one document may have it; otherwise it is retry feedback
- * and, on the last attempt, the document is delivered as "body". */
+ * the memo, goes under a document other than the memo, and only one document
+ * may have it; otherwise it is retry feedback and, on the last attempt, the
+ * document is delivered as "body" and the memo keeps no deliverable. */
 export function parsePlan(reply: string, request?: string, inferred?: ActingFor): Checked<LeanOutline> {
   if (!reply.trim()) return { issues: [`The reply was empty. ${OUTLINE_SHAPE}`] }
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
@@ -256,6 +351,9 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
   const acting: string[] = []
   const memos: string[] = []
   const selectionIssues: string[] = []
+  // A document's own lines after its parts, which no document reads, named
+  // back in one issue per document.
+  const late: { title: string; line: string }[] = []
   for (const raw of reply.split(/\r?\n/)) {
     const line = raw.trim()
     const party = /^acting for\s*:\s*(.*)$/i.exec(line.replace(/^[-*]\s+/, "").replace(/[*`]/g, ""))?.[1]
@@ -265,7 +363,7 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
     }
     // The value keeps its own characters; outlineMemo cleans and checks it.
     const memoLine = /^(?:[-*]\s+)?[*`]*memo[*`]*\s*:[*`]*\s*(.*)$/i.exec(line)?.[1]
-    if (memoLine !== undefined && !documents.length) {
+    if (memoLine !== undefined) {
       memos.push(memoLine)
       continue
     }
@@ -289,6 +387,22 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
     const pageNumbers = /^page\s+numbers\s*:\s*(.*)$/i.exec(unmarked)?.[1]
     const playbook = /^[-*]?\s*playbook review\s*:\s*(.+)$/i.exec(line)?.[1]
     const displayHeading = /^display heading\s*:\s*(.*)$/i.exec(line)?.[1]
+    // A "###" or deeper heading writes a sub-part's name: it is scope text of
+    // the current part, as a plain line under it would be.
+    const sub = /^#{3,}(?!#)\s*(.*)$/.exec(line)?.[1]
+    if (sub !== undefined) {
+      const text = headingText(sub)
+      if (text && current) (current.parts.at(-1)?.scope ?? current.purpose).push(text)
+      continue
+    }
+    // A document's own line after its first part belongs to no document: read
+    // as the part's scope, it would hide a document planned without its title.
+    const field = playbook !== undefined || mode || deliverable || template !== undefined || comparison !== undefined || file !== undefined
+      || executed !== undefined || form !== undefined || headingsShown || legend !== undefined || pageNumbers !== undefined
+    if (field && current?.parts.length) {
+      late.push({ title: current.title, line })
+      continue
+    }
     if (playbook && current && !current.parts.length) {
       let value: unknown
       try { value = JSON.parse(playbook) } catch {}
@@ -314,10 +428,28 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
       (current.parts.at(-1)?.scope ?? current.purpose).push(line.replace(/^[-*]\s+/, ""))
   }
   const titles = duplicates(documents.map(document => document.title))
-  const issues = [
+  // A memo planned without parts takes the skeleton, so it may list none.
+  const lined = outlineMemo(memos[0], request)
+  // With no Memo line standing, the one document planned as advice, when no
+  // other is and it is not the only document, is the memo whatever its title,
+  // named by its title: a memo accompanies something. Only the internal advice
+  // form is adopted: an advice letter is not.
+  const advice = lined.name ? [] : documents.filter(document => documentForm(document.form) === "advice")
+  const lone = advice.length === 1 && documents.length > 1 ? advice[0] : undefined
+  const memo = lone ? { name: plainTitle(lone.title), issues: lined.issues } : lined
+  const named = lone ? [lone] : memo.name ? documents.filter(document => repeatsMemo(plainTitle(document.title), memo.name!)) : []
+  // With no title naming the memo, the last attempt adopts the one document
+  // planned as advice or titled a memo before adding the memo as its own.
+  const adoptable = memo.name && !named.length ? documents.filter(document => documentForm(document.form) === "advice" || titledMemo(plainTitle(document.title))) : []
+  const memoAt = named.length ? documents.indexOf(named.find(document => documentForm(document.form) === "advice") ?? named.at(-1)!)
+    : adoptable.length === 1 ? documents.indexOf(adoptable[0]!) : -1
+  const own = documents.filter((_, index) => index !== memoAt)
+  // Shape defects withhold the outline; every other defect is named with them,
+  // so one revision can answer all of them.
+  const shapeIssues = [
     ...selectionIssues,
     ...(!documents.length ? [`The outline has no "# " title line. ${OUTLINE_SHAPE}`] : []),
-    ...documents.filter(document => !document.parts.length)
+    ...own.filter(document => !document.parts.length)
       .map(document => `The document "${document.title}" lists no parts. Add one "## " line per top-level part of that document, in order.`),
     ...(titles.length ? [`These document titles appear more than once: ${titles.map(name => `"${name}"`).join(", ")}. Give each document a distinct title.`] : []),
     ...documents.flatMap(document => {
@@ -327,43 +459,49 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
         : []
     }),
   ]
-  if (issues.length) return { issues }
   const party = statedParty(acting[0] ?? "")
   // The party intake quoted, named again by the outline, keeps intake's basis.
   const asInferred = party !== undefined && inferred !== undefined && inferred.basis !== "none" && nameKey(party) === nameKey(inferred.party)
   const ungrounded = party !== undefined && request !== undefined && !namedIn(request, party) && !asInferred
   const files = documents.map(document => requestedFile(document.title, document.file, request))
   const repeatedFiles = duplicates(files.flatMap(file => file.name ?? []))
-  const memo = outlineMemo(memos[0], request)
-  const repeated = memo.name ? documents.map(document => plainTitle(document.title)).filter(title => repeatsMemo(title, memo.name!)) : []
-  // The lawyer asked for the memo: a repeat is retry feedback only, never a reason to drop it.
   const memoName = memo.name
-  const combined = documents.filter(document => document.deliverable === "combined").map(document => plainTitle(document.title))
+  const combined = own.filter(document => document.deliverable === "combined").map(document => plainTitle(document.title))
   const combinedIssues = [
     ...(combined.length && !memo.name ? [COMBINED_NEEDS_MEMO] : []),
     ...(combined.length > 1 ? [combinedMoreThanOne(combined)] : []),
   ]
-  const forms = documents.map(document => documentForm(document.form))
+  const memoIssues = !memoName || !documents.length ? [] : !named.length ? [memoUnplanned(memoName, documents.map(document => plainTitle(document.title)))]
+    : [...(named.length > 1 ? [memoNamesMore(memoName, named.map(document => plainTitle(document.title)))] : []),
+      ...(documents[memoAt]!.deliverable === "combined" ? [combinedOnMemo(plainTitle(documents[memoAt]!.title))] : [])]
+  const forms = documents.map((document, index) => index === memoAt ? "advice" as const : documentForm(document.form))
   const furniture = documents.map(document => documentFurniture(plainTitle(document.title), document.furniture, request))
+  const issues = [
+    ...shapeIssues,
+    ...lateIssues(late),
+    ...documents.flatMap(document => document.parts.flatMap(part => scopeIssues(plainTitle(document.title), part))),
+    ...(!acting.length ? [ACTING_FOR_MISSING] : ungrounded ? [actingForUngrounded(party)] : []),
+    ...documents.flatMap((document, index) => forms[index] ? [] : [formIssue(plainTitle(document.title), document.form)]),
+    ...furniture.flatMap(row => row.issues),
+    ...documents.flatMap(document => titleIssues(document.title)),
+    ...files.flatMap(file => file.issues),
+    ...(repeatedFiles.length ? [`These file names are given to more than one document: ${repeatedFiles.map(name => `"${name}"`).join(", ")}. Give each document its own file name.`] : []),
+    ...memo.issues,
+    ...memoIssues,
+    ...combinedIssues,
+  ]
+  if (shapeIssues.length) return { issues }
   return {
-    issues: [
-      ...(!acting.length ? [ACTING_FOR_MISSING] : ungrounded ? [actingForUngrounded(party)] : []),
-      ...documents.flatMap((document, index) => forms[index] ? [] : [formIssue(plainTitle(document.title), document.form)]),
-      ...furniture.flatMap(row => row.issues),
-      ...documents.flatMap(document => titleIssues(document.title)),
-      ...files.flatMap(file => file.issues),
-      ...(repeatedFiles.length ? [`These file names are given to more than one document: ${repeatedFiles.map(name => `"${name}"`).join(", ")}. Give each document its own file name.`] : []),
-      ...memo.issues,
-      ...repeated.map(title => memoRepeated(title, memo.name!)),
-      ...combinedIssues,
-    ],
+    issues,
     value: {
-      documents: documents.map((document, index) => ({
-        title: plainTitle(document.title),
+      documents: [...documents.flatMap((document, index) => index === memoAt ? [] : [{
+        title: plannedTitle(document.title),
         purpose: document.purpose.join(" "),
         ...(document.playbook_review ? { playbook_review: document.playbook_review } : {}),
         // Planning labels are not the document's headings.
-        parts: document.parts.map(part => plannedPart(part, !document.headings)),
+        // A template's own attachments arrive as its parts (templateContract),
+        // presented as the template presents them; they are not marked again.
+        parts: document.parts.map(part => plannedPart(part, !document.headings, !document.template)),
         ...(document.mode ? { mode: document.mode } : {}),
         // A combined file that cannot be built stands as the body on the last attempt.
         ...(document.deliverable ? { deliverable: document.deliverable === "combined" && (combinedIssues.length || !memoName) ? "body" as const : document.deliverable } : {}),
@@ -374,7 +512,16 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
         ...(files[index]?.name && !repeatedFiles.includes(files[index].name) ? { file: files[index].name } : {}),
         ...(forms[index] ? { form: forms[index] } : {}),
         ...(furniture[index]?.value ? { furniture: furniture[index].value } : {}),
-      })),
+      }]),
+      // The lawyer asked for the memo: it is planned last, as the workflow's memo.
+      ...(memoName ? [memoDocument(memoAt < 0 ? { title: memoTitle(memoName), purpose: MEMO_PURPOSE, parts: memoParts() } : {
+        title: plannedTitle(documents[memoAt]!.title),
+        purpose: documents[memoAt]!.purpose.join(" ") || MEMO_PURPOSE,
+        parts: documents[memoAt]!.parts.length ? documents[memoAt]!.parts.map(part => plannedPart(part, !documents[memoAt]!.headings)) : memoParts(),
+        ...(documents[memoAt]!.playbook_review ? { playbook_review: documents[memoAt]!.playbook_review } : {}),
+        ...(files[memoAt]?.name && !repeatedFiles.includes(files[memoAt].name) ? { file: files[memoAt].name } : {}),
+        ...(furniture[memoAt]?.value ? { furniture: furniture[memoAt].value } : {}),
+      })] : [])],
       acting_for: party === undefined || ungrounded ? NOT_STATED : request !== undefined && namedIn(request, party) || !asInferred ? { party, basis: "stated" } : inferred!,
       ...(memoName ? { memo: memoName } : {}),
     },
@@ -382,10 +529,31 @@ export function parsePlan(reply: string, request?: string, inferred?: ActingFor)
 }
 
 /** A planned part; with `unheaded`, a part without its own "Display heading:"
- * line is unheaded. */
-function plannedPart(part: { heading: string; scope: string[]; display_heading?: string }, unheaded: boolean): PlannedPart {
-  const display = part.display_heading ?? (unheaded ? "" : undefined)
-  return { heading: part.heading, scope: part.scope.join(" "), ...(display !== undefined ? { display_heading: display } : {}) }
+ * line is unheaded. With `attachments` (a document not drafted from a
+ * template), a part whose printed heading (its display heading, else its
+ * label) is an attachment's heading is that attachment, and prints it. */
+function plannedPart(part: { heading: string; scope: string[]; display_heading?: string }, unheaded: boolean, attachments = true): PlannedPart {
+  const attachment = attachments && Boolean(attachmentHead(part.display_heading || part.heading))
+  const display = attachment ? part.display_heading || undefined : part.display_heading ?? (unheaded ? "" : undefined)
+  return { heading: part.heading, scope: scopeWords(part.scope.join(" ")), ...(display !== undefined ? { display_heading: display } : {}), ...(attachment ? { attachment: true as const } : {}) }
+}
+
+/** An open-item marker or blank in a scope line (OPEN_ITEM_PATTERN, without its global flag). */
+const OPEN_ITEM_IN_SCOPE = new RegExp(OPEN_ITEM_PATTERN.source, "i")
+
+/** A part whose scope carries an open-item marker: a scope describes the part,
+ * and a marker in it is copied into the part beside the drafter's own. */
+function scopeIssues(title: string, part: { heading: string; scope: string[] }) {
+  return OPEN_ITEM_IN_SCOPE.test(part.scope.join(" "))
+    ? [`In "${title}", the scope of "${part.heading}" carries an open-item marker. Scope describes the part; write the open point as scope words, the drafter sets the marker.`]
+    : []
+}
+
+/** The scope the plan keeps: as written, except that an open-item marker still
+ * in it on the last attempt stands as its words, and a blank as nothing. */
+function scopeWords(scope: string) {
+  if (!OPEN_ITEM_IN_SCOPE.test(scope)) return scope
+  return scope.replace(OPEN_ITEM_PATTERN, marker => /^[[(]\s*open item:\s*(.*?)\s*[\])]$/i.exec(marker)?.[1] ?? "").replace(/\s+/g, " ").trim()
 }
 
 export function headingText(text: string) {
@@ -417,6 +585,18 @@ export function plainFileName(file: string) {
   return !FILE_NAME_FORBIDDEN.test(file) && file.length <= 120
 }
 
+/** Begins every misplaced-line issue: the order the outline's shape reads. */
+const DOCUMENT_ORDER = 'Begin each document with its own "# " title line, then its lines such as "Form:" and "File:", then its "## " parts.'
+const quotedLines = (lines: string[]) => lines.map(line => `"${line}"`).join(", ")
+
+/** A document's own lines written after a document's first part, one issue per document. */
+function lateIssues(rows: { title: string; line: string }[]) {
+  return [...new Set(rows.map(row => row.title))].map(title => {
+    const lines = rows.filter(row => row.title === title).map(row => row.line)
+    return `${lines.length === 1 ? `The line ${quotedLines(lines)} comes` : `The lines ${quotedLines(lines)} come`} after the "## " parts of "${plainTitle(title)}", so no document reads ${lines.length === 1 ? "it" : "them"}. ${DOCUMENT_ORDER}`
+  })
+}
+
 function titleIssues(title: string) {
   if (FILE_IN_TITLE.test(title))
     return [`The title "${title}" carries a file name. Write the document's own title on the "# " line, and give the file name the request asks for on a "File:" line under it.`]
@@ -435,6 +615,18 @@ function plainTitle(title: string) {
   return plain.replace(/^(?:(?:subject|re|fwd?)(?:\s*:|\s+[-–—])\s*)+/i, "").trim() || plain
 }
 
+/** The title the plan keeps: the plain title, except that a title which is
+ * only a file name, still so on the last attempt, stands as the words of that
+ * name ("fee-letter.docx" as "Fee letter"), not as a file name. */
+function plannedTitle(title: string) {
+  const plain = plainTitle(title)
+  const named = /^["'“‘]?([^\s`'"“”‘’]+)\.docx?["'”’]?$/i.exec(plain)?.[1]
+  if (!named) return plain
+  const words = named.replace(/[-_.]+/g, " ").replace(/\s+/g, " ").trim()
+  if (!words) return plain
+  return words === words.toLowerCase() ? words.charAt(0).toUpperCase() + words.slice(1) : words
+}
+
 /** A "File:" line's name, kept only when it is a plain file name the request gives. */
 function requestedFile(title: string, file: string | undefined, request: string | undefined): { name?: string; issues: string[] } {
   if (!file) return { issues: [] }
@@ -446,17 +638,18 @@ function requestedFile(title: string, file: string | undefined, request: string 
 }
 
 /** A "Memo:" line's name, kept only when it is words the request uses and can
- * be part of a file name. List markers, bold and code marks, wrapping quotes,
+ * be part of a file name. A file name the request gives counts as its words,
+ * its hyphens and underscores as spaces ("cover-memo.docx" uses "cover memo"). List markers, bold and code marks, wrapping quotes,
  * trailing full stops and one leading article are not part of the name; only a
  * value that is wholly a non-answer is no memo. */
 function outlineMemo(line: string | undefined, request: string | undefined): { name?: string; issues: string[] } {
   const name = (line ?? "").trim().replace(/^[-*]\s+/, "").replace(/\*\*|`/g, "").trim().replace(/^["'“‘]+|["'”’.]+$/g, "").trim()
     .replace(/^(?:a|an|the)\s+/i, "").replace(/\s+/g, " ")
   if (!name || MEMO_NON_ANSWER.test(name)) return { issues: [] }
-  if (FILE_NAME_FORBIDDEN.test(name) || FILE_IN_TITLE.test(name) || name.length > MEMO_NAME_MAX)
+  if (FILE_NAME_FORBIDDEN.test(name) || FILE_IN_TITLE.test(name))
     return { issues: [`The "Memo:" line gives "${name}", which cannot be part of a file name. Name the memo in a few of the request's own words, without a folder, file extension, Markdown or any of \\ / : * ? " < > |.`] }
-  if (request !== undefined && !namedIn(request, name))
-    return { issues: [`The "Memo:" line names "${name}", but the request does not use those words. Write a "Memo:" line only when the request asks for a memo or note to accompany the documents, naming it in the request's own words; otherwise leave the line out.`] }
+  if (request !== undefined && !namedIn(request, name) && !namedIn(request.replace(/[-_]+/g, " "), name))
+    return { issues: [`The "Memo:" line names "${name}", but the request does not use those words. Name the memo in a few of the request's own words, as it writes them, and keep the memo planned as its "# " document. Leave the line and that document out only when the request does not ask for a memo or note.`] }
   return { name, issues: [] }
 }
 
@@ -465,26 +658,54 @@ function outlineMemo(line: string | undefined, request: string | undefined): { n
  * so the words after its first connective ("on", "for", "to", "about"...) name
  * what it covers. A title whose words all sit in that subject names the memo's
  * subject, not the memo. Otherwise the title is the memo when the content words
- * of one are all among the other's, ignoring case, punctuation and function
- * words; a memo name of one word does not make a longer title a repeat. */
+ * of one are all among the other's, ignoring case, punctuation, function
+ * words and "memorandum" for "memo", so "Memo" names "Cover Memo". */
 function repeatsMemo(title: string, memo: string) {
   const words = (tokens: string[]) => new Set(tokens.filter(word => word && !FUNCTION_WORDS.has(word)))
-  const tokens = (text: string) => text.toLowerCase().split(/[^\p{L}\p{N}]+/u)
+  const tokens = (text: string) => text.toLowerCase().split(/[^\p{L}\p{N}]+/u).map(word => /^memorand(?:um|a)$|^memos$/.test(word) ? "memo" : word)
   const memoTokens = tokens(memo)
   const at = memoTokens.findIndex(word => MEMO_CONNECTIVES.has(word))
   const subject = words(at < 0 ? [] : memoTokens.slice(at + 1))
   const [planned, named] = [words(tokens(title)), words(memoTokens)]
   const within = (some: Set<string>, all: Set<string>) => some.size > 0 && [...some].every(word => all.has(word))
   if (within(planned, subject)) return false
-  return within(planned, named) || (named.size > 1 && within(named, planned))
+  return within(planned, named) || within(named, planned)
 }
+
+/** Whether a planned title calls itself a memo ("memorandum" counting as "memo"). */
+const titledMemo = (title: string) => title.toLowerCase().split(/[^\p{L}\p{N}]+/u).some(word => /^memo(?:s|randum|randa)?$/.test(word))
 
 const MEMO_CONNECTIVES = new Set(["on", "for", "to", "about", "regarding", "concerning", "re", "of", "in", "with", "from", "at", "by"])
 const FUNCTION_WORDS = new Set(["a", "an", "the", "to", "for", "of", "on", "and", "with", "that", "in"])
-const memoRepeated = (title: string, memo: string) =>
-  `The document "${title}" repeats the requested memo "${memo}", which the run writes as its notes. ` +
-  "Remove that document, or, if the request asks for a separate memo with its own audience or purpose, leave out the \"Memo:\" line."
-const MEMO_NAME_MAX = 60
+const memoUnplanned = (memo: string, titles: string[]) =>
+  `The "Memo:" line names "${memo}", but no planned title is that memo; the planned titles are ${titles.map(title => `"${title}"`).join(", ")}. Plan the memo as one "# " document whose title has the memo's words, with "Form: advice", and plan its parts as for any document.`
+const memoNamesMore = (memo: string, titles: string[]) =>
+  `The "Memo:" line names "${memo}", which ${titles.map(title => `"${title}"`).join(", ")} all repeat. Plan the memo as one "# " document, and give the others titles that do not repeat it.`
+const combinedOnMemo = (title: string) =>
+  `"Deliverable: combined" is under the memo "${title}" itself. Write it under the document the request asks to deliver with the memo, and leave it out under the memo.`
+
+/** The workflow's memo: drafted last, as advice that takes no legal act, in the
+ * parts given. The open points are not a part: the gate lists them from the
+ * final register. */
+function memoDocument(memo: Pick<PlannedDocument, "title" | "purpose" | "playbook_review" | "file" | "furniture" | "parts">): Omit<PlannedDocument, "id"> {
+  return { ...memo, mode: "new", executed_by: [], form: "advice" }
+}
+
+/** A fresh copy of the cover-memo skeleton, for a memo planned without parts. */
+const memoParts = () => MEMO_PARTS.map(part => ({ ...part }))
+
+/** A cover memo's parts from general practice, each scope line its content rule
+ * and word cap. */
+const MEMO_PARTS: PlannedPart[] = [
+  { heading: "What this is and what you need to do", scope: "At most 150 words: the documents delivered, whom they are drafted for, and the decisions the reader needs to take." },
+  { heading: "Decisions taken and why", scope: "At most 300 words: each point decided in drafting on a delegated or advised question, one short paragraph each, saying what was decided and why." },
+  { heading: "Discrepancies and how handled", scope: "At most 300 words: each discrepancy between the sources or instructions, one short entry each: the point, the sources that differ, how the documents handle it, and whether it stays open." },
+  { heading: "What the documents do", scope: "At most 250 words: what each delivered document does, part by part, briefly." },
+  { heading: "Research relied on and its limits", scope: "At most 200 words: one paragraph on the research relied on and its limits, then the authorities relied on." },
+]
+const MEMO_PURPOSE = "The cover memo the request asks for: what the documents are, the decisions taken and what the reader needs to do."
+/** The memo name as a title: its first letter capitalised. */
+const memoTitle = (memo: string) => memo.charAt(0).toLocaleUpperCase() + memo.slice(1)
 const MEMO_NON_ANSWER = /^(?:not\s+(?:requested|stated|specified|given|known|clear)|no(?:\s+memo)?|none|nothing|unknown|unspecified|unclear|n\/?a)$/i
 const COMBINED_NEEDS_MEMO = "\"Deliverable: combined\" puts a document and the requested memo in one file, so it needs a \"Memo:\" line before the first \"# \" title " +
   "naming that memo in the request's own words; otherwise write \"Deliverable: body\"."
@@ -640,7 +861,7 @@ function isPlannedDocument(value: unknown): value is PlannedDocument {
   const row = value as PlannedDocument
   return typeof row.id === "string" && /^d[1-9]\d*$/.test(row.id) && typeof row.title === "string" && typeof row.purpose === "string" &&
     Array.isArray(row.parts) && row.parts.length > 0 && row.parts.every(part => typeof part?.heading === "string" && typeof part.scope === "string" && (part.display_heading === undefined || typeof part.display_heading === "string") &&
-      (part.instrument === undefined || isPlannedInstrument(part.instrument))) &&
+      (part.instrument === undefined || isPlannedInstrument(part.instrument)) && (part.attachment === undefined || part.attachment === true)) &&
     (row.playbook_review === undefined || isPlaybookReview(row.playbook_review)) &&
     (row.mode === undefined || ["new", "revise"].includes(row.mode)) && (row.deliverable === undefined || ["body", "redline", "combined"].includes(row.deliverable)) &&
     (row.comparison === undefined || typeof row.comparison === "string") && (row.template === undefined || typeof row.template === "string") && (row.file === undefined || typeof row.file === "string") &&

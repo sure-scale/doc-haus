@@ -36,7 +36,11 @@ import { sourceText } from "./template-structure"
 // it; an ordinary numbered list inside a clause numbers no clauses, so its
 // labels are not read. A document with no clause numbers has its clause
 // references left unchecked, and so has advice or a letter, which cites the
-// clauses of the documents it discusses. An original read from its source
+// clauses of the documents it discusses. A reference to an attachment the
+// final text lacks is reported for every form, numbered clauses or not,
+// unless another pack document has it in its final text, or in its plan's
+// part headings while it is not yet drafted (a separate document of
+// attachments, or the document advice discusses). An original read from its source
 // text carries the list labels ingest's extraction writes into it as text. A
 // document planned without a known form is not checked at all.
 //
@@ -75,9 +79,14 @@ export function consistencyItems(directory: string, document: DocID, draft: Para
   // A drafted part's heading is still its paragraph's heading after the changes.
   const headings = new Set(draft.flatMap(row => row.draft_heading ? [row.pid] : []))
   const own = (rows: ParagraphRow[]) => shown(rows).map(para => headings.has(para.pid) ? { ...para, heading: true as const } : para)
+  // A pack document not yet drafted holds the attachments its plan heads.
   const others = plan.documents.flatMap((row, at): PackDocument[] => {
     if (row.id === document) return []
-    const paras = shown(finalBodyParagraphs(directory, row.id))
+    const drafted = shown(finalBodyParagraphs(directory, row.id))
+    const paras = drafted.length ? drafted : row.parts.flatMap(part => {
+      const text = part.display_heading || part.heading
+      return attachmentHead(text) ? [{ text, heading: true as const }] : []
+    })
     return paras.length ? [{ title: row.title, paras, earlier: at < position }] : []
   })
   const labels = new Map(final.map(row => [row.pid, row.label]))
@@ -257,8 +266,9 @@ function clauseLabel(text: string): { label: string; rest: string } | undefined 
   if (keyed && headed(keyed[3]!, text)) return { label: keyed[2]!, rest: keyed[3]!.replace(/^\s*[-–—:.]?\s*/, "").trim() }
 }
 
-/** "schedule 1" for a schedule's (annex's …) heading paragraph. */
-function attachmentHead(text: string) {
+/** "schedule 1" for a schedule's (annex's …) heading paragraph. The plan
+ * marks a part headed so as an attachment (parsePlan). */
+export function attachmentHead(text: string) {
   const head = ATTACHMENT_HEAD.exec(text)
   return head && headed(head[3]!, text) ? `${head[1]!.toLowerCase()} ${head[2]!.toUpperCase()}` : undefined
 }
@@ -496,7 +506,7 @@ function referenceFindings(title: string, final: Outline, baselines: Outline[], 
         findings.push({ pid, detail: `${from} refers to ${ref.kind} ${label} of "${other.title}", but no ${ref.kind} in that document's final text is numbered ${label}.` })
       continue
     }
-    if (advisory) continue
+    if (advisory && CLAUSE_KINDS.has(ref.kind)) continue
     // A live cross-reference points where its field's bookmark is: it is
     // settled when its cached number is its target's, and stale otherwise.
     const start = leading(final.paras[ref.at]!.text) + ref.spans[n]!
@@ -510,8 +520,11 @@ function referenceFindings(title: string, final: Outline, baselines: Outline[], 
       const name = `${capitalize(ref.kind)} ${label}`
       const keyName = `${ref.kind} ${label}`
       const before = baselines.some(row => row.attachments.has(keyName))
-      if (final.attachments.has(keyName) || (!before && !final.attachmentAt.some(head => head?.startsWith(`${ref.kind} `)))) continue
+      if (final.attachments.has(keyName)) continue
       if (pack.some(row => key(row.title).startsWith(key(name)))) continue
+      // Held in another pack document: a separate document of attachments, or
+      // the document that advice discusses.
+      if (pack.some(row => row.outline.attachments.has(keyName))) continue
       findings.push({ pid, detail: `${from} refers to ${name}, but the final text has no ${name}.${before ? ` ${name} was in the text before the changes.` : ""}` })
       continue
     }

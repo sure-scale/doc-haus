@@ -4,7 +4,7 @@ import { focusedChangeReviewInputs, runFocusedChangeReview, runFocusedChangeRevi
 import { acceptChangePlan } from "./change-pipeline"
 import { checkChanges } from "./change-checks"
 import { readParagraphs } from "./checks"
-import { writeLeanPlan } from "./plan"
+import { FIXED_PLAN, writeLeanPlan } from "./plan"
 import { packageCompositionBlock } from "./prompts"
 import { drainLeanRequests, enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
@@ -32,11 +32,14 @@ async function fixture() {
   return { directory, delivery, payment, plan }
 }
 
-test("coverage includes the current group, ungrouped explanation and unresolved disclosure without omnibus history", async () => {
+// A deferred finding is already fulfilled: the drafting notes carry it to the
+// lawyer, so it is no review job's disclosure to find.
+test("coverage includes the current group, ungrouped explanation and recommendation disclosure without omnibus history", async () => {
   const { directory, delivery, payment, plan } = await fixture()
   const full = { ...plan, findings: [
-    { disposition: "deferred", kind: "information", detail: "Confirm a material delivery exception before execution.", reason: "The exception is unresolved.", documents: ["d1"], sources: SUPPORT, limitations: [] },
+    { disposition: "deferred", kind: "information", detail: "DEFERRED_FOR_THE_NOTES", reason: "The exception is unresolved.", documents: ["d1"], sources: SUPPORT, limitations: [] },
     { disposition: "rejected", kind: "suggestion", detail: "UNRELATED_REJECTED_HISTORY", reason: "Not requested.", documents: ["d1"], sources: SUPPORT, limitations: [] },
+    { disposition: "recommendation", kind: "suggestion", detail: "Advise on a material delivery exception before execution.", reason: "The exception is optional advice.", documents: ["d1"], sources: SUPPORT, limitations: [] },
   ] }
   expect(acceptChangePlan(directory, "d1", JSON.stringify(full)).issues).toEqual([])
   writeLeanText(directory, "d1/review-wording.json", JSON.stringify({ findings: [{ id: "f-0000000000", document: "d1", origin: "drafting", finding: "UNRELATED_RAW_REVIEW_HISTORY".repeat(2000), sources: [] }] }))
@@ -45,8 +48,10 @@ test("coverage includes the current group, ungrouped explanation and unresolved 
   expect(inputs).toHaveLength(3)
   expect(inputs.flatMap(row => row.pids)).toContain(delivery.pid)
   expect(inputs.flatMap(row => row.pids)).toContain(payment.pid)
-  expect(inputs.some(row => row.id === "disclosure:0")).toBe(true)
+  expect(inputs.map(row => row.id).filter(id => id.startsWith("disclosure:"))).toEqual(["disclosure:2"])
   for (const input of inputs) {
+    expect(input.text).toContain(FIXED_PLAN)
+    expect(input.text).not.toContain("DEFERRED_FOR_THE_NOTES")
     expect(input.text).toContain("explicit dependency task")
     expect(input.text).toContain("view=proposed_body")
     expect(input.text).toContain("even when this assignment has no inline target PID")
@@ -93,6 +98,21 @@ test("invalid pass-with-findings is corrected through the native contract withou
   expect(result.status).toBe("done")
   expect((readLeanJson(directory, "d1/change-review.json") as { status: string }).status).toBe("changes-required")
   expect(port.prompts.some(row => row.text.includes("A pass cannot contain material correction findings"))).toBe(true)
+})
+
+test("a focused body finding without a paragraph is returned for one, and the corrected finding keeps its pid", async () => {
+  const { directory, delivery } = await fixture()
+  const calls = new Map<string, number>()
+  const port = scriptedModel({ "lean-change-review": (text, _, sessionID = "one") => {
+    const call = text.includes('"id":"group:delivery"') ? 0 : calls.get(sessionID)
+    calls.set(sessionID, call === undefined ? -1 : call + 1)
+    if (call === undefined) return JSON.stringify({ status: "pass", findings: [], limitations: [] })
+    return JSON.stringify({ status: "changes-required", findings: [{ pid: call ? delivery.pid : null, detail: "A supported delivery condition is missing." }], limitations: [] })
+  } })
+  const result = await runFocusedChangeReview(directory, readLeanState(directory)!, { sessions: port.port }, "d1", () => {})
+  expect(result.status).toBe("done")
+  expect(port.prompts.some(row => row.text.includes("name the paragraph the correction amends or where the missing wording belongs"))).toBe(true)
+  expect((readLeanJson(directory, "d1/change-review.json") as { findings: unknown[] }).findings).toEqual([{ pid: delivery.pid, detail: "A supported delivery condition is missing." }])
 })
 
 test("oversized assignments and conflicting same-PID operations fail before a model admission", async () => {
@@ -283,7 +303,7 @@ test("every decomposed target must settle; a sibling cross-document defect survi
 
 test("a requested memo reaches every focused review assignment, disclosure included; without one they are unchanged", async () => {
   const { directory, plan } = await fixture()
-  expect(acceptChangePlan(directory, "d1", JSON.stringify({ ...plan, findings: [{ disposition: "deferred", kind: "information", detail: "Confirm a material delivery exception before execution.", reason: "The exception is unresolved.", documents: ["d1"], sources: SUPPORT, limitations: [] }] })).issues).toEqual([])
+  expect(acceptChangePlan(directory, "d1", JSON.stringify({ ...plan, findings: [{ disposition: "recommendation", kind: "suggestion", detail: "Advise on a material delivery exception before execution.", reason: "The exception is optional advice.", documents: ["d1"], sources: SUPPORT, limitations: [] }] })).issues).toEqual([])
   const texts = () => new Map(focusedChangeReviewInputs(directory, "d1").map(row => [row.id, row.text]))
   const without = texts()
   expect(without.has("disclosure:0")).toBe(true)
