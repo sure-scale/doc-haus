@@ -6,7 +6,7 @@ import { deliveryArtifactEvidence, requestedMemo } from "./deliverables"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { checkFocusedNotesCoverage } from "./focused-notes-coverage"
 import { resolveFocusedNotesDependency } from "./focused-notes-dependencies"
-import { assembleNotesOwnerEvidence, checkNotesInspection, checkNotesTargets, currentNotesPids, notesCurrentEvidence, notesEvidencePlan, NOTES_CURRENT_EVIDENCE_VERSION, type NotesBody } from "./focused-notes-evidence"
+import { assembleNotesOwnerEvidence, checkNotesInspection, checkNotesTargets, currentNotesPids, notesCurrentEvidence, notesEvidencePlan, NOTES_CURRENT_EVIDENCE_VERSION, NOTES_INSPECTION_OUTPUT_CONTRACT, type NotesBody } from "./focused-notes-evidence"
 import { raisedFindings } from "./review-findings"
 import { matterDatesBlock } from "./intake"
 import { readLeanPlan, type DocID } from "./plan"
@@ -275,6 +275,7 @@ export function assembleFocusedNotes(directory: string, sections: { input: Focus
  * retry; accepted prose survives a failed neighbor and an unchanged resume. */
 export async function runFocusedNotes(directory: string, state: LeanState, deps: LeanDeps, progress: (patch: Partial<LeanStageState>) => void): Promise<StageRun> {
   let inputs = focusedNotesInputs(directory)
+  const bodies = (readLeanPlan(directory)?.documents ?? []).map(document => notesBody(directory, document.id))
   const stageKey = () => hashStageInputs("finalize", LEAN_PROMPT_VERSION, stageInputs(directory, "finalize"))
   const initial = stageKey()
   const common = [
@@ -303,7 +304,6 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
   // so recovery can reuse it without repeating this transient lookup.
   const locateCurrentInput = async (input: FocusedNotesInput): Promise<FocusedNotesInput | undefined> => {
     if (!input.needsCurrentLookup) return input
-    const bodies = (readLeanPlan(directory)?.documents ?? []).map(document => notesBody(directory, document.id))
     const navigation = bodies.map(body => ({ document: body.document, record: `.dochaus/lean/${body.document}/paragraphs-applied.json`,
       paragraphs: body.current.map(({ pid, label, draft_part, draft_heading, text }) => ({ pid, label, part: draft_part, ...(draft_heading ? { heading: text } : {}) })) }))
     const index = json(navigation)
@@ -324,7 +324,7 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
       appendLeanEvent(directory, { stage: "finalize", step, event: attempt ? "retry" : "model_call", attempt, session_id: sessionID })
       const asked = performance.now()
       const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: attempt
-        ? `Correct only this target-selection reply: ${issues.join(" ")}. Return targets/limitation JSON, retaining this one assignment.` : prompt })
+        ? `Correct only this target-selection reply: ${issues.join(" ")}. Retain this one assignment. Return only {"targets":[{"document":"planned id","pids":["exact current paragraph PID"]}],"limitation":""}. An unavailable inspection returns {"targets":[],"limitation":"the actual inspection limit"}; never infer absence.` : prompt })
       const answered = performance.now()
       const parsed = parseJsonObject(reply)
       const checked = parsed.ok ? checkNotesTargets(parsed.value, bodies) : { issues: [parsed.error] }
@@ -431,9 +431,9 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
           appendLeanEvent(directory, { stage: "finalize", step, event: attempt ? "retry" : "model_call", attempt, session_id: sessionID })
           const asked = performance.now()
           const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: attempt
-            ? `Correct only this evidence-selection reply. Keep the original relevance question and return targets/excerpts/limitation JSON, selecting exact available ranges where a complete PID is unavailable.\n${issues.join("\n")}` : inspection.text })
+            ? `Correct only this evidence-selection reply. Keep the original relevance question.\n${NOTES_INSPECTION_OUTPUT_CONTRACT}\n${issues.join("\n")}` : inspection.text })
           const answered = performance.now()
-          const checked = checkNotesInspection(reply, inspection)
+          const checked = checkNotesInspection(reply, inspection, bodies)
           issues = checked.issues
           calls.count++
           calls.attempts = Math.max(calls.attempts, attempt + 1)
@@ -444,7 +444,7 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
         }
         if (!selected) { failures.push(`${step}: evidence selection supplied no valid answer: ${issues.join(" ")}`); return }
       }
-      const writing = evidencePlan.changedScope ? { ...located, text: assembleNotesOwnerEvidence(evidencePlan, selections) } : located
+      const writing = evidencePlan.changedScope ? { ...located, text: assembleNotesOwnerEvidence(evidencePlan, selections, bodies) } : located
       if (evidencePlan.changedScope || legacySplit) file = ownerFile
       const writeUnit = async (writing: FocusedNotesInput, unitFile: string): Promise<string | undefined> => {
         const input = writing
@@ -497,7 +497,7 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
               }
               observedCalls = 0
               const dependency = await resolveFocusedNotesDependency(directory, state, deps, writing, reply, coverage.request,
-                documents.map(document => notesBody(directory, document.id)), observe)
+                bodies, observe)
               if (dependency.status === "failed") { failures.push(`${input.id}: ${dependency.reason}`); return }
               const evidence = dependency.evidence.map(row => tagged(row.name, escapeTagOpeners(row.text))).join("\n\n")
               dependencies.push(evidence)

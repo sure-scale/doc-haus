@@ -30,11 +30,13 @@ function fixture(condition: string) {
   return directory
 }
 
-function model(mode: "supports" | "contradicts" | "unanswered") {
+function model(mode: "supports" | "contradicts" | "unanswered", miscopyFirstClaim = false) {
   const initial = new Map<string, string>()
   const writes: string[] = [], checks: string[] = [], lookups: string[] = []
+  const checkPackets: { sessionID: string; text: string; initial: string }[] = []
   let ownerWrites = 0
   let sessionCount = 0
+  let requests = 0
   const port: StageSessionPort = {
     async createSession() { return `session-${++sessionCount}` },
     async prompt(input) {
@@ -42,10 +44,11 @@ function model(mode: "supports" | "contradicts" | "unanswered") {
       const first = initial.get(input.sessionID)!
       if (input.agent === NOTES_COVERAGE_AGENT) {
         checks.push(input.text)
-        if (!input.text.includes(point.detail)) return JSON.stringify({ status: "pass", reason: "The section explains its own assigned point." })
-        if (!input.text.includes("dependency_evidence") || mode === "unanswered") return JSON.stringify({ status: "needs-evidence", reason: "The present claim needs the companion's actual acceptance condition.",
-          request: { document: "d1", claim, question: "What is the current acceptance condition?" } })
-        if (mode === "contradicts" && input.text.includes(`<proposed_prose>\n${original}`)) return JSON.stringify({ status: "rewrite", reason: "The inspected current companion provides immediate acceptance; the prose incorrectly describes a condition." })
+        checkPackets.push({ sessionID: input.sessionID, text: input.text, initial: first })
+        if (!first.includes(point.detail)) return JSON.stringify({ status: "pass", reason: "The section explains its own assigned point." })
+        if (!first.includes("dependency_evidence") || mode === "unanswered") return JSON.stringify({ status: "needs-evidence", reason: "The present claim needs the companion's actual acceptance condition.",
+          request: { document: "d1", claim: miscopyFirstClaim && requests++ === 0 ? claim.toLowerCase() : claim, question: "What is the current acceptance condition?" } })
+        if (mode === "contradicts" && first.includes(`<proposed_prose>\n${original}`)) return JSON.stringify({ status: "rewrite", reason: "The inspected current companion provides immediate acceptance; the prose incorrectly describes a condition." })
         return JSON.stringify({ status: "pass", reason: "The same prose is supported by the actual companion and preserves the unknown design and required action." })
       }
       if (first.includes("<current_target_lookup>")) {
@@ -57,8 +60,24 @@ function model(mode: "supports" | "contradicts" | "unanswered") {
       return "The note preserves the container label instruction."
     },
   }
-  return { port, writes, checks, lookups, get ownerWrites() { return ownerWrites } }
+  return { port, writes, checks, checkPackets, lookups, get ownerWrites() { return ownerWrites } }
 }
+
+test("an inexact dependency claim is corrected by the same verifier before lookup, without repeating the writer", async () => {
+  const directory = fixture("Acceptance requires inspection.")
+  const scripted = model("supports", true)
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, { sessions: scripted.port }, () => {})).status).toBe("done")
+  const ownerChecks = scripted.checkPackets.filter(packet => packet.initial.includes(point.detail))
+  expect(ownerChecks).toHaveLength(3)
+  expect(ownerChecks[1]!.sessionID).toBe(ownerChecks[0]!.sessionID)
+  expect(ownerChecks[1]!.text).toContain("claim")
+  expect(ownerChecks[1]!.text).toContain("Correct only")
+  expect(ownerChecks[2]!.sessionID).not.toBe(ownerChecks[0]!.sessionID)
+  expect(ownerChecks[2]!.initial).toContain("dependency_evidence")
+  expect(scripted.lookups).toHaveLength(1)
+  expect(scripted.ownerWrites).toBe(1)
+  expect(readLeanText(directory, "drafting-notes.md")).toContain(original)
+})
 
 for (const mode of ["supports", "contradicts"] as const) test(`dependency inspection ${mode} the same proposed prose before any writer retry or acceptance`, async () => {
   const directory = fixture(mode === "supports" ? "Acceptance requires inspection." : "Acceptance is immediate.")

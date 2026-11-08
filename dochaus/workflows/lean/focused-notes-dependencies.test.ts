@@ -32,9 +32,17 @@ function locator(replies: unknown[]) {
 
 test("dependency request belongs to an exact current prose claim and a planned document", () => {
   expect(checkNotesEvidenceRequest(request, [body], prose)).toEqual({ request, issues: [] })
+  expect(checkNotesEvidenceRequest(request, [{ document: "d1" }], prose)).toEqual({ request, issues: [] })
   for (const invalid of [null, [], {}, { ...request, document: "d9" }, { ...request, claim: "" },
     { ...request, claim: "An earlier reply contained this claim." }, { ...request, question: " " }])
     expect(checkNotesEvidenceRequest(invalid, [body], prose).request).toBeUndefined()
+  for (const changed of [claim.toLowerCase(), claim.replace(".", "!")]) {
+    const checked = checkNotesEvidenceRequest({ ...request, claim: changed }, [{ document: "d1" }], prose)
+    expect(checked.request).toBeUndefined()
+    expect(checked.issues.join(" ")).toContain("request.claim")
+    expect(checked.issues.join(" ")).not.toContain(changed)
+  }
+  expect(checkNotesEvidenceRequest({ ...request, document: "d9" }, [{ document: "d1" }], prose).issues.join(" ")).toContain('request.document="d9"')
 })
 
 test("lookup reconstructs actual accepted text, mapped baseline and qualifications without trusting model quotations", async () => {
@@ -108,7 +116,8 @@ test("invented, historical or wrong-document targets cannot supply trusted depen
     expect(model.prompts).toHaveLength(LEAN_MAX_RETRIES + 1)
   }
   const unused = locator([selected])
-  expect((await resolveFocusedNotesDependency(directory, readLeanState(directory)!, { sessions: unused.port }, input, prose, { ...request, claim: "not in prose" }, [body], () => {})).status).toBe("failed")
+  for (const invalid of [{ ...request, claim: "not in prose" }, { ...request, claim: claim.toLowerCase() }, { ...request, document: "d9" as const }])
+    expect((await resolveFocusedNotesDependency(directory, readLeanState(directory)!, { sessions: unused.port }, input, prose, invalid, [body], () => {})).status).toBe("failed")
   expect(unused.sessions).toHaveLength(0)
   expect(readLeanEvents(directory).filter(event => event.event === "checker").every(event => !JSON.stringify(event).includes(claim))).toBe(true)
 })

@@ -14,13 +14,13 @@ export type NotesDependencyResult =
 
 /** Missing packet evidence is not a false claim. Bind each lookup to one
  * actual prose claim and a planned document, without deciding its truth. */
-export function checkNotesEvidenceRequest(value: unknown, bodies: NotesBody[], prose: string): { request?: NotesEvidenceRequest; issues: string[] } {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return { issues: ["Return one document, claim and question."] }
+export function checkNotesEvidenceRequest(value: unknown, bodies: Pick<NotesBody, "document">[], prose: string): { request?: NotesEvidenceRequest; issues: string[] } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { issues: ["request: return one object with document, claim and question."] }
   const row = value as Record<string, unknown>
-  if (!bodies.some(body => body.document === row.document)) return { issues: ["Request evidence from one planned document only."] }
+  if (!bodies.some(body => body.document === row.document)) return { issues: [`request.document=${JSON.stringify(row.document)}: select one planned document ID. Planned document IDs: ${bodies.map(body => body.document).join(", ") || "none available"}.`] }
   if (typeof row.claim !== "string" || !row.claim.trim() || !prose.includes(row.claim))
-    return { issues: ["The nonempty claim must occur exactly in the proposed prose being checked."] }
-  if (typeof row.question !== "string" || !row.question.trim()) return { issues: ["Ask one concrete question about the missing current-body evidence."] }
+    return { issues: ["request.claim: copy a nonempty exact span from proposed_prose, including capitalization and punctuation. Do not paraphrase, normalize or change the prose; correct only this request field."] }
+  if (typeof row.question !== "string" || !row.question.trim()) return { issues: ["request.question: ask one concrete question about the missing current-body evidence."] }
   return { request: { document: row.document as DocID, claim: row.claim, question: row.question.trim() }, issues: [] }
 }
 

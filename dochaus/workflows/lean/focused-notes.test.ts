@@ -56,7 +56,7 @@ function noteMatter(items: OpenItem[] = []) {
 function scriptedSections(answer: (input: { text: string; sessionID: string; initial: string; attempt: number }) => string | Promise<string>,
   coverage: (text: string, initial: string) => string = () => JSON.stringify({ status: "pass", reason: "The synthetic section substantively explains its assigned point." }),
   lookup: (text: string) => string = () => JSON.stringify({ targets: [], limitation: "This fixture supplies no inspected current target for the point." }),
-  inspect: (text: string) => string = () => JSON.stringify({ targets: [], limitation: "This fixture range supplies no additional material evidence." })) {
+  inspect: (text: string) => string = () => JSON.stringify({ excerpts: [], limitation: "This fixture range supplies no additional material evidence." })) {
   const prompts: { text: string; sessionID: string; initial: string; attempt: number }[] = []
   const lookups: string[] = []
   const inspections: string[] = []
@@ -448,9 +448,9 @@ test("a far-end condition reaches bounded passage writers and the original open-
       ? { status: "rewrite", reason: "The complete owning paragraph retains an inspection condition beyond the early focus range." }
       : { status: "pass", reason: "Current effect and the earlier baseline remain distinct and qualified." }), undefined, text => {
       const available = JSON.parse(/<available_evidence>\n([\s\S]*?)\n<\/available_evidence>/.exec(text)![1]!) as { document: string; pid: string; baseline: string; start: number; end: number; text: string }[]
-      const excerpts = available.flatMap(span => span.baseline === "initial" ? [{ ...span, role: "target" }] : span.text.includes(condition)
-        ? [{ ...span, start: span.start + span.text.indexOf(condition), end: span.start + span.text.indexOf(condition) + condition.length, role: "qualification" }] : [])
-      return JSON.stringify({ targets: [], excerpts, limitation: excerpts.length ? "" : "This range contains no material inspection condition." })
+      const excerpts = available.flatMap(({ document, pid, baseline, start, end, text }) => baseline === "initial" ? [{ document, pid, baseline, start, end, role: "target" }] : text.includes(condition)
+        ? [{ document, pid, baseline, start: start + text.indexOf(condition), end: start + text.indexOf(condition) + condition.length, role: "qualification" }] : [])
+      return JSON.stringify({ excerpts, limitation: excerpts.length ? "" : "This range contains no material inspection condition." })
     })
   expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
   const units = model.prompts.filter(input => input.initial.includes("<section_kind>\nopen-item\n") || input.initial.includes("<final_passage>"))
@@ -476,6 +476,32 @@ test("a far-end condition reaches bounded passage writers and the original open-
   expect(model.verifications).toHaveLength(checks)
 })
 
+
+test("a retrieved canonical qualification outside the inspection focus reaches the same owner and verifier", async () => {
+  const item: OpenItem = { id: "apply:omission:acceptance-condition", stage: "apply", kind: "omission", status: "open",
+    detail: "Explain the acceptance condition and its unresolved inspection.", ref: { document: "d1", pid: "p111111111111" } }
+  const directory = noteMatter([item])
+  writeLeanPlan(directory, [
+    { title: "Archive handover", purpose: "Record acceptance.", parts: [{ heading: "Container", scope: "Acceptance." }] },
+    { title: "Inspection notice", purpose: "Record the acceptance qualification.", parts: [{ heading: "Inspection", scope: "Seal inspection." }] },
+  ])
+  const target = row("p111111111111", "The custodian accepts the container. ".repeat(400))
+  const condition = "Acceptance remains conditional on the seal inspection."
+  const qualifier = row("p222222222222", condition)
+  for (const [document, rows] of [["d1", [target]], ["d2", [qualifier]]] as const) {
+    writeLeanText(directory, `${document}/paragraphs.json`, JSON.stringify(rows))
+    writeLeanText(directory, `${document}/paragraphs-applied.json`, JSON.stringify(rows))
+  }
+  const model = scriptedSections(() => "Acceptance remains conditional; the custodian must inspect the seal.", undefined, undefined,
+    () => JSON.stringify({ excerpts: [{ document: "d2", pid: qualifier.pid, baseline: "current", start: 0, end: condition.length, role: "qualification" }], limitation: "" }))
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  expect(model.inspections.length).toBeGreaterThan(0)
+  const owner = model.prompts.filter(input => input.initial.includes("<section_kind>\nopen-item\n"))
+  expect(owner).toHaveLength(1)
+  expect(owner[0]!.initial).toContain(condition)
+  expect(model.verifications.some(text => text.includes(item.detail) && text.includes(condition))).toBe(true)
+  expect(readLeanText(directory, "drafting-notes.md")!.split(`[ref: ${item.id}]`)).toHaveLength(2)
+})
 
 test("unscoped open points and delegated choices still require current target inspection", async () => {
   const directory = noteMatter(OPEN_POINTS)

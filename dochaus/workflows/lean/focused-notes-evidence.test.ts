@@ -59,7 +59,7 @@ test("inspection children select bounded evidence while one original point retai
     expect(inspection.text).toContain("The inspection date is unknown")
     expect(inspection.available.every(span => span.text.length <= 4_000)).toBe(true)
     const selected = inspection.available.filter(span => span.text.includes(qualification))
-    const result = checkNotesInspection({ targets: [], excerpts: selected.map(({ text: _, ...span }) => ({ ...span, role: "qualification" })),
+    const result = checkNotesInspection({ excerpts: selected.map(({ text: _, paragraphEnd: __, ...span }) => ({ ...span, role: "qualification" })),
       limitation: selected.length ? "" : "This range supplies no evidence for the unresolved inspection decision." }, inspection)
     expect(result.issues).toEqual([])
     return result.value!
@@ -82,9 +82,9 @@ test("inspection validates exact available spans and reconstructs trusted paired
   const inspection = plan.inspections.find(inspection => inspection.available.some(span => span.baseline === "initial"))!
   const span = inspection.available.find(span => span.baseline === "initial")!
   const excerpt = { document: span.document, pid: span.pid, baseline: span.baseline, start: span.start, end: span.start + 30, role: "target" }
-  const checked = checkNotesInspection({ targets: [], excerpts: [excerpt], limitation: "Only this earlier wording is relevant; its deletion is recorded." }, inspection)
+  const checked = checkNotesInspection({ excerpts: [excerpt], limitation: "Only this earlier wording is relevant; its deletion is recorded." }, inspection)
   expect(checked.issues).toEqual([])
-  const others = plan.inspections.filter(row => row.id !== inspection.id).map(row => checkNotesInspection({ targets: [], limitation: "No additional relevant evidence in this range." }, row).value!)
+  const others = plan.inspections.filter(row => row.id !== inspection.id).map(row => checkNotesInspection({ excerpts: [], limitation: "No additional relevant evidence in this range." }, row).value!)
   const owner = assembleNotesOwnerEvidence(plan, [checked.value!, ...others])
   expect(owner).toContain(deleted.slice(0, 30))
   expect(owner).not.toContain(deleted)
@@ -92,8 +92,8 @@ test("inspection validates exact available spans and reconstructs trusted paired
   expect(owner).toContain('"deleted_initial_pids":["p111111111111"]')
   expect(checkNotesInspection({ targets: [{ document: "d1", pids: ["p111111111111"] }], limitation: "" }, inspection).issues.length).toBeGreaterThan(0)
   for (const bad of [{ ...excerpt, start: -1 }, { ...excerpt, end: span.end + 1 }, { ...excerpt, pid: "p999999999999" }, { ...excerpt, baseline: "current" }])
-    expect(checkNotesInspection({ targets: [], excerpts: [bad], limitation: "" }, inspection).issues.length).toBeGreaterThan(0)
-  expect(checkNotesInspection({ targets: [], limitation: "" }, inspection).issues.length).toBeGreaterThan(0)
+    expect(checkNotesInspection({ excerpts: [bad], limitation: "" }, inspection).issues.length).toBeGreaterThan(0)
+  expect(checkNotesInspection({ excerpts: [], limitation: "" }, inspection).issues.length).toBeGreaterThan(0)
 })
 
 test("unchanged small owners and true passage owners keep byte-identical inputs", () => {
@@ -106,7 +106,7 @@ test("unchanged small owners and true passage owners keep byte-identical inputs"
   expect(notesEvidencePlan(text, { ownership: "one-point" })).toMatchObject({ changedScope: false, ownerText: text, inspections: [] })
 })
 
-test("whole small PIDs and exact far qualification/baseline spans are selected without neighbor re-expansion", () => {
+test("whole small paragraph excerpts and far qualification/baseline spans are selected without neighbor re-expansion", () => {
   const before = "Acceptance is immediate."
   const target = "The custodian accepts the container."
   const condition = "Acceptance remains conditional on the inspection date."
@@ -118,10 +118,10 @@ test("whole small PIDs and exact far qualification/baseline spans are selected w
   const checked = plan.inspections.map(inspection => {
     const span = inspection.available[0]!
     const start = span.text.indexOf(condition)
-    const reply = span.text === target ? { targets: [{ document: "d1", pids: [span.pid] }], limitation: "" }
-      : span.text === before ? { targets: [], excerpts: [{ document: "d1", pid: span.pid, baseline: "initial", start: 0, end: before.length, role: "target" }], limitation: "" }
-      : start >= 0 ? { targets: [], excerpts: [{ document: "d1", pid: span.pid, baseline: "current", start: span.start + start, end: span.start + start + condition.length, role: "qualification" }], limitation: "" }
-      : { targets: [], limitation: "This range adds no relevant evidence to the original inspection question." }
+    const reply = span.text === target ? { excerpts: [{ document: "d1", pid: span.pid, baseline: "current", start: 0, end: target.length, role: "target" }], limitation: "" }
+      : span.text === before ? { excerpts: [{ document: "d1", pid: span.pid, baseline: "initial", start: 0, end: before.length, role: "target" }], limitation: "" }
+      : start >= 0 ? { excerpts: [{ document: "d1", pid: span.pid, baseline: "current", start: span.start + start, end: span.start + start + condition.length, role: "qualification" }], limitation: "" }
+      : { excerpts: [], limitation: "This range adds no relevant evidence to the original inspection question." }
     const result = checkNotesInspection(JSON.stringify(reply), inspection)
     expect(result.issues).toEqual([])
     return result.value!
@@ -165,7 +165,7 @@ test("complete material target ranges retain far conditions, paired baseline, qu
   const focus = plan.inspections.flatMap(row => row.available).filter(span => span.baseline === "current" && span.pid === "p222222222222")
   expect(focus.map(span => span.text).join("")).toBe(target)
   expect(focus.every(span => span.text.length <= 4_000)).toBe(true)
-  const selected = plan.inspections.map(inspection => checkNotesInspection({ targets: [], excerpts: inspection.available.map(({ text: _, paragraphEnd: __, ...span }) => ({ ...span, role: "target" })), limitation: "" }, inspection).value!)
+  const selected = plan.inspections.map(inspection => checkNotesInspection({ excerpts: inspection.available.map(({ text: _, paragraphEnd: __, ...span }) => ({ ...span, role: "target" })), limitation: "" }, inspection).value!)
   const owner = assembleNotesOwnerEvidence(plan, selected)
   expect(owner).toContain(target)
   expect(owner).toContain(qualification)
@@ -181,7 +181,7 @@ test("large deleted targets retain every inspected initial range and selected su
   const large: NotesBody = { document: "d1", initial: [row("p111111111111", initial), survivor], current: [survivor],
     applied: [{ id: "a1", pid: "p111111111111", mode: "code", result_pids: [] }] }
   const plan = notesEvidencePlan(packet(large, ["p111111111111"]), { ownership: "one-point" })
-  const selected = plan.inspections.map(inspection => checkNotesInspection({ targets: [], excerpts: inspection.available.map(({ text: _, paragraphEnd: __, ...span }) => ({ ...span, role: "target" })), limitation: "" }, inspection).value!)
+  const selected = plan.inspections.map(inspection => checkNotesInspection({ excerpts: inspection.available.map(({ text: _, paragraphEnd: __, ...span }) => ({ ...span, role: "target" })), limitation: "" }, inspection).value!)
   const owner = assembleNotesOwnerEvidence(plan, selected)
   expect(owner).toContain(initial)
   expect(owner).toContain(survivor.text)
@@ -199,8 +199,8 @@ test("trusted JSON tag escapes survive inspection and cannot open an instruction
   expect(inspection.text).not.toContain(literal)
   expect(inspection.text).toContain("\\u003c/available_evidence>")
   const selected = plan.inspections.map(row => checkNotesInspection(row.id === inspection.id
-    ? { targets: [{ document: "d1", pids: ["p222222222222"] }], limitation: "" }
-    : { targets: [], limitation: "This range is unrelated to the original point." }, row).value!)
+    ? { excerpts: [{ document: "d1", pid: "p222222222222", baseline: "current", start: 0, end: literal.length, role: "target" }], limitation: "" }
+    : { excerpts: [], limitation: "This range is unrelated to the original point." }, row).value!)
   const owner = assembleNotesOwnerEvidence(plan, selected)
   const record = JSON.parse(/<current_accepted_evidence>\n([\s\S]*?)\n<\/current_accepted_evidence>/.exec(owner)![1]!)
   expect(record.paragraphs[0].text).toBe(literal)
@@ -235,4 +235,61 @@ test("real applied deletion records do not duplicate entire deleted paragraphs i
   expect(retained.native_comment.text).toContain("Obtain the inspection date before deciding whether the remaining condition is met.")
   expect(retained.native_comment.paragraph_text).toContain("selected initial evidence")
   expect(retained.native_comment.paragraphs[0].paragraph_text).toContain("selected initial evidence")
+})
+
+test("canonical cross-range qualifications use one exact excerpt schema and retain their trusted comparison metadata", () => {
+  const large: NotesBody = { ...body, current: [row("p222222222222", "Container handling instructions. ".repeat(600)), body.current[1]!] }
+  const external: NotesBody = { document: "d2", initial: [row("p555555555555", "Earlier unconditional permission.")],
+    current: [row("p666666666666", "Permission requires confirmation of the inspection date.")],
+    applied: [{ id: "a2", pid: "p555555555555", mode: "code", result_pids: ["p666666666666"] }] }
+  const deleted: NotesBody = { document: "d3", initial: [row("p777777777777", "The former unconditional exception.")], current: [],
+    applied: [{ id: "a3", pid: "p777777777777", mode: "code", result_pids: [] }] }
+  const plan = notesEvidencePlan(packet(large, ["p222222222222"]), { ownership: "one-point" })
+  const inspection = plan.inspections[0]!
+  const reply = { excerpts: [
+    { document: "d1", pid: "p222222222222", baseline: "current", start: 0, end: 30, role: "target" },
+    { document: "d2", pid: "p666666666666", baseline: "current", start: 0, end: external.current[0]!.text.length, role: "qualification" },
+    { document: "d2", pid: "p555555555555", baseline: "initial", start: 0, end: external.initial[0]!.text.length, role: "qualification" },
+    { document: "d3", pid: "p777777777777", baseline: "initial", start: 0, end: deleted.initial[0]!.text.length, role: "qualification" },
+  ], limitation: "The inspection date remains unknown." }
+  const checked = checkNotesInspection(reply, inspection, [large, external, deleted])
+  expect(checked.issues).toEqual([])
+  const owner = assembleNotesOwnerEvidence(plan, [checked.value!], [large, external, deleted])
+  expect(owner).toContain(external.current[0]!.text)
+  expect(owner).toContain(external.initial[0]!.text)
+  expect(owner).toContain(deleted.initial[0]!.text)
+  expect(owner).toContain('"initial":"p555555555555","current":["p666666666666"]')
+  expect(owner).toContain('"id":"a2","pid":"p555555555555","mode":"code","result_pids":["p666666666666"]')
+  expect(owner).toContain('"deleted_initial_pids":["p777777777777"]')
+  expect(owner).toContain('"id":"a3","pid":"p777777777777","mode":"code","result_pids":[]')
+  expect(owner).toContain("The inspection date remains unknown.")
+  expect(owner).not.toContain(large.current[0]!.text)
+})
+
+test("selection diagnostics name malformed fields, exact invalid identifiers and permitted target ranges", () => {
+  const large: NotesBody = { ...body, current: [row("p222222222222", "Container handling instructions. ".repeat(600)), body.current[1]!] }
+  const plan = notesEvidencePlan(packet(large, ["p222222222222"]), { ownership: "one-point" })
+  const inspection = plan.inspections[0]!
+  const excerpt = { document: "d1", pid: "p222222222222", baseline: "current", start: 0, end: 30, role: "target" }
+  const check = (candidate: unknown) => checkNotesInspection({ excerpts: [candidate], limitation: "" }, inspection, [large]).issues.join(" ")
+  expect(check({ ...excerpt, pid: "p999999999999" })).toContain("excerpts[0].pid")
+  expect(check({ ...excerpt, pid: "p999999999999" })).toContain("p999999999999")
+  const truncated = check({ ...excerpt, pid: "p22222222222", role: "qualification" })
+  expect(truncated).toContain("p22222222222")
+  expect(truncated).toContain("p222222222222")
+  expect(truncated).toContain("navigation")
+  expect(check({ ...excerpt, pid: "p333333333333", end: 20 })).toContain("available")
+  expect(check({ ...excerpt, pid: "p333333333333", end: 20 })).toContain("p222222222222")
+  expect(check({ ...excerpt, start: 3_999, end: 4_001 })).toContain("[0,4000)")
+  expect(check({ ...excerpt, role: "qualification", end: large.current[0]!.text.length + 1 })).toContain("excerpts[0].end")
+  expect(check({ ...excerpt, baseline: "source" })).toContain("excerpts[0].baseline")
+  const legacy = checkNotesInspection({ targets: [{ document: "d1", pid: "p222222222222" }], excerpts: [], limitation: "" }, inspection, [large]).issues.join(" ")
+  expect(legacy).toContain("targets")
+  expect(legacy).toContain("excerpts")
+  const locator = checkNotesTargets({ targets: [{ document: "d1", pids: ["p22222222222"] }], limitation: "" }, [large])
+  expect(locator.targets).toBeUndefined()
+  expect(locator.issues.join(" ")).toContain("targets[0].pids[0]")
+  expect(locator.issues.join(" ")).toContain("p22222222222")
+  expect(locator.issues.join(" ")).toContain("p222222222222")
+  expect(checkNotesTargets({ targets: [{ document: "d9", pids: ["p222222222222"] }], limitation: "" }, [large]).issues.join(" ")).toContain("targets[0].document")
 })

@@ -4,6 +4,7 @@ import { checkFocusedNotesCoverage, checkNotesCoverageReply, notesCoveragePrompt
 import { LEAN_MAX_RETRIES, type StageSessionPort } from "./stages"
 import { readLeanState } from "./state"
 import { cleanupMatters, matter } from "./test-support"
+import { writeLeanPlan } from "./plan"
 
 afterEach(cleanupMatters)
 
@@ -42,6 +43,15 @@ function verifier(replies: string[]) {
     async prompt(input) { prompts.push(input); return replies[Math.min(prompts.length - 1, replies.length - 1)]! },
   }
   return { sessions, prompts, port }
+}
+
+function plannedMatter() {
+  const directory = matter()
+  writeLeanPlan(directory, [
+    { title: "Handover", purpose: "Record the handover condition.", parts: [{ heading: "Inspection", scope: "Inspection condition." }] },
+    { title: "Certificate", purpose: "Record the inspection result.", parts: [{ heading: "Result", scope: "Inspection result." }] },
+  ])
+  return directory
 }
 
 test("a malformed verdict retries only the same tool-denied verifier and its valid pass is required", async () => {
@@ -106,7 +116,7 @@ test("verification separates current accepted effects from legitimate initial hi
 })
 
 test("a missing current dependency packet requests one bounded inspection rather than a prose rewrite", async () => {
-  const directory = matter()
+  const directory = plannedMatter()
   const prose = "The covering note remains subject to the inspection condition in the attached certificate."
   const request = { document: "d2" as const, claim: "the inspection condition in the attached certificate", question: "What current certificate wording qualifies the inspection condition?" }
   const needed: NotesCoverageVerdict = { status: "needs-evidence", reason: "The assigned packet does not include the certificate's current condition.", request }
@@ -125,6 +135,18 @@ test("an inspection verdict must name one document and one concrete claim and qu
   }
 })
 
+test("reference-aware verdict parsing preserves strict claim case and punctuation against planned IDs", () => {
+  const request = { document: "d1", claim: "The seal design remains unknown", question: "What condition applies?" }
+  const verdict = { status: "needs-evidence", reason: "Need the current condition.", request }
+  const reference = { documents: [{ document: "d1" as const }], prose: proposed }
+  expect(checkNotesCoverageReply(JSON.stringify(verdict), reference).value).toEqual(verdict)
+  for (const invalid of [{ ...request, claim: "the seal design remains unknown" }, { ...request, claim: "The seal design remains unknown." }, { ...request, document: "d2" }]) {
+    const checked = checkNotesCoverageReply(JSON.stringify({ ...verdict, request: invalid }), reference)
+    expect(checked.value).toBeUndefined()
+    expect(checked.issues.join(" ")).toContain(invalid.document === "d2" ? "request.document" : "request.claim")
+  }
+})
+
 test("coverage distinguishes the owned change explanation from a dependency's separately owned human action", () => {
   const input = { kind: "change" as const, text: "Explain the accepted seal clause change. The separate open-item section owns the custodian's action to supply the missing design; retain its unresolved qualification here." }
   const prompt = notesCoveragePrompt(input, "The revised seal clause is conditional on the design remaining subject to confirmation.")
@@ -133,4 +155,49 @@ test("coverage distinguishes the owned change explanation from a dependency's se
   expect(prompt).toContain("never treat a missing dependency packet as evidence that the prose is false")
   const open = notesCoveragePrompt(assignment, proposed)
   expect(open).toContain("An open-item owner must explain the actual uncertainty, its practical consequence and the required human action")
+})
+
+test("an inexact dependency claim is corrected inside the same verifier before returning needs-evidence", async () => {
+  const directory = plannedMatter()
+  const request = { document: "d1" as const, claim: "The seal design remains unknown", question: "What current qualification applies to the seal design?" }
+  const needed = { status: "needs-evidence" as const, reason: "One current qualification is outside the packet.", request }
+  const model = verifier([JSON.stringify({ ...needed, request: { ...request, claim: "the seal design remains unknown" } }), JSON.stringify(needed)])
+  expect(await checkFocusedNotesCoverage(directory, readLeanState(directory)!, { sessions: model.port }, assignment, proposed, () => {})).toEqual(needed)
+  expect(model.sessions).toHaveLength(1)
+  expect(model.prompts).toHaveLength(2)
+  expect(model.prompts.every(prompt => prompt.sessionID === "notes-coverage-session" && prompt.agent === NOTES_COVERAGE_AGENT)).toBe(true)
+  expect(model.prompts[1]!.text).toContain("request.claim")
+  expect(model.prompts[1]!.text).toContain("including capitalization and punctuation")
+  expect(model.prompts[1]!.text).toContain('"status":"needs-evidence"')
+  expect(model.prompts[1]!.text).toContain('"question"')
+  expect(readLeanEvents(directory).filter(event => event.event === "checker").map(event => event.outcome)).toEqual([undefined, "needs-evidence"])
+  expect(JSON.stringify(readLeanEvents(directory))).not.toContain("the seal design remains unknown")
+})
+
+test("an unplanned dependency document is corrected in the same verifier without changing the proposed prose", async () => {
+  const directory = plannedMatter()
+  const request = { document: "d1" as const, claim: "The seal design remains unknown", question: "What current condition applies?" }
+  const needed = { status: "needs-evidence" as const, reason: "The relevant condition is not in this packet.", request }
+  const model = verifier([JSON.stringify({ ...needed, request: { ...request, document: "d9" } }), JSON.stringify(needed)])
+  expect(await checkFocusedNotesCoverage(directory, readLeanState(directory)!, { sessions: model.port }, assignment, proposed, () => {})).toEqual(needed)
+  expect(model.sessions).toHaveLength(1)
+  expect(model.prompts).toHaveLength(2)
+  expect(model.prompts[1]!.text).toContain("request.document")
+  expect(model.prompts[1]!.text).toContain("d9")
+  expect(model.prompts[1]!.text).toContain("d1, d2")
+  expect(model.prompts[0]!.text).toContain(proposed)
+})
+
+test("exhausted or missing-plan dependency requests never escape as a verdict", async () => {
+  for (const { directory, document } of [{ directory: plannedMatter(), document: "d9" }, { directory: matter(), document: "d1" }]) {
+    const model = verifier([JSON.stringify({ status: "needs-evidence", reason: "Need a current condition.", request: {
+      document, claim: "The seal design remains unknown", question: "What current condition applies?",
+    } })])
+    const result = await checkFocusedNotesCoverage(directory, readLeanState(directory)!, { sessions: model.port }, assignment, proposed, () => {})
+    expect(result.status).toBe("failed")
+    expect(result.reason).toContain("request.document")
+    expect(model.sessions).toHaveLength(1)
+    expect(model.prompts).toHaveLength(LEAN_MAX_RETRIES + 1)
+    expect(readLeanEvents(directory).filter(event => event.event === "checker").every(event => event.outcome === undefined)).toBe(true)
+  }
 })
