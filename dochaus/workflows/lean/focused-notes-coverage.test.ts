@@ -136,8 +136,8 @@ test("an inspection verdict must name one document and one concrete claim and qu
 })
 
 test("reference-aware verdict parsing preserves strict claim case and punctuation against planned IDs", () => {
-  const request = { document: "d1", claim: "The seal design remains unknown", question: "What condition applies?" }
-  const verdict = { status: "needs-evidence", reason: "Need the current condition.", request }
+  const request = { document: "d1" as const, claim: "The seal design remains unknown", question: "What condition applies?" }
+  const verdict: NotesCoverageVerdict = { status: "needs-evidence", reason: "Need the current condition.", request }
   const reference = { documents: [{ document: "d1" as const }], prose: proposed }
   expect(checkNotesCoverageReply(JSON.stringify(verdict), reference).value).toEqual(verdict)
   for (const invalid of [{ ...request, claim: "the seal design remains unknown" }, { ...request, claim: "The seal design remains unknown." }, { ...request, document: "d2" }]) {
