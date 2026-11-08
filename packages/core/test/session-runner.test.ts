@@ -84,7 +84,7 @@ import { Location } from "@opencode/core/location"
 import { Provider } from "@opencode/core/provider"
 import { Cause, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Queue, Schema, Scope, Stream } from "effect"
 import { TestClock } from "effect/testing"
-import { asc, desc, eq, sql } from "drizzle-orm"
+import { and, asc, desc, eq, sql } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 import { promptLocationNode } from "./fixture/prompt-location"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
@@ -6214,6 +6214,75 @@ describe("SessionRunnerLLM", () => {
       { type: "synthetic", text: INCOMPLETE_STREAM_CONTINUATION },
       Expected.assistant({ finish: "stop" }, [Expected.text(" continuation")]),
     ])
+  })
+
+  scenario("keeps sustained soft capacity Retry and Continue waits in one admitted native task", function* (s) {
+    const admitted = yield* s.admit("Finish the admitted handover explanation")
+    for (let i = 0; i < 12; i++) {
+      yield* s.llm.push(i % 2 === 0 ? Stream.fail(rateLimited(20_000)) : TestLLM.failAfter(
+        rateLimited(20_000),
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: `capacity-partial-${i}` }),
+        LLMEvent.textDelta({ id: `capacity-partial-${i}`, text: `Retained piece ${i}.` }),
+      ))
+    }
+    yield* s.llm.push(TestLLM.text("Finished from retained work", "capacity-finished"))
+
+    const scheduled = yield* subscribeRetries(s)
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    const assistantIDs: SessionMessage.ID[] = []
+    for (let i = 0; i < 12; i++) {
+      assistantIDs.push(yield* Queue.take(scheduled))
+      expect(s.requests).toHaveLength(i + 1)
+      yield* TestClock.adjust("20 seconds")
+    }
+    yield* Fiber.join(run)
+
+    expect(s.requests).toHaveLength(13)
+    // A pre-output Retry keeps its assistant; a partial Continue starts the
+    // next assistant while retaining the previous accepted stream fragments.
+    for (let i = 0; i < 12; i += 2) expect(assistantIDs[i]).toBe(assistantIDs[i + 1])
+    expect(new Set(assistantIDs).size).toBe(6)
+    const users = yield* s.db.select({ id: SessionMessageTable.id }).from(SessionMessageTable)
+      .where(and(eq(SessionMessageTable.session_id, sessionID), eq(SessionMessageTable.type, "user")))
+      .all().pipe(Effect.orDie)
+    expect(users).toEqual([{ id: admitted.id }])
+    expect(yield* s.inbox).toEqual([])
+    const context = yield* s.context
+    expect(context.filter(message => message.type === "synthetic")).toHaveLength(6)
+    for (let i = 1; i < 12; i += 2) {
+      const partial = context.find(message => message.type === "assistant" && message.content.some(part => part.type === "text" && part.text === `Retained piece ${i}.`))
+      expect(partial).toMatchObject(Expected.assistant({ finish: "error", error: { type: "provider.rate-limit" } }, [Expected.text(`Retained piece ${i}.`)]))
+    }
+    expect(context.at(-1)).toMatchObject(Expected.assistant({ finish: "stop" }, [Expected.text("Finished from retained work")]))
+    expect((yield* recordedEventTypes(sessionID)).filter(type => type === "session.retry.scheduled.1")).toHaveLength(12)
+    yield* replaySessionProjection(sessionID)
+    expect(yield* s.context).toMatchObject(context)
+  })
+
+  scenario("interrupts a native soft capacity wait without another request or lost partial output", function* (s) {
+    yield* s.admit("Pause the pending handover explanation")
+    yield* s.llm.push(TestLLM.failAfter(
+      rateLimited(60_000),
+      LLMEvent.stepStart({ index: 0 }),
+      LLMEvent.textStart({ id: "capacity-interrupted-partial" }),
+      LLMEvent.textDelta({ id: "capacity-interrupted-partial", text: "Retained before pause" }),
+    ), TestLLM.text("Must not run", "capacity-unused"))
+    const scheduled = yield* subscribeRetries(s)
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    yield* Queue.take(scheduled)
+    yield* s.session.interrupt(sessionID)
+    const exit = yield* Fiber.await(run)
+    expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true)
+    yield* TestClock.adjust("1 hour")
+    expect(s.requests).toHaveLength(1)
+    expect(yield* s.context).toMatchObject([
+      Expected.user("Pause the pending handover explanation"),
+      Expected.assistant({ finish: "error", error: { type: "provider.rate-limit" } }, [Expected.text("Retained before pause")]),
+    ])
+    const events = yield* recordedEventTypes(sessionID)
+    expect(events.filter(type => type === "session.retry.scheduled.1")).toHaveLength(1)
+    expect(events).not.toContain("session.synthetic.1")
   })
 
   scenario("continues after an unrecognized mid-stream provider failure", function* (s) {

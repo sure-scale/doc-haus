@@ -16,10 +16,26 @@ import { Context, Effect, Layer, Schema, Struct } from "effect"
 import { AISDK } from "./aisdk.js"
 import { Credential } from "./credential.js"
 import { Integration } from "./integration.js"
+import { IntegrationConnection } from "./integration/connection.js"
 import { Capabilities, ID, Info, Model, Ref, VariantID } from "./model.js"
 import type { RuntimeInfo } from "./model.js"
 import { Npm } from "@opencode/util/npm"
 import { Provider } from "./provider.js"
+
+/** Internal, non-wire identity of the selected access choice. Auth survives
+ * model/default and endpoint route clones; model/route custom fields do not. */
+export const MODEL_CAPACITY_SCOPE = Symbol.for("@opencode/core/model-capacity-scope")
+
+export function withCapacityScope(model: LanguageModel, providerID: string, connection: Parameters<typeof IntegrationConnection.key>[0]) {
+  const access = IntegrationConnection.key(connection)
+  if (!access) return model
+  const original = model.route.auth
+  const descriptors: PropertyDescriptorMap = Object.getOwnPropertyDescriptors(original)
+  delete descriptors[MODEL_CAPACITY_SCOPE]
+  const auth = Object.create(Object.getPrototypeOf(original), descriptors) as typeof original
+  Object.defineProperty(auth, MODEL_CAPACITY_SCOPE, { value: JSON.stringify([providerID, access]), enumerable: false })
+  return LanguageModel.update(model, { route: model.route.with({ auth }) })
+}
 
 export class VariantUnavailableError extends Schema.TaggedError<VariantUnavailableError>()(
   "SessionRunnerModel.VariantUnavailableError",
@@ -461,10 +477,10 @@ export const layer = Layer.effect(
         ...selectedVariant,
         settings: Provider.mergeOverlay(provider?.settings, Provider.modelSettings(selectedVariant.settings)),
       }
-      return { provider, credential, runtimeInfo }
+      return { provider, credential, runtimeInfo, connection }
     })
     const load = Effect.fn("ModelResolver.resolveModel")(function* (selected: Info, variant?: VariantID) {
-      const { provider, credential, runtimeInfo } = yield* prepare(selected, variant)
+      const { provider, credential, runtimeInfo, connection } = yield* prepare(selected, variant)
       const model = yield* fromCatalogModel(runtimeInfo, credential, dependencies)
       const runtime =
         provider?.activation === "enabled" &&
@@ -474,7 +490,7 @@ export const layer = Layer.effect(
           ? LanguageModel.update(model, { route: model.route.with({ auth: Auth.none }) })
           : model
       return {
-        model: runtime,
+        model: withCapacityScope(runtime, selected.providerID, connection),
         ref: Ref.make({
           id: selected.id,
           providerID: selected.providerID,
