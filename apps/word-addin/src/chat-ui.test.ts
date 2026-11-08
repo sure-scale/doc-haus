@@ -133,6 +133,18 @@ test("native paragraph insertion review offers Apply without the legacy import b
   } finally { f.restore() }
 })
 
+test("a disposed paragraph review cannot apply a retained card", async () => {
+  let calls = 0
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal })], host: { apply: async () => { calls++ } } })
+  try {
+    await f.chat.ready
+    const apply = [...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(button => button.textContent === "Apply")!
+    f.chat.dispose()
+    apply.click(); await Bun.sleep(0)
+    expect(calls).toBe(0)
+  } finally { f.restore() }
+})
+
 test("row uncertainty, prior application, unavailable callback and pending review never offer a retry", async () => {
   let calls = 0
   const uncertain = fixture({turns:[turn({kind:"amendment",rowProposal})],host:{applyRow:async () => {calls++; throw Object.assign(new Error("uncertain"),{mutationState:"uncertain"})}}})
@@ -1162,6 +1174,22 @@ test("a request sent from this pane that lands in a table is prepared again with
     const text = f.root.textContent ?? ""
     expect(text).toContain("Prepared again as a table change.")
     expect(text).not.toContain("Prepare as table change"); expect(text).not.toContain("This change is in a table.")
+  } finally { f.restore() }
+})
+
+test("a disposed table review cannot move the Word cursor from a retained card", async () => {
+  let placements = 0
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal })], host: {
+    applyEligibility: () => ({ supported: false, reason: "Prepare this table change again." }),
+    tableTarget: async (_target, place = false) => { if (place) placements++; return true },
+  } })
+  try {
+    await f.chat.ready; await Bun.sleep(0)
+    const prepare = [...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(button => button.textContent === "Prepare as table change")!
+    f.chat.dispose()
+    prepare.click(); await Bun.sleep(0)
+    expect(placements).toBe(0)
+    expect(f.calls.some(call => call.action === "send")).toBe(false)
   } finally { f.restore() }
 })
 
