@@ -581,6 +581,40 @@ describe("chat compare card", () => {
     expect(html).toContain("<li><strong>C99</strong> · Unknown entry remains a list item.</li>")
     expect(html).toContain("The actual deletion.")
   })
+
+  test("qualified comparison labels preserve their entire source", () => {
+    const compare = turn({ ...meta, hunks }).compares![0]!
+    for (const label of ["C1 not C2", "C1 except C2", "C1 remains unapproved"]) {
+      const text = `- **${label}** · The latter remains unapproved.`
+      const html = renderToStaticMarkup(createElement(CompareAnswer, { text, compare, onOpen: () => {} }))
+      expect(html).not.toContain('class="change-row"')
+      expect(html).not.toContain('title="Show C1 in the blackline"')
+      expect(html).toContain(`<li><strong>${label}</strong> · The latter remains unapproved.</li>`)
+    }
+  })
+
+  test("an unresolved member of a grouped entry keeps every ID visible after reload", () => {
+    const compare = turn({ ...meta, hunks }).compares![0]!
+    const text = "- **C1,C99** · The latter remains unapproved."
+    const props = { text, compare }
+    const html = renderToStaticMarkup(createElement(CompareAnswer, { ...props, onOpen: () => {} }))
+    expect(html).not.toContain('class="change-row"')
+    expect(html).not.toContain('title="Show C1 in the blackline"')
+    expect(html).toContain("<li><strong>C1,C99</strong> · The latter remains unapproved.</li>")
+    expect(renderToStaticMarkup(createElement(CompareAnswer, JSON.parse(JSON.stringify(props))))).toBe(html)
+  })
+
+  test("complete known ID lists accept the producer comma and legacy dot or and separators", () => {
+    const compare = turn({ ...meta, hunks }).compares![0]!
+    for (const label of ["C1, C2", "C1 · C2", "C1 and C2"]) {
+      const text = `**${label}** · Both reviewed changes.`
+      const html = renderToStaticMarkup(createElement(CompareAnswer, { text, compare, onOpen: () => {} }))
+      expect(html.match(/class="change-row"/g)).toHaveLength(1)
+      expect(html).toContain('title="Show C1 in the blackline"')
+      expect(html).toContain('title="Show C2 in the blackline"')
+      expect(html).toContain("Both reviewed changes.")
+    }
+  })
 })
 
 describe("compare entry points", () => {

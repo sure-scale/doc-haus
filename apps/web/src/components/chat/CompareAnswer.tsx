@@ -25,8 +25,9 @@ type Segment = { markdown: string } | { ids: string[]; note: string; source: str
 
 // An entry opens with its change ids in bold, "**C3** · …" or "- **C2, C4** · …",
 // and runs to a blank line or the next block. P-ids are the earlier version's
-// own tracked changes.
-const ENTRY = /^ {0,3}(?:[-*+]\s+|\d+[.)]\s+)?(\*\*\s*[CUP]\d+\b[^*]*\*\*.*)$/
+// own tracked changes. The producer uses commas; centered dots and "and" retain
+// legacy grouped entries. Any other words in the label remain ordinary prose.
+const ENTRY = /^ {0,3}(?:[-*+]\s+|\d+[.)]\s+)?(\*\*\s*[CUP]\d+(?:\s*(?:,|·|\band\b)\s*[CUP]\d+)*\s*\*\*.*)$/
 const BLOCK = /^\s*(?:[-*+]\s|\d+[.)]\s|#|\||>)/
 const markdownParser = unified().use(remarkParse)
 type MarkdownBlock = ReturnType<typeof markdownParser.parse>["children"][number]
@@ -102,6 +103,7 @@ export default function CompareAnswer({ text, compare, onOpen }: { text: string;
     <div className="markdown compare-answer">
       {segments.map((segment, i) => {
         if ("markdown" in segment) return <MarkdownContent key={i}>{segment.markdown}</MarkdownContent>
+        if (segment.ids.some(id => !listed.has(id))) return <MarkdownContent key={i}>{segment.source}</MarkdownContent>
         const changes = segment.ids.flatMap((id) => listed.get(id) ?? [])
         if (!changes.length) return <MarkdownContent key={i}>{segment.source}</MarkdownContent>
         return <ChangeRow key={i} changes={changes} note={segment.note} onShow={show} />
