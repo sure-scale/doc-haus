@@ -1607,6 +1607,47 @@ test("large table omits deletion guidance while retaining append guidance", asyn
   } finally {modelRawOutput=undefined}
 })
 
+test("table prompt canonical citations preserve cell text without JSON row delimiters", async () => {
+  const id = await newConversation(), paragraphs = ['Label "Quoted"', "Value", "A | B", "Ordinary entry"].map((text, index) => ({ id: `citation-cell-${index}`, text }))
+  const native = { ...context, text: paragraphs.map(p => p.text).join("\r"), paragraphs, table: { tableIndex: 0, rows: [paragraphs.slice(0, 2), paragraphs.slice(2)] } }
+  const request = () => post("send", { conversationId: id, scope: "document", text: "Explain why the requested table edit cannot be prepared.", requestId: crypto.randomUUID(), attachments: [], mode: "redline", context: native })
+  try {
+    modelStructuredRawOutput = JSON.stringify({ answerParts: [{ type: "text", text: "No proposal." }] })
+    const turn = (await (await request()).json() as { turn: WordChatTurn }).turn
+    const prompt = sessionContext(turn.id), supplied = suppliedContext(prompt)
+    expect(supplied.tableCitations).toEqual(paragraphs.map(({ text }) => ({ sourceId: "word", quote: text })))
+    expect(prompt).toContain("Table arrays are structural JSON")
+    expect(prompt).toContain("Do not join or serialize cells to create a quotation")
+    for (const citation of supplied.tableCitations) expect(supplied.sources.some((source: { id: string; quote: string }) => source.id === citation.sourceId && source.quote.includes(citation.quote))).toBe(true)
+    modelStructuredRawOutput = JSON.stringify({ answerParts: [{ type: "reference", sourceId: "word", quote: '"A | B","Ordinary entry"' }] })
+    const invalid = (await (await request()).json() as { turn: WordChatTurn }).turn
+    expect(invalid.status).toBe("error"); expect(invalid.error).toContain("A source reference or answer could not be verified")
+    modelStructuredRawOutput = JSON.stringify({ answerParts: [{ type: "reference", sourceId: "word", quote: 'Label "Quoted"' }] })
+    const exact = (await (await request()).json() as { turn: WordChatTurn }).turn
+    expect(exact.status).toBe("complete"); expect(exact.error).not.toContain("source reference")
+  } finally { modelStructuredRawOutput = undefined }
+})
+
+test("table prompt canonical citation hints are unique, bounded and drawn only from admitted source text", async () => {
+  const id = await newConversation()
+  const texts = ["AB", "x".repeat(1201), "Repeated literal cell", "Repeated literal cell", ...Array.from({ length: 80 }, (_, index) => `Cell ${index}: ${"literal ".repeat(18)}`)]
+  const paragraphs = texts.map((text, index) => ({ id: `bounded-citation-cell-${index}`, text }))
+  const native = { ...context, text: paragraphs.map(p => p.text).join("\r"), paragraphs, table: { tableIndex: 0, rows: paragraphs.map(paragraph => [paragraph]) } }
+  modelStructuredRawOutput = JSON.stringify({ answerParts: [{ type: "text", text: "No proposal." }] })
+  try {
+    const turn = (await (await post("send", { conversationId: id, scope: "document", text: "Inspect this table.", requestId: crypto.randomUUID(), attachments: [], mode: "redline", context: native })).json() as { turn: WordChatTurn }).turn
+    const supplied = suppliedContext(sessionContext(turn.id)), citations = supplied.tableCitations as Array<{ sourceId: string; quote: string }>
+    expect(citations.length).toBeGreaterThan(0); expect(citations.length).toBeLessThanOrEqual(64)
+    expect(citations.reduce((size, citation) => size + citation.quote.length, 0)).toBeLessThanOrEqual(8000)
+    expect(citations.filter(citation => citation.quote === "Repeated literal cell")).toHaveLength(1)
+    for (const citation of citations) {
+      expect(citation.quote.length).toBeGreaterThanOrEqual(3); expect(citation.quote.length).toBeLessThanOrEqual(1200)
+      expect(supplied.sources.some((source: { id: string; quote: string }) => source.id === citation.sourceId && source.quote.includes(citation.quote))).toBe(true)
+    }
+    expect(new Set(citations.map(citation => citation.quote)).size).toBe(citations.length)
+  } finally { modelStructuredRawOutput = undefined }
+})
+
 test("paragraph merge review, refinement and stored preparation remain bound to one boundary", async () => {
   const id=await newConversation(), paragraphs=[{id:"merge-a",text:"First sentence."},{id:"merge-b",text:"Second sentence."},{id:"merge-c",text:"Third sentence."}]
   const native={...context,text:paragraphs.map(p=>p.text).join("\r"),paragraphs,selection:undefined}
