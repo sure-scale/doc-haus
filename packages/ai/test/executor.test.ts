@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Deferred, Effect, Fiber, Layer, Ref, Stream } from "effect"
-import { Headers, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http"
+import { FetchHttpClient, Headers, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { Socket } from "effect/socket"
 import { ai, AIError, HttpContext, InvalidProviderOutputError, isRetryable, TransportError } from "../src/effect.js"
 import {
@@ -38,6 +38,45 @@ const expectAIError = (error: unknown) => {
 const largeProviderMessage = `Upstream request failed: ${"validation failed; ".repeat(1_000)}`
 
 describe("RequestExecutor", () => {
+  for (const operation of ["request", "read"] as const) {
+    it.effect(`normalizes a raw fetch socket reset during ${operation} into the typed transport channel`, () =>
+      Effect.gen(function* () {
+        const cause = systemError("ECONNRESET", "The socket connection was closed unexpectedly")
+        const chunks: Uint8Array[] = []
+        const fetch = Object.assign(async () => {
+          if (operation === "request") throw cause
+          let emitted = false
+          return new Response(new ReadableStream({
+            pull(controller) {
+              if (!emitted) {
+                emitted = true
+                controller.enqueue(new TextEncoder().encode("retained response bytes"))
+                return
+              }
+              controller.error(cause)
+            },
+          }))
+        }, { preconnect: globalThis.fetch.preconnect })
+        const error = yield* Effect.gen(function* () {
+          const executor = yield* RequestExecutor.Service
+          return yield* RequestExecutor.stream(executor, sseRequest).pipe(
+            Stream.runForEach(chunk => Effect.sync(() => chunks.push(chunk))),
+            Effect.flip,
+          )
+        }).pipe(
+          Effect.provide(RequestExecutor.fetchLayer),
+          Effect.provideService(FetchHttpClient.Fetch, fetch),
+        )
+
+        expectAIError(error)
+        expect(error.reason).toMatchObject({ _tag: "Transport", transport: "http", operation, code: "ECONNRESET" })
+        expect(error.reason.cause).toBe(cause)
+        expect(isRetryable(error)).toBeTrue()
+        expect(chunks.map(chunk => new TextDecoder().decode(chunk))).toEqual(operation === "read" ? ["retained response bytes"] : [])
+      }),
+    )
+  }
+
   it.effect("preserves externally captured HTTP errors without inventing response context", () =>
     Effect.sync(() => {
       const cause = new Error("upstream request failed")

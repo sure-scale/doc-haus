@@ -19,7 +19,8 @@ const retryAfter = (input: Input) => {
   return undefined
 }
 
-// Capacity waits and ordinary faults share the delay rules, not the retry count.
+// Temporary capacity/connection waits and ordinary faults share delay rules,
+// not the retry count.
 // Exponential from 2s capped at 10s per gap (before jitter); provider hints can
 // raise the minimum, up to RETRY_AFTER_MAX. Every wait remains interruptible.
 const backoff = Schedule.min([Schedule.exponential("2 seconds"), Schedule.spaced("10 seconds")]).pipe(
@@ -37,10 +38,20 @@ const schedule = Schedule.max([backoff, Schedule.recurs(10)])
 // dead provider hold a call for most of an hour. Cap those attempts well below it.
 const MAX_TIMEOUT_RETRIES = 3
 
-const makePolicy = (capacityWait: boolean) =>
+// These typed runtime codes affirm a lost connection or temporary offline
+// condition. Unknown errors, endpoint refusals, DNS not-found, unreachable
+// hosts and TLS/setup failures keep the ordinary bounded fault policy.
+const CONNECTION_LOSS_CODES = new Set(["ECONNRESET", "EPIPE", "ConnectionClosed", "UND_ERR_SOCKET", "ENETDOWN", "EAI_AGAIN"])
+const connectionLost = (error: AIError) => {
+  const reason = error.reason
+  return reason._tag === "Transport" && isRetryable(error) &&
+    (CONNECTION_LOSS_CODES.has(reason.code ?? "") || (reason.transport === "websocket" && reason.code === "1006"))
+}
+
+const makePolicy = (pendingWait: boolean) =>
   Effect.gen(function* () {
     const step = yield* Schedule.toStep(schedule)
-    const capacity = yield* Schedule.toStep(backoff)
+    const pending = yield* Schedule.toStep(backoff)
     let attempt = 1
     let timeouts = 0
     return (input: Input) =>
@@ -48,10 +59,11 @@ const makePolicy = (capacityWait: boolean) =>
         if (!input.retry || input.cause.reason.http?.headers["x-should-retry"] === "false")
           return { attempt: attempt + 1, delay: 0, retry: false }
         const now = yield* Clock.currentTimeMillis
-        // Soft throttles leave the same native turn pending. They must not spend
-        // the fault allowance shared by pre-output Retry and partial Continue.
-        const waiting = capacityWait && input.cause.reason._tag === "RateLimit"
-        const next = yield* (waiting ? capacity : step)(now, input).pipe(Pull.catchDone(() => Effect.succeed(undefined)))
+        // Soft throttles and known connection loss leave the same native turn
+        // pending without spending its shared pre-output Retry/partial Continue
+        // fault allowance. Delivery and explicit retry refusals still control.
+        const waiting = pendingWait && (input.cause.reason._tag === "RateLimit" || connectionLost(input.cause))
+        const next = yield* (waiting ? pending : step)(now, input).pipe(Pull.catchDone(() => Effect.succeed(undefined)))
         if (!next) return undefined
         const [, duration] = next
         attempt++

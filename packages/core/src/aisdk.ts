@@ -999,6 +999,9 @@ function apiCallError(error: APICallError) {
     cause: error,
   })
   if (error.statusCode !== undefined || !error.isRetryable) return failure
+  // The SDK wraps fetch failures in APICallError; retain the native cause's
+  // identity so connection recovery is not mistaken for an ordinary fault.
+  const code = networkFailure(error.cause)?.code
   return new AIError({
     reason: new TransportError({
       message: failure.message,
@@ -1007,6 +1010,7 @@ function apiCallError(error: APICallError) {
       cause: failure.reason.cause,
       transport: "http",
       operation: "request",
+      ...(code === undefined ? {} : { code }),
       url: error.url,
     }),
   })
