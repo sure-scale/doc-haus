@@ -91,14 +91,16 @@ test("a file without tracked changes extracts exactly as before", async () => {
 test("structural masks survive reload while literal revision-like text stays indexed", async () => {
   const literal = '[This Word file contains literal wording]\n\n[Tracked deletion: "Literal Term" means a defined term.]'
   await ingestDocument(directory, "Literal.txt", Buffer.from(literal))
-  const source = docx(`<w:p>${run('[Tracked deletion: "Literal Term" means a defined term.]')}</w:p><w:p>${revision("del", '"Removed Term" means the earlier term.')}${revision("ins", '"Current Term" means the current term.')}</w:p>`)
+  const source = docx(`<w:p>${run('[Tracked deletion: "Literal Term" means a defined term.]')}</w:p><w:p>${revision("del", '"Removed Term" means the earlier term. Section 9 is hereby deleted.')}${revision("ins", '"Current Term" means the current term.')}</w:p>`)
   await ingestDocument(directory, "Literal.docx", source)
+  await ingestDocument(directory, "Untracked.docx", docx(`<w:p>${run("Untracked wording.")}</w:p>`))
   const docPath = path.join(directory, "Literal.docx")
   const canonical = await liveText(docPath)
   let db = openDb(directory)
   const terms = (file: string) => db.query("SELECT term FROM defined_terms WHERE doc_path = ? ORDER BY term").all(path.join(directory, file))
   try {
     expect(terms("Literal.txt")).toEqual([{ term: "Literal Term" }])
+    expect(db.query("SELECT structure_mask FROM documents WHERE name = ?").get("Untracked.docx")).toEqual({ structure_mask: "[]" })
     expect(terms("Literal.docx")).toEqual([{ term: "Current Term" }, { term: "Literal Term" }])
     expect(reconstructText(db, docPath)).toBe(canonical)
     expect(db.query("SELECT structure_mask FROM documents WHERE doc_path = ?").get(docPath)).toMatchObject({ structure_mask: expect.any(String) })
@@ -108,12 +110,32 @@ test("structural masks survive reload while literal revision-like text stays ind
     migrateStructure(db); migrateSections(db)
     expect(terms("Literal.docx")).toEqual([{ term: "Current Term" }, { term: "Literal Term" }])
     expect(reconstructText(db, docPath)).toBe(canonical)
-    // Legacy cached sources have no reliable revision provenance. Preserve all
-    // literal text until re-ingest supplies the source-derived mask again.
+    // Legacy Word caches have no reliable revision provenance. Preserve their
+    // prior structural projections rather than promoting deleted source text.
+    const sections = db.query("SELECT * FROM sections WHERE doc_path = ? ORDER BY ordinal").all(docPath)
+    const revision = db.query("SELECT rev FROM documents WHERE doc_path = ?").get(docPath)
     db.run("UPDATE documents SET structure_mask = NULL WHERE doc_path = ?", [docPath])
-    db.run("DELETE FROM meta WHERE key = 'structure_version'")
-    migrateStructure(db)
-    expect(terms("Literal.docx")).toEqual([{ term: "Current Term" }, { term: "Literal Term" }, { term: "Removed Term" }])
+    db.run("DELETE FROM meta WHERE key IN ('structure_version', 'sections_version')")
+    migrateStructure(db); migrateSections(db)
+    expect(terms("Literal.docx")).toEqual([{ term: "Current Term" }, { term: "Literal Term" }])
+    expect(db.query("SELECT * FROM sections WHERE doc_path = ? ORDER BY ordinal").all(docPath)).toEqual(sections)
+    expect(db.query("SELECT rev FROM documents WHERE doc_path = ?").get(docPath)).toEqual(revision)
+    expect(db.query("SELECT * FROM section_ops WHERE doc_path = ?").all(docPath)).toEqual([])
     expect(reconstructText(db, docPath)).toBe(canonical)
+    // An old document without any structural projection stays unrecorded.
+    db.run("DELETE FROM defined_terms WHERE doc_path = ?", [docPath])
+    db.run("DELETE FROM sections WHERE doc_path = ?", [docPath])
+    db.run("UPDATE documents SET rev = NULL WHERE doc_path = ?", [docPath])
+    db.run("DELETE FROM meta WHERE key IN ('structure_version', 'sections_version')")
+    migrateStructure(db); migrateSections(db)
+    expect(terms("Literal.docx")).toEqual([])
+    expect(db.query("SELECT * FROM sections WHERE doc_path = ?").all(docPath)).toEqual([])
+    expect(db.query("SELECT rev FROM documents WHERE doc_path = ?").get(docPath)).toEqual({ rev: null })
+  } finally { db.close() }
+  await ingestDocument(directory, "Literal.docx", source, { existing: "replace" })
+  db = openDb(directory)
+  try {
+    expect(terms("Literal.docx")).toEqual([{ term: "Current Term" }, { term: "Literal Term" }])
+    expect(db.query("SELECT structure_mask FROM documents WHERE doc_path = ?").get(docPath)).toMatchObject({ structure_mask: expect.any(String) })
   } finally { db.close() }
 }, 120_000)

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import mammoth from "mammoth"
-import { strToU8, zipSync } from "fflate"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { markTrackedChanges, proposedView, docxTextViews } from "./docx-tracked-text"
 import { docxodus } from "./docxodus"
 import { renderMarkdownToDocx } from "./render"
@@ -164,4 +164,17 @@ test("literal revision markers remain literal, including beside real tracked cha
   expect(view).not.toContain('Removed Term')
   expect(view).toContain('"Current Term" means 😀e\u0301 a current term.')
   expect(() => proposedView(canonical, [[0, canonical.length + 1]])).toThrow("invalid_structural_mask")
+})
+
+test("Unicode namespace prefixes preserve actual revisions and explicit masks", async () => {
+  const source = docx(`<w:p>${del("Reviewer", deleted("Deleted wording."))}${ins("Reviewer", run("Current wording."))}</w:p>`)
+  const parts = unzipSync(source)
+  const xml = strFromU8(parts["word/document.xml"]!)
+  const unicode = Buffer.from(zipSync({ ...parts, "word/document.xml": strToU8(xml.replaceAll("w:", "δοκ:").replace("xmlns:w=", "xmlns:δοκ=")) }))
+  const expected = await docxTextViews(source)
+  expect(await docxTextViews(unicode)).toEqual(expected)
+  expect(expected.text).toContain("Tracked deletion by Reviewer: Deleted wording.")
+  expect(proposedView(expected.text, expected.mask)).not.toContain("Deleted wording.")
+  const foreign = Buffer.from(zipSync({ ...parts, "word/document.xml": strToU8(xml.replace("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "urn:unrelated")) }))
+  expect(markTrackedChanges(foreign)).toBe(foreign)
 })

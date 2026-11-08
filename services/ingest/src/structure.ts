@@ -13,6 +13,10 @@ import { proposedView, type StructuralMask } from "../../../dochaus/lib/docx-tra
 
 export const VERSION = "4"
 
+// Every supported non-Word extractor returns literal text. Other legacy names
+// may have used the DOCX fallback and need source-derived provenance first.
+const STRUCTURE_READY = "(structure_mask IS NOT NULL OR lower(name) GLOB '*.txt' OR lower(name) GLOB '*.csv' OR lower(name) GLOB '*.md' OR lower(name) GLOB '*.markdown' OR lower(name) GLOB '*.pdf' OR lower(name) GLOB '*.rtf' OR lower(name) GLOB '*.eml' OR lower(name) GLOB '*.msg' OR lower(name) GLOB '*.xlsx' OR lower(name) GLOB '*.zip')"
+
 // Quoted defined term: starts uppercase, single line, sane length. Straight or
 // curly quotes — extracted text carries both.
 const TERM = `[“"]([A-Z][^”"\\n]{0,60}?)[”"]`
@@ -508,11 +512,12 @@ export function chunkSection(section: { text: string; charStart: number }) {
 }
 
 // Backfill matters indexed before structure extraction existed (or before the
-// current pattern VERSION). Text comes back out of the chunks themselves, so no
-// re-parse of the source file is needed.
+// current pattern VERSION). Text comes back out of the chunks themselves. Legacy
+// Word rows without source-derived masks retain their cached projections until
+// re-ingest: punctuation cannot recover whether old wording was actually deleted.
 export function migrateStructure(db: Database) {
   if (getMeta(db, "structure_version") === VERSION) return 0
-  const docs = db.query("SELECT doc_path, name FROM documents WHERE role = 'source'").all() as Array<{
+  const docs = db.query(`SELECT doc_path, name FROM documents WHERE role = 'source' AND ${STRUCTURE_READY}`).all() as Array<{
     doc_path: string
     name: string
   }>
@@ -567,7 +572,9 @@ const SECTIONS_VERSION = "3"
 
 // Backfill matters indexed before sections were recorded or before the current
 // SECTIONS_VERSION, plus any source document still without a rev, and drop
-// sections no source document owns. Like the structure backfill it reads the
+// sections no source document owns. Legacy Word rows without masks retain
+// existing sections, ordinals and revision; absent projections wait for re-ingest.
+// Like the structure backfill it reads the
 // chunks, which is what ingest records from too, so a backfilled document
 // matches a fresh ingest. One transaction never leaves a matter half-recorded.
 // With nothing to do it costs the single query below.
@@ -575,7 +582,7 @@ export function migrateSections(db: Database) {
   const state = db
     .query(
       `SELECT (SELECT value FROM meta WHERE key = 'sections_version') AS version,
-        EXISTS (SELECT 1 FROM documents WHERE role = 'source' AND rev IS NULL) AS unrecorded,
+        EXISTS (SELECT 1 FROM documents WHERE role = 'source' AND rev IS NULL AND ${STRUCTURE_READY}) AS unrecorded,
         EXISTS (SELECT 1 FROM (SELECT DISTINCT doc_path FROM sections) AS s WHERE NOT EXISTS
           (SELECT 1 FROM documents AS d WHERE d.doc_path = s.doc_path AND d.role = 'source')) AS orphaned`,
     )
@@ -583,7 +590,7 @@ export function migrateSections(db: Database) {
   const current = state.version === SECTIONS_VERSION
   if (current && !state.unrecorded && !state.orphaned) return 0
   const docs = db
-    .query(`SELECT doc_path, name FROM documents WHERE role = 'source'${current ? " AND rev IS NULL" : ""}`)
+    .query(`SELECT doc_path, name FROM documents WHERE role = 'source' AND ${STRUCTURE_READY}${current ? " AND rev IS NULL" : ""}`)
     .all() as Array<{ doc_path: string; name: string }>
   db.transaction(() => {
     db.run("DELETE FROM sections WHERE doc_path NOT IN (SELECT doc_path FROM documents WHERE role = 'source')")
