@@ -573,7 +573,8 @@ const SECTIONS_VERSION = "3"
 // Backfill matters indexed before sections were recorded or before the current
 // SECTIONS_VERSION, plus any source document still without a rev, and drop
 // sections no source document owns. Legacy Word rows without masks retain
-// existing sections, ordinals and revision; absent projections wait for re-ingest.
+// existing sections and ordinals; absent projections wait for re-ingest.
+// Missing canonical text revisions are backfilled independently.
 // Like the structure backfill it reads the
 // chunks, which is what ingest records from too, so a backfilled document
 // matches a fresh ingest. One transaction never leaves a matter half-recorded.
@@ -582,7 +583,7 @@ export function migrateSections(db: Database) {
   const state = db
     .query(
       `SELECT (SELECT value FROM meta WHERE key = 'sections_version') AS version,
-        EXISTS (SELECT 1 FROM documents WHERE role = 'source' AND rev IS NULL AND ${STRUCTURE_READY}) AS unrecorded,
+        EXISTS (SELECT 1 FROM documents WHERE role = 'source' AND rev IS NULL) AS unrecorded,
         EXISTS (SELECT 1 FROM (SELECT DISTINCT doc_path FROM sections) AS s WHERE NOT EXISTS
           (SELECT 1 FROM documents AS d WHERE d.doc_path = s.doc_path AND d.role = 'source')) AS orphaned`,
     )
@@ -592,12 +593,18 @@ export function migrateSections(db: Database) {
   const docs = db
     .query(`SELECT doc_path, name FROM documents WHERE role = 'source' AND ${STRUCTURE_READY}${current ? " AND rev IS NULL" : ""}`)
     .all() as Array<{ doc_path: string; name: string }>
+  // Canonical text identity does not depend on interpreting revision markers.
+  // Preserve/withhold legacy structure, but give its stored text the same rev
+  // that source snapshot staging computes before taking the registry lock.
+  const legacy = db.query(`SELECT doc_path FROM documents WHERE role = 'source' AND rev IS NULL AND NOT ${STRUCTURE_READY}`)
+    .all() as Array<{ doc_path: string }>
   db.transaction(() => {
     db.run("DELETE FROM sections WHERE doc_path NOT IN (SELECT doc_path FROM documents WHERE role = 'source')")
     for (const doc of docs) recordSections(db, doc.doc_path, doc.name)
+    for (const doc of legacy) db.run("UPDATE documents SET rev = ? WHERE doc_path = ?", [revision(reconstructText(db, doc.doc_path)), doc.doc_path])
     setMeta(db, "sections_version", SECTIONS_VERSION)
   })()
-  return docs.length
+  return docs.length + legacy.length
 }
 
 // Absent legacy metadata is literal text. Never recover authority from a summary.
