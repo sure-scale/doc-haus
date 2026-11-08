@@ -4,7 +4,7 @@ import { leanClarifications } from "./requests"
 import { z } from "zod"
 import { readLeanPlan } from "./plan"
 import { checklistAdjudicationCounterevidenceSchema, type ChecklistAdjudicationCounterevidence, type ChecklistItem } from "./checklist-contract"
-import { checklistFindingRecovery, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, checklistFindingSchema, checklistItemSchema, checklistRefinementSchema, buildChecklistRefinementPrompt, type ChecklistRefinementInput, type ChecklistSourceReference, type ChecklistTargetDocument } from "./checklist-contract"
+import { checklistFindingRecovery, markerVerificationIssues, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, checklistFindingSchema, checklistItemSchema, checklistRefinementSchema, buildChecklistRefinementPrompt, type ChecklistRefinementInput, type ChecklistSourceReference, type ChecklistTargetDocument } from "./checklist-contract"
 import { buildChecklistDocumentContext } from "./checklist-document-context"
 import { runChecklistCheckJob, runChecklistExtractionJob, runChecklistRefinementJob, type ChecklistJobDeps } from "./checklist-job"
 import { checklistProducerInputs } from "./checklist-source-context"
@@ -144,17 +144,20 @@ export async function runChecklistCheckFlow(directory: string, deps: ChecklistJo
     const reinspection = priorReview?.canonical_input_sha === job.canonical_input_sha ? priorReview : undefined
     // An admission that recorded no outcome has not spent the allowance.
     const unfinished = reinspection?.status === "failed" && reinspection.sessionID === undefined && reinspection.issues.length === 1 && reinspection.issues[0] === UNFINISHED_REINSPECTION
-    const record = records[index]
     const previous = cached?.checks.find(row => row.item_id === job.record.id)
+    // A former source-duty verdict can violate the product marker contract.
+    // Recheck that invalid output, retaining any consumed reinspection below.
+    const invalid = !!previous?.finding && markerVerificationIssues(job.context.input, previous.finding).length > 0
+    const record = invalid ? undefined : records[index]
     // A changed prompt or navigation hint is not new substantive evidence.
     // Preserve the consumed assessment before either ordinary or clarified admission.
-    if (!record && reinspection && !unfinished && previous?.status === "succeeded" && previous.finding) {
+    if (!invalid && !record && reinspection && !unfinished && previous?.status === "succeeded" && previous.finding) {
       records[index] = { ...previous, input_sha: job.input_sha }
       save()
       return
     }
-    const clarified = !record && clarifications.length > 0 && previous?.status === "succeeded" && previous.finding ? previous : undefined
-    const inspected = record ?? clarified ?? (unfinished ? previous : undefined)
+    const clarified = !invalid && !record && clarifications.length > 0 && previous?.status === "succeeded" && previous.finding ? previous : undefined
+    const inspected = record ?? clarified ?? (!invalid && unfinished ? previous : undefined)
     if (inspected?.status === "succeeded") {
       const admitted = options.reinspectAdverse || options.reinspectItems?.has(job.record.id)
       if (!clarified && !unfinished && (!admitted || !inspected.finding || checklistFindingRecovery(job.record.item, inspected.finding) === "none" || reinspection)) return

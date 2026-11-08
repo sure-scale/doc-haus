@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { buildChecklistReinspectionPrompt, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, type ChecklistCheckerInput, type ChecklistProducerInput } from "./checklist-contract"
+import { buildChecklistReinspectionPrompt, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, type ChecklistCheckerInput, type ChecklistFinding, type ChecklistProducerInput } from "./checklist-contract"
 import { CHECKLIST_JOB_AGENTS, CHECKLIST_JOB_PERMISSIONS, runChecklistCheckJob, runChecklistExtractionJob, runChecklistRefinementJob } from "./checklist-job"
 import { LEAN_PROMPT_VERSION, stageInputs, LEAN_MAX_RETRIES, type StageSessionPort } from "./stages"
 
@@ -71,6 +71,26 @@ test("malformed JSON and shape receive bounded correction in the same native ses
   expect(port.prompts[1].text).toContain("not valid JSON")
   expect(port.prompts[2].text).toContain("item_id")
   expect(JSON.stringify(checker)).toBe(before)
+})
+
+test("contradictory marker verdicts receive bounded correction without being rewritten into acceptance", async () => {
+  const directory = matter(source.quote)
+  const input: ChecklistCheckerInput = { ...checker, verification: "provisional_fact_marker", item: { ...checker.item, required_action: "flag" } }
+  const invalid: ChecklistFinding = { ...finding, status: "not_applicable", action_status: "fulfilled", open_decisions: ["The underlying fact remains unknown."] }
+  const adverse: ChecklistFinding = { ...finding, status: "unsatisfied", action_status: "not_fulfilled", open_decisions: [], reason: "The inspected dependent passage lacks the required marker." }
+  const port = sessionPort([JSON.stringify(invalid), JSON.stringify(adverse)])
+  const result = await runChecklistCheckJob(directory, { sessions: port.sessions, model: null }, input)
+  expect(result.status).toBe("succeeded")
+  expect(result.attempts).toBe(2)
+  expect(port.created).toHaveLength(1)
+  expect(port.prompts[1]!.text).toContain("not_applicable must have action_status not_applicable")
+  expect(port.prompts[1]!.text).toContain("unknown and belongs in limitation")
+  expect(port.prompts.every(row => row.sessionID === "session-1")).toBe(true)
+  if (result.status === "succeeded") expect(result.value).toEqual(adverse)
+  const exhausted = sessionPort(Array.from({ length: LEAN_MAX_RETRIES + 1 }, () => JSON.stringify(invalid)))
+  const failed = await runChecklistCheckJob(directory, { sessions: exhausted.sessions, model: null }, input)
+  expect(failed.status).toBe("failed")
+  expect(exhausted.prompts).toHaveLength(LEAN_MAX_RETRIES + 1)
 })
 
 test("a deferral marker is accepted only from range or process-records assignments", async () => {

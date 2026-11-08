@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import { checklistFindingRecovery, checklistTextMeasuresMeaning, type ChecklistFinding, buildChecklistReinspectionPrompt, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, buildChecklistRefinementPrompt, CHECKLIST_ITEM_SHAPE, parseChecklistCheckerInput, parseChecklistExtraction, parseChecklistFinding, parseChecklistItem, type ChecklistItem } from "./checklist-contract"
+import { markerVerificationIssues, type ChecklistCheckerInput } from "./checklist-contract"
 
 const item: ChecklistItem = {
   check: "Check the proposed notice arrangement remains subject to confirmation.",
@@ -10,6 +11,65 @@ const item: ChecklistItem = {
 }
 const evidence = [{ document: "agreement.docx", locator: "p0123456789ab", text: "[open item: confirm notice arrangement]", kind: "body" as const }]
 const packet = { item_id: "source-1-item-1", item, current_evidence: evidence, settled_instructions: [], retrieval: "Use read-record at current.json /paragraphs/0 and targeted lookup for necessary context." }
+
+const markerPacket: ChecklistCheckerInput = { ...packet, verification: "provisional_fact_marker", item: { ...item,
+  check: "Verify visible handling of the missing complete storage specification and unknown prior inspection.", basis: "open_question", required_action: "flag",
+  source_refs: [{ document: "request", locator: "questions.json answer (q-storage)", question: "Is the complete specification supplied, and was the container inspected?", quote: "No more information is available. Prepare a review draft and disclose what remains unresolved." }],
+} }
+
+test("product marker verification has a distinct contract without promoting human provenance to a source duty", () => {
+  const before = JSON.stringify(markerPacket)
+  const prompt = buildChecklistCheckerPrompt(markerPacket)
+  expect(prompt).toContain("application supplies the handling rule")
+  expect(prompt).toContain("do not require a separate human instruction")
+  expect(prompt).toContain("Descriptive or paraphrased markers")
+  expect(prompt).toContain("retain each unresolved component")
+  expect(prompt).toContain("every dependent passage")
+  expect(prompt).toContain("unknown factual answer is not an unresolved marker decision")
+  expect(prompt).toContain("Missing inspection or uncertain dependency coverage is indeterminate")
+  expect(prompt).not.toContain("First independently assess whether the cited sources support the item's stated scope")
+  expect(prompt).not.toContain("Check this one unchanged source-derived checklist item")
+  const input = JSON.parse(prompt.split("CHECK_INPUT:\n\n")[1]!)
+  expect(input.item).toEqual(markerPacket.item)
+  expect(input.verification).toBe("provisional_fact_marker")
+  expect(input.item.source_refs[0].quote).toBe(markerPacket.item.source_refs[0]!.quote)
+  expect(JSON.stringify(markerPacket)).toBe(before)
+  expect(() => parseChecklistItem({ ...item, verification: "provisional_fact_marker" })).toThrow()
+  expect(() => parseChecklistCheckerInput({ ...packet, verification: "source_override" })).toThrow()
+  const ordinary = buildChecklistCheckerPrompt(packet)
+  expect(buildChecklistCheckerPrompt({ ...packet, verification: undefined })).toBe(ordinary)
+  expect(ordinary).toContain("First independently assess whether the cited sources support the item's stated scope")
+})
+
+test("marker reinspection retains its handling task instead of reintroducing source-duty applicability", () => {
+  const previous: ChecklistFinding = { item_id: markerPacket.item_id, status: "not_applicable", action_status: "not_applicable", reason: "The human did not separately require marking.", evidence, source_refs: markerPacket.item.source_refs, inspection_scope: "The supplied current paragraphs.", limitation: "The facts remain unknown.", open_decisions: ["The prior inspection is unknown."] }
+  const prompt = buildChecklistReinspectionPrompt(markerPacket, previous)
+  expect(prompt).toContain("Reinspect this unchanged product-owned marker task")
+  expect(prompt).toContain("do not assume a pass")
+  expect(prompt).toContain("application supplies the handling rule")
+  expect(prompt).not.toContain("Assess source-supported applicability")
+  expect(prompt).not.toContain("A proposal does not require adoption merely because")
+  const preserved = prompt.split("\n\n").find(row => row.startsWith("Previous finding (unverified assessment, not source authority): "))!
+  expect(JSON.parse(preserved.slice(preserved.indexOf(": ") + 2))).toEqual(previous)
+})
+
+test("marker contract correction rejects affirmative contradictions while preserving valid adverse findings and ordinary semantics", () => {
+  const positive: ChecklistFinding = { item_id: markerPacket.item_id, status: "satisfied", action_status: "fulfilled", reason: "Every current dependent passage visibly retains both unknowns.", evidence, source_refs: markerPacket.item.source_refs, inspection_scope: "All current dependent passages.", limitation: "The complete specification and inspection history remain unknown.", open_decisions: [] }
+  expect(markerVerificationIssues(markerPacket, positive)).toEqual([])
+  expect(markerVerificationIssues(markerPacket, { ...positive, status: "not_applicable", action_status: "not_applicable" })).toEqual([])
+  for (const value of [
+    { ...positive, action_status: "not_applicable" as const },
+    { ...positive, status: "not_applicable" as const, action_status: "fulfilled" as const },
+    { ...positive, open_decisions: ["The inspection history remains unknown."] },
+    { ...positive, open_decisions: undefined },
+    { ...positive, evidence: [] },
+  ]) expect(markerVerificationIssues(markerPacket, value).length).toBeGreaterThan(0)
+  const adverse: ChecklistFinding = { ...positive, status: "unsatisfied", action_status: "not_fulfilled", reason: "A dependent passage is unmarked.", open_decisions: ["Mark the remaining dependent passage."] }
+  const before = JSON.stringify(adverse)
+  expect(markerVerificationIssues(markerPacket, adverse)).toEqual([])
+  expect(JSON.stringify(adverse)).toBe(before)
+  expect(markerVerificationIssues(packet, { ...positive, status: "not_applicable", action_status: "not_applicable", open_decisions: ["Whether the proposal should be adopted."] })).toEqual([])
+})
 
 test("producer to consumer preserves exact canonical source meaning", () => {
   const produced = parseChecklistExtraction({ items: [item] }).items[0]

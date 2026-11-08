@@ -6,6 +6,7 @@ import {
   type ChecklistRefinementInput,
   type ChecklistRefinement,
   buildChecklistCheckerPrompt,
+  markerVerificationIssues,
   buildChecklistReinspectionPrompt,
   buildChecklistProducerPrompt,
   parseChecklistExtraction,
@@ -48,6 +49,7 @@ export function runChecklistExtractionJob(directory: string, deps: ChecklistJobD
 
 export function runChecklistCheckJob(directory: string, deps: ChecklistJobDeps, input: ChecklistCheckerInput, previous?: ChecklistFinding, counterevidence?: ChecklistAdjudicationCounterevidence): Promise<ChecklistJobResult<ChecklistFinding>> {
   return runChecklistJob(directory, deps, CHECKLIST_JOB_AGENTS.check, previous ? buildChecklistReinspectionPrompt(input, previous, counterevidence) : buildChecklistCheckerPrompt(input), parseChecklistFinding, value => [
+    ...markerVerificationIssues(input, value),
     ...sourceReferenceIssues(directory, value.source_refs, input.settled_instructions, "source_refs"),
     ...currentEvidenceIssues(directory, value.evidence, input),
     ...(input.item.required_action && (!value.action_status || !value.open_decisions) ? ["Refined-item findings must include action_status and open_decisions, separately from overall status and source applicability."] : []),

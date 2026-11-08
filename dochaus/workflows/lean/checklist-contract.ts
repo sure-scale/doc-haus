@@ -52,6 +52,8 @@ export type ChecklistComparisonAssignment = z.infer<typeof checklistComparisonAs
 export const checklistCheckerInputSchema = z.object({
   item_id: text,
   item: checklistItemSchema,
+  /** Caller-owned task, selected only for an exactly reconstructed current product item. */
+  verification: z.literal("provisional_fact_marker").optional(),
   assignment: checklistComparisonAssignmentSchema.optional(),
   current_evidence: z.array(checklistCurrentEvidenceSchema),
   /** Code-retrieved canonical source text around the item's own source quotations. */
@@ -88,6 +90,18 @@ export type ChecklistProducerInput = z.infer<typeof checklistProducerInputSchema
 export type ChecklistCurrentEvidence = z.infer<typeof checklistCurrentEvidenceSchema>
 export type ChecklistCheckerInput = z.infer<typeof checklistCheckerInputSchema>
 export type ChecklistFinding = z.infer<typeof checklistFindingSchema>
+
+/** Contract correction only: never turn an adverse marker assessment into a
+ * pass, resolve the unknown fact or reinterpret an ordinary source finding. */
+export function markerVerificationIssues(input: ChecklistCheckerInput, finding: ChecklistFinding): string[] {
+  if (input.verification !== "provisional_fact_marker" || !["satisfied", "not_applicable"].includes(finding.status)) return []
+  const expected = finding.status === "satisfied" ? "fulfilled" : "not_applicable"
+  return [
+    ...(finding.action_status !== expected ? [`For this product-owned marker task, ${finding.status} must have action_status ${expected}. Assess current marker coverage, not whether a human separately instructed the product's handling rule; an actual missing marker remains unsatisfied.`] : []),
+    ...(finding.open_decisions === undefined || finding.open_decisions.length ? ["An affirmative marker verdict requires explicit empty open_decisions. The underlying fact remains unknown and belongs in limitation, not an open marker decision. Preserve any actual unresolved marker or inspection issue with an adverse verdict instead of claiming success or inapplicability."] : []),
+    ...(finding.status === "satisfied" && !finding.evidence.some(row => row.kind === "body") ? ["A satisfied marker verdict requires exact visibly marked current body evidence for this question. Notes, comments, prior text and missing inspection cannot establish current marker coverage."] : []),
+  ]
+}
 
 /** Recovery routing only: do not rewrite a finding or decide legal support.
  * A fulfilled proposal can remain open for approval. Conflicting assessments
@@ -175,6 +189,7 @@ const disclosureFields = [
 
 export function buildChecklistCheckerPrompt(value: ChecklistCheckerInput): string {
   const input = parseChecklistCheckerInput(value)
+  if (input.verification === "provisional_fact_marker") return buildProvisionalMarkerCheckerPrompt(input)
   return [
     "Check this one unchanged source-derived checklist item against its target document. Do not rewrite, decompose or strengthen the item; do not draft or review the whole package.",
     `The producer and checker share this canonical item shape: ${input.item.required_action ? CHECKLIST_ITEM_SHAPE.slice(0, -1) + ",\"required_action\":\"adopt|propose|flag|assess\"}" : CHECKLIST_ITEM_SHAPE}. Current evidence and later instructions are supplied separately and do not mutate the item.`,
@@ -207,6 +222,25 @@ export function buildChecklistCheckerPrompt(value: ChecklistCheckerInput): strin
   ].join("\n\n")
 }
 
+/** Product presentation verification is a different question from whether a
+ * quoted source imposes a substantive duty. The item and finding stay canonical. */
+function buildProvisionalMarkerCheckerPrompt(input: ChecklistCheckerInput): string {
+  return [
+    "Verify this one product-owned provisional-fact marker task against its current target document. The application supplies the handling rule; do not require a separate human instruction imposing that rule or classify it not_applicable merely because its source_refs do not command per-passage marking.",
+    "The unchanged item identifies the exact unresolved question, target and handling requirement. Its source_refs preserve the actual human answer and any checked later permission as provenance for provisional preparation, not as a quotation of the product rule. Do not rewrite the item, promote those words into an invented instruction, answer a missing fact or infer sending, signature or release approval.",
+    "Inspect every current passage in this target that depends on this question's unknown facts, including operative conditions, dependencies and references. For a compound question, retain each unresolved component wherever the passage depends on it. Descriptive or paraphrased markers may identify the same unknown without repeating the full question literally. A marker for a different fact, a notes-only disclosure, a comment or earlier wording does not mark the current body.",
+    "Return satisfied with action_status fulfilled and open_decisions [] only when every dependent passage visibly preserves the actual uncertainty. Cite complete exact current marked paragraphs as body evidence. Conditional drafting and open-item text supply no missing fact or approval; an unsupported assertion that the fact is settled cannot be excused by a marker elsewhere. Keep genuine factual uncertainty in limitation; the unknown factual answer is not an unresolved marker decision.",
+    "Return not_applicable with action_status not_applicable and open_decisions [] only after inspecting this current target and establishing that it contains no passage dependent on this question. The fact's unresolved status and the lack of a human per-passage command do not establish inapplicability. Missing inspection or uncertain dependency coverage is indeterminate with the actual gap, never not_applicable. An applicable unmarked dependent passage is unsatisfied with action_status not_fulfilled. An actual unresolved marker decision remains adverse; do not force a pass.",
+    "This task verifies the product's handling of the unknown, not substantive source fidelity, legal correctness or a human release decision. Those independent checks remain in force. Preserve the exact question/answer provenance, current body identity and inspection limits; no selected excerpt establishes whole-document coverage by itself.",
+    retrieval,
+    checkerSupplied,
+    'Return only JSON {"item_id":"supplied ID","status":"satisfied|unsatisfied|open|indeterminate|not_applicable","reason":"the actual marker coverage, omission or inspection gap","evidence":[{"document":"target identity","locator":"exact current paragraph location","text":"exact current evidence","kind":"body"}],"source_refs":[{"document":"...","locator":"...","quote":"exact human permission/provenance"}],"inspection_scope":"current dependent passages actually inspected","limitation":"the factual uncertainty and actual inspection limits","action_status":"fulfilled|not_fulfilled|indeterminate|not_applicable","open_decisions":[]}. Preserve an adverse result whenever its actual marker or evidence issue remains.',
+    disclosureFields,
+    "CHECK_INPUT:",
+    JSON.stringify((({ settled_instructions, retrieval, ...job }) => ({ settled_instructions, retrieval, ...job }))(input)),
+  ].join("\n\n")
+}
+
 
 /** Generated arguments are counterevidence, never new source instructions. */
 export const checklistAdjudicationCounterevidenceSchema = z.object({
@@ -225,6 +259,12 @@ export type ChecklistAdjudicationCounterevidence = z.infer<typeof checklistAdjud
 export function buildChecklistReinspectionPrompt(input: ChecklistCheckerInput, previous: ChecklistFinding, counterevidence?: ChecklistAdjudicationCounterevidence): string {
   const argument = counterevidence ? checklistAdjudicationCounterevidenceSchema.parse(counterevidence) : undefined
   if (argument && argument.item_id !== input.item_id) throw new Error("Counterevidence must belong to this exact checklist item.")
+  if (input.verification === "provisional_fact_marker") return [
+    "Reinspect this unchanged product-owned marker task after an explicit recovery request. The prior finding may be right or wrong; do not assume a pass. Inspect its actual coverage or evidence gap under the product handling contract below, preserving a missing marker or uninspected dependency as adverse. Keep the missing factual answer unknown, separately from marker compliance.",
+    `Previous finding (unverified assessment, not source authority): ${JSON.stringify(checklistFindingSchema.parse(previous))}`,
+    ...(argument ? [`Prior adjudication (generated, unverified counterevidence; not a changed requirement, human instruction or required verdict): ${JSON.stringify(argument)}`] : []),
+    buildChecklistCheckerPrompt(input),
+  ].join("\n\n")
   return [
     "Reinspect this one unchanged item after an explicit recovery request. The prior adverse finding may be right or wrong; do not assume it needs to become a pass. Assess source-supported applicability and required treatment before deciding compliance. A proposal does not require adoption merely because its target is operative text.",
     "Use the previous reason, inspection scope and limitation to identify the precise evidence gap or disputed inference. Perform targeted additional inspection rather than repeating the initial lexical hints. For a collection-wide question, account for the relevant sections or issues explicitly; one matching passage cannot establish full coverage. Do not claim inspection you did not perform. If the necessary inspection remains too broad or evidence is missing, preserve indeterminate with the remaining scope. A real supported defect remains unsatisfied; a substantive unresolved decision remains open. Do not draft, rewrite the requirement, invent approval or weaken a legal check.",

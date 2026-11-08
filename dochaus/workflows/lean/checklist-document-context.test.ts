@@ -18,6 +18,9 @@ import { combinedDelivery, deliveryArtifactEvidence, memoNotesFile } from "./del
 import { withSourceSnapshot } from "./quotes"
 import { writeLeanPlan } from "./plan"
 import { leanFile, writeLeanBytes } from "./state"
+import { withFactOptions } from "./fact-answers"
+import { provisionalFactMarkerItems } from "./provisional-fact-markers"
+import { readQuestions, writeQuestions, type Question } from "./state"
 
 const item = (document = "record.docx", check = "Verify the violet inventory receipt."): ChecklistItem => ({
   check, basis: "directive", source_refs: [{ document: "request.txt", locator: "line 1", quote: "Verify the violet inventory receipt." }],
@@ -49,6 +52,30 @@ function matter() {
   ])
   return directory
 }
+
+test("only the exact current reconstructed marker item receives the product verification task", () => {
+  const directory = matter()
+  try {
+    const offered = withFactOptions({ id: "q-specification", stage: "intake", kind: "fact", status: "open", question: "Is the complete storage specification available, and was it previously approved?", context: "The complete text and its prior approval are unknown." })
+    const question: Question = { ...offered, status: "answered", answer_kind: "option", option_id: "o1", answer: offered.options![0]!.text, fact_status: "provisional" }
+    writeQuestions(directory, [question])
+    const expected = provisionalFactMarkerItems(directory)[0]!
+    const before = JSON.stringify(expected.item)
+    const context = buildChecklistDocumentContext(directory, { item_id: expected.id, item: expected.item })
+    expect(context.input.verification).toBe("provisional_fact_marker")
+    expect(JSON.stringify(context.input.item)).toBe(before)
+    expect(readQuestions(directory)).toEqual([question])
+    for (const value of [
+      { item_id: `${expected.id}:forged`, item: expected.item },
+      { item_id: "source-observation", item: expected.item, verification: "provisional_fact_marker" },
+      { item_id: expected.id, item: { ...expected.item, check: "A different marker question." } },
+      { item_id: expected.id, item: { ...expected.item, target: { ...expected.item.target, document: "d2" } } },
+      { item_id: expected.id, item: { ...expected.item, source_refs: [{ ...expected.item.source_refs[0]!, quote: "The specification is verified." }] } },
+    ]) expect(buildChecklistDocumentContext(directory, value).input.verification).toBeUndefined()
+    writeQuestions(directory, [{ ...question, fact_status: "wait" }])
+    expect(buildChecklistDocumentContext(directory, { item_id: expected.id, item: expected.item }).input.verification).toBeUndefined()
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
 function acceptApplyForTest(directory: string, document = "d1") {
  const step = `${document}.apply` as `d${number}.apply`
  const prior = readLeanState(directory)

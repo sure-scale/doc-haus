@@ -3,7 +3,13 @@ import { currentFactDisposition } from "./fact-answers"
 import { readLeanPlan } from "./plan"
 import { readLeanText, readQuestions } from "./state"
 
-export const PROVISIONAL_FACT_MARKER_CONTRACT = "question-specific-provisional-markers-1"
+export const PROVISIONAL_FACT_MARKER_CONTRACT = "question-specific-provisional-markers-2-product-verification"
+
+/** The producer cannot opt into a product task by naming a reserved prefix or
+ * copying its wording. Reconstruct its current permission, provenance and scope. */
+export function isProvisionalFactMarkerItem(directory: string, id: string, item: ChecklistItem) {
+  return provisionalFactMarkerItems(directory).some(expected => expected.id === id && JSON.stringify(expected.item) === JSON.stringify(item))
+}
 
 /** Product handling requirements, not quotations falsely attributed to the
  * lawyer. The existing checklist checker decides this one question's marker
