@@ -133,6 +133,8 @@ export function openDb(matterDir: string, options: { startup?: boolean; commit?:
   // offsets and section spans index; deliverables have none. section_ordinal:
   // the section the chunk was cut from. Rows the sections backfill (structure.ts
   // migrateSections) has not yet reached hold NULL.
+  // Source-derived structural mask; old rows keep literal canonical text until re-ingest.
+  if (!hasColumn(db, "documents", "structure_mask")) db.run("ALTER TABLE documents ADD COLUMN structure_mask TEXT")
   if (!hasColumn(db, "documents", "rev")) db.run("ALTER TABLE documents ADD COLUMN rev TEXT")
   if (!hasColumn(db, "chunks", "section_ordinal")) db.run("ALTER TABLE chunks ADD COLUMN section_ordinal INTEGER")
   // Small key-value table for index-level facts that aren't rows — currently
@@ -559,7 +561,7 @@ export function upsertDocument(
   })
   const values = [docPath, name, createdAt, injectionReport, label, sourceProvenance ?? metadata?.source_provenance ?? null, kept.parent_name, kept.attachments, extractionQuality]
   if (owner) {
-    db.run("UPDATE documents SET doc_path = ?, name = ?, created_at = ?, injection_report = ?, role = 'source', label = ?, source_provenance = ?, parent_name = ?, attachments = ?, extraction_quality = ?, rev = NULL WHERE id = ?", [...values, owner.id])
+    db.run("UPDATE documents SET doc_path = ?, name = ?, created_at = ?, injection_report = ?, role = 'source', label = ?, source_provenance = ?, parent_name = ?, attachments = ?, extraction_quality = ?, structure_mask = NULL, rev = NULL WHERE id = ?", [...values, owner.id])
     return owner.id
   }
   const result = db.run("INSERT INTO documents (doc_path, name, created_at, injection_report, role, label, source_provenance, parent_name, attachments, extraction_quality) VALUES (?, ?, ?, ?, 'source', ?, ?, ?, ?, ?)", values)

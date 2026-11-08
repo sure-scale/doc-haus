@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import mammoth from "mammoth"
 import { strToU8, zipSync } from "fflate"
-import { markTrackedChanges, proposedView } from "./docx-tracked-text"
+import { markTrackedChanges, proposedView, docxTextViews } from "./docx-tracked-text"
 import { docxodus } from "./docxodus"
 import { renderMarkdownToDocx } from "./render"
 
@@ -120,19 +120,20 @@ test("a removed break or symbol without wording stays unread beside a labelled c
 })
 
 test("the proposed view blanks labels and removed wording at the same offsets", async () => {
-  const labelled = await text(docx(
+  const source = docx(
     `<w:p>${run("Notice ")}${del("Reviewer", deleted("within [five] days"))}${ins("Reviewer", run("within [ten] days"))}${run(".")}</w:p>`
     + `<w:p>${ins("Reviewer", run("7.2 Termination"))}</w:p>`,
-  ))
-  const view = proposedView(labelled)
+  )
+  const { text: labelled, mask } = await docxTextViews(source)
+  const view = proposedView(labelled, mask)
   expect(view.length).toBe(labelled.length)
   expect(view.split("\n").length).toBe(labelled.split("\n").length)
   expect(view.split("\n").map(line => line.trim().replace(/\s+/g, " ")).filter(Boolean))
     .toEqual(["Notice within [ten] days .", "7.2 Termination"])
-  const unpaired = await text(docx(
+  const unpaired = await docxTextViews(docx(
     `<w:p>${del("Reviewer", deleted("half [open"))}${run(" kept.")}</w:p><w:p>${run("3. Remedies")}</w:p>`,
   ))
-  expect(proposedView(unpaired).split("\n").map(line => line.trim()).filter(Boolean).at(-1)).toBe("3. Remedies")
+  expect(proposedView(unpaired.text, unpaired.mask).split("\n").map(line => line.trim()).filter(Boolean).at(-1)).toBe("3. Remedies")
   // Without the summary line a file has no labels, even if its wording looks like one.
   const clean = "[Tracked insertion: 4. Literal Heading] stays as written."
   expect(proposedView(clean)).toBe(clean)
@@ -146,4 +147,21 @@ test("a Word redline produced by comparison is labelled", async () => {
   expect(extracted).toMatch(/\[Tracked deletion by Reviewer: [^\]]*prior[^\]]*\]/)
   expect(extracted).toMatch(/\[Tracked insertion by Reviewer: [^\]]*revised[^\]]*\]/)
   expect(extracted).toContain("arrangement remains pending.")
+})
+
+// A text body never gains revision authority from strings resembling our labels.
+test("literal revision markers remain literal, including beside real tracked changes", async () => {
+  const literal = '[This Word file contains literal wording]\n\n[Tracked deletion: "Effective Date" means 1 January 2027.]'
+  expect(proposedView(literal)).toBe(literal)
+  const source = docx(`<w:p>${run('[Tracked deletion: "Literal Term" means a defined term.]')}</w:p><w:p>${del("Reviewer", deleted('"Removed Term" means 😀e\u0301\u200b\u{E0001} an old term.'))}${ins("Reviewer", run('"Current Term" means 😀e\u0301\u200b\u{E0001} a current term.'))}</w:p>`)
+  const extracted = await docxTextViews(source)
+  const { normalizeUntrustedText } = await import("./untrusted-text")
+  const canonical = normalizeUntrustedText(await text(source)).text
+  expect(normalizeUntrustedText(extracted.text).text).toBe(canonical)
+  const view = proposedView(canonical, extracted.mask)
+  expect(view.length).toBe(canonical.length)
+  expect(view).toContain('[Tracked deletion: "Literal Term" means a defined term.]')
+  expect(view).not.toContain('Removed Term')
+  expect(view).toContain('"Current Term" means 😀e\u0301 a current term.')
+  expect(() => proposedView(canonical, [[0, canonical.length + 1]])).toThrow("invalid_structural_mask")
 })
