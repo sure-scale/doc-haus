@@ -315,7 +315,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   }
   /** Send the same request again with the table's rows, after Word has put the cursor in that table. */
   async function prepareAsTable(proposal: WordChatProposal, turn: WordChatTurn, auto: boolean) {
-    if (applying || sending || proposalFinished(proposal.id) || tableRetry.get(proposal.id) !== "yes") return
+    if (disposed || applying || sending || proposalFinished(proposal.id) || tableRetry.get(proposal.id) !== "yes") return
     const placed = await host.tableTarget!(proposal.target, true).catch(() => false)
     if (disposed) return
     if (!placed) { tableRetry.set(proposal.id, "no"); proposalErrors.set(proposal.id, "Click in the table in Word, then send your request again."); renderTurns(); return }
@@ -437,7 +437,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     refine.onclick = () => { if (applying || proposalFinished(proposal.id)) return; cancelSelectionCapture(); refinement = proposal; rowRefinement = undefined; renderChips(); controls(); message.placeholder = "How should this change?"; message.focus() }
     const apply = document.createElement("button"); apply.type = "button"; apply.className = "chat-send"; apply.textContent = "Apply"; apply.disabled = applying
     apply.onclick = async () => {
-      if (applying || proposalFinished(proposal.id)) return
+      if (disposed || applying || proposalFinished(proposal.id)) return
       const eligibility = host.applyEligibility(proposal)
       if (!eligibility.supported) { proposalErrors.delete(proposal.id); renderTurns(); return }
       applying = true; cancelSelectionCapture(); controls(); status("Applying in Word…")
