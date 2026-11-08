@@ -263,18 +263,21 @@ export function classifyProviderFailure(input: ProviderFailure): AIError["reason
   // (e.g. overflow phrases nested in a JSON error body) still classify.
   const text = [input.message, body].filter((value) => value.length > 0).join("\n")
   const clientScoped = input.status === undefined || (input.status >= 400 && input.status < 500)
+  const throttled =
+    input.status === 429 ||
+    codes.some((code) => code.includes("rate_limit") || code === "too_many_requests" || code === "throttlingexception")
 
   if (
     clientScoped &&
     (codes.includes("context_length_exceeded") ||
       codes.includes("model_context_window_exceeded") ||
       codes.includes("request_too_large") ||
-      // 429 bodies are throttles even when their wording matches an overflow phrase, e.g. Cerebras's
-      // "too many tokens processed". Text matching stays on for 4xx and mid-stream errors without a status.
-      (input.status !== 429 && !codes.includes("throttlingexception") && isContextOverflow(text)))
+      // Typed throttles may use size wording such as "Too many tokens" or "Request too large".
+      // Only heuristic text yields to throttling; explicit size codes and HTTP 413 still win.
+      (!throttled && isContextOverflow(text)))
   )
     return new InvalidRequestError({ ...details, classification: "context-overflow" })
-  if (input.status === 413 || isPayloadTooLarge(text))
+  if (input.status === 413 || (!throttled && isPayloadTooLarge(text)))
     return new InvalidRequestError({ ...details, classification: "payload-too-large" })
   if (codes.some((code) => CONTENT_POLICY_CODES.has(code)) || (clientScoped && CONTENT_POLICY_TEXT.test(input.message)))
     return new ContentPolicyError(details)
@@ -292,13 +295,7 @@ export function classifyProviderFailure(input: ProviderFailure): AIError["reason
     (input.status === 400 && AUTH_TEXT.test(text))
   )
     return new AuthenticationError(details)
-  if (
-    input.status === 429 ||
-    codes.some(
-      (code) => code.includes("rate_limit") || code === "too_many_requests" || code === "throttlingexception",
-    ) ||
-    RATE_LIMIT_TEXT.test(text)
-  )
+  if (throttled || RATE_LIMIT_TEXT.test(text))
     return new RateLimitError({
       ...details,
       retryAfterMs: input.retryAfterMs,

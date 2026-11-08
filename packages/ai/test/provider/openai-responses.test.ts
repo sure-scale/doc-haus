@@ -6,6 +6,7 @@ import {
   AIError,
   HttpContext,
   HttpOptions,
+  isRetryable,
   LanguageModel,
   LLMEvent,
   LLMRequest,
@@ -5192,6 +5193,27 @@ describe("OpenAI Responses route", () => {
 
       expect(error).toBeInstanceOf(AIError)
       expect(error).toMatchObject({ reason: { _tag: "RateLimit" }, message: "rate_limit_exceeded: Slow down" })
+    }),
+  )
+
+  it.effect("keeps nested token-rate errors retryable despite request-size wording", () =>
+    Effect.gen(function* () {
+      const body = JSON.stringify({
+        type: "error",
+        error: {
+          type: "tokens",
+          code: "rate_limit_exceeded",
+          message: "Request too large for the token rate limit; please try again later.",
+        },
+      })
+      const error = yield* LLMClient.generate(request).pipe(
+        Effect.provide(fixedResponse(sseEvents(body))),
+        Effect.flip,
+      )
+
+      expect(error.reason._tag).toBe("RateLimit")
+      expect(isRetryable(error)).toBe(true)
+      expect(error.reason.body).toBe(body)
     }),
   )
 

@@ -49,6 +49,50 @@ describe("provider error classification", () => {
     )
   })
 
+  test("keeps typed token throttles retryable despite ambiguous request-size wording", () => {
+    for (const message of ["Request too large", "Too many tokens processed"]) {
+      const rawBody = JSON.stringify({
+        type: "error",
+        error: { type: "tokens", code: "rate_limit_exceeded", message },
+      })
+      for (const status of [undefined, 200, 429]) {
+        const error = new AIError({ reason: classifyProviderFailure({ message, status, rawBody }) })
+        expect(error.reason._tag).toBe("RateLimit")
+        expect(isRetryable(error)).toBe(true)
+        expect(isContextOverflowFailure(error)).toBe(false)
+        expect(error.reason.body).toBe(rawBody)
+      }
+    }
+    const error = new AIError({
+      reason: classifyProviderFailure({ message: "Request too large", status: 429 }),
+    })
+    expect(error.reason._tag).toBe("RateLimit")
+    expect(isRetryable(error)).toBe(true)
+  })
+
+  test("does not let throttle evidence override affirmative permanent failures", () => {
+    const cases = [
+      { status: 413, code: "rate_limit_exceeded", tag: "InvalidRequest", classification: "payload-too-large" },
+      { code: "context_length_exceeded", tag: "InvalidRequest", classification: "context-overflow" },
+      { code: "request_too_large", tag: "InvalidRequest", classification: "context-overflow" },
+      { status: 401, code: "rate_limit_exceeded", tag: "Authentication" },
+      { status: 403, code: "rate_limit_exceeded", tag: "Authentication" },
+      { code: "insufficient_quota", tag: "QuotaExceeded" },
+      { code: "content_filter", tag: "ContentPolicy" },
+    ]
+    for (const entry of cases) {
+      const rawBody = JSON.stringify({ code: "rate_limit_exceeded", error: { code: entry.code } })
+      const error = new AIError({
+        reason: classifyProviderFailure({ message: "Request too large", status: entry.status, rawBody }),
+      })
+      expect(error.reason).toMatchObject({
+        _tag: entry.tag,
+        ...("classification" in entry ? { classification: entry.classification } : {}),
+      })
+      expect(isRetryable(error)).toBe(false)
+    }
+  })
+
   test("does not classify rate limits as context overflow", () => {
     const messages = [
       "Throttling error: Too many tokens, please wait before trying again.",
