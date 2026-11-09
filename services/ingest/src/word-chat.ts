@@ -19,6 +19,7 @@ import { conversationAnswerContract, conversationResponseContract, suppliedConve
 import { readWordChatPreferences } from "./word-chat-preferences"
 import { installWordChatEvents } from "./word-chat-events"
 import { docxProtectionMessage } from "./docx-protection-message"
+import { installWordConsequences } from "./word-consequences"
 
 const ID = /^[A-Za-z0-9_-]{1,160}$/
 const DENY_TOOLS = [{ action: "*", resource: "*", effect: "deny" }]
@@ -460,6 +461,12 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
       }
     })
   }
+  const consequences = installWordConsequences({ route, body, api,
+    root: async (auth, id) => { const root = await session(auth, id); rootMeta(root, auth); return root },
+    turns: children, reviewed: readTurn,
+    submit: submitScoped, model: () => modelRef(selectedModel()), stop: stopSession,
+    error: (message, status) => new WordChatError(message, status),
+  })
   route("conversations", async (_c, auth) => {
     const value = await api(auth, "/api/session?roots=true")
     if (!Array.isArray(value)) throw new WordChatError("Chat history is unavailable.", 503)
@@ -717,7 +724,7 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
     }
     return authored
   }))
-  return { withValidatedProposal }
+  return { withValidatedProposal, dispose: consequences.dispose }
 }
 
 function scopedContextID(id: string, messageID: string) { return `msg_word_context_${wordChatHash(`${id}:${messageID}`).slice(0, 32)}` }

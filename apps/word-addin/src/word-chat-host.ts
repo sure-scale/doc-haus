@@ -290,6 +290,30 @@ export class WordChatHost {
       return this.readSnapshot(false, false)
     }
   }
+  /** Background evidence needs accepted wording and paragraph identities only,
+   * without reading selection or rebuilding optional table/list geometry. */
+  async captureReview(): Promise<WordChatSnapshot> {
+    const structured = this.supports("WordApi", "1.6")
+    try { return await this.readSnapshot(structured, false) }
+    catch (error) {
+      if (error instanceof WordChatHostError || !structured) failure(error, "Word could not read the current text for consequence review.")
+      return this.readSnapshot(false, false)
+    }
+  }
+  /** Navigate only after resolving the current reviewed wording. This read-only
+   * action never changes text, tracking, annotations or the saved version. */
+  async navigate(target: WordChatTarget): Promise<boolean> {
+    if (!this.supports("WordApi", "1.6")) return false
+    try {
+      return await this.word.run(async context => {
+        const { range } = await this.resolve(context, target, true)
+        if (!range.select) return false
+        range.select("Select")
+        await context.sync()
+        return true
+      })
+    } catch { return false }
+  }
   /** Whether every target paragraph is an ordinary table-cell paragraph. With
    * `place`, the cursor moves to the first one so the next capture names that
    * table; nothing in the document changes. Paragraph ids last only for one
@@ -1574,7 +1598,9 @@ export class WordChatHost {
 let defaultHost: WordChatHost | undefined
 const host = () => defaultHost ??= new WordChatHost()
 export const captureCurrentWordContext = (includeSelection = false, pinned?: WordChatTarget) => host().capture(includeSelection, pinned)
+export const captureWordReviewContext = () => host().captureReview()
 export const captureWordChatSelection = () => host().selection()
+export const navigateWordChatTarget = (target: WordChatTarget) => host().navigate(target)
 export const wordChatTableTarget = (target: WordChatTarget, place = false) => host().tableTarget(target, place)
 export const applyReviewedProposal = (proposal: import("../../../dochaus/lib/word-chat-amendment-contract").WordChatProposal,
   author: WordChatApplyInput["author"], mayDispatch?: () => boolean) => {

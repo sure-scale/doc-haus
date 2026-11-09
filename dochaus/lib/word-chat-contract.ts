@@ -1,5 +1,5 @@
 /** Word's scoped chat bridge. A linked-document token never proxies engine APIs. */
-export const WORD_CHAT_ROUTES = ["conversations", "conversation", "send", "poll", "cancel", "materials", "upload", "suggest", "prepare", "events"] as const
+export const WORD_CHAT_ROUTES = ["conversations", "conversation", "send", "poll", "cancel", "materials", "upload", "suggest", "prepare", "events", "assess", "assessment", "assessment-cancel"] as const
 export const wordChatPath = (pathname: string) => WORD_CHAT_ROUTES.some(route => pathname === `/word/chat/${route}`)
 export type WordChatScope = "document" | "matter"
 export type WordChatKind = "chat" | "amendment" | "formatting" | "suggestions"
@@ -53,7 +53,7 @@ export type WordChatSend = {
   suggestionTarget?: "document" | "selection"
 }
 export type WordChatConversationResult = { conversation: WordChatConversation; turns: WordChatTurn[] }
-export type WordChatPreferences = { defaultScope: WordChatScope; suggestions: boolean }
+export type WordChatPreferences = { defaultScope: WordChatScope; suggestions: boolean; consequences?: boolean }
 export type WordChatMaterials = { materials: WordChatMaterial[]; matterName: string; documentName: string; preferences?: WordChatPreferences }
 /** Authoring output is a verification oracle, never a Word import payload. */
 export type WordChatAuthoredTableRow = {

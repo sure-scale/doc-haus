@@ -97,8 +97,8 @@ GET `/word/open/<ticket>` and POST `/word/open/<ticket>/result`, and only
 POST/OPTIONS `/word/lease`, `/word/saves`, `/word/heartbeat`, `/word/done` and
 `/word/desk/sources`, `/word/desk/source`, `/word/desk/versions`, `/word/desk/compare`,
 `/word/desk/open`, and the exact `/word/chat/` commands `conversations`,
-`conversation`, `send`, `poll`, `cancel`, `materials`, `upload`, `suggest` and
-`prepare` to ingest. Do not
+`conversation`, `send`, `poll`, `cancel`, `materials`, `upload`, `suggest`,
+`prepare`, `events`, `assess`, `assessment` and `assessment-cancel` to ingest. Do not
 expose the rest of the ingest API through this Word receiver. In Docker, build
 the pane with `bun run --cwd apps/word-addin build` and include its `dist` assets
 with the server. The normal start scripts build these assets automatically.
@@ -180,6 +180,17 @@ Suggestions are on by default, with three clickable prompts in an empty chat.
 Preparation uses sampled document passages together with any current selection.
 Ideas never apply themselves. Pause stops new preparation; ordinary chat remains
 available. Suggestions are not a complete document review.
+
+**Check amendment consequences** is on by default in **Settings → Background
+agents**. After a wording amendment is prepared, background checks consider its
+meaning and potentially affected passages while you keep chatting and editing.
+Findings appear progressively, with a combined assessment when you pause and the
+checks have caught up. Coverage and unchecked material remain visible; an
+assessment does not establish that the whole document is legally correct.
+Changes to wording or instructions cause affected work to be checked again.
+**Show in Word** selects a passage only after checking its current wording.
+Turning the setting off stops further checks and follow-ups; existing findings
+remain available. Consequence findings never apply an amendment automatically.
 
 A proposed amendment shows its before/after wording, formatting or table-row
 change and any open items. **Refine** keeps the original target. **Apply** uses

@@ -1431,3 +1431,54 @@ test("nested list Before review uses the captured label without inventing a new 
     expect([...card.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === "Apply")?.disabled).toBe(false)
   } finally { f.restore() }
 })
+
+test("consequence admission never blocks foreground chat or amendment Apply", async () => {
+  let complete!: (value: unknown) => void, admissions = 0
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal })], request: async action => {
+    if (action === "assessment") return { assessment: null }
+    if (action === "assess") { admissions++; return await new Promise(resolve => { complete = resolve }) }
+    if (action === "send") return { turn: turn({ id: "new-answer", text: "Explain the other clause" }) }
+    return undefined
+  } })
+  try {
+    await f.chat.ready; await f.advance(1_500); await f.advance(3_000)
+    expect(admissions).toBe(1)
+    const apply = [...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(node => node.textContent === "Apply")!
+    expect(apply.disabled).toBe(false)
+    await f.send("Explain the other clause")
+    expect(f.calls.some(call => call.action === "send")).toBe(true)
+    expect(f.get("history").textContent).toContain("Explain the other clause")
+    expect(f.get<HTMLTextAreaElement>("message").disabled).toBe(false)
+  } finally {
+    complete?.({ id: "background-one", conversationId: "conversation-one", requestId: "request-one", turnId: "turn-one", status: "running", findings: [], coverage: { reviewed: 0, total: 1, candidates: 0, checked: 0 }, gaps: [], createdAt: 1 }); await Bun.sleep(0); f.restore()
+  }
+})
+
+test("declining the final amendment immediately cancels its consequence review", async () => {
+  const assessment = { id: "review-one", conversationId: "conversation-one", requestId: "request-review", turnId: "turn-one", status: "running", findings: [], coverage: { reviewed: 0, total: 1, candidates: 0, checked: 0 }, gaps: [], createdAt: 1 }
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal })], request: async action => action === "assessment" ? { assessment: null } : action === "assess" ? assessment : undefined })
+  try {
+    await f.chat.ready; await f.advance(1_500); await f.advance(3_000)
+    expect(f.calls.some(call => call.action === "assess")).toBe(true)
+    const decline = [...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(node => node.textContent === "Decline")!
+    decline.click()
+    expect(f.calls.some(call => call.action === "assessment-cancel")).toBe(true)
+    const count = f.calls.filter(call => call.action === "assess").length
+    await f.advance(30_000)
+    expect(f.calls.filter(call => call.action === "assess")).toHaveLength(count)
+  } finally { f.restore() }
+})
+
+test("declining the latest proposal never restarts review of a superseded older proposal", async () => {
+  const f = fixture({ turns: [turn({ id: "older", kind: "amendment", proposal: { ...proposal, id: "older-proposal" } }), turn({ kind: "amendment", proposal })], request: async (action, input) => action === "assessment" ? { assessment: null } : action === "assess" ? { id: "review-one", conversationId: "conversation-one", requestId: "request-review", turnId: (input as { turnId: string }).turnId, status: "running", findings: [], coverage: { reviewed: 0, total: 1, candidates: 0, checked: 0 }, gaps: [], createdAt: 1 } : undefined })
+  try {
+    await f.chat.ready; await f.advance(1_500); await f.advance(3_000)
+    const latest = f.root.querySelector('[data-turn="turn-one"]')!
+    const decline = [...latest.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(node => node.textContent === "Decline")!
+    decline.click(); await f.advance(30_000)
+    const admissions = f.calls.filter(call => call.action === "assess")
+    expect(admissions).toHaveLength(1)
+    expect((admissions[0]!.input as { turnId: string }).turnId).toBe("turn-one")
+    expect(f.calls.some(call => call.action === "assessment-cancel")).toBe(true)
+  } finally { f.restore() }
+})

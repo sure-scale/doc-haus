@@ -366,8 +366,8 @@ test("material loading supplies the persisted installation defaults without chan
   const id = await newConversation()
   writeWordChatPreferences({ defaultScope: "matter", suggestions: false })
   try {
-    const material = await (await post("materials", { conversationId: id })).json() as { preferences: { defaultScope: string; suggestions: boolean } }
-    expect(material.preferences).toEqual({ defaultScope: "matter", suggestions: false })
+    const material = await (await post("materials", { conversationId: id })).json() as { preferences: { defaultScope: string; suggestions: boolean; consequences: boolean } }
+    expect(material.preferences).toEqual({ defaultScope: "matter", suggestions: false, consequences: true })
     const result = (await (await send(id, "document", "Explain the current delivery day")).json() as { turn: WordChatTurn }).turn
     expect(result.scope).toBe("document")
   } finally { writeWordChatPreferences({ defaultScope: "document", suggestions: true }) }
@@ -1842,4 +1842,38 @@ test("before-final native list proposal stays bound through review and rejects f
     output({list});expect((await (await request()).json() as {turn:WordChatTurn}).turn.proposal).toBeUndefined()
     output({paragraphAction:"append_list_item",after:text+"\rAnother item"});const changed=await request({proposal:turn.proposal});expect(changed.status).toBe(200);expect((await changed.json() as {turn:WordChatTurn}).turn.proposal).toBeUndefined()
   } finally {modelStructuredRawOutput=undefined}
+})
+
+
+test("consequence bridge uses native normalized sessions and stays outside foreground turns", async () => {
+  writeWordChatPreferences({ consequences: true })
+  const id = await newConversation()
+  amend = true
+  try {
+    const initial = await send(id, "document", "Change Tuesday delivery to Wednesday.")
+    const turn = (await initial.json() as { turn: WordChatTurn }).turn
+    expect(turn.proposal).toBeDefined()
+    amend = false
+    engineHook = async (native, tail) => {
+      if (native.metadata.type === "word-consequence-job" && tail === "/prompt") modelRawOutput = JSON.stringify(native.metadata.stage === "meaning" ? { meaning: "Delivery moves from Tuesday to Wednesday.", uncertainties: [] } : { candidates: [] })
+    }
+    const admitted = await post("assess", { conversationId: id, requestId: "native-consequence", turnId: turn.id, context })
+    expect(admitted.status).toBe(200)
+    let assessment = await admitted.json() as { id: string; status: string; meaning?: string; coverage: { reviewed: number }; findings: unknown[] }
+    for (let i = 0; i < 5 && assessment.status === "running"; i++) {
+      const response = await post("assessment", { conversationId: id, assessmentId: assessment.id, context })
+      expect(response.status).toBe(200)
+      assessment = await response.json() as typeof assessment
+    }
+    expect(assessment.status).toBe("complete")
+    expect(assessment.meaning).toContain("Tuesday to Wednesday")
+    expect(assessment.coverage.reviewed).toBe(1)
+    expect(assessment.findings).toEqual([])
+    const reopened = await (await post("conversation", { conversationId: id })).json() as { turns: WordChatTurn[] }
+    expect(reopened.turns.map(t => t.id)).toEqual([turn.id])
+    const nativeJobs = [...sessions.values()].filter(s => s.parentID === id && s.metadata.type === "word-consequence-job")
+    expect(nativeJobs.map(s => s.metadata.stage)).toEqual(["meaning", "discovery"])
+    expect(nativeJobs.every(s => admissions.some(a => a.session === s.id && a.tail === "/synthetic"))).toBe(true)
+    expect((await post("assessment", { conversationId: "different-conversation", assessmentId: assessment.id, context })).status).toBe(503)
+  } finally { amend = false; engineHook = undefined; modelRawOutput = undefined }
 })

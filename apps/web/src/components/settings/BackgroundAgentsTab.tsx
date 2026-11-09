@@ -4,14 +4,15 @@ import { fetchWordChatPreferences, saveWordChatPreferences } from "../../api/ing
 import { ToggleRow } from "./controls"
 
 // Optional jobs that start without a click. Each switch saves at once. Firm preferences merge
-// top-level keys only, so the whole backgroundAgents object is sent; Word suggestions keep their
+// top-level keys only, so the whole backgroundAgents object is sent; Word agents keep their
 // own saved setting, which the Word pane reads.
-type Switches = BackgroundAgents & { wordSuggestions: boolean }
+type Switches = BackgroundAgents & { wordSuggestions: boolean; wordConsequences: boolean }
 const AGENTS: { key: keyof Switches; title: string; when: string; description: string }[] = [
   { key: "chronologySuggestion", title: "Suggest a chronology", when: "When you open a matter, add documents or close a chat.", description: "Checks whether a timeline of events would help and suggests one. If off, open it yourself from the matter menu." },
   { key: "reviewCompare", title: "Compare review answers", when: "When you fill a review table.", description: "Shows which documents give the same answer to each question and which differ. If off, use Compare with AI on a column." },
   { key: "narration", title: "Narrate drafting progress", when: "While a draft is being prepared.", description: "Adds a short plain-English update as each step finishes, and every few minutes during long steps. If off, you still see each step." },
   { key: "wordSuggestions", title: "Suggest ideas in Word", when: "While the doc.haus pane is open in Word.", description: "Offers up to three ideas about your document or the passage you've selected. If off, ask in the Word chat." },
+  { key: "wordConsequences", title: "Check amendment consequences", when: "While you amend a document in Word.", description: "Checks how amendments affect the rest of the document in the background. You can keep chatting and editing while it checks." },
 ]
 
 const STATES = { on: "On", off: "Off" }
@@ -38,7 +39,7 @@ export default function BackgroundAgentsTab({ onSaved }: { onSaved?: (text: stri
     let active = true
     setLoadError("")
     Promise.all([getPreferences(), fetchWordChatPreferences()]).then(([prefs, word]) => {
-      if (active) setAgents({ ...normalize(prefs.backgroundAgents), wordSuggestions: word.suggestions })
+      if (active) setAgents({ ...normalize(prefs.backgroundAgents), wordSuggestions: word.suggestions, wordConsequences: word.consequences !== false })
     }).catch(() => {
       if (active) setLoadError("Could not load background agent settings.")
     })
@@ -66,15 +67,15 @@ export default function BackgroundAgentsTab({ onSaved }: { onSaved?: (text: stri
     setError("")
     setSaving(true)
     try {
-      if (agent.key === "wordSuggestions") {
-        const saved = await saveWordChatPreferences({ suggestions: on })
+      if (agent.key === "wordSuggestions" || agent.key === "wordConsequences") {
+        const saved = await saveWordChatPreferences(agent.key === "wordSuggestions" ? { suggestions: on } : { consequences: on })
         if (!mounted.current) return
-        setAgents({ ...next, wordSuggestions: saved.suggestions })
+        setAgents({ ...next, wordSuggestions: saved.suggestions, wordConsequences: saved.consequences !== false })
       } else {
-        const { wordSuggestions, ...backgroundAgents } = next
+        const { wordSuggestions, wordConsequences, ...backgroundAgents } = next
         const saved = await savePreferences({ backgroundAgents })
         if (!mounted.current) return
-        setAgents({ ...normalize(saved.backgroundAgents ?? backgroundAgents), wordSuggestions })
+        setAgents({ ...normalize(saved.backgroundAgents ?? backgroundAgents), wordSuggestions, wordConsequences })
       }
       onSaved?.(`${agent.title} turned ${on ? "on" : "off"}.`)
     } catch {

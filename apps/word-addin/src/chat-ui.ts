@@ -2,6 +2,7 @@ import type { WordChatConversation, WordChatConversationResult, WordChatMaterial
 import type { WordChatProposal, WordChatSnapshot, WordChatTableRowProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { wordChatApplyPlan, wordChatTargetCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { ChatRequestError, type WordChatApi } from "./chat-client"
+import { mountWordConsequences } from "./chat-consequences"
 import { nativeEventSession, subscribeNativeChatStream } from "../../../dochaus/lib/native-chat-stream"
 import type { WordChatApplyEligibility } from "./word-chat-apply"
 import { nativeWordChatParagraphInsertionEligible, nativeWordChatParagraphDeletionEligible, nativeWordChatParagraphMergeEligible, nativeWordChatParagraphSplitEligible, nativeWordChatListInsertionEligible } from "./word-chat-apply"
@@ -10,6 +11,8 @@ export type ChatHost = {
   documentName: string
   capture(includeSelection?: boolean, pinned?: WordChatTarget): Promise<WordChatSnapshot>
   captureSelection(): Promise<WordChatTarget | undefined>
+  /** Read paragraph wording without optional table/list geometry. */
+  captureReview?(): Promise<WordChatSnapshot>
   watchSelection?(onChange: () => void): () => void
   openAttachments?(options: { conversationId: string; attached: WordChatMaterial[]; onAttach(material: WordChatMaterial): void }): Promise<void>
   apply(proposal: WordChatProposal, request: { conversationId: string; turnId: string }): Promise<unknown>
@@ -17,6 +20,8 @@ export type ChatHost = {
   applyEligibility(proposal: WordChatProposal): WordChatApplyEligibility
   /** Whether the target is table-cell text; `place` moves the Word cursor into it. */
   tableTarget?(target: WordChatTarget, place?: boolean): Promise<boolean>
+  /** Explicit navigation only; the adapter revalidates paragraph identity and wording. */
+  navigate?(target: WordChatTarget): Promise<boolean>
   sourceUrl?(source: WordChatSource): string | undefined
   now?: () => number
   schedule?: (run: () => void, delay: number) => () => void
@@ -48,7 +53,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   <section data-chat="suggestions" class="chat-suggestions" aria-label="Suggestions" hidden>
     <div class="chat-suggestions-heading"><h2>Suggestions</h2><button data-chat="pause" class="chat-subtle" type="button">Pause</button></div>
     <div data-chat="suggestion-content"></div>
-  </section></div>
+  </section><section data-chat="consequences" hidden></section></div>
   <div class="chat-recovery"><p data-chat="activity" class="chat-activity" role="status" aria-live="polite"></p>
     <button data-chat="reconnect" class="chat-subtle" type="button" hidden>Reconnect</button>
     <button data-chat="stop" class="chat-subtle" type="button" hidden>Stop</button></div>
@@ -108,6 +113,19 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   // Turns this pane sent (not history), and proposals it prepared again as a table change by itself.
   const sentHere = new Set<string>(), autoTable = new Set<string>()
   const nodes = new Map<string, { stamp: string; node: HTMLElement }>()
+  function consequenceTurnId() {
+    const latest = [...turns].reverse().find(turn => turn.status === "complete" && Boolean(turn.proposal || turn.rowProposal))
+    return latest && !declined.has((latest.proposal ?? latest.rowProposal)!.id) ? latest.id : undefined
+  }
+  const consequences = mountWordConsequences(get("consequences"), api, {
+    capture: () => host.captureReview?.() ?? host.capture(false), navigate: host.navigate, now, schedule,
+  }, () => ({
+    conversationId: conversation?.id,
+    turnId: consequenceTurnId(),
+    revision: JSON.stringify([turns.filter(turn => turn.kind !== "suggestions").map(turn => [turn.id, turn.text, turn.proposal?.id, turn.rowProposal?.id, declined.has((turn.proposal ?? turn.rowProposal)?.id ?? ""), turn.proposalApplied || applied.has((turn.proposal ?? turn.rowProposal)?.id ?? "")]), materials.map(item => [item.kind, item.id, item.hash]), attachments.map(item => [item.kind, item.id, item.hash]), pending?.requestId]),
+    enabled: preferences.consequences !== false,
+    busy: connecting || sending || applying || Boolean(pending) || foreground?.status === "running",
+  }))
   get("document-info-content").textContent = host.documentName
   let documentInfoPinned = false
   function showDocumentInfo(open: boolean) {
@@ -429,7 +447,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       retarget.disabled = applying || sending
       retarget.onclick = () => { void prepareAsTable(proposal, turn, false) }
       const decline = document.createElement("button"); decline.type = "button"; decline.className = "chat-subtle"; decline.textContent = "Decline"; decline.disabled = applying
-      decline.onclick = () => { if (applying || proposalFinished(proposal.id)) return; declined.add(proposal.id); proposalErrors.delete(proposal.id); renderTurns() }
+      decline.onclick = () => { if (applying || proposalFinished(proposal.id)) return; declined.add(proposal.id); consequences.refresh(); proposalErrors.delete(proposal.id); renderTurns() }
       actions.append(retarget, decline); card.append(actions); return card
     }
     const refine = document.createElement("button"); refine.type = "button"; refine.className = "chat-subtle"; refine.textContent = "Refine"
@@ -458,7 +476,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     }
     const decline = document.createElement("button"); decline.type = "button"; decline.className = "chat-subtle"; decline.textContent = "Decline"
     decline.disabled = applying
-    decline.onclick = () => { if (applying || proposalFinished(proposal.id)) return; declined.add(proposal.id); proposalErrors.delete(proposal.id); if (refinement?.id === proposal.id) { refinement = undefined; renderChips() }; renderTurns() }
+    decline.onclick = () => { if (applying || proposalFinished(proposal.id)) return; declined.add(proposal.id); consequences.refresh(); proposalErrors.delete(proposal.id); if (refinement?.id === proposal.id) { refinement = undefined; renderChips() }; renderTurns() }
     actions.append(refine)
     if (!unavailable) actions.append(apply)
     actions.append(decline); card.append(actions); return card
@@ -526,7 +544,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       } finally { applying = false; if (!disposed) apply.disabled = false; controls() }
     }
     const decline = document.createElement("button"); decline.type = "button"; decline.className = "chat-subtle"; decline.textContent = "Decline"; decline.disabled = applying
-    decline.onclick = () => { if (disposed || applying || proposalFinished(proposal.id)) return; declined.add(proposal.id); proposalErrors.delete(proposal.id); if (rowRefinement?.id === proposal.id) { rowRefinement = undefined; message.placeholder = "Ask doc.haus…"; renderChips() }; renderTurns() }
+    decline.onclick = () => { if (disposed || applying || proposalFinished(proposal.id)) return; declined.add(proposal.id); consequences.refresh(); proposalErrors.delete(proposal.id); if (rowRefinement?.id === proposal.id) { rowRefinement = undefined; message.placeholder = "Ask doc.haus…"; renderChips() }; renderTurns() }
     actions.append(refine); if (host.applyRow) actions.append(apply); actions.append(decline); card.append(actions); return card
   }
   function renderTurns(forceScroll = false) {
@@ -629,7 +647,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     const index = turns.findIndex(item => item.id === turn.id)
     if (index < 0) turns.push(turn); else turns[index] = turn
     if (turn.kind !== "suggestions") { foreground = turn.status === "running" ? turn : undefined; renderTurns() }
-    controls()
+    controls(); consequences.refresh()
   }
   async function refreshMaterials() {
     const conversationId = conversation?.id
@@ -639,10 +657,12 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     materials = result.materials
     if (result.preferences) {
       const previousSuggestions = preferences.suggestions
-      preferences = { defaultScope: result.preferences.defaultScope === "matter" ? "matter" : "document", suggestions: result.preferences.suggestions !== false }
+      const previousConsequences = preferences.consequences
+      preferences = { defaultScope: result.preferences.defaultScope === "matter" ? "matter" : "document", suggestions: result.preferences.suggestions !== false, consequences: result.preferences.consequences !== false }
       defaultScope = preferences.defaultScope
       if (!scopeChanged && !turns.some(turn => turn.kind !== "suggestions")) scope = defaultScope
       if (previousSuggestions !== preferences.suggestions) invalidateSuggestions()
+      if (previousConsequences !== preferences.consequences) consequences.refresh()
       renderSuggestions(); controls()
     }
     if (changed) {
@@ -665,7 +685,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       const existing = conversations.findIndex(item => item.id === conversation!.id)
       if (existing < 0) conversations.unshift(conversation); else conversations[existing] = conversation
       options(); renderTurns(true); status(); button("reconnect").hidden = true
-      startStream(); await refreshMaterials(); scheduleReconciliation()
+      startStream(); await refreshMaterials(); scheduleReconciliation(); consequences.refresh()
     } catch (error) { failure(error) }
     finally { connecting = false; controls() }
   }
@@ -918,7 +938,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   }
 
   get<HTMLFormElement>("form").onsubmit = event => { event.preventDefault(); void submit() }
-  message.oninput = controls
+  message.oninput = () => { consequences.interaction(); controls() }
   message.onkeydown = event => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void submit() } }
   button("conversation").onclick = () => { if (!conversationLocked()) { options(); setPanel("conversations", get("conversations").hidden) } }
   button("conversations-close").onclick = () => { setPanel("conversations", false); button("conversation").focus() }
@@ -951,6 +971,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   function changeConversation(id?: string) {
     if (disposed || conversationLocked() || !conversation) return
     if (!id) mode = "auto"
+    consequences.reset()
     conversationEpoch++; foregroundEpoch++; clearSelection(); invalidateSuggestions(); attachments = []; refinement = undefined; rowRefinement = undefined; message.placeholder = "Ask doc.haus…"
     suggestionsPaused = false; suggestionCalls = 0; lastSuggestion = -Infinity
     scopeChanged = false
@@ -992,7 +1013,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   })
   const onFocus = () => {
     if (!root.ownerDocument.hidden) {
-      void reconcileTurns()
+      void reconcileTurns(); consequences.refresh()
       if (conversation && !connecting && !applying) void refreshMaterials().catch(() => {})
     }
   }
@@ -1007,6 +1028,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   cancelMonitor = schedule(() => { void monitor() }, 2_000)
   return { ready, resetDocumentContext() {
     if (disposed) return
+    consequences.reset()
     clearSelection()
     refinement = undefined; rowRefinement = undefined; suggestionsPaused = true
     message.placeholder = "Ask doc.haus…"
@@ -1015,6 +1037,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     root.ownerDocument.removeEventListener("click", dismissDocumentInfo)
     root.ownerDocument.removeEventListener("visibilitychange", onFocus)
     root.ownerDocument.defaultView?.removeEventListener("focus", onFocus)
+    consequences.dispose()
     disposed = true; streamEpoch++; stream?.abort(); foregroundEpoch++; suggestionEpoch++; selectionCaptureEpoch++; pickerEpoch++; cancelSelection?.(); stopWatchingSelection?.(); cancelReconnectNotice?.(); cancelMonitor?.(); cancelReconcile?.(); root.replaceChildren()
   } }
 }

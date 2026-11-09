@@ -8,7 +8,16 @@ import type { WordChatPreferences } from "../../../dochaus/lib/word-chat-contrac
 
 type Environment = Record<string, string | undefined>
 const repository = fileURLToPath(new URL("../../../", import.meta.url))
-const defaults: WordChatPreferences = { defaultScope: "document", suggestions: true }
+const defaults: WordChatPreferences = { defaultScope: "document", suggestions: true, consequences: true }
+const consequenceDisabledListeners = new Set<{ file: string; notify: () => void }>()
+
+/** Stop active checks as soon as the saved switch is turned off. */
+export function onWordChatConsequencesDisabled(listener: () => void, environment: Environment = process.env): () => void {
+  const subscription = { file: wordChatPreferencesFile(environment), notify: listener }
+  consequenceDisabledListeners.add(subscription)
+  return () => { consequenceDisabledListeners.delete(subscription) }
+}
+
 class WordChatPreferencesError extends Error {
   constructor(message: string, readonly status: 400 | 503) { super(message) }
 }
@@ -19,13 +28,15 @@ export function wordChatPreferencesFile(environment: Environment = process.env) 
 
 function patch(input: unknown): Partial<WordChatPreferences> {
   if (!input || typeof input !== "object" || Array.isArray(input) ||
-    Object.keys(input).some(key => key !== "defaultScope" && key !== "suggestions"))
-    throw new WordChatPreferencesError("Provide only the Word chat default scope and suggestions setting.", 400)
+    Object.keys(input).some(key => key !== "defaultScope" && key !== "suggestions" && key !== "consequences"))
+    throw new WordChatPreferencesError("Provide only the Word chat default scope, suggestions and amendment consequences settings.", 400)
   const value = input as Record<string, unknown>
   if (Object.hasOwn(value, "defaultScope") && value.defaultScope !== "document" && value.defaultScope !== "matter")
     throw new WordChatPreferencesError("Choose This document or This matter as the default scope.", 400)
   if (Object.hasOwn(value, "suggestions") && typeof value.suggestions !== "boolean")
     throw new WordChatPreferencesError("Choose whether to show suggestions.", 400)
+  if (Object.hasOwn(value, "consequences") && typeof value.consequences !== "boolean")
+    throw new WordChatPreferencesError("Choose whether to check amendment consequences.", 400)
   return value as Partial<WordChatPreferences>
 }
 
@@ -58,6 +69,12 @@ export function writeWordChatPreferences(input: unknown, environment: Environmen
   } finally {
     if (descriptor !== undefined) closeSync(descriptor)
     try { unlinkSync(temporary) } catch { /* Already published or never created. */ }
+  }
+  if (update.consequences === false) {
+    for (const listener of consequenceDisabledListeners) {
+      if (listener.file !== file) continue
+      try { listener.notify() } catch { /* A cancellation failure must not undo a saved preference. */ }
+    }
   }
   return saved
 }
