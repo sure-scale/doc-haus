@@ -88,6 +88,8 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     omitContentProperties: false, paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
     windowsText: false,
     bodyOoxmlAfterWrite: undefined as undefined | (() => string),
+    paragraphReviewedAfterWrite: undefined as undefined | ((id: string, version: string) => string | undefined),
+    postwriteParagraphExports: [] as string[],
   }
   const text = () => state.paragraphs.map((p) => p.text).join(state.separator)
   const position = (id: string) => {
@@ -241,6 +243,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       if (this.bodyExport && state.writes.length && state.bodyOoxmlAfterWrite) return { value: state.bodyOoxmlAfterWrite() }
       if (state.refuseEmptyContentXml && this.paragraphContent && this.start === this.end) throw new Error("empty Content XML unavailable")
       const paragraphs = this.paragraphs.items
+      if (this.paragraphContent && state.writes.length) state.postwriteParagraphExports.push(...paragraphs.map(p => p.uniqueLocalId))
       const whole = paragraphs.length && this.end === position(paragraphs.at(-1)!.uniqueLocalId).end + 1
       const markup = (p: { uniqueLocalId: string; text: string }) => {
         const stored = state.paragraphXml.get(p.uniqueLocalId)
@@ -273,6 +276,10 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       if (version === "Original" && state.listInsertions && this.start === 0 && this.end === text().length) return {value:state.listOriginal}
       const paragraphs = state.paragraphs.filter(p => { const at = position(p.id); return this.start <= at.start && at.end <= this.end })
       const complete = paragraphs.length && position(paragraphs[0]!.id).start === this.start && position(paragraphs.at(-1)!.id).end === this.end
+      if (this.paragraphContent && complete && paragraphs.length === 1 && state.writes.length) {
+        const override = state.paragraphReviewedAfterWrite?.(paragraphs[0]!.id, version ?? "Current")
+        if (override !== undefined) return { value: override }
+      }
       const deletedMark = (p: NativeParagraph) => {
         const doc = new DOMParser().parseFromString(flatOpc(state.paragraphXml.get(p.id) ?? `<w:p/>`), "application/xml")
         const properties = doc.getElementsByTagNameNS(WORD_XML, "p")[0]!.getElementsByTagNameNS(WORD_XML, "pPr")[0]
@@ -587,6 +594,35 @@ test("native text transport confirms a tracked edit when Word's paragraph text i
   expect(target.paragraphs[0]!.text).toBe("Control target alpha continues.")
   expect((await host.apply({ proposalId: "windows-wording", target, replacement: "remains" })).status).toBe("applied")
   expect(text()).toBe("Control target alpha remains.\rAnother earlier clause.")
+})
+
+test("native reviewed text reconciles the exact tracked-markup ambiguity in body and cell paragraphs", async () => {
+  // Synthetic compatibility inputs, not an Office capture or a host acceptance claim.
+  for (const inTable of [false, true]) {
+    const { state, host, text } = office(["Old clause.", "Unchanged neighbour."], true)
+    state.paragraphs[0]!.inTable = inTable
+    state.paragraphReviewedAfterWrite = (id, view) => id !== "paragraph-0" ? undefined : view === "Original" ? "Old clause." : "OldNew clause."
+    state.selection = [0, 3]
+    const target = (await host.selection())!
+    expect((await host.apply({ proposalId: `reviewed-markup-${inTable}`, target, replacement: "New" })).status).toBe("applied")
+    expect(text()).toBe("New clause.\rUnchanged neighbour.")
+    expect(state.postwriteParagraphExports).toEqual(["paragraph-0", "paragraph-0"])
+    expect(state.writes).toHaveLength(1)
+  }
+})
+
+test("native reviewed text refuses inconsistent Original and arbitrary Current without another dispatch", async () => {
+  for (const wrong of ["Original", "Current"]) {
+    const { state, host } = office(["Old clause.", "Unchanged neighbour."], true)
+    state.paragraphs[0]!.inTable = true
+    state.paragraphReviewedAfterWrite = (id, view) => id !== "paragraph-0" ? undefined : view === wrong ? "Wrong API wording" : view === "Original" ? "Old clause." : "OldNew clause."
+    state.selection = [0, 3]
+    const target = (await host.selection())!, input = { proposalId: `reviewed-mismatch-${wrong}`, target, replacement: "New" }
+    await expect(host.apply(input)).rejects.toThrow()
+    expect(state.writes).toHaveLength(1)
+    await expect(host.apply(input)).rejects.toThrow("may already contain this change")
+    expect(state.writes).toHaveLength(1)
+  }
 })
 
 test("native text insertion after an earlier inserted paragraph by the same author is confirmed", async () => {

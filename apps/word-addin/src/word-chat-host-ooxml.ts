@@ -338,6 +338,49 @@ export function nativeWordChatParagraphCurrentText(xml: string): string | undefi
     return paragraphs.length === 1 ? text(paragraphs[0]!, "Current") : undefined
   } catch { return }
 }
+
+/** Reconcile only the exact reviewed-text ambiguity where Current retains
+ * deleted runs. Original and the paragraph's own XML must independently agree;
+ * arbitrary API differences and unmodelled inline content are never repaired. */
+export function reconcileNativeWordChatParagraphText(xml: string, current: string, original: string): string {
+  const fail = (): never => { throw new Error("Native paragraph reviewed text mismatch") }
+  const { nodes } = content(parse(xml, 16_000_000), true, true)
+  if (nodes.length !== 1) return fail()
+  const views = { Current: "", Original: "", Markup: "" }
+  const children = (node: Element) => {
+    if (Array.from(node.childNodes).some(n => n.nodeType !== 1 && (n.nodeType !== 3 || Boolean(n.nodeValue?.trim())))) return fail()
+    return elements(node)
+  }
+  const add = (value: string, revision: "ins" | "del" | undefined) => {
+    views.Markup += value
+    if (revision !== "del") views.Current += value
+    if (revision !== "ins") views.Original += value
+  }
+  const walk = (parent: Element, kind: "p" | "revision" | "r", revision?: "ins" | "del") => {
+    children(parent).forEach((node, index) => {
+      if (node.namespaceURI !== W) return fail()
+      const name = node.localName
+      if (name === (kind === "p" ? "pPr" : kind === "r" ? "rPr" : "")) {
+        // Properties and paragraph marks do not contribute Content wording;
+        // their existing structural and formatting checks remain authoritative.
+        if (index !== 0) return fail()
+      } else if (name === "r" && kind !== "r") walk(node, "r", revision)
+      else if (["ins", "del"].includes(name) && kind === "p") walk(node, "revision", name as "ins" | "del")
+      else if (kind === "r" && name === (revision === "del" ? "delText" : "t")) {
+        if (Array.from(node.childNodes).some(n => n.nodeType !== 3 && n.nodeType !== 4)) return fail()
+        add(node.textContent ?? "", revision)
+      } else if (kind === "r" && ["tab", "br", "cr"].includes(name)) {
+        if (node.childNodes.length) return fail()
+        add(name === "tab" ? "\t" : "\u000b", revision)
+      } else if ((kind === "p" && ["bookmarkStart", "bookmarkEnd", "commentRangeStart", "commentRangeEnd", "proofErr"].includes(name) || kind === "r" && name === "commentReference") && !node.childNodes.length) {
+        // Known zero-width anchors remain in XML for the preservation checks.
+      } else return fail()
+    })
+  }
+  walk(nodes[0]!, "p")
+  if (original !== views.Original || current !== views.Current && current !== views.Markup) return fail()
+  return views.Current
+}
 function text(node: Node, version: "Current" | "Original" = "Current"): string {
   if (node.nodeType !== 1) return ""
   const element = node as Element

@@ -1,6 +1,6 @@
 import type { WordChatAuthoredAmendment, WordChatCellRun, WordChatPreparedAmendment, WordChatParagraphFormat, WordChatInlineFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget, WordChatTableRowInsertionProposal, WordChatTableRowDeletionProposal, WordChatProposal, WordChatListCapture } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { validWordChatFormatting, validWordChatInlineFormatting, targetWordChatAmendment, validWordChatTableRowInsertion, validWordChatTableRowDeletion, wordChatApplyPlan, wordChatTableCaptureCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, sameNativeWordChatBodySnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle, assertWordChatRowFormatNeutral, WordChatRowFormatRefusal, assertNativeWordChatInlineTarget, assertNativeWordChatInlineDependencies, verifiedNativeWordChatInlineFormatting, nativeWordChatParagraphCurrentText, sameNativeInlineWordChatParagraph, assertNativeInlineWordChatRevisionIds } from "./word-chat-host-ooxml"
+import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, sameNativeWordChatBodySnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle, assertWordChatRowFormatNeutral, WordChatRowFormatRefusal, assertNativeWordChatInlineTarget, assertNativeWordChatInlineDependencies, verifiedNativeWordChatInlineFormatting, reconcileNativeWordChatParagraphText, sameNativeInlineWordChatParagraph, assertNativeInlineWordChatRevisionIds } from "./word-chat-host-ooxml"
 import type { WordChatAuthoredTableRow, WordChatAuthoredTableRowDeletion } from "../../../dochaus/lib/word-chat-contract"
 import { prepareNativeRow, queueNativeRow, type NativeRowContext } from "./word-chat-native-row"
 import { nativeWordChatRowRefitWidths, verifyNativeWordChatAddedRow } from "./word-chat-native-row-verification"
@@ -194,21 +194,20 @@ async function nativeInventory(context: WordChatContext, items: Paragraph[]) {
   return items.map((p, i) => ({ id: p.uniqueLocalId, text: texts[i]!, tableNestingLevel: p.tableNestingLevel }))
 }
 
-/** The Current wording of each paragraph. Inside a table cell Word's reviewed text keeps the
- * tracked-deleted wording after the inserted wording ("31 July30 June 2027"), though the same
- * text is right at body level. A cell paragraph with tracked changes (Current differs from
- * Original) cannot be trusted that way, so its Current wording is read from its own OOXML. */
+/** Reconcile changed paragraphs against their own XML in every location. Word
+ * can include deleted wording in reviewed Current; only that exact markup-order
+ * ambiguity is admitted, with an independently matching Original view. */
 async function currentParagraphTexts(context: WordChatContext, items: Paragraph[]): Promise<string[]> {
   const rows = items.map(p => {
-    const range = p.getRange("Content"), cell = p.tableNestingLevel > 0
-    return { range, cell, current: range.getReviewedText("Current"), original: cell ? range.getReviewedText("Original") : undefined }
+    const range = p.getRange("Content")
+    return { range, current: range.getReviewedText("Current"), original: range.getReviewedText("Original") }
   })
   await context.sync()
-  const suspect = rows.filter(row => row.cell && row.original!.value !== row.current.value)
+  const suspect = rows.filter(row => row.original.value !== row.current.value)
   const exported = suspect.map(row => row.range.getOoxml())
   if (suspect.length) await context.sync()
-  const fixed = new Map(suspect.map((row, i) => [row, nativeWordChatParagraphCurrentText(exported[i]!.value)] as const))
-  return rows.map(row => fixed.get(row) ?? row.current.value)
+  const fixed = new Map(suspect.map((row, i) => [row, reconcileNativeWordChatParagraphText(exported[i]!.value, row.current.value, row.original.value)] as const))
+  return rows.map(row => fixed.has(row) ? fixed.get(row)! : row.current.value)
 }
 
 /** Word Find has a short-query limit. Locate boundaries with a short literal
