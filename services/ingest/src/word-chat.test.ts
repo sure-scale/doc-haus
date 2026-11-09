@@ -1274,6 +1274,36 @@ test("structured answers are suppressed while review is pending and when review 
   } finally { queueReview = false; approveReview = true; modelStructuredRawOutput = undefined }
 })
 
+test("inline formatting contract separates boolean objects from paragraph formatting arrays", async () => {
+  const id = await newConversation(), text = "Keep the existing payment terms."
+  const native = {...context,text,paragraphs:[{id:"inline-shape",text}],selection:undefined}
+  const request = () => post("send",{conversationId:id,scope:"document",text:"Format the requested passage, keeping all wording unchanged.",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context:native})
+  const output = (before:string, properties:object) => { modelStructuredRawOutput = JSON.stringify({answerParts:[{type:"text",text:"Prepared for review."},{type:"reference",sourceId:"word",quote:text}],proposal:{before,after:before,explanation:"Requested formatting only.",openItems:[],...properties}}) }
+  try {
+    output("payment",{inlineFormatting:[{underline:true}]})
+    const reviewed = [...sessions.values()].filter(session => session.metadata.type === "word-chat-review").length
+    const refused = (await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(refused.proposal).toBeUndefined()
+    expect(refused.answer).toBe(""); expect(refused.error).toContain("inline formatting")
+    expect(refused.error).not.toContain("Select complete paragraphs")
+    expect([...sessions.values()].filter(session => session.metadata.type === "word-chat-review")).toHaveLength(reviewed)
+    const contract = (JSON.parse(sessionContext(refused.id).split("\n").at(-2)!) as {responseContract:string}).responseContract
+    expect(contract).toContain("one nonempty JSON object")
+    expect(contract).toContain("never an array")
+    expect(contract).toContain('optional boolean properties "bold", "italic" and "underline"')
+    const reloaded = (await (await post("poll",{conversationId:id,turnId:refused.id})).json() as {turn:WordChatTurn}).turn
+    expect(reloaded.proposal).toBeUndefined(); expect(reloaded.error).toBe(refused.error)
+    output("payment",{inlineFormatting:{underline:true}})
+    const inline = (await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(inline.status).toBe("complete"); expect(inline.proposal?.inlineFormatting).toEqual({underline:true})
+    expect(inline.proposal?.target.text).toBe("payment"); expect([...sessions.values()].some(session => session.parentID === inline.id && session.metadata.type === "word-chat-review")).toBe(true)
+    output(text,{formatting:[{paragraph:0,style:"Heading2"}]})
+    const paragraph = (await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(paragraph.status).toBe("complete"); expect(paragraph.proposal?.formatting).toEqual([{paragraph:0,style:"Heading2"}])
+    expect(paragraph.proposal?.inlineFormatting).toBeUndefined(); expect([...sessions.values()].some(session => session.parentID === paragraph.id && session.metadata.type === "word-chat-review")).toBe(true)
+  } finally { modelStructuredRawOutput = undefined }
+})
+
 test("inline formatting review binds exact Word text, preserves refinement target and refuses invalid shapes", async () => {
   const id = await newConversation(), text = "Keep the payment terms and delivery terms."
   const native = {...context,text,paragraphs:[{id:"inline-native",text}],selection:undefined}
