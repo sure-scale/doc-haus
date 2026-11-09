@@ -193,7 +193,17 @@ export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:strin
     for(const ins of named(markProps,"ins")) markProps.removeChild(ins)
     const markFlags=directFlags(markProps), markChanges=named(pr[0]!,"rPrChange")
     if(markFlags.bold || markFlags.italic || markFlags.underline || markChanges.length>1) return fail()
-    for(const change of markChanges) { mark(change);const old=named(change,"rPr");if(old.length!==1 || !only(change,["rPr"]) || !basic(old[0]!)) return fail();directFlags(old[0]) }
+    for(const change of markChanges) {
+      mark(change);const old=named(change,"rPr")
+      if(old.length!==1 || !only(change,["rPr"])) return fail()
+      // Clearing a new paragraph mark can record that mark's insertion in
+      // its old properties. It is still this row's uniquely stamped carrier.
+      const props=old[0]!.cloneNode(true) as Element, priorMarks=named(props,"ins")
+      if(priorMarks.length>1) return fail()
+      for(const prior of priorMarks) { if(prior.childNodes.length) return fail();mark(prior);props.removeChild(prior) }
+      if(!basic(props)) return fail()
+      directFlags(props)
+    }
     let value=""
     const groups:WordChatCellRun[]=[]
     for(const ins of named(p,"ins")) {

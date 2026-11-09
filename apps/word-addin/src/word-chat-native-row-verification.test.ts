@@ -23,6 +23,32 @@ test("new cell paragraph marks are plain even when Word records clearing inherit
   for(const props of ['<w:b/>','<w:bCs/>','<w:i/>','<w:u w:val="single"/>',record.replace('w:id="10"','w:id="3"'),record.replace('<w:b/>','<w:sz w:val="28"/>'),record.replace('<w:b/>','<w:b w:val="maybe"/>'),record.replace('w:author="Reviewer"','w:author="Other"'),record+record]) expect(()=>verify(changed(props))).toThrow()
 })
 
+test("clearing a newly inserted paragraph mark may record its prior insertion carrier",()=>{
+  const marker=`<w:ins w:id="2" ${stamp}/>`
+  const prior=`<w:ins w:id="11" ${stamp}/>`
+  const history=(old:string)=>`<w:rPrChange w:id="10" ${stamp}><w:rPr>${old}</w:rPr></w:rPrChange>`
+  const changed=(old:string,current="")=>after.replace(marker,marker+current+history(old))
+  expect(verify(changed(prior+"<w:b/>"))).toEqual({authors:["Reviewer"]})
+  expect(verify(changed(prior))).toEqual({authors:["Reviewer"]})
+  for(const old of [
+    prior.replace('w:author="Reviewer"','w:author="Other"')+"<w:b/>",
+    prior.replace("2026-01-01T00:00:00Z","2026-01-02T00:00:00Z")+"<w:b/>",
+    prior.replace('w:id="11"','w:id="3"')+"<w:b/>",
+    prior+prior,
+    prior+prior.replace('w:id="11"','w:id="12"'),
+    prior.replace("/>","><w:b/></w:ins>"),
+    prior.replace("w:ins","w:del")+"<w:b/>",
+    prior.replace("/>",' w:extra="value"/>')+"<w:b/>",
+    prior+"<w:sz w:val=\"24\"/>",
+    prior+"<w:b w:val=\"maybe\"/>",
+    prior+"<w:b/><w:b/>",
+    prior+"<w:b/><w:bCs w:val=\"0\"/>",
+  ]) expect(()=>verify(changed(old))).toThrow()
+  for(const current of ['<w:b/>','<w:i/>','<w:u w:val="single"/>']) expect(()=>verify(changed(prior+"<w:b/>",current))).toThrow()
+  // The allowance is only for paragraph-mark history, never character runs.
+  expect(()=>verify(after.replace('<w:rPr><w:b/></w:rPr></w:rPrChange>',`<w:rPr>${prior}<w:b/></w:rPr></w:rPrChange>`))).toThrow()
+})
+
 const space=(text:string)=>/^\s|\s$/.test(text)?' xml:space="preserve"':""
 const fcell=(runs:Array<[string,string]>, mark:number, content:number)=>`<w:tc><w:tcPr/><w:p><w:pPr><w:rPr><w:ins w:id="${mark}" ${stamp}/></w:rPr></w:pPr><w:ins w:id="${content}" ${stamp}>${runs.map(([props,text])=>`<w:r>${props?`<w:rPr>${props}</w:rPr>`:""}<w:t${space(text)}>${text}</w:t></w:r>`).join("")}</w:ins></w:p></w:tc>`
 const frow=(a:Array<[string,string]>, b:Array<[string,string]>)=>wrap(body(`<w:tr><w:trPr><w:ins w:id="1" ${stamp}/></w:trPr>${fcell(a,2,3)}${fcell(b,4,5)}</w:tr>`),"Text","AABBCCDD")
