@@ -719,6 +719,14 @@ export class WordChatHost {
 
   private async applyRowDeletionOnce(proposal: WordChatTableRowDeletionProposal, identity: string, exportCurrent: () => Promise<Uint8Array>,
     author: (bytes: Uint8Array) => Promise<WordChatAuthoredTableRowDeletion>, mayDispatch?: () => boolean): Promise<WordChatApplyResult> {
+    // Only static descriptions reach the card. Keep native errors as causes;
+    // their messages can contain document content or other private values.
+    let confirmationNotice = "Word could not finish checking the deleted row with its document API."
+    const confirm = (condition: boolean, notice: string) => {
+      if (condition) return
+      confirmationNotice = notice
+      throw new Error("Native row deletion confirmation failed")
+    }
     try {
       const source=await exportCurrent()
       if (!(source instanceof Uint8Array) || !source.length || source.length>16*1024*1024) throw new WordChatHostError("The current Word document is too large or unavailable to prepare this row. Your document is unchanged.")
@@ -763,15 +771,27 @@ export class WordChatHost {
         const afterInventory=await nativeInventory(context, afterAll.items), afterXmlValue=afterXml.value, bodyOriginal=afterOriginal.value
         const reviewed=afterCells.map(c=>({current:c.current.value,original:c.original.value}))
         const expectedAfter=expectedValues.map((row,i)=>i===proposal.rowIndex ? row.map(()=>"") : row)
-        if (tracking!==prepared.tracking || trackFormatting!==prepared.trackFormatting || !uniform || count!==prepared.rowCount || JSON.stringify(values)!==JSON.stringify(expectedAfter) || bodyOriginal!==originalText || reviewed.some((c,i)=>c.current!=="" || c.original!==proposal.cells[i])) throw new Error("Native row deletion confirmation failed")
+        confirm(tracking===prepared.tracking,"Word could not confirm that the original tracking settings were restored.")
+        confirm(trackFormatting===prepared.trackFormatting,"Word could not confirm that formatting tracking was restored.")
+        confirm(uniform,"Word could not confirm the table shape after deleting the row.")
+        confirm(count===prepared.rowCount,"Word could not confirm the tracked row count after deleting the row.")
+        confirm(JSON.stringify(values)===JSON.stringify(expectedAfter),"Word could not confirm the Current table values after deleting the row.")
+        confirm(bodyOriginal===originalText,"Word could not confirm preservation of the Original document text.")
+        confirm(reviewed.every(c=>c.current===""),"Word could not confirm the deleted row's Current cell text.")
+        confirm(reviewed.every((c,i)=>c.original===proposal.cells[i]),"Word could not confirm the deleted row's Original cell text.")
         const afterComments=await this.documentState(context)
-        if (JSON.stringify(beforeComments.comments)!==JSON.stringify(afterComments.comments)) throw new Error("Native row comments changed")
+        confirm(JSON.stringify(beforeComments.comments)===JSON.stringify(afterComments.comments),"Word could not confirm preservation of the document's comments.")
+        confirmationNotice = "Word could not confirm the deleted row's tracked markup and document preservation."
         const verified=verifyNativeWordChatDeletedRow(beforeXml,afterXmlValue,inventory,afterInventory,proposal)
         this.applied.set(proposal.id,{identity,authors:verified.authors,uncertain:false})
         return {status:"applied",tracked:true,saved:false,authors:verified.authors}
       })
     } catch(error) {
-      if (this.applied.get(proposal.id)?.uncertain) throw new WordChatHostError("Word may have deleted the row, but its tracked result could not be confirmed. Inspect it and use Undo if needed; do not apply it again.","uncertain",{cause:error})
+      if (this.applied.get(proposal.id)?.uncertain) {
+        const failure = new WordChatHostError("Word may have deleted the row, but its tracked result could not be confirmed. Inspect it and use Undo if needed; do not apply it again.","uncertain",{cause:error})
+        failure.notice = `${confirmationNotice} Check the change in Word. Use Undo if needed; do not apply it again.`
+        throw failure
+      }
       failure(error,"Word could not prepare the reviewed row deletion. Your document is unchanged.")
     }
   }

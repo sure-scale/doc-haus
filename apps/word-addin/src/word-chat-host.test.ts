@@ -2076,6 +2076,68 @@ test("row deletion rejects a tampered oracle before opening Word", async () => {
   expect(runs).toBe(0)
 })
 
+async function rowDeletionConfirmationFixture(failure = "none") {
+  const {zipSync,strToU8} = await import("fflate")
+  const row = (a:string,b:string) => `<w:tr><w:tc><w:p><w:r><w:t>${a}</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>${b}</w:t></w:r></w:p></w:tc></w:tr>`
+  const mark = (id:number) => `w:id="${id}" w:author="Reviewer" w:date="2026-01-01T00:00:00Z"`
+  const deletedCell = (text:string,id:number) => `<w:tc><w:p><w:pPr><w:rPr><w:del ${mark(id)}/></w:rPr></w:pPr><w:del ${mark(id+1)}><w:r><w:delText>${text}</w:delText></w:r></w:del></w:p></w:tc>`
+  const retained = row("Label","Value"), removed = row("Old","Entry")
+  const deleted = `<w:tr><w:trPr><w:del ${mark(1)}/></w:trPr>${deletedCell("Old",2)}${deletedCell("Entry",4)}</w:tr>`
+  const content = (target:string) => `<w:tbl>${retained}${target}</w:tbl>`
+  const documentXml = (target:string) => `<w:document xmlns:w="${WORD_XML}"><w:body>${content(target)}<w:sectPr/></w:body></w:document>`
+  const pack = (target:string,tracked:boolean) => zipSync({"word/document.xml":strToU8(documentXml(target)),"word/settings.xml":strToU8(`<w:settings xmlns:w="${WORD_XML}">${tracked ? "<w:trackRevisions/>" : ""}</w:settings>`)})
+  const source = pack(removed,false), authored = pack(deleted.replaceAll('w:author="Reviewer"','w:author="doc.haus"'),true)
+  const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",source))).map(x=>x.toString(16).padStart(2,"0")).join("")
+  const cells = ["Label","Value","Old","Entry"], ids = ["a","b","c","d"]
+  const table = {tableIndex:0,rows:[cells.slice(0,2),cells.slice(2)].map((row,ri)=>row.map((text,ci)=>({id:ids[ri*2+ci]!,text})))}
+  const proposal = {kind:"table_row_delete" as const,id:"delete-confirmation",documentId:"doc",explanation:"Delete the requested row",openItems:[],createdAt:"now",table,rowIndex:1,cells:cells.slice(2)}
+  const oracle = {kind:"table_row_delete" as const,proposalId:proposal.id,sourceSha256:hash,table,rowIndex:1,cells:proposal.cells,author:"doc.haus" as const,writerRequest:{source_sha256:hash,target_handle:"bound",author:"doc.haus"},authoredBase64:Buffer.from(authored).toString("base64"),revisions:[{id:"r",family:"row_delete"}]}
+  let applied=false, queued=false, writes=0
+  const cause = new Error("PRIVATE document text /path token=secret")
+  const collection = <T>(items:T[]) => ({items,load() {}})
+  const current = (index:number) => applied && index>=2 ? "" : cells[index]!
+  const paras = cells.map((text,i)=>({uniqueLocalId:ids[i]!,get text() {return current(i)},tableNestingLevel:1,styleBuiltIn:"Normal",spaceBefore:0,spaceAfter:0,lineSpacing:12,load() {},
+    getRange() {return {getReviewedText(view:string) {return {value:view==="Original" ? text : current(i)}},getOoxml() {return {value:flatOpc(applied && i>=2 ? `<w:p><w:del ${mark(20+i)}><w:r><w:delText>${text}</w:delText></w:r></w:del></w:p>` : `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`)}}}}}))
+  const values = () => applied ? [["Label","Value"],["",""]] : [["Label","Value"],["Old","Entry"]]
+  const rows = cells.slice(0,2).map((_,i)=>({rowIndex:i,cellCount:2,isHeader:false,get values() {return [values()[i]!]},delete() {queued=true;writes++}}))
+  const nativeTable = {get rowCount() {return applied && failure==="count" ? 1 : 2},get isUniform() {return !(applied && failure==="uniform")},get values() {return applied && failure==="values" ? [["Label","Value"],["PRIVATE",""]] : values()},rows:collection(rows),load() {},
+    getCell(ri:number,ci:number) {const i=ri*2+ci;return {body:{paragraphs:collection([paras[i]!]),getRange() {return {getReviewedText(view:string) {return {value:applied && (failure==="cell-current" && view==="Current" || failure==="cell-original" && view==="Original") ? "PRIVATE" : view==="Original" ? cells[i]! : current(i)}}}}}}}}
+  const body = {paragraphs:collection(paras),tables:collection([nativeTable]),getRange() {return {
+    getOoxml() {return {value:flatOpc(content(applied ? failure==="markup" ? removed : deleted : removed))}},
+    getReviewedText(view:string) {return {value:applied && failure==="original" && view==="Original" ? "PRIVATE" : (view==="Original" ? cells : cells.map((_,i)=>current(i))).join("\r")}},
+    getTrackedChanges() {return collection([])},getComments() {return collection(applied && failure==="comments" ? [{author:"PRIVATE",content:"PRIVATE",resolved:false}] : [])},
+  }}}
+  const document = {body,changeTrackingMode:"Off",trackFormatting:false,load() {}}
+  const word = {async run(fn:(context:unknown)=>Promise<unknown>) {return fn({document,async sync() {if (queued) {queued=false;applied=true;if(failure==="tracking") document.changeTrackingMode="TrackAll";if(failure==="track-formatting") document.trackFormatting=true;if(failure==="api") throw cause}}})}} as WordChatWord
+  return {host:new WordChatHost(word,()=>true),proposal,source,oracle,cause,writes:()=>writes}
+}
+
+test("row deletion confirmation notices identify failed checks without exposing native data or replaying", async () => {
+  const cases = [
+    ["tracking","tracking settings"],["track-formatting","formatting tracking"],["uniform","table shape"],["count","row count"],
+    ["values","Current table values"],["original","Original document text"],["cell-current","Current cell text"],["cell-original","Original cell text"],
+    ["comments","comments"],["markup","tracked markup and document preservation"],["api","document API"],
+  ] as const
+  for (const [failure,notice] of cases) {
+    const fixture=await rowDeletionConfirmationFixture(failure)
+    let rejected:unknown
+    try {await fixture.host.applyRowDeletion(fixture.proposal,async()=>fixture.source,async()=>fixture.oracle)} catch(error) {rejected=error}
+    expect(rejected).toBeInstanceOf(WordChatHostError)
+    expect({message:(rejected as Error).message,mutationState:(rejected as WordChatHostError).mutationState,notice:(rejected as WordChatHostError).notice}).toMatchObject({mutationState:"uncertain",notice:expect.stringContaining(notice)})
+    expect((rejected as WordChatHostError).notice).toContain("Use Undo if needed")
+    expect((rejected as WordChatHostError).notice).not.toMatch(/PRIVATE|secret|token=|<w:|\/path/)
+    expect((rejected as Error).cause).toBeDefined()
+    if(failure==="api") expect((rejected as Error).cause).toBe(fixture.cause)
+    const repeated=await fixture.host.applyRowDeletion(fixture.proposal,async()=>{throw Error("must not export again")},async()=>fixture.oracle).then(()=>undefined,error=>error as WordChatHostError)
+    expect(repeated?.mutationState).toBe("uncertain")
+    expect(fixture.writes()).toBe(1)
+  }
+  const good=await rowDeletionConfirmationFixture()
+  expect((await good.host.applyRowDeletion(good.proposal,async()=>good.source,async()=>good.oracle)).status).toBe("applied")
+  expect((await good.host.applyRowDeletion(good.proposal,async()=>good.source,async()=>good.oracle)).status).toBe("already-applied")
+  expect(good.writes()).toBe(1)
+})
+
 test("paragraph merge rejects a forged prepared command without writing", async () => {
   const {state,nativeHost}=office(["First clause.","Second clause."],true)
   state.selection=[0,"First clause.\rSecond clause.".length]
