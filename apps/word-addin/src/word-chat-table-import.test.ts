@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test"
 import { assertWordChatTableImportPreimage, assertWordChatTableImportRange, assertWordChatTableImportFormatting, WordChatTableImportError, type WordChatTableImportErrorCode } from "./word-chat-table-import"
+import { DOMParser } from "@xmldom/xmldom"
+import { firstTableImportXmlDifference, sameTableImportXml } from "./word-chat-table-import-xml"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", P = "http://schemas.microsoft.com/office/2006/xmlPackage"
 const REL = "http://schemas.openxmlformats.org/package/2006/relationships", R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -79,9 +81,9 @@ test("categorical import notices distinguish failed boundaries without exposing 
   const ids = proposal.table.rows.flat().map(cell => cell.id)
   const enclosed = table.replace(p("Item"), '<w:p><w:bookmarkStart w:id="9" w:name="inside"/><w:r><w:t>Item</w:t></w:r><w:bookmarkEnd w:id="9"/></w:p>')
   const cases: Array<[WordChatTableImportErrorCode, () => void]> = [
-    ["package_xml", () => assertWordChatTableImportPreimage("<!DOCTYPE package><private-capture/>", fresh, inventory, proposal)],
+    ["package_xml", () => assertWordChatTableImportPreimage(scoped, fresh+"<!ENTITY private-capture>", inventory, proposal)],
     ["document_context", () => assertWordChatTableImportPreimage(scoped, fresh.replace("<w:body>", '<w:body xml:space="preserve">'), inventory, proposal)],
-    ["table_preimage", () => assertWordChatTableImportPreimage(scoped, fresh.replace('w:w="1800"', 'w:w="2400"'), inventory, proposal)],
+    ["live_table_preimage", () => assertWordChatTableImportPreimage(scoped, fresh.replace('w:w="1800"', 'w:w="2400"'), inventory, proposal)],
     ["table_boundary", () => assertWordChatTableImportPreimage(pack(enclosed), pack(p("Outside")+enclosed+p("After")), inventory, proposal)],
     ["formatting_dependencies", () => assertWordChatTableImportPreimage(scoped, fresh.replace('w:val="22"', 'w:val="28"'), inventory, proposal)],
     ["range_paragraphs", () => assertWordChatTableImportRange([...ids,"private-capture"], proposal)],
@@ -108,7 +110,8 @@ test("wrapped native binding and unsupported XML causes stay private behind stat
   try { assertWordChatTableImportPreimage(scoped, fresh, inventory.map((p,i) => i === 1 ? {...p,id:"private-capture"} : p), proposal) }
   catch (error) { binding = error }
   expect(binding).toBeInstanceOf(WordChatTableImportError)
-  expect((binding as WordChatTableImportError).code).toBe("table_preimage")
+  expect((binding as WordChatTableImportError).code).toBe("target_validation")
+  expect((binding as WordChatTableImportError).detail).toEqual({category:"target_validation",path:"/target",reason:"target_binding"})
   expect((binding as WordChatTableImportError).cause).toBeInstanceOf(Error)
   expect((binding as WordChatTableImportError).message).not.toContain("private-capture")
   const choice = (xml: string) => xml.replace("</w:styles>", '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Fallback/></mc:AlternateContent></w:styles>')
@@ -116,7 +119,7 @@ test("wrapped native binding and unsupported XML causes stay private behind stat
   try { assertWordChatTableImportPreimage(choice(scoped), choice(fresh), inventory, proposal) }
   catch (error) { unsupported = error }
   expect(unsupported).toBeInstanceOf(WordChatTableImportError)
-  expect((unsupported as WordChatTableImportError).code).toBe("formatting_dependencies")
+  expect((unsupported as WordChatTableImportError).code).toBe("xml_comparison_unsupported")
   expect((unsupported as WordChatTableImportError).cause).toBeInstanceOf(Error)
   const privateCause = new Error("private-capture <w:p>secret text</w:p> /private/styles.xml")
   const safe = new WordChatTableImportError("package_xml", privateCause)
@@ -124,4 +127,73 @@ test("wrapped native binding and unsupported XML causes stay private behind stat
   expect(safe.message).not.toContain("private-capture")
   expect(safe.message).not.toContain("secret text")
   expect(safe.message).not.toContain("styles.xml")
+})
+
+test("target diagnostics classify exact static projector and target reasons without captured values", () => {
+  const cases = [
+    ["paragraph_inventory",()=>assertWordChatTableImportPreimage(scoped,fresh,[],proposal)],
+    ["paragraph_projection",()=>assertWordChatTableImportPreimage(scoped,fresh,inventory.map((p,i)=>i===1?{...p,text:"private-capture"}:p),proposal)],
+    ["story_structure",()=>assertWordChatTableImportPreimage(scoped,fresh.replace("<w:body>",'<w:body><w:private-capture/>'),inventory,proposal)],
+    ["table_geometry",()=>assertWordChatTableImportPreimage(scoped,fresh,inventory,{...proposal,table:{...proposal.table,tableIndex:99}})],
+    ["target_qualification",()=>assertWordChatTableImportPreimage(scoped,fresh.replace(row(["Remove","Entry"]),row(["Remove","Entry"]).replace("<w:tr>","<w:tr><w:trPr><w:tblHeader/></w:trPr>")),inventory,proposal)],
+  ] as const
+  for(const [reason,run] of cases){
+    let error:WordChatTableImportError|undefined
+    try{run()}catch(cause){error=cause as WordChatTableImportError}
+    expect(error?.code).toBe("target_validation")
+    expect(error?.detail).toEqual({category:"target_validation",path:"/target",reason})
+    expect(error?.message).not.toContain("private-capture")
+  }
+})
+
+test("strict live-table differences expose allowlisted paths but never values or unknown XML names", () => {
+  const cases = [
+    [scoped.replace('w:w="1800"','w:w="private-width"'),"attribute_value","/w:tbl[1]/w:tblGrid[2]/w:gridCol[1]/@w:w"],
+    [scoped.replace("<w:tbl>",'<w:tbl w:rsidR="private-revision">'),"attribute_presence","/w:tbl[1]/@w:rsidR"],
+    [scoped.replace("<w:tbl>",'<w:tbl private-capture="private-value">'),"attribute_presence","/w:tbl[1]/@attribute"],
+    [scoped.replace("Remove","private-text"),"text","/w:tbl[1]/w:tr[4]/w:tc[1]/w:p[2]/w:r[1]/w:t[1]/node[1]"],
+    [scoped.replace("</w:tbl>",'<private-capture xmlns="urn:private-namespace">private-text</private-capture></w:tbl>'),"node_count","/w:tbl[1]/element[5]"],
+  ] as const
+  for(const [source,category,path] of cases){
+    let error:WordChatTableImportError|undefined
+    try{assertWordChatTableImportPreimage(source,fresh,inventory,proposal)}catch(cause){error=cause as WordChatTableImportError}
+    expect(error?.code).toBe("live_table_preimage")
+    expect(error?.detail).toEqual({category,path})
+    expect(error?.diagnosticMessage).toContain(`${category} at ${path}`)
+    expect(error?.message).toBe(new WordChatTableImportError("live_table_preimage").message)
+    expect(error?.diagnosticMessage).not.toContain("private-")
+    expect(error?.message).not.toContain("private-")
+  }
+})
+
+test("XML difference reporting retains QName semantics and hides namespace binding values", () => {
+  const parse=(xml:string)=>new DOMParser().parseFromString(xml,"application/xml").documentElement
+  const a=parse(`<w:p xmlns:w="${W}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:privatePrefix="urn:private-before" mc:Ignorable="privatePrefix">${p("private-text")}</w:p>`)
+  const b=parse(`<other:p xmlns:other="${W}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:privatePrefix="urn:private-after" mc:Ignorable="privatePrefix">${p("private-text").replaceAll("w:","other:")}</other:p>`)
+  expect(sameTableImportXml(a,b)).toBe(false)
+  expect(firstTableImportXmlDifference(a,b)).toEqual({category:"namespace_binding",path:"/w:p[1]/@mc:Ignorable"})
+  const same=parse(`<other:p xmlns:other="${W}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:privatePrefix="urn:private-before" mc:Ignorable="privatePrefix">${p("private-text").replaceAll("w:","other:")}</other:p>`)
+  expect(sameTableImportXml(a,same)).toBe(true)
+  expect(firstTableImportXmlDifference(a,same)).toBeUndefined()
+})
+
+test("prototype-key namespace URIs stay comparable and cannot become diagnostic names", () => {
+  const parse=(xml:string)=>new DOMParser().parseFromString(xml,"application/xml").documentElement
+  for(const uri of ["constructor","__proto__","toString"]){
+    const a=parse(`<x:private-capture xmlns:x="${uri}" x:private-attribute="private-value">private-text</x:private-capture>`)
+    const same=parse(`<y:private-capture xmlns:y="${uri}" y:private-attribute="private-value">private-text</y:private-capture>`)
+    const changed=parse(`<y:private-capture xmlns:y="${uri}" y:private-attribute="private-changed">private-text</y:private-capture>`)
+    expect(sameTableImportXml(a,same)).toBe(true)
+    expect(firstTableImportXmlDifference(a,same)).toBeUndefined()
+    expect(sameTableImportXml(a,changed)).toBe(false)
+    expect(firstTableImportXmlDifference(a,changed)).toEqual({category:"attribute_value",path:"/element[1]/@attribute"})
+  }
+})
+
+test("attribute presence diagnostics identify the actual added or removed expanded name", () => {
+  const parse=(attrs:string)=>new DOMParser().parseFromString(`<w:tbl xmlns:w="${W}" ${attrs}/>`,"application/xml").documentElement
+  const before=parse('w:val="private-same"'),after=parse('w:id="private-new" w:val="private-same"')
+  expect(sameTableImportXml(before,after)).toBe(false)
+  expect(firstTableImportXmlDifference(before,after)).toEqual({category:"attribute_presence",path:"/w:tbl[1]/@w:id"})
+  expect(firstTableImportXmlDifference(after,before)).toEqual({category:"attribute_presence",path:"/w:tbl[1]/@w:id"})
 })

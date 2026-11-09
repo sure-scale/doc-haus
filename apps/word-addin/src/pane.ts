@@ -6,7 +6,7 @@ import { configureConnectionRecovery, createPaneRenderer } from "./pane-render"
 import { setupLatestVersion } from "./latest-version"
 import { ChatRequestError, chatClient } from "./chat-client"
 import { mountWordChat } from "./chat-ui"
-import { captureCurrentWordContext, captureWordChatSelection, wordChatTableTarget, applyReviewedProposal, applyReviewedTableRow, applyWordChatRowDeletion, WordChatHostError } from "./word-chat-host"
+import { captureCurrentWordContext, captureWordChatSelection, wordChatTableTarget, applyReviewedProposal, applyReviewedTableRow, applyWordChatRowDeletion, checkWordChatRowDeletion, WordChatHostError } from "./word-chat-host"
 import { watchWordChatSelection } from "./word-chat-selection"
 import { openChatAttachments } from "./chat-attachments"
 import { preferRoomyPane } from "./feature-tabs"
@@ -95,6 +95,12 @@ async function main(): Promise<void> {
         throw new WordChatHostError(/unchanged\.$/.test(error.message) ? error.message : `${error.message} Your document is unchanged.`, "unchanged", { cause: error })
       }
     }
+    const prepareRow = async <T>(request: object, bytes: Uint8Array): Promise<T> => {
+      const chunks: string[] = []
+      for (let start = 0; start < bytes.length; start += 32_768)
+        chunks.push(String.fromCharCode(...bytes.subarray(start, start + 32_768)))
+      return prepare<T>({ ...request, docxBase64: btoa(chunks.join("")) })
+    }
     const chatPanel = element("pane-chat")
     const conversation = mountWordChat(chatPanel, chat, {
       documentName: link.documentName,
@@ -110,15 +116,18 @@ async function main(): Promise<void> {
         return sync.localEdit({ conversationId: request.conversationId, turnId: request.turnId }, async identity => {
           localEditIdentity = identity
           try {
-            const prepareRow = async <T>(bytes: Uint8Array): Promise<T> => {
-              const chunks: string[] = []
-              for (let start = 0; start < bytes.length; start += 32_768)
-                chunks.push(String.fromCharCode(...bytes.subarray(start, start + 32_768)))
-              return prepare<T>({ ...request, docxBase64: btoa(chunks.join("")) })
-            }
             return proposal.kind === "table_row_delete"
-              ? await applyWordChatRowDeletion(proposal, () => office.host.export(), bytes => prepareRow<WordChatAuthoredTableRowDeletion>(bytes), () => !sync.isDisposed())
-              : await applyReviewedTableRow(proposal, () => office.host.export(), bytes => prepareRow<WordChatAuthoredTableRow>(bytes), () => !sync.isDisposed())
+              ? await applyWordChatRowDeletion(proposal, () => office.host.export(), bytes => prepareRow<WordChatAuthoredTableRowDeletion>(request, bytes), () => !sync.isDisposed())
+              : await applyReviewedTableRow(proposal, () => office.host.export(), bytes => prepareRow<WordChatAuthoredTableRow>(request, bytes), () => !sync.isDisposed())
+          } finally { localEditIdentity = undefined }
+        })
+      },
+      async checkRow(proposal, request) {
+        if (sync.snapshot().busy) throw new Error("Wait for the current Save to finish, then check the table.")
+        return sync.localInspection(request, async identity => {
+          localEditIdentity = identity
+          try {
+            return await checkWordChatRowDeletion(proposal, () => office.host.export(), bytes => prepareRow<WordChatAuthoredTableRowDeletion>(request, bytes), () => !sync.isDisposed())
           } finally { localEditIdentity = undefined }
         })
       },

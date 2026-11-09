@@ -61,6 +61,7 @@ export type WordChatContext = {
   sync(): Promise<void>
 }
 export type WordChatWord = { run<T>(callback: (context: WordChatContext) => Promise<T>): Promise<T> }
+export type WordChatRowDeletionCheckResult = { status: "ready" }
 export type WordChatApplyResult = { status: "applied" | "already-applied"; tracked: true; saved: false; authors: string[]; target?: WordChatTarget }
 export type WordChatApplyInput = { proposalId: string; target: WordChatTarget; replacement: string; formatting?: WordChatParagraphFormat[]; inlineFormatting?: WordChatInlineFormat; paragraphAction?: WordChatProposal["paragraphAction"]; list?: WordChatListCapture; author: (snapshot: { ooxml: string }) => Promise<WordChatPreparedAmendment>; mayDispatch?: () => boolean }
 export class WordChatHostError extends Error {
@@ -700,11 +701,7 @@ export class WordChatHost {
 
   async applyRowDeletion(proposal: WordChatTableRowDeletionProposal, exportCurrent: () => Promise<Uint8Array>,
     author: (bytes: Uint8Array) => Promise<WordChatAuthoredTableRowDeletion>, mayDispatch?: () => boolean): Promise<WordChatApplyResult> {
-    this.ready()
-    if (!this.supports("WordApiDesktop", "1.4")) throw new WordChatHostError("Deleting a reviewed row requires a supported desktop version of Word.")
-    const rows = proposal?.table?.rows
-    const snapshot: WordChatSnapshot = {text:"", paragraphs:Array.isArray(rows) ? rows.flat() : [], saved:false, capturedAt:"", truncated:false, table:proposal?.table}
-    if (!validWordChatTableRowDeletion(snapshot, proposal) || typeof exportCurrent !== "function" || typeof author !== "function") throw new WordChatHostError("Review a complete table row before deleting it. Your document is unchanged.")
+    this.validateRowDeletion(proposal, exportCurrent, author)
     const identity=JSON.stringify(proposal), pending=this.pending.get(proposal.id), observed=this.applied.get(proposal.id)
     if (pending) { if (pending.identity!==identity) throw new WordChatHostError("This proposal has changed. Prepare a fresh proposal."); return pending.promise }
     if (observed) {
@@ -715,6 +712,50 @@ export class WordChatHost {
     const promise=this.applyRowDeletionOnce(proposal,identity,exportCurrent,author,mayDispatch)
     this.pending.set(proposal.id,{identity,promise})
     try { return await promise } finally { this.pending.delete(proposal.id) }
+  }
+
+  private validateRowDeletion(proposal: WordChatTableRowDeletionProposal, exportCurrent: () => Promise<Uint8Array>,
+    author: (bytes: Uint8Array) => Promise<WordChatAuthoredTableRowDeletion>): void {
+    this.ready()
+    if (!this.supports("WordApiDesktop", "1.4")) throw new WordChatHostError("Deleting a reviewed row requires a supported desktop version of Word.")
+    const rows = proposal?.table?.rows
+    const snapshot: WordChatSnapshot = {text:"", paragraphs:Array.isArray(rows) ? rows.flat() : [], saved:false, capturedAt:"", truncated:false, table:proposal?.table}
+    if (!validWordChatTableRowDeletion(snapshot, proposal) || typeof exportCurrent !== "function" || typeof author !== "function") throw new WordChatHostError("Review a complete table row before deleting it. Your document is unchanged.")
+  }
+
+  /** Read the same current file, oracle and complete-table preimage as Apply.
+   * No dispatch, mutation fence, applied result, tracking or document writes. */
+  async checkRowDeletion(proposal: WordChatTableRowDeletionProposal, exportCurrent: () => Promise<Uint8Array>,
+    author: (bytes: Uint8Array) => Promise<WordChatAuthoredTableRowDeletion>, mayContinue?: () => boolean): Promise<WordChatRowDeletionCheckResult> {
+    this.validateRowDeletion(proposal, exportCurrent, author)
+    let notice = "Word could not prepare the reviewed row deletion. Your document is unchanged."
+    const preparing = (message: string) => { notice = `${message} Your document is unchanged.` }
+    try {
+      const pair = await this.prepareRowDeletionOracle(proposal, exportCurrent, author, preparing)
+      if (pair === undefined) throw new WordChatHostError("This Word session cannot check the complete table import. Your document is unchanged.")
+      await this.word.run(context => this.prepareDeletedRowImport(context, proposal, pair, preparing))
+      if (mayContinue && !mayContinue()) throw new WordChatHostError("The Word pane closed before the check finished. Your document is unchanged.")
+      return {status:"ready"}
+    } catch (error) {
+      if (error instanceof WordChatTableImportError) throw new WordChatHostError(`${error.diagnosticMessage} Your document is unchanged.`, "unchanged", {cause:error})
+      failure(error, notice)
+    }
+  }
+
+  private async prepareRowDeletionOracle(proposal: WordChatTableRowDeletionProposal, exportCurrent: () => Promise<Uint8Array>,
+    author: (bytes: Uint8Array) => Promise<WordChatAuthoredTableRowDeletion>, preparing: (notice:string) => void, paired?: () => void) {
+    const source=await exportCurrent()
+    if (!(source instanceof Uint8Array) || !source.length || source.length>16*1024*1024) throw new WordChatHostError("The current Word document is too large or unavailable to prepare this row. Your document is unchanged.")
+    const oracle=await author(source)
+    // Retain the exact strings verified across subsequent Office reads.
+    const tableImport=oracle?.tableImport===undefined ? undefined : {beforeOoxml:oracle.tableImport.beforeOoxml,ooxml:oracle.tableImport.ooxml}
+    if (tableImport !== undefined) {
+      paired?.()
+      preparing("The prepared row deletion could not be verified against the current document file.")
+    }
+    await verifyReviewedWordChatRowDeletionOracle(source,{...oracle,tableImport},proposal)
+    if (tableImport !== undefined) preparing("Word could not begin reading the complete reviewed table.")
+    return tableImport
   }
 
   private async applyRowDeletionOnce(proposal: WordChatTableRowDeletionProposal, identity: string, exportCurrent: () => Promise<Uint8Array>,
@@ -731,16 +772,7 @@ export class WordChatHost {
       throw new Error("Native row deletion confirmation failed")
     }
     try {
-      const source=await exportCurrent()
-      if (!(source instanceof Uint8Array) || !source.length || source.length>16*1024*1024) throw new WordChatHostError("The current Word document is too large or unavailable to prepare this row. Your document is unchanged.")
-      const oracle=await author(source)
-      // Retain the exact strings being verified across subsequent Office reads;
-      // the author callback must not be able to replace the payload afterwards.
-      const tableImport=oracle?.tableImport===undefined ? undefined : {beforeOoxml:oracle.tableImport.beforeOoxml,ooxml:oracle.tableImport.ooxml}
-      pairedImport = tableImport !== undefined
-      if (pairedImport) preparing("The prepared row deletion could not be verified against the current document file.")
-      await verifyReviewedWordChatRowDeletionOracle(source,{...oracle,tableImport},proposal)
-      if (pairedImport) preparing("Word could not begin reading the complete reviewed table.")
+      const tableImport=await this.prepareRowDeletionOracle(proposal,exportCurrent,author,preparing,()=>{pairedImport=true})
       return await this.word.run(async context => {
         if (tableImport !== undefined) {
           confirmationNotice="Word could not confirm the imported table's tracked deletion and document preservation."
@@ -815,11 +847,8 @@ export class WordChatHost {
     }
   }
 
-  /** Import only a verified enclosing table. Paragraph IDs inside this parent
-   * may be renewed by Word; the imported-row verifier owns that scoped mapping.
-   * The old native deletion path remains available only for older no-pair oracles. */
-  private async importDeletedRow(context: WordChatContext, proposal: WordChatTableRowDeletionProposal, identity: string,
-    pair: {beforeOoxml:string;ooxml:string}, preparing: (notice:string) => void, mayDispatch?: () => boolean): Promise<WordChatApplyResult> {
+  private async prepareDeletedRowImport(context: WordChatContext, proposal: WordChatTableRowDeletionProposal,
+    pair: {beforeOoxml:string;ooxml:string}, preparing: (notice:string) => void) {
     const body=context.document.body
     if (!body.tables) throw captureMismatch("Word cannot read the complete reviewed table.")
     type ImportTable=NativeTable & {getRange?(location:"Whole"):WordChatRange;rows:Collection<{rowIndex:number;cellCount:number;isHeader:boolean;values:string[][]}>}
@@ -881,6 +910,16 @@ export class WordChatHost {
       JSON.stringify(initial.inventory)!==JSON.stringify(fresh.inventory) || JSON.stringify(initial.rangeIds)!==JSON.stringify(fresh.rangeIds) ||
       initial.original!==fresh.original || initial.tracking!==fresh.tracking || initial.trackFormatting!==fresh.trackFormatting)
       throw captureMismatch("The complete table changed before deletion.")
+    return {fresh,beforeState,expectedValues}
+  }
+
+  /** Import only a verified enclosing table. Paragraph IDs inside this parent
+   * may be renewed by Word; the imported-row verifier owns that scoped mapping.
+   * The old native deletion path remains available only for older no-pair oracles. */
+  private async importDeletedRow(context: WordChatContext, proposal: WordChatTableRowDeletionProposal, identity: string,
+    pair: {beforeOoxml:string;ooxml:string}, preparing: (notice:string) => void, mayDispatch?: () => boolean): Promise<WordChatApplyResult> {
+    const body=context.document.body
+    const {fresh,beforeState,expectedValues}=await this.prepareDeletedRowImport(context,proposal,pair,preparing)
     if (mayDispatch && !mayDispatch()) throw new WordChatHostError("The Word pane closed before the row was deleted. Your document is unchanged.")
     // Fence before even a synchronous insert or failed sync can have mutated
     // Word. A failure must never unlock a replay of an ambiguous import.
@@ -1768,3 +1807,6 @@ export const applyReviewedTableRow = (proposal: WordChatTableRowInsertionProposa
 
 export const applyWordChatRowDeletion = (proposal: WordChatTableRowDeletionProposal, exportCurrent: () => Promise<Uint8Array>,
   author: (bytes: Uint8Array) => Promise<WordChatAuthoredTableRowDeletion>, mayDispatch?: () => boolean) => host().applyRowDeletion(proposal, exportCurrent, author, mayDispatch)
+
+export const checkWordChatRowDeletion = (proposal: WordChatTableRowDeletionProposal, exportCurrent: () => Promise<Uint8Array>,
+  author: (bytes: Uint8Array) => Promise<WordChatAuthoredTableRowDeletion>, mayContinue?: () => boolean) => host().checkRowDeletion(proposal, exportCurrent, author, mayContinue)

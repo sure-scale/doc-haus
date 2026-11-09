@@ -524,6 +524,38 @@ export class WordSync {
     this.nativeUncertain = false
   }
 
+  /** Authorize a read-only check through the existing reviewed-operation gate.
+   * A check can prepare an oracle but never confirms a dispatched Word change. */
+  async localInspection<T>(proposal: ProposalBinding, read: (identity: {base:string;generation:string}) => Promise<T>): Promise<T> {
+    let value!: T
+    let rejected: unknown
+    let readFailed = false
+    const complete = await this.enqueue(async () => {
+      try {
+        if (!proposal?.conversationId || !proposal.turnId) throw documentStateError("Review the proposal again before checking it.")
+        if (this.pending) throw documentStateError("Finish the pending Save before checking the table.")
+        await this.inspect(false)
+        // Claim the ordinary lease without marking document content dirty.
+        if (!this.latestUncertain && !this.nativeUncertain && this.connection?.nativeOperation?.state !== "pending" &&
+          this.connection?.version.state === "current" && this.connection.lease.state === "available")
+          this.connection = await this.transport.lease("claim", this.base)
+        if (!this.canWrite()) throw documentStateError(this.blockedMessage())
+        if (!this.connection?.nativeOperation) throw documentStateError("This Word connection needs an update before checking the table.")
+        const identity = {base:this.base,generation:this.connection.lease.generation!}
+        if (this.closed) throw documentStateError("The Word pane closed before the table was checked.")
+        const operation = await this.beginNative(identity.base,identity.generation,this.connection.nativeOperation.sequence,{intent:"amendment",proposal})
+        try {
+          if (this.closed) throw documentStateError("The Word pane closed before the table was checked.")
+          value = await read(identity)
+        } catch (error) { rejected = error; readFailed = true }
+        try { await this.settleNative(operation,"not-dispatched") }
+        catch (cause) { throw nativeSettlementFailure(this.blockedMessage(),cause,false) }
+      } catch (error) { rejected = error; throw error }
+    })
+    if (!complete || readFailed) throw rejected instanceof Error ? rejected : documentStateError(this.state.message)
+    return value
+  }
+
   /** Reviewed changes share Save's queue. BEGIN is committed before the host
    * callback; only that uninterrupted callback may queue native writes. */
   async localEdit<T>(proposal: ProposalBinding, edit: (identity: { base: string; generation: string }) => Promise<T>): Promise<T> {

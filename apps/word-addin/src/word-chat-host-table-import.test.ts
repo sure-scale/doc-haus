@@ -2,6 +2,7 @@ import {expect,test} from "bun:test"
 import {createHash} from "node:crypto"
 import {strToU8,zipSync} from "fflate"
 import {WordChatHost,type WordChatWord, type WordChatHostError} from "./word-chat-host"
+import {WordChatTableImportError} from "./word-chat-table-import"
 
 const W="http://schemas.openxmlformats.org/wordprocessingml/2006/main",P="http://schemas.microsoft.com/office/2006/xmlPackage",R="http://schemas.openxmlformats.org/package/2006/relationships",O="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 const MAIN="word/document.xml", SETTINGS="word/settings.xml"
@@ -60,7 +61,8 @@ function office(options:{failure?:string;tracking?:string;formatting?:boolean}={
  const word={async run(fn:(context:unknown)=>Promise<unknown>){state.runs++;if(failure==="read-start")throw Error("PRIVATE context detail");return fn({document,async sync(){if(state.queued){state.queued=false;state.applied=true;if(failure==="restore-ignored")formatting=!formatting;if(failure==="lost-sync"&&!state.failed){state.failed=true;throw Error("PRIVATE lost sync")}}}})}} as WordChatWord
  const host=new WordChatHost(word,()=>true)
  const apply=(payload=oracle(),mayDispatch?:()=>boolean)=>host.applyRowDeletion(proposal,async()=>source,async()=>{state.authorCalls++;return payload},mayDispatch)
- return {state,document,apply}
+ const check=(payload=oracle(),mayContinue?:()=>boolean)=>host.checkRowDeletion(proposal,async()=>source,async()=>{state.authorCalls++;return payload},mayContinue)
+ return {state,document,apply,check}
 }
 
 test("verified parent import replaces one Whole table with tracking Off, restores settings and permits only inside ID renewal",async()=>{
@@ -143,4 +145,41 @@ test("paired preparation failures identify safe read phases without exposing nat
  const fixture=office(),payload=oracle();payload.proposalId="different"
  await expect(fixture.apply(payload)).rejects.toMatchObject({mutationState:"unchanged",message:"The prepared row deletion could not be verified against the current document file. Your document is unchanged."})
  expect(fixture.state.runs).toBe(0)
+})
+
+
+test("read-only row deletion check shares the paired reads but never writes or consumes Apply",async()=>{
+ const fixture=office({tracking:"TrackMineOnly",formatting:false})
+ expect(await fixture.check()).toEqual({status:"ready"})
+ expect(fixture.state.writes).toEqual([]);expect(fixture.state.modes).toEqual([]);expect(fixture.state.formats).toEqual([])
+ expect(fixture.state.applied).toBe(false);expect(fixture.state.authorCalls).toBe(1)
+ expect(fixture.document.changeTrackingMode).toBe("TrackMineOnly");expect(fixture.document.trackFormatting).toBe(false)
+ expect(fixture.state.scopedReads).toBe(0);expect(fixture.state.rangeLocations).toEqual(["Whole","Whole"])
+ expect((await fixture.apply()).status).toBe("applied")
+ expect(fixture.state.authorCalls).toBe(2);expect(fixture.state.writes).toHaveLength(1)
+})
+
+test("read-only row deletion check returns the same safe predispatch refusal without mutation",async()=>{
+ for(const failure of ["stale-table","stale-style","late-table","partial-ids","leak-ids","overlap","read-start","read-comments"]){
+  const fixture=office({failure})
+  const checked=await fixture.check().catch(error=>error as WordChatHostError)
+  expect(checked).toMatchObject({mutationState:"unchanged"})
+  expect((checked as WordChatHostError).message).not.toContain("PRIVATE")
+  expect(fixture.state.writes).toEqual([]);expect(fixture.state.modes).toEqual([]);expect(fixture.state.formats).toEqual([])
+  const applied=await fixture.apply().catch(error=>error as WordChatHostError)
+  const cause=(checked as WordChatHostError).cause
+  if(cause instanceof WordChatTableImportError){
+   expect((checked as WordChatHostError).message).toBe(`${cause.diagnosticMessage} Your document is unchanged.`)
+   expect((applied as WordChatHostError).message).toBe(`${cause.message} Your document is unchanged.`)
+   expect((checked as WordChatHostError).message).not.toContain("<w:")
+   expect((checked as WordChatHostError).message).not.toContain("urn:font-profile:before")
+  }else expect((applied as WordChatHostError).message).toBe((checked as WordChatHostError).message)
+  expect(fixture.state.writes).toEqual([])
+ }
+ const closed=office()
+ await expect(closed.check(oracle(),()=>false)).rejects.toMatchObject({mutationState:"unchanged"})
+ expect(closed.state.writes).toEqual([]);expect(closed.state.modes).toEqual([])
+ const forged=office(),payload=oracle();payload.proposalId="different"
+ await expect(forged.check(payload)).rejects.toMatchObject({mutationState:"unchanged"})
+ expect(forged.state.runs).toBe(0)
 })
