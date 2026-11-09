@@ -1645,8 +1645,15 @@ test("paragraph insertion prepare uses stored reviewed proposal and existing lea
   const id=await newConversation(), text=context.text, inserted="A further obligation."
   modelStructuredRawOutput=JSON.stringify({answerParts:[{type:"text",text:"Prepared."}],proposal:{before:text,after:text+"\r"+inserted,formatting:[{paragraph:1,style:"Normal"}],explanation:"Add paragraph",openItems:[]}})
   let turn:WordChatTurn
-  try { turn=(await (await post("send",{conversationId:id,scope:"document",text:"Add a paragraph",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context})).json() as {turn:WordChatTurn}).turn }
+  try { turn=(await (await post("send",{conversationId:id,scope:"document",text:"Insert one new Normal paragraph after the existing complete paragraph, preserving existing content and formatting.",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context})).json() as {turn:WordChatTurn}).turn }
   finally { modelStructuredRawOutput=undefined }
+  const contract = JSON.parse(sessionContext(turn.id).split("\n").at(-2)!).responseContract as string
+  expect(contract).toContain("To insert one new standalone paragraph after a unique complete captured paragraph")
+  expect(contract).toContain("set proposal.before to the exact unchanged anchor")
+  expect(contract).toContain("proposal.after to that same anchor followed by one paragraph break and the literal text of exactly one new paragraph")
+  expect(contract).toContain("omit paragraphAction and inlineFormatting")
+  expect(contract).toContain('{"paragraph":1,"style":"Normal"}')
+  expect(contract).toContain("do not format the anchor at paragraph 0")
   expect(turn.proposal?.after).toBe(text+"\r"+inserted)
   expect(sessionContext(turn.id)).toContain("inserting or deleting paragraphs alone does not request formatting")
   const reviewer = [...sessions.values()].find(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")!
