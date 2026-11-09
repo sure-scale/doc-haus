@@ -122,6 +122,30 @@ function linkMismatch(link:Element,candidates:Element[],kind:RelationshipFamily)
   }
   return kind==="root"?"root_link_match":"relationship_link_match"
 }
+function sameLinkExceptId(a:Element,b:Element):boolean {
+  const copy=(link:Element)=>{
+    const value=link.cloneNode(true) as Element
+    value.removeAttribute("Id")
+    // Retain inherited QName bindings for the strict XML comparator.
+    let child:Node=value,parent=link.parentNode
+    while(parent?.nodeType===1){const wrapper=parent.cloneNode(false);wrapper.appendChild(child);child=wrapper;parent=parent.parentNode}
+    return value
+  }
+  return same(copy(a),copy(b))
+}
+function referencesRelationship(document:Element,id:string):boolean {
+  if(Array.from(document.attributes).some(a=>a.value===id&&(a.namespaceURI==="http://schemas.openxmlformats.org/officeDocument/2006/relationships"||a.namespaceURI==="urn:schemas-microsoft-com:office:office"&&a.localName==="relid")))return true
+  return children(document).some(child=>referencesRelationship(child,id))
+}
+/** File and live exports may renumber only unreferenced implicit formatting
+ * links. Both sides must identify the same unique relationship without its Id;
+ * all other attributes, children and namespace semantics remain strict. */
+function implicitFormattingLink(link:Element,oldLinks:Element[],newLinks:Element[],sourceDocument:Element,currentDocument:Element):boolean {
+  if(!["styles","theme","fontTable","numbering"].some(type=>link.getAttribute("Type")===`http://schemas.openxmlformats.org/officeDocument/2006/relationships/${type}`))return false
+  if(oldLinks.filter(old=>sameLinkExceptId(link,old)).length!==1)return false
+  const matches=newLinks.filter(fresh=>sameLinkExceptId(link,fresh))
+  return matches.length===1&&!referencesRelationship(sourceDocument,link.getAttribute("Id")!)&&!referencesRelationship(currentDocument,matches[0]!.getAttribute("Id")!)
+}
 function closedBoundary(main: Element, table: Element) {
   const active = new Set<string>()
   const starts: Record<string, string> = { bookmarkStart: "bookmark", commentRangeStart: "comment", permStart: "perm", moveFromRangeStart: "moveFrom", moveToRangeStart: "moveTo", customXmlInsRangeStart: "customIns", customXmlDelRangeStart: "customDel" }
@@ -178,12 +202,12 @@ export function assertWordChatTableImportPreimage(sourceOoxml: string, currentOo
       const oldLinks = relationships(part,kind), newLinks = relationships(fresh,kind)
       for (const link of oldLinks) {
         if (link.getAttribute("TargetMode") === "External") return formattingFail("external_relationship",kind)
-        // Root relationship IDs have no content references. Document and
-        // dependency IDs do, and must remain exactly the source identities.
+        // Root IDs have no content references. Preserve other exact matches;
+        // only unique unreferenced document-formatting links may renew IDs.
         if (name === "/_rels/.rels") {
           if (oldLinks.length !== 1 || link.getAttribute("Type") !== "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument") return formattingFail("root_shape",kind)
           if (!newLinks.some(e => e.getAttribute("Type") === link.getAttribute("Type") && e.getAttribute("Target") === link.getAttribute("Target") && e.getAttribute("TargetMode") !== "External")) return formattingFail(linkMismatch(link,newLinks,kind),kind)
-        } else if (!newLinks.some(e => same(link, e))) return formattingFail(linkMismatch(link,newLinks,kind),kind)
+        } else if (!newLinks.some(e => same(link, e)) && !(kind==="document"&&implicitFormattingLink(link,oldLinks,newLinks,before.parentNode as Element,now.parentNode as Element))) return formattingFail(linkMismatch(link,newLinks,kind),kind)
       }
     } else requireSame(data(part),data(fresh),"formatting_dependencies")
   }

@@ -34,7 +34,6 @@ test("same-text table formatting and imported defaults cannot drift before dispa
   expect(() => assertWordChatTableImportPreimage(scoped, fresh.replace('w:w="1800"', 'w:w="2400"'), inventory, proposal)).toThrow()
   expect(() => assertWordChatTableImportPreimage(scoped, fresh.replace('<w:tblPr/>', '<w:tblPr><w:tblLayout w:type="fixed"/></w:tblPr>'), inventory, proposal)).toThrow()
   expect(() => assertWordChatTableImportPreimage(scoped, fresh.replace('w:val="22"', 'w:val="28"'), inventory, proposal)).toThrow()
-  expect(() => assertWordChatTableImportPreimage(scoped, fresh.replace('Id="format"','Id="renamed"'), inventory, proposal)).toThrow()
   expect(() => assertWordChatTableImportPreimage(scoped, pack(p("Outside")+table+p("After"), root+links), inventory, proposal)).toThrow()
 })
 
@@ -246,7 +245,7 @@ test("bare formatting failures report fixed families and reasons without paths, 
     ["root","root_shape",check(part("/_rels/.rels",rels(rel("one","officeDocument","word/document.xml")+rel("two","officeDocument","word/document.xml")))+links+style)],
     ["root","root_link_match",check(root+links+style,root.replace('Target="word/document.xml"','Target="private-value.xml"')+links+style)],
     ["root","relationship_target_equivalent",check(root+links+style,root.replace('Id="root"','Id="private-id"').replace('Target="word/document.xml"','Target="/word/document.xml"')+links+style)],
-    ["document","relationship_id_mismatch",check(root+links+style,root+links.replace('Id="format"','Id="private-id"')+style)],
+    ["document","relationship_id_mismatch",check(root+links.replace(`${R}/styles`,`${R}/image`)+style,root+links.replace(`${R}/styles`,`${R}/image`).replace('Id="format"','Id="private-id"')+style)],
     ["document","relationship_link_match",check(root+links+style,root+links.replace('Target="styles.xml"','Target="private-value.xml"')+style)],
     ["dependency","relationship_link_match",check(root+links+style+part("/word/theme/_rels/theme1.xml.rels",rels(rel("theme","image","../media/image1.png"))),root+links+style+part("/word/theme/_rels/theme1.xml.rels",rels(rel("theme","image","../media/private-value.png"))))],
   ] as const
@@ -261,4 +260,44 @@ test("bare formatting failures report fixed families and reasons without paths, 
     expect(error?.diagnosticMessage).not.toContain(".xml")
     expect(error?.detail).not.toHaveProperty("path")
   }
+})
+
+test("only unique unreferenced implicit document-formatting links may renew their IDs", () => {
+  const formats=[
+    ["styles","styles.xml",`<w:styles xmlns:w="${W}"/>`],
+    ["theme","theme/theme1.xml",'<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"/>'],
+    ["fontTable","fontTable.xml",`<w:fonts xmlns:w="${W}"/>`],
+    ["numbering","numbering.xml",`<w:numbering xmlns:w="${W}"/>`],
+  ] as const
+  for(const [kind,target,xml] of formats){
+    const dependencies=(id:string)=>root+part("/word/_rels/document.xml.rels",rels(rel(id,kind,target)))+part(`/word/${target}`,xml)
+    assertWordChatTableImportPreimage(pack(table,dependencies("old")),pack(p("Outside")+table+p("After"),dependencies("new")),inventory,proposal)
+  }
+  const dependencies=(linkXml=rel("format","styles","styles.xml"),format=style)=>root+part("/word/_rels/document.xml.rels",rels(linkXml))+format
+  const source=pack(table,dependencies()),freshLink=rel("renewed","styles","styles.xml")
+  const current=(linkXml=freshLink,format=style,content=table)=>pack(p("Outside")+content+p("After"),dependencies(linkXml,format))
+  for(const changed of [
+    current(rel("renewed","styles","other.xml")),
+    current(rel("renewed","theme","styles.xml")),
+    current(freshLink.replace('/>',' TargetMode="External"/>')),
+    current(freshLink.replace('/>',' TargetMode="Internal"/>')),
+    current(freshLink.replace('/>',' extra="changed"/>')),
+    current(freshLink.replace('/>','><extra/></Relationship>')),
+    current(""),
+    current(freshLink, ""),
+    current(freshLink+rel("ambiguous","styles","styles.xml")),
+    current(freshLink,style.replace('w:val="22"','w:val="24"')),
+    current(freshLink,style,table.replace('w:w="1800"','w:w="2400"')),
+  ]) expect(()=>assertWordChatTableImportPreimage(source,changed,inventory,proposal)).toThrow(WordChatTableImportError)
+  expect(()=>assertWordChatTableImportPreimage(pack(table,dependencies(rel("format","styles","styles.xml")+rel("ambiguous","styles","styles.xml"))),current(),inventory,proposal)).toThrow(WordChatTableImportError)
+  for(const id of ["format","renewed"]){
+    for(const reference of [`xmlns:r="${R}" r:embed="${id}"`,`xmlns:r="${R}" r:unknown="${id}"`,`xmlns:o="urn:schemas-microsoft-com:office:office" o:relid="${id}"`]){
+      const referenced=table.replace("<w:p>",`<w:p ${reference}>`)
+      expect(()=>assertWordChatTableImportPreimage(pack(referenced,dependencies()),current(freshLink,style,referenced),inventory,proposal)).toThrow(WordChatTableImportError)
+      const ownerReference=(xml:string)=>xml.replace("<w:document ",`<w:document ${reference} `)
+      expect(()=>assertWordChatTableImportPreimage(ownerReference(source),ownerReference(current()),inventory,proposal)).toThrow(WordChatTableImportError)
+    }
+  }
+  const dependency=(id:string)=>part("/word/theme/_rels/theme1.xml.rels",rels(rel(id,"styles","../styles.xml")))
+  expect(()=>assertWordChatTableImportPreimage(pack(table,root+links+style+dependency("old")),pack(p("Outside")+table+p("After"),root+links+style+dependency("new")),inventory,proposal)).toThrow(WordChatTableImportError)
 })
