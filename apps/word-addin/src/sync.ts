@@ -24,6 +24,17 @@ export interface Checkpoints {
 const nativeUnknown = "The status of a Word operation could not be confirmed. Keep this Word file and its local edits. Check the document status in the matter in doc.haus; if it shows an unconfirmed Word change, choose Create saved copy. The copy will not include unsent Word edits."
 const nativeRecovery = "A Word change could not be confirmed. Keep this Word file and its local edits. In the matter in doc.haus, choose Create saved copy for this document; the copy will not include unsent Word edits."
 
+// The card already displays static uncertain notices. Retain the original
+// transport cause internally; never interpolate it into the customer message.
+function nativeSettlementFailure(message: string, cause: unknown, confirmed: boolean) {
+  return Object.assign(new Error(message, { cause }), {
+    mutationState: "uncertain" as const,
+    notice: confirmed
+      ? "doc.haus could not confirm the native operation status after the Word change. Check the change in Word. Use Undo if needed; do not apply it again."
+      : "doc.haus could not confirm cancellation of the native operation before editing. Keep this Word file; do not apply the proposal again.",
+  })
+}
+
 type NativeOperation = { sequence: number; operationId: string | null; state: "idle" | "pending" | "confirmed" | "not-dispatched" }
 type ProposalBinding = { conversationId: string; turnId: string }
 type NativeIntent = { intent: "amendment"; proposal: ProposalBinding } | { intent: "refresh"; expectedCurrent: string }
@@ -535,19 +546,19 @@ export class WordSync {
         operation = await this.beginNative(identity.base, identity.generation, this.connection.nativeOperation.sequence, { intent: "amendment", proposal })
         if (this.closed) {
           try { await this.settleNative(operation, "not-dispatched") }
-          catch { throw Object.assign(new Error(this.blockedMessage()), { mutationState: "uncertain" }) }
+          catch (cause) { throw nativeSettlementFailure(this.blockedMessage(), cause, false) }
           throw documentStateError("The Word pane closed before the change was applied.")
         }
         try { value = await edit(identity) }
         catch (error) {
           if (error && typeof error === "object" && "mutationState" in error && error.mutationState === "unchanged") {
             try { await this.settleNative(operation, "not-dispatched") }
-            catch { throw Object.assign(new Error(this.blockedMessage()), { mutationState: "uncertain" }) }
+            catch (cause) { throw nativeSettlementFailure(this.blockedMessage(), cause, false) }
           }
           throw error
         }
         try { await this.settleNative(operation, "confirmed") }
-        catch { throw Object.assign(new Error(this.blockedMessage()), { mutationState: "uncertain" }) }
+        catch (cause) { throw nativeSettlementFailure(this.blockedMessage(), cause, true) }
         this.content = "changed"
         this.show("not-saved", "Applied in Word. Choose Save when you’re ready.")
       } catch (error) {

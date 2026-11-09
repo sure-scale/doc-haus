@@ -1426,7 +1426,8 @@ export class WordChatHost {
       const fallback = "Word could not complete the authored amendment. Inspect the clause before preparing a fresh proposal; your existing work has not been replaced by a saved copy."
       if (this.applied.get(input.proposalId)?.uncertain) {
         const uncertain = new WordChatHostError(error instanceof WordChatHostError ? error.message : fallback, "uncertain", { cause: error })
-        if (error instanceof WordChatHostError) uncertain.notice = error.notice
+        uncertain.notice = error instanceof WordChatHostError && error.notice ? error.notice
+          : "Word returned an error while completing the native amendment operation. Check the change in Word. Use Undo if needed; do not apply it again."
         throw uncertain
       }
       failure(error, fallback)
@@ -1481,58 +1482,73 @@ export class WordChatHost {
     // All reads are complete. Fence before queuing tracking or any write; a
     // lost final sync is uncertain and must never trigger a second dispatch.
     this.applied.set(input.proposalId, { identity, authors: [], uncertain: true })
-    context.document.changeTrackingMode = "TrackAll"
-    for (const item of [...ranges].reverse()) {
-      // A verified zero-length range inserts without deleting source text.
-      // Pure deletions use the native deletion operation, excluding the mark.
-      if (item.hunk.after) item.range.insertText(item.hunk.after, "Replace")
-      else item.range.delete()
-    }
-    context.document.changeTrackingMode = fresh.tracking
-    await context.sync()
-    context.document.load("changeTrackingMode")
-    const after = await this.documentState(context)
-    const afterAll = context.document.body.paragraphs
-    afterAll.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
-    const afterBodyXml = context.document.body.getRange("Whole").getOoxml()
-    await context.sync()
-    const post = projectNativeWordChatBody(afterBodyXml.value, await nativeInventory(context, afterAll.items))
-    const targetAfter = post.scope([at])
-    const { added, missing } = newWordChatRevisions(before.changes, after.changes)
-    const wanted = authored.revisions.filter(change => change.type !== "Formatted")
-    const texts = (changes: Array<{ type: string; text: string }>, type: string) => changes.filter(change => change.type === type).map(change => change.text).sort()
-    const authors = [...new Set(added.map(change => change.author).filter(Boolean))]
-    const sameParagraphs = after.paragraphs.length === before.paragraphs.length &&
-      after.paragraphs.every((item, index) => item.id === before.paragraphs[index]!.id && (index !== at ||
-        item.text === expectedParagraph) && (index === at || JSON.stringify(item) === JSON.stringify(before.paragraphs[index])))
-    // Checked in order; the first failing stage is kept as the cause.
-    const checks: Array<[string, string, () => boolean]> = [
-      ["text-tracking-mode", "Word could not confirm that the original tracking settings were restored.", () => context.document.changeTrackingMode === fresh.tracking],
-      ["text-paragraphs", "Word could not confirm the paragraph identities and wording after the change.", () => sameParagraphs],
-      ["text-current", "Word could not confirm the Current document wording after the change.", () => after.current === expectedText],
-      ["text-prior-revisions", "Word could not confirm preservation of the earlier tracked changes.", () => !missing.length],
-      ["text-new-revisions", "Word could not confirm the new wording revisions.", () => added.length > 0 && added.every(change => ["Added", "Deleted"].includes(change.type) && Boolean(change.author)) &&
-        JSON.stringify(texts(added, "Added")) === JSON.stringify(texts(wanted, "Added")) && JSON.stringify(texts(added, "Deleted")) === JSON.stringify(texts(wanted, "Deleted"))],
-      ["text-geometry", "Word could not confirm preservation of the document structure.", () => sameNativeProjectionGeometry(pre, post)],
-      ["text-paragraph-properties", "Word could not confirm preservation of the paragraph formatting.", () => sameWordChatParagraphProperties(pre.scope([at]), targetAfter)],
-      ["text-hunk-formatting", "Word could not confirm preservation of the character formatting.", () => sameWordChatHunkFormatting(pre.scope([at]), targetAfter, hunks)],
-      ["text-adjacent", "Word could not confirm preservation of the neighbouring paragraphs.", () => fresh.adjacent.every(item => { const i = post.paragraphs.findIndex(p => p.id === item.id); return i >= 0 && sameNativeWordChatParagraphContent(pre.scope([i]), post.scope([i])) })],
-      ["text-comments", "Word could not confirm preservation of the document comments.", () => JSON.stringify(after.comments) === JSON.stringify(before.comments)],
-    ]
-    const failed = checks.find(([, , check]) => !check())
-    if (failed) {
-      const error = new WordChatHostError("Word applied the wording, but could not confirm that only the reviewed passage and tracked markup changed. Inspect it and use Undo if needed. Do not apply this proposal again.", "unchanged", { cause: new Error(failed[0]) })
-      // Static descriptions only: never expose API errors or document values.
-      error.notice = `${failed[1]} Check the change in Word. Use Undo if needed; do not apply it again.`
+    // A failed Office read or projection is different from a false preservation
+    // predicate. Keep that phase visible without exposing native error data.
+    let phaseNotice = "Word could not confirm completion of the native wording write."
+    try {
+      context.document.changeTrackingMode = "TrackAll"
+      for (const item of [...ranges].reverse()) {
+        // A verified zero-length range inserts without deleting source text.
+        // Pure deletions use the native deletion operation, excluding the mark.
+        if (item.hunk.after) item.range.insertText(item.hunk.after, "Replace")
+        else item.range.delete()
+      }
+      context.document.changeTrackingMode = fresh.tracking
+      await context.sync()
+      phaseNotice = "Word could not finish reading the changed document state."
+      context.document.load("changeTrackingMode")
+      const after = await this.documentState(context)
+      phaseNotice = "Word could not finish reading the changed document body."
+      const afterAll = context.document.body.paragraphs
+      afterAll.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+      const afterBodyXml = context.document.body.getRange("Whole").getOoxml()
+      await context.sync()
+      const inventory = await nativeInventory(context, afterAll.items)
+      phaseNotice = "Word could not finish projecting the changed document structure."
+      const post = projectNativeWordChatBody(afterBodyXml.value, inventory)
+      const targetAfter = post.scope([at])
+      phaseNotice = "Word could not finish evaluating the wording preservation checks."
+      const { added, missing } = newWordChatRevisions(before.changes, after.changes)
+      const wanted = authored.revisions.filter(change => change.type !== "Formatted")
+      const texts = (changes: Array<{ type: string; text: string }>, type: string) => changes.filter(change => change.type === type).map(change => change.text).sort()
+      const authors = [...new Set(added.map(change => change.author).filter(Boolean))]
+      const sameParagraphs = after.paragraphs.length === before.paragraphs.length &&
+        after.paragraphs.every((item, index) => item.id === before.paragraphs[index]!.id && (index !== at ||
+          item.text === expectedParagraph) && (index === at || JSON.stringify(item) === JSON.stringify(before.paragraphs[index])))
+      // Checked in order; the first failing stage is kept as the cause.
+      const checks: Array<[string, string, () => boolean]> = [
+        ["text-tracking-mode", "Word could not confirm that the original tracking settings were restored.", () => context.document.changeTrackingMode === fresh.tracking],
+        ["text-paragraphs", "Word could not confirm the paragraph identities and wording after the change.", () => sameParagraphs],
+        ["text-current", "Word could not confirm the Current document wording after the change.", () => after.current === expectedText],
+        ["text-prior-revisions", "Word could not confirm preservation of the earlier tracked changes.", () => !missing.length],
+        ["text-new-revisions", "Word could not confirm the new wording revisions.", () => added.length > 0 && added.every(change => ["Added", "Deleted"].includes(change.type) && Boolean(change.author)) &&
+          JSON.stringify(texts(added, "Added")) === JSON.stringify(texts(wanted, "Added")) && JSON.stringify(texts(added, "Deleted")) === JSON.stringify(texts(wanted, "Deleted"))],
+        ["text-geometry", "Word could not confirm preservation of the document structure.", () => sameNativeProjectionGeometry(pre, post)],
+        ["text-paragraph-properties", "Word could not confirm preservation of the paragraph formatting.", () => sameWordChatParagraphProperties(pre.scope([at]), targetAfter)],
+        ["text-hunk-formatting", "Word could not confirm preservation of the character formatting.", () => sameWordChatHunkFormatting(pre.scope([at]), targetAfter, hunks)],
+        ["text-adjacent", "Word could not confirm preservation of the neighbouring paragraphs.", () => fresh.adjacent.every(item => { const i = post.paragraphs.findIndex(p => p.id === item.id); return i >= 0 && sameNativeWordChatParagraphContent(pre.scope([i]), post.scope([i])) })],
+        ["text-comments", "Word could not confirm preservation of the document comments.", () => JSON.stringify(after.comments) === JSON.stringify(before.comments)],
+      ]
+      const failed = checks.find(([, , check]) => !check())
+      if (failed) {
+        const error = new WordChatHostError("Word applied the wording, but could not confirm that only the reviewed passage and tracked markup changed. Inspect it and use Undo if needed. Do not apply this proposal again.", "unchanged", { cause: new Error(failed[0]) })
+        // Static descriptions only: never expose API errors or document values.
+        error.notice = `${failed[1]} Check the change in Word. Use Undo if needed; do not apply it again.`
+        throw error
+      }
+      this.applied.set(input.proposalId, { identity, authors, uncertain: false })
+      return { status: "applied", tracked: true, saved: false, authors, target: input.replacement.trim() ? {
+        ...target, id: crypto.randomUUID(), text: input.replacement,
+        paragraphs: [{ id: paragraph.id, text: expectedParagraph }],
+        startOffset: target.startOffset, endOffset: target.startOffset + input.replacement.length,
+        saved: false, capturedAt: new Date().toISOString(),
+      } : undefined }
+    } catch (cause) {
+      if (cause instanceof WordChatHostError && cause.notice) throw cause
+      const error = new WordChatHostError("Word could not finish verifying the wording change. Inspect it and use Undo if needed. Do not apply this proposal again.", "uncertain", { cause })
+      error.notice = `${phaseNotice} Check the change in Word. Use Undo if needed; do not apply it again.`
       throw error
     }
-    this.applied.set(input.proposalId, { identity, authors, uncertain: false })
-    return { status: "applied", tracked: true, saved: false, authors, target: input.replacement.trim() ? {
-      ...target, id: crypto.randomUUID(), text: input.replacement,
-      paragraphs: [{ id: paragraph.id, text: expectedParagraph }],
-      startOffset: target.startOffset, endOffset: target.startOffset + input.replacement.length,
-      saved: false, capturedAt: new Date().toISOString(),
-    } : undefined }
   }
 
   private async applyNativeFormatting(context: WordChatContext, input: WordChatApplyInput, identity: string,

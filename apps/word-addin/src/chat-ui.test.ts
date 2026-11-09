@@ -1038,7 +1038,10 @@ test("mixed review shows the replacement and collapsed layout, and applies the e
 })
 
 test("Apply uncertainty hides every action and affected context, while pre-import errors with the same text remain retryable", async () => {
-  for (const mutationState of ["unchanged", "uncertain"] as const) for (const noticeText of [undefined, "Word could not confirm preservation of the paragraph formatting."]) {
+  for (const mutationState of ["unchanged", "uncertain"] as const) for (const noticeText of [undefined,
+    "Word could not confirm preservation of the paragraph formatting.",
+    "Word could not finish projecting the changed document structure. Check the change in Word. Use Undo if needed; do not apply it again.",
+    "doc.haus could not confirm the native operation status after the Word change. Check the change in Word. Use Undo if needed; do not apply it again."]) {
     let calls = 0
     const error = Object.assign(new Error("Word could not confirm the imported change. Inspect it and use Undo if needed."), { mutationState, notice: noticeText })
     const f = fixture({ turns: [turn({ kind: "amendment", proposal })], host: { apply: async () => { calls++; throw error } } })

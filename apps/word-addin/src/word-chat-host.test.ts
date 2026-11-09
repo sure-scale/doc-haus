@@ -87,6 +87,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false, cellWholeExpandsRow: false, refuseEmptyContentXml: false,
     omitContentProperties: false, paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
     windowsText: false,
+    bodyOoxmlAfterWrite: undefined as undefined | (() => string),
   }
   const text = () => state.paragraphs.map((p) => p.text).join(state.separator)
   const position = (id: string) => {
@@ -237,6 +238,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       return result
     }
     getOoxml() {
+      if (this.bodyExport && state.writes.length && state.bodyOoxmlAfterWrite) return { value: state.bodyOoxmlAfterWrite() }
       if (state.refuseEmptyContentXml && this.paragraphContent && this.start === this.end) throw new Error("empty Content XML unavailable")
       const paragraphs = this.paragraphs.items
       const whole = paragraphs.length && this.end === position(paragraphs.at(-1)!.uniqueLocalId).end + 1
@@ -1594,9 +1596,71 @@ test("native dispatch error remains the cause of an uncertain failure and cannot
   try { await host.apply(input) } catch (error) { caught = error }
   expect(caught).toBeInstanceOf(WordChatHostError)
   expect((caught as WordChatHostError).mutationState).toBe("uncertain")
-  expect((caught as WordChatHostError).cause).toBe(nativeError)
+  expect(((caught as WordChatHostError).cause as Error).cause).toBe(nativeError)
+  expect((caught as WordChatHostError).notice).toBe("Word could not confirm completion of the native wording write. Check the change in Word. Use Undo if needed; do not apply it again.")
   expect(state.writes).toHaveLength(1)
   await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("may already contain") })
+  expect(state.writes).toHaveLength(1)
+})
+
+test("native wording exception phases retain their cause and never expose data or replay", async () => {
+  for (const phase of ["success", "state", "body", "projection", "checks", "predicate"] as const) {
+    const { state, host, author } = office(["A clear obligation."], true)
+    const target = (await host.selection())!, nativeError = new Error("PRIVATE token=secret <w:body> /path/document.docx")
+    const input = { proposalId: `phase-${phase}`, target, replacement: target.text.replace("clear", "specific") }
+    const prepare = author(input)
+    state.afterSync = () => {
+      if (!state.writes.length) return
+      state.afterSync = undefined
+      if (phase === "state") Object.defineProperty(state, "nativeRevisions", { get() { throw nativeError } })
+      // This getter is read by the first preservation predicate after the
+      // post-write reads/projection, rather than returning a false result.
+      if (phase === "predicate") Object.defineProperty(state, "tracking", { get() { throw nativeError } })
+      if (phase === "body") state.bodyOoxmlAfterWrite = () => { throw nativeError }
+      if (phase === "projection") state.bodyOoxmlAfterWrite = () => flatOpc("<w:p><w:r><w:t>Different Current wording.</w:t></w:r></w:p>")
+    }
+    const request = { ...input, author: async (snapshot: { ooxml: string }) => {
+      const authored = await prepare(snapshot), revisions = authored.revisions
+      if (phase === "checks") Object.defineProperty(authored, "revisions", { get() { if (state.writes.length) throw nativeError; return revisions } })
+      return authored
+    } }
+    if (phase === "success") {
+      expect((await host.apply(request)).status).toBe("applied")
+      expect((await host.apply(request)).status).toBe("already-applied")
+    } else {
+      const error = await host.apply(request).then(() => undefined, error => error as WordChatHostError)
+      const stage = { state: "reading the changed document state", body: "reading the changed document body", projection: "projecting the changed document structure", checks: "evaluating the wording preservation checks", predicate: "evaluating the wording preservation checks" }[phase]
+      expect(error).toBeInstanceOf(WordChatHostError)
+      expect(error?.mutationState).toBe("uncertain")
+      expect(error?.notice).toBe(`Word could not finish ${stage}. Check the change in Word. Use Undo if needed; do not apply it again.`)
+      expect(error?.notice).not.toMatch(/PRIVATE|secret|token=|<w:|\/path|Different Current|A clear obligation/)
+      const original = (error?.cause as Error).cause
+      if (phase === "projection") expect((original as Error).message).toBe("Native paragraph projection mismatch")
+      else expect(original).toBe(nativeError)
+      await expect(host.apply(request)).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("may already contain") })
+    }
+    expect(state.writes).toHaveLength(1)
+    expect(state.modeChanges).toEqual(["TrackAll", "Off"])
+  }
+})
+
+test("a replaced Office runtime rejection keeps an operation notice and its original cause chain", async () => {
+  const { state, word, nativeHost, author } = office(["A clear obligation."], true)
+  const target = (await nativeHost.selection())!, run = word.run.bind(word)
+  const original = new Error("PRIVATE native write response"), runtime = new Error("PRIVATE Office runtime rejection", { cause: original })
+  state.throwAfterWrite = true; state.syncFailure = original
+  word.run = async callback => {
+    try { return await run(callback) }
+    catch (cause) { if (state.writes.length) { runtime.cause = cause; throw runtime }; throw cause }
+  }
+  const input = { proposalId: "runtime-replaced", target, replacement: target.text.replace("clear", "specific") }
+  const error = await nativeHost.apply({ ...input, author: author(input) }).then(() => undefined, error => error as WordChatHostError)
+  expect(error?.mutationState).toBe("uncertain")
+  expect(error?.notice).toBe("Word returned an error while completing the native amendment operation. Check the change in Word. Use Undo if needed; do not apply it again.")
+  expect(error?.notice).not.toContain("PRIVATE")
+  expect(error?.cause).toBe(runtime)
+  expect((runtime.cause as Error).cause).toBe(original)
+  await expect(nativeHost.apply({ ...input, author: author(input) })).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("may already contain") })
   expect(state.writes).toHaveLength(1)
 })
 
