@@ -762,12 +762,15 @@ export class WordChatHost {
         context.document.trackFormatting=prepared.trackFormatting
         await context.sync()
         context.document.load("changeTrackingMode,trackFormatting")
-        table.load("rowCount,isUniform,values")
+        table.load("rowCount,isUniform")
         const afterAll=context.document.body.paragraphs, afterXml=context.document.body.getRange("Whole").getOoxml(), afterOriginal=context.document.body.getRange("Content").getReviewedText("Original")
         afterAll.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+        // Table.values can retain tracked-deleted text. Bind the full table's
+        // explicit Current view, including every cell outside the deleted row.
+        const afterValues=expectedValues.map((row,ri)=>row.map((_,ci)=>(table.getCell(ri,ci).body as unknown as {getRange(location:string):WordChatRange}).getRange("Content").getReviewedText("Current")))
         const afterCells=proposal.cells.map((_,i)=>{const r=(table.getCell(proposal.rowIndex,i).body as unknown as {getRange(location:string):WordChatRange}).getRange("Content");return {current:r.getReviewedText("Current"),original:r.getReviewedText("Original")}})
         await context.sync()
-        const tracking=context.document.changeTrackingMode, trackFormatting=context.document.trackFormatting, values=table.values.map(row=>[...row]), count=table.rowCount, uniform=table.isUniform
+        const tracking=context.document.changeTrackingMode, trackFormatting=context.document.trackFormatting, values=afterValues.map(row=>row.map(cell=>cell.value)), count=table.rowCount, uniform=table.isUniform
         const afterInventory=await nativeInventory(context, afterAll.items), afterXmlValue=afterXml.value, bodyOriginal=afterOriginal.value
         const reviewed=afterCells.map(c=>({current:c.current.value,original:c.original.value}))
         const expectedAfter=expectedValues.map((row,i)=>i===proposal.rowIndex ? row.map(()=>"") : row)

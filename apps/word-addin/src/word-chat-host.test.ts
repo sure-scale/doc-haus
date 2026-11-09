@@ -2100,10 +2100,15 @@ async function rowDeletionConfirmationFixture(failure = "none") {
     getRange() {return {getReviewedText(view:string) {return {value:view==="Original" ? text : current(i)}},getOoxml() {return {value:flatOpc(applied && i>=2 ? `<w:p><w:del ${mark(20+i)}><w:r><w:delText>${text}</w:delText></w:r></w:del></w:p>` : `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`)}}}}}))
   const values = () => applied ? [["Label","Value"],["",""]] : [["Label","Value"],["Old","Entry"]]
   const rows = cells.slice(0,2).map((_,i)=>({rowIndex:i,cellCount:2,isHeader:false,get values() {return [values()[i]!]},delete() {queued=true;writes++}}))
-  const nativeTable = {get rowCount() {return applied && failure==="count" ? 1 : 2},get isUniform() {return !(applied && failure==="uniform")},get values() {return applied && failure==="values" ? [["Label","Value"],["PRIVATE",""]] : values()},rows:collection(rows),load() {},
-    getCell(ri:number,ci:number) {const i=ri*2+ci;return {body:{paragraphs:collection([paras[i]!]),getRange() {return {getReviewedText(view:string) {return {value:applied && (failure==="cell-current" && view==="Current" || failure==="cell-original" && view==="Original") ? "PRIVATE" : view==="Original" ? cells[i]! : current(i)}}}}}}}}
+  const nativeTable = {get rowCount() {return applied && failure==="count" ? 1 : 2},get isUniform() {return !(applied && failure==="uniform")},get values() {return applied && failure==="raw-deleted-values" ? [["Label","Value"],["Old","Entry"]] : values()},rows:collection(rows),load() {},
+    getCell(ri:number,ci:number) {const i=ri*2+ci;return {body:{paragraphs:collection([paras[i]!]),getRange() {return {getReviewedText(view:string) {return {value:applied && (failure==="values" && i===0 && view==="Current" || failure==="cell-current" && i>=2 && view==="Current" || failure==="cell-original" && i>=2 && view==="Original") ? "PRIVATE" : view==="Original" ? cells[i]! : current(i)}}}}}}}}
   const body = {paragraphs:collection(paras),tables:collection([nativeTable]),getRange() {return {
-    getOoxml() {return {value:flatOpc(content(applied ? failure==="markup" ? removed : deleted : removed))}},
+    getOoxml() {
+      let xml=content(applied ? failure==="markup" ? removed : failure==="untracked" ? row("","") : deleted : removed)
+      if (applied && failure==="geometry") xml=xml.replace("<w:tbl>",'<w:tbl><w:tblPr><w:tblW w:w="120" w:type="dxa"/></w:tblPr>')
+      if (applied && failure==="wrong-row") xml=`<w:tbl>${deleted.replaceAll("Old","Label").replaceAll("Entry","Value")}${removed}</w:tbl>`
+      return {value:flatOpc(xml)}
+    },
     getReviewedText(view:string) {return {value:applied && failure==="original" && view==="Original" ? "PRIVATE" : (view==="Original" ? cells : cells.map((_,i)=>current(i))).join("\r")}},
     getTrackedChanges() {return collection([])},getComments() {return collection(applied && failure==="comments" ? [{author:"PRIVATE",content:"PRIVATE",resolved:false}] : [])},
   }}}
@@ -2115,8 +2120,9 @@ async function rowDeletionConfirmationFixture(failure = "none") {
 test("row deletion confirmation notices identify failed checks without exposing native data or replaying", async () => {
   const cases = [
     ["tracking","tracking settings"],["track-formatting","formatting tracking"],["uniform","table shape"],["count","row count"],
-    ["values","Current table values"],["original","Original document text"],["cell-current","Current cell text"],["cell-original","Original cell text"],
-    ["comments","comments"],["markup","tracked markup and document preservation"],["api","document API"],
+    ["values","Current table values"],["original","Original document text"],["cell-current","Current table values"],["cell-original","Original cell text"],
+    ["comments","comments"],["markup","tracked markup and document preservation"],["untracked","tracked markup and document preservation"],
+    ["wrong-row","tracked markup and document preservation"],["geometry","tracked markup and document preservation"],["api","document API"],
   ] as const
   for (const [failure,notice] of cases) {
     const fixture=await rowDeletionConfirmationFixture(failure)
@@ -2136,6 +2142,13 @@ test("row deletion confirmation notices identify failed checks without exposing 
   expect((await good.host.applyRowDeletion(good.proposal,async()=>good.source,async()=>good.oracle)).status).toBe("applied")
   expect((await good.host.applyRowDeletion(good.proposal,async()=>good.source,async()=>good.oracle)).status).toBe("already-applied")
   expect(good.writes()).toBe(1)
+})
+
+test("tracked row deletion verifies every cell's Current view when raw table values retain deleted text", async () => {
+  const fixture=await rowDeletionConfirmationFixture("raw-deleted-values")
+  expect((await fixture.host.applyRowDeletion(fixture.proposal,async()=>fixture.source,async()=>fixture.oracle)).status).toBe("applied")
+  expect((await fixture.host.applyRowDeletion(fixture.proposal,async()=>fixture.source,async()=>fixture.oracle)).status).toBe("already-applied")
+  expect(fixture.writes()).toBe(1)
 })
 
 test("paragraph merge rejects a forged prepared command without writing", async () => {
