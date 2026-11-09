@@ -66,3 +66,49 @@ test("parent import maps runtime IDs only inside its complete table and keeps ph
   expect(() => verifyImportedWordChatDeletedRow(outside(identified(flat(beforeRow),"A0000001")),outside(identified(flat(deletedRow),"A0000002")),original,observed,proposal)).toThrow()
   expect(() => verifyImportedWordChatDeletedRow(outside(flat(beforeRow)),outside(flat(deletedRow).replaceAll('w:author="doc.haus"','w:author="Other"')),original,observed,proposal)).toThrow()
 })
+
+test("parent import binds persisted row and paragraph IDs bijectively before strict preservation proof", () => {
+  const w14="http://schemas.microsoft.com/office/word/2010/wordml"
+  const identified=(xml:string,start:number)=>{
+    let next=start
+    return xml.replace("<w:document ",`<w:document xmlns:w14="${w14}" `)
+      .replace(/<w:(tr|p)>/g,(_,name:string)=>`<w:${name} w14:paraId="${(++next).toString(16).toUpperCase()}"${name==="p"?' w14:textId="33333333"':""}>`)
+      .replace("<w:tbl>",'<w:tbl><w:tblPr><w:tblW w:w="3600"/></w:tblPr>')
+      .replace('<w:r><w:rPr><w:b/></w:rPr><w:t>head</w:t></w:r>','<w:ins w:id="9" w:author="Reviewer" w:date="2025-01-01T00:00:00Z"><w:r><w:rPr><w:b/></w:rPr><w:t>head</w:t></w:r></w:ins>')
+  }
+  const outside=(xml:string)=>xml.replace("<w:body>",'<w:body><w:p w14:paraId="30000001"><w:r><w:t>Before</w:t></w:r></w:p>').replace("<w:sectPr/>",'<w:p w14:paraId="30000002"><w:r><w:t>After</w:t></w:r></w:p><w:sectPr/>')
+  const source=outside(identified(flat(beforeRow),0x10000000)),current=outside(identified(flat(deletedRow),0x20000000))
+  const first={id:"outside-first",text:"Before",tableNestingLevel:0},last={id:"outside-last",text:"After",tableNestingLevel:0}
+  const original=[first,...before,last],observed=[first,...after.map(p=>({...p,id:`imported-${p.id}`})),last]
+  const verify=(a=source,b=current)=>verifyImportedWordChatDeletedRow(a,b,original,observed,proposal)
+  expect(verify()).toEqual({authors:["doc.haus"]})
+  // Mapping is confined to a parsed copy and to the paired-parent entry point.
+  expect(current).toContain('w14:paraId="20000001"')
+  expect(()=>verifyNativeWordChatDeletedRow(source,current,original,[first,...after,last],proposal)).toThrow()
+  for(const changed of [
+    current.replace('w14:paraId="20000002"','w14:paraId="20000001"'),
+    current.replace(' w14:paraId="20000002"',""),
+    current.replace('w14:paraId="20000002"','w14:paraId="not-hex"'),
+    current.replace('w14:paraId="20000002"','w14:paraId="00000000"'),
+    current.replace('w14:paraId="20000002"','w14:paraId="80000000"'),
+    current.replace('w14:paraId="20000002"','w14:paraId="30000001"'),
+    current.replace('w14:paraId="30000001"','w14:paraId="10000001"'),
+    current.replace('w14:paraId="30000001"','w14:paraId="40000001"'),
+    current.replace('w14:textId="33333333"','w14:textId="33333334"'),
+    current.replace('w:w="3600"','w:w="4000"'),
+    current.replace("<w:t>head</w:t>","<w:t>changed</w:t>"),
+    current.replace("<w:delText>old</w:delText>","<w:delText>changed</w:delText>"),
+    current.replace('w:author="Reviewer"','w:author="Other"'),
+    current.replace('w:date="2025-01-01T00:00:00Z"','w:date="2025-01-02T00:00:00Z"'),
+  ])expect(()=>verify(source,changed)).toThrow()
+  expect(()=>verify(source.replace(' w14:paraId="10000002"',""),current)).toThrow()
+  for(const id of ["10000002","20000002"]){
+    for(const site of ['<w:tbl>','<w:p w14:paraId="30000001"']){
+      const reference=(xml:string)=>xml.replace(site,site.replace(/>$/,'')+` data-reference="prefix(${id.toLowerCase()})"`+(site.endsWith(">")?">":""))
+      expect(()=>verify(reference(source),reference(current))).toThrow()
+    }
+    const part=`<pkg:part pkg:name="/word/metadata.xml"><pkg:xmlData><meta reference="${id}"/></pkg:xmlData></pkg:part>`
+    const reference=(xml:string)=>xml.replace("</pkg:package>",part+"</pkg:package>")
+    expect(()=>verify(reference(source),reference(current))).toThrow()
+  }
+})

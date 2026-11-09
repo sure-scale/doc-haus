@@ -159,6 +159,43 @@ function revisionNodes(body: Element) {
   }
   visit(body, "body"); return result
 }
+/** A parent import can renew persisted row/paragraph identities. Prove their
+ * ordered bijection before normalizing only the parsed observed copy; the
+ * unchanged inverse and whole-body proof still own every other XML property. */
+function normalizeParentParagraphIds(before:Document,after:Document,oldTable:Element,newTable:Element) {
+  const reject=()=>fail("parent persisted paragraph mapping")
+  const entries=(table:Element)=>{
+    const found:Array<{path:string;node:Element}>=[],rows=named(table,"tr")
+    rows.forEach((row,ri)=>{
+      found.push({path:`tr[${ri}]`,node:row})
+      named(row,"tc").forEach((cell,ci)=>named(cell,"p").forEach((p,pi)=>found.push({path:`tr[${ri}]/tc[${ci}]/p[${pi}]`,node:p})))
+    })
+    if(table.getElementsByTagNameNS(W,"tr").length!==rows.length||table.getElementsByTagNameNS(W,"p").length!==found.length-rows.length)return reject()
+    return found
+  }
+  const old=entries(oldTable),now=entries(newTable)
+  if(old.length!==now.length||old.some((entry,i)=>entry.path!==now[i]!.path||entry.node.hasAttributeNS(W14,"paraId")!==now[i]!.node.hasAttributeNS(W14,"paraId")||entry.node.hasAttributeNS(W14,"textId")!==now[i]!.node.hasAttributeNS(W14,"textId")||entry.node.getAttributeNS(W14,"textId")!==now[i]!.node.getAttributeNS(W14,"textId")))return reject()
+  const all=(doc:Document)=>Array.from(doc.getElementsByTagName("*"))
+  const valid=(id:string)=>/^[0-9a-fA-F]{8}$/.test(id)&&parseInt(id,16)>0&&parseInt(id,16)<0x80000000
+  for(const doc of [before,after]){
+    const ids=all(doc).filter(e=>e.hasAttributeNS(W14,"paraId")).map(e=>e.getAttributeNS(W14,"paraId")!)
+    if(ids.some(id=>!valid(id))||new Set(ids.map(id=>id.toUpperCase())).size!==ids.length)return reject()
+  }
+  const mapped=old.filter(entry=>entry.node.hasAttributeNS(W14,"paraId"))
+  const ids=new Set([...old,...now].filter(entry=>entry.node.hasAttributeNS(W14,"paraId")).map(entry=>entry.node.getAttributeNS(W14,"paraId")!.toUpperCase()))
+  for(const [doc,inside] of [[before,new Set(old.map(e=>e.node))],[after,new Set(now.map(e=>e.node))]] as const){
+    for(const node of all(doc))for(const attr of Array.from(node.attributes)){
+      if(inside.has(node)&&attr.namespaceURI===W14&&attr.localName==="paraId")continue
+      // Fail closed on any attribute consumer, including one within the table.
+      // This does not claim to decode embedded/binary reference formats.
+      for(const token of attr.value.matchAll(/(?:^|[^0-9a-f])([0-9a-f]{8})(?=$|[^0-9a-f])/gi))if(ids.has(token[1]!.toUpperCase()))return reject()
+    }
+  }
+  for(const entry of mapped){
+    const observed=now[old.indexOf(entry)]!.node,attr=observed.getAttributeNodeNS(W14,"paraId")!
+    observed.setAttributeNS(W14,attr.name,entry.node.getAttributeNS(W14,"paraId")!)
+  }
+}
 function verifyDeletedRow(beforeXml: string, afterXml: string, beforeInventory: Inventory, afterInventory: Inventory, proposal: WordChatTableRowDeletionProposal, parentImport: boolean): { authors: string[] } {
   assertNativeWordChatRowDeletionTarget(beforeXml, beforeInventory, proposal)
   const before = projectNativeWordChatBody(beforeXml, beforeInventory), after = projectNativeWordChatBody(afterXml, afterInventory)
@@ -178,7 +215,9 @@ function verifyDeletedRow(beforeXml: string, afterXml: string, beforeInventory: 
   }
   if (before.paragraphs.length !== after.paragraphs.length || before.paragraphs.some((x, i) => { const y = after.paragraphs[i]; return !y || (!(parentImport && inside(x.path)) && x.id !== y.id) || (!deleted.has(x.id) && x.path !== y.path) || x.nesting !== y.nesting || y.text !== (deleted.has(x.id) ? "" : x.text) })) return fail("native preservation")
   assertNativeWordChatInlineDependencies(beforeXml, afterXml)
-  const old = flat(beforeXml), now = flat(afterXml), oldRow = target(old.body, proposal).row, currentRow = tableRow(now.body, proposal).row
+  const old = flat(beforeXml), now = flat(afterXml), oldTarget=target(old.body,proposal),currentTarget=tableRow(now.body,proposal)
+  if(parentImport)normalizeParentParagraphIds(old.doc,now.doc,oldTarget.table,currentTarget.table)
+  const oldRow=oldTarget.row,currentRow=currentTarget.row
   const proof = inverse(oldRow, currentRow, true)
   if (parentImport && [...proof.authors].some(author => author !== "doc.haus")) return fail("imported revision author")
   currentRow.parentNode!.replaceChild(oldRow.cloneNode(true), currentRow)
