@@ -1666,7 +1666,14 @@ test("native wording refuses faithful property drift before writing and fences p
       return result
     } }
     if (phase === "postwrite") state.afterSync = () => { if (state.writes.length) { state.paragraphXml.set("paragraph-0", xml.replace("clear", "specific").replace('w:after="120"', 'w:after="240"')); state.afterSync = undefined } }
-    await expect(nativeHost.apply(input)).rejects.toMatchObject({ mutationState: phase === "author" ? "unchanged" : "uncertain" })
+    const error = await nativeHost.apply(input).then(() => undefined, error => error)
+    expect(error).toMatchObject({ mutationState: phase === "author" ? "unchanged" : "uncertain" })
+    if (phase === "postwrite") {
+      expect(error.notice).toBe("Word could not confirm preservation of the paragraph formatting. Check the change in Word. Use Undo if needed; do not apply it again.")
+      expect(error.cause.cause.message).toBe("text-paragraph-properties")
+      expect(error.notice).not.toContain("A clear obligation")
+      expect(error.notice).not.toContain("w:spacing")
+    } else expect(error.notice).toBeUndefined()
     expect(state.writes).toHaveLength(phase === "author" ? 0 : 1)
     if (phase === "postwrite") { await expect(nativeHost.apply(input)).rejects.toThrow("may already contain"); expect(state.writes).toHaveLength(1) }
   }
