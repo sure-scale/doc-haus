@@ -1038,9 +1038,9 @@ test("mixed review shows the replacement and collapsed layout, and applies the e
 })
 
 test("Apply uncertainty hides every action and affected context, while pre-import errors with the same text remain retryable", async () => {
-  for (const mutationState of ["unchanged", "uncertain"] as const) {
+  for (const mutationState of ["unchanged", "uncertain"] as const) for (const noticeText of [undefined, "Word could not confirm preservation of the paragraph formatting."]) {
     let calls = 0
-    const error = Object.assign(new Error("Word could not confirm the imported change. Inspect it and use Undo if needed."), { mutationState })
+    const error = Object.assign(new Error("Word could not confirm the imported change. Inspect it and use Undo if needed."), { mutationState, notice: noticeText })
     const f = fixture({ turns: [turn({ kind: "amendment", proposal })], host: { apply: async () => { calls++; throw error } } })
     try {
       await f.chat.ready
@@ -1052,7 +1052,7 @@ test("Apply uncertainty hides every action and affected context, while pre-impor
       const notice = f.root.querySelector('.chat-proposal-error[role="alert"]')!
       expect(message.value).toBe("Keep my next message"); expect(f.get("activity").textContent).toBe("")
       if (mutationState === "uncertain") {
-        expect(notice.textContent).toBe("Check the change in Word. Use Undo if needed.")
+        expect(notice.textContent).toBe(noticeText ?? "Check the change in Word. Use Undo if needed.")
         expect(actions()).toHaveLength(0)
         expect(f.get("chips").textContent).not.toContain("Refining amendment"); expect(f.get("chips").textContent).not.toContain("Selected Word text")
         expect(message.placeholder).toBe("Ask doc.haus…")
