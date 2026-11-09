@@ -17,8 +17,6 @@ const messages = {
   table_boundary: "The table's annotation or content boundary could not be verified. Refresh and review it again.",
   formatting_dependencies: "The table's imported formatting or relationships could not be verified. Refresh and review it again.",
   range_paragraphs: "Word's table range does not contain the reviewed paragraph identities. Refresh and review it again.",
-  range_table: "Word's complete-table range does not match the reviewed table. Refresh and review it again.",
-  range_section: "Word's table range has different section context. Refresh and review it again.",
 } as const
 export type WordChatTableImportErrorCode = keyof typeof messages
 /** Static public notice only; an original parser/native cause stays private.
@@ -136,28 +134,13 @@ export function assertWordChatTableImportPreimage(sourceOoxml: string, currentOo
   }
 }
 
-/** Bind an actual Table.getRange("Whole") read to the exact cell paragraph IDs.
- * Word may export the body's terminal section as OOXML context; it is accepted
- * only when identical to the full capture (apart from its qualified session
- * rsid). A real adjacent paragraph is never part of this replacement range. */
-export function assertWordChatTableImportRange(rangeOoxml: string, fullOoxml: string, rangeParagraphIds: string[], proposal: WordChatTableRowDeletionProposal): void {
+/** Match the ordered paragraph identities read from the bound native table's
+ * Whole range. The caller must also verify native containment and the complete
+ * source preimage. A range OOXML export is a separate serialization, so it is
+ * not used as a substitute for that native boundary or the full-body proof. */
+export function assertWordChatTableImportRange(rangeParagraphIds: string[], proposal: WordChatTableRowDeletionProposal): void {
   const expected = proposal.table.rows.flat().map(cell => cell.id)
   if (!expected.length || JSON.stringify(expected) !== JSON.stringify(rangeParagraphIds) || new Set(rangeParagraphIds).size !== expected.length) return fail("range_paragraphs")
-  const scoped = body(parts(rangeOoxml).get(MAIN)!), whole = body(parts(fullOoxml).get(MAIN)!)
-  const nodes = children(scoped), table = named(whole, "tbl")[proposal.table.tableIndex]
-  if (!table || nodes.length < 1 || nodes.length > 2 || nodes[0]!.namespaceURI !== W || nodes[0]!.localName !== "tbl" || !same(nodes[0]!, table, "range_table")) return fail("range_table")
-  if (nodes.length === 2) {
-    const context = nodes[1]!, terminal = children(whole).at(-1)
-    if (context.namespaceURI !== W || context.localName !== "sectPr" || terminal?.namespaceURI !== W || terminal.localName !== "sectPr") return fail("range_section")
-    const clean = (node: Element) => {
-      const copy = node.cloneNode(true) as Element
-      if (copy.hasAttributeNS(W, "rsidSect") && !/^[0-9a-fA-F]{8}$/.test(copy.getAttributeNS(W, "rsidSect")!)) return fail("range_section")
-      copy.removeAttributeNS(W, "rsidSect")
-      return copy
-    }
-    if (!same(clean(context), clean(terminal), "range_section")) return fail("range_section")
-  }
-  closedBoundary(whole, table)
 }
 
 /** After the structural/revision verifier has proved the imported result and

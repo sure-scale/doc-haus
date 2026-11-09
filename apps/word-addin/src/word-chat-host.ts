@@ -839,7 +839,7 @@ export class WordChatHost {
       const location=range.compareLocationWith(body.getRange("Whole"))
       const before=at ? range.compareLocationWith(all.items[at-1]!.getRange("Whole")) : undefined
       const after=at+expectedIds.length<all.items.length ? range.compareLocationWith(all.items[at+expectedIds.length]!.getRange("Whole")) : undefined
-      const xml=body.getRange("Whole").getOoxml(), scoped=range.getOoxml(), original=body.getRange("Content").getReviewedText("Original")
+      const xml=body.getRange("Whole").getOoxml(), original=body.getRange("Content").getReviewedText("Original")
       const rangeParagraphs=range.paragraphs
       rangeParagraphs.load("items/uniqueLocalId,items/tableNestingLevel")
       context.document.load("changeTrackingMode,trackFormatting")
@@ -847,9 +847,9 @@ export class WordChatHost {
       const originalCells=proposal.cells.map((_,ci)=>table.getCell(proposal.rowIndex,ci).body as unknown as {getRange(location:"Content"):WordChatRange})
         .map(cell=>cell.getRange("Content").getReviewedText("Original"))
       await context.sync()
-      // Capture these IDs in the same read as the scoped OOXML, before another
-      // paragraph collection or reviewed-text call can advance the host batch.
-      const rangeIds=rangeParagraphs.items.map(p=>p.uniqueLocalId), beforeXml=xml.value, rangeXml=scoped.value
+      // The native Whole-table range owns the boundary. Capture its IDs with
+      // the full-body snapshot before another read can advance the host batch.
+      const rangeIds=rangeParagraphs.items.map(p=>p.uniqueLocalId), beforeXml=xml.value
       const originalText=original.value, tracking=context.document.changeTrackingMode, trackFormatting=context.document.trackFormatting
       if (!INSIDE.has(location.value) || before && !["After","AdjacentAfter"].includes(before.value) || after && !["Before","AdjacentBefore"].includes(after.value) ||
         rangeParagraphs.items.some(p=>p.tableNestingLevel!==1) || !table.isUniform || table.rowCount!==prepared.rowCount || JSON.stringify(table.values)!==JSON.stringify(expectedValues) ||
@@ -860,24 +860,24 @@ export class WordChatHost {
       const inventory=await nativeInventory(context,all.items)
       if (JSON.stringify(inventory.map(p=>p.id))!==JSON.stringify(allIds)) throw captureMismatch("The document paragraphs changed during capture.")
       preparing("Word could not refresh the complete table range before deletion.")
-      const finalXml=body.getRange("Whole").getOoxml(), finalRange=range.getOoxml()
+      const finalXml=body.getRange("Whole").getOoxml()
       rangeParagraphs.load("items/uniqueLocalId,items/tableNestingLevel")
       all.load("items/uniqueLocalId,items/tableNestingLevel");context.document.load("changeTrackingMode,trackFormatting")
       await context.sync()
-      if (!sameNativeWordChatBodySnapshot(beforeXml,finalXml.value) || !sameNativeWordChatBodySnapshot(rangeXml,finalRange.value) ||
+      if (!sameNativeWordChatBodySnapshot(beforeXml,finalXml.value) ||
         JSON.stringify(rangeParagraphs.items.map(p=>p.uniqueLocalId))!==JSON.stringify(rangeIds) || JSON.stringify(all.items.map(p=>p.uniqueLocalId))!==JSON.stringify(allIds) ||
         context.document.changeTrackingMode!==tracking || context.document.trackFormatting!==trackFormatting)
         throw captureMismatch("The complete table changed during capture.")
       preparing("Word could not verify the complete table range before deletion.")
-      assertWordChatTableImportRange(finalRange.value,finalXml.value,rangeIds,proposal)
+      assertWordChatTableImportRange(rangeIds,proposal)
       preparing("The complete table could not be matched to the prepared deletion.")
       assertWordChatTableImportPreimage(pair.beforeOoxml,finalXml.value,inventory,proposal)
-      return {range,rangeIds,rangeXml:finalRange.value,xml:finalXml.value,inventory,original:originalText,tracking,trackFormatting,rowCount:prepared.rowCount}
+      return {range,rangeIds,xml:finalXml.value,inventory,original:originalText,tracking,trackFormatting,rowCount:prepared.rowCount}
     }
     const initial=await read()
     preparing("Word could not read the document's comments and prior tracked changes.")
     const beforeState=await this.documentState(context), fresh=await read()
-    if (!sameNativeWordChatBodySnapshot(initial.xml,fresh.xml) || !sameNativeWordChatBodySnapshot(initial.rangeXml,fresh.rangeXml) ||
+    if (!sameNativeWordChatBodySnapshot(initial.xml,fresh.xml) ||
       JSON.stringify(initial.inventory)!==JSON.stringify(fresh.inventory) || JSON.stringify(initial.rangeIds)!==JSON.stringify(fresh.rangeIds) ||
       initial.original!==fresh.original || initial.tracking!==fresh.tracking || initial.trackFormatting!==fresh.trackFormatting)
       throw captureMismatch("The complete table changed before deletion.")

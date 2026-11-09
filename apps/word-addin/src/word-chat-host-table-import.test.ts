@@ -33,7 +33,7 @@ const oracle=()=>({kind:"table_row_delete" as const,proposalId:proposal.id,sourc
 /** An Office batch model: replacement runs on sync; Table proxies are invalidated
  * by replacement. These deterministic mocks do not establish native acceptance. */
 function office(options:{failure?:string;tracking?:string;formatting?:boolean}={}) {
- const state={applied:false,queued:false,failed:false,writes:[] as Array<{xml:string;tracking:string;location:string}>,modes:[] as string[],formats:[] as boolean[],authorCalls:0,runs:0,scopedReads:0,rangeLocations:[] as string[]}
+ const state={applied:false,queued:false,failed:false,writes:[] as Array<{xml:string;tracking:string;location:string}>,modes:[] as string[],formats:[] as boolean[],authorCalls:0,runs:0,wholeReads:0,scopedReads:0,rangeLocations:[] as string[]}
  let tracking=options.tracking??"TrackAll",formatting=options.formatting??true
  const failure=options.failure??"none",collection=<T>(items:()=>T[])=>({get items(){return items()},load(_props:string){}})
  const current=(i:number)=>state.applied&&(i===3||i===4)?"":texts[i]!
@@ -41,12 +41,13 @@ function office(options:{failure?:string;tracking?:string;formatting?:boolean}={
  const tableXml=()=>{
   let value=table(state.applied)
   if(failure==="stale-table"&&!state.applied||failure==="post-geometry"&&state.applied)value=value.replace('w:w="1800"','w:w="2100"')
-  if(failure==="late-table"&&state.scopedReads>=3&&!state.applied)value=value.replace('w:w="1800"','w:w="2100"')
+  if(failure==="late-table"&&state.wholeReads>=3&&!state.applied)value=value.replace('w:w="1800"','w:w="2100"')
   return value
  }
- const full=()=>flat({...base,[MAIN]:main(para("Before")+tableXml()+para("After")+section),"word/styles.xml":failure==="stale-style"?styles.replace('w:val="Normal"','w:val="Changed"'):failure==="post-style-binding"&&state.applied?styles.replace("urn:font-profile:before","urn:font-profile:changed"):styles})
+ const full=()=>{state.wholeReads++;return flat({...base,[MAIN]:main(para("Before")+tableXml()+para("After")+section),"word/styles.xml":failure==="stale-style"?styles.replace('w:val="Normal"','w:val="Changed"'):failure==="post-style-binding"&&state.applied?styles.replace("urn:font-profile:before","urn:font-profile:changed"):styles})}
  const scopedXml=()=>{
   state.scopedReads++
+  if(failure==="fragment-throws")throw Error("PRIVATE independent fragment serialization")
   const extra=failure==="leak-paragraph"?para("Before"):failure==="leak-table"?table():failure==="leak-section"?section.replace('w:w="12000"','w:w="9999"'):section
   return flat({...base,[MAIN]:main(tableXml()+extra)})
  }
@@ -88,8 +89,18 @@ test("only the pair strings verified before Office reads can reach dispatch",asy
  expect(fixture.state.writes[0]!.xml).toBe(scoped(true))
 })
 
+test("native Whole-table binding does not consult an independent fragment serialization",async()=>{
+ for(const failure of ["leak-paragraph","leak-table","leak-section","fragment-throws"]){
+  const fixture=office({failure})
+  expect((await fixture.apply()).status).toBe("applied")
+  expect(fixture.state.scopedReads).toBe(0)
+  expect(fixture.state.writes).toEqual([{xml:scoped(true),location:"Replace",tracking:"Off"}])
+  expect(fixture.state.rangeLocations).toEqual(["Whole","Whole"])
+ }
+})
+
 test("stale geometry/defaults, partial or leaking ranges and overlapping boundaries refuse without mutation",async()=>{
- for(const failure of ["stale-table","stale-style","late-table","partial-ids","leak-ids","leak-paragraph","leak-table","leak-section","overlap"]){
+ for(const failure of ["stale-table","stale-style","late-table","partial-ids","leak-ids","overlap"]){
   const fixture=office({failure})
   await expect(fixture.apply()).rejects.toMatchObject({mutationState:"unchanged"})
   expect(fixture.state.writes).toHaveLength(0);expect(fixture.state.modes).toEqual([])

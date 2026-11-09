@@ -68,17 +68,12 @@ test("compatibility prefix bindings and document siblings cannot hide a wider im
   expect(() => assertWordChatTableImportPreimage(background(scoped), background(fresh), inventory, proposal)).toThrow()
 })
 
-test("complete native table ranges permit only matched section export context", () => {
+test("native Whole-table ranges require every reviewed paragraph exactly once in order", () => {
   const ids = proposal.table.rows.flat().map(cell => cell.id)
-  assertWordChatTableImportRange(scoped, fresh, ids, proposal)
-  assertWordChatTableImportRange(pack(table+'<w:sectPr w:rsidSect="12345678"/>'), fresh, ids, proposal)
-  expect(() => assertWordChatTableImportRange(pack(table+'<w:sectPr w:rsidSect="invalid"/>'), fresh, ids, proposal)).toThrow()
-  expect(() => assertWordChatTableImportRange(pack(table+p("After")), fresh, ids, proposal)).toThrow()
-  expect(() => assertWordChatTableImportRange(pack(table+'<w:sectPr><w:pgSz w:w="12345"/></w:sectPr>'), fresh, ids, proposal)).toThrow()
-  expect(() => assertWordChatTableImportRange(scoped, fresh, [...ids,"outside"], proposal)).toThrow()
-  expect(() => assertWordChatTableImportRange(scoped, fresh, ids.slice(1), proposal)).toThrow()
+  assertWordChatTableImportRange(ids, proposal)
+  for (const actual of [[], [...ids,"outside"], ["outside",...ids], ids.slice(1), ids.slice(0,-1), [...ids].reverse(), [ids[0]!,ids[0]!,...ids.slice(2)]])
+    expect(() => assertWordChatTableImportRange(actual, proposal)).toThrow(WordChatTableImportError)
 })
-
 
 test("categorical import notices distinguish failed boundaries without exposing captured content", () => {
   const ids = proposal.table.rows.flat().map(cell => cell.id)
@@ -89,9 +84,7 @@ test("categorical import notices distinguish failed boundaries without exposing 
     ["table_preimage", () => assertWordChatTableImportPreimage(scoped, fresh.replace('w:w="1800"', 'w:w="2400"'), inventory, proposal)],
     ["table_boundary", () => assertWordChatTableImportPreimage(pack(enclosed), pack(p("Outside")+enclosed+p("After")), inventory, proposal)],
     ["formatting_dependencies", () => assertWordChatTableImportPreimage(scoped, fresh.replace('w:val="22"', 'w:val="28"'), inventory, proposal)],
-    ["range_paragraphs", () => assertWordChatTableImportRange(scoped, fresh, [...ids,"private-capture"], proposal)],
-    ["range_table", () => assertWordChatTableImportRange(scoped.replace('w:w="1800"', 'w:w="2400"'), fresh, ids, proposal)],
-    ["range_section", () => assertWordChatTableImportRange(pack(table+'<w:sectPr><w:pgSz w:w="12345"/></w:sectPr>'), fresh, ids, proposal)],
+    ["range_paragraphs", () => assertWordChatTableImportRange([...ids,"private-capture"], proposal)],
     ["formatting_dependencies", () => assertWordChatTableImportFormatting(scoped, fresh.replace('w:val="22"', 'w:val="28"'))],
   ]
   const notices = new Set<string>()
@@ -107,7 +100,7 @@ test("categorical import notices distinguish failed boundaries without exposing 
     expect(error.message).not.toContain("<")
     notices.add(error.message)
   }
-  expect(notices.size).toBe(8)
+  expect(notices.size).toBe(6)
 })
 
 test("wrapped native binding and unsupported XML causes stay private behind static notices", () => {
