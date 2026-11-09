@@ -1,4 +1,4 @@
-import { sameTableImportXml, firstTableImportXmlDifference, TableImportXmlUnsupportedError, type TableImportXmlDifference } from "./word-chat-table-import-xml"
+import { sameTableImportXml, firstTableImportXmlDifference, sameLiveTableImportPreimageXml, firstLiveTableImportPreimageXmlDifference, TableImportXmlUnsupportedError, type TableImportXmlDifference } from "./word-chat-table-import-xml"
 import { DOMParser } from "@xmldom/xmldom"
 import type { WordChatTableRowDeletionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { assertNativeWordChatRowDeletionTarget } from "./word-chat-native-row-delete"
@@ -74,10 +74,11 @@ function same(a: Node, b: Node) {
 function unsupported(cause:unknown):never {
   return fail("xml_comparison_unsupported",cause,{category:"unsupported_xml",path:cause instanceof TableImportXmlUnsupportedError?cause.path:"/xml",reason:cause instanceof TableImportXmlUnsupportedError?cause.reason:"comparison_unclassified"})
 }
-function requireSame(a:Node,b:Node,code:WordChatTableImportErrorCode):void {
-  if(same(a,b))return
+function requireSame(a:Node,b:Node,code:WordChatTableImportErrorCode,liveRowSession=false):void {
+  try {if(liveRowSession?sameLiveTableImportPreimageXml(a,b):sameTableImportXml(a,b))return}
+  catch(cause){return unsupported(cause)}
   let detail:TableImportXmlDifference|undefined
-  try {detail=firstTableImportXmlDifference(a,b)}catch(cause){return unsupported(cause)}
+  try {detail=liveRowSession?firstLiveTableImportPreimageXmlDifference(a,b):firstTableImportXmlDifference(a,b)}catch(cause){return unsupported(cause)}
   return fail(code,undefined,detail)
 }
 function targetReason(cause:unknown):TargetReason {
@@ -142,7 +143,7 @@ export function assertWordChatTableImportPreimage(sourceOoxml: string, currentOo
   requireSame(before.parentNode!.cloneNode(false),now.parentNode!.cloneNode(false),"document_context")
   if (scoped.length !== 1 || scoped[0]!.namespaceURI !== W || scoped[0]!.localName !== "tbl") return fail("table_boundary")
   if (!table) return fail("live_table_preimage")
-  requireSame(scoped[0]!,table,"live_table_preimage")
+  requireSame(scoped[0]!,table,"live_table_preimage",true)
   closedBoundary(now, table)
   for (const [name, part] of source) {
     if (name === MAIN) continue

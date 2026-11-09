@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { assertWordChatTableImportPreimage, assertWordChatTableImportRange, assertWordChatTableImportFormatting, WordChatTableImportError, type WordChatTableImportErrorCode } from "./word-chat-table-import"
 import { DOMParser } from "@xmldom/xmldom"
-import { firstTableImportXmlDifference, sameTableImportXml } from "./word-chat-table-import-xml"
+import { firstTableImportXmlDifference, sameTableImportXml, sameLiveTableImportPreimageXml } from "./word-chat-table-import-xml"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", P = "http://schemas.microsoft.com/office/2006/xmlPackage"
 const REL = "http://schemas.openxmlformats.org/package/2006/relationships", R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -120,6 +120,7 @@ test("wrapped native binding and unsupported XML causes stay private behind stat
   catch (error) { unsupported = error }
   expect(unsupported).toBeInstanceOf(WordChatTableImportError)
   expect((unsupported as WordChatTableImportError).code).toBe("xml_comparison_unsupported")
+  expect((unsupported as WordChatTableImportError).detail).toMatchObject({category:"unsupported_xml",reason:"compatibility_element"})
   expect((unsupported as WordChatTableImportError).cause).toBeInstanceOf(Error)
   const privateCause = new Error("private-capture <w:p>secret text</w:p> /private/styles.xml")
   const safe = new WordChatTableImportError("package_xml", privateCause)
@@ -196,4 +197,32 @@ test("attribute presence diagnostics identify the actual added or removed expand
   expect(sameTableImportXml(before,after)).toBe(false)
   expect(firstTableImportXmlDifference(before,after)).toEqual({category:"attribute_presence",path:"/w:tbl[1]/@w:id"})
   expect(firstTableImportXmlDifference(after,before)).toEqual({category:"attribute_presence",path:"/w:tbl[1]/@w:id"})
+})
+
+test("only valid row rsidR export variation is ignored by the live source preimage", () => {
+  const reviewed = table.replace(p("Item"),'<w:p><w:del w:id="7" w:author="Reviewer" w:date="2026-02-01T00:00:00Z"><w:r><w:delText>Older</w:delText></w:r></w:del><w:ins w:id="8" w:author="Reviewer" w:date="2026-02-01T00:00:00Z"><w:r><w:t>Item</w:t></w:r></w:ins></w:p>')
+    .replaceAll("<w:tr>",'<w:tr w:rsidR="1234ABCD">')
+  const live = reviewed.replaceAll('w:rsidR="1234ABCD"','w:rsidR="ABCD5678"')
+  const source=pack(reviewed),current=(value:string)=>pack(p("Outside")+value+p("After")+"<w:sectPr/>")
+  assertWordChatTableImportPreimage(source,current(live),inventory,proposal)
+  assertWordChatTableImportPreimage(source,current(live.replaceAll(' w:rsidR="ABCD5678"',"")),inventory,proposal)
+  assertWordChatTableImportPreimage(pack(reviewed.replaceAll(' w:rsidR="1234ABCD"',"")),current(live),inventory,proposal)
+  const parse=(value:string)=>new DOMParser().parseFromString(`<w:body xmlns:w="${W}">${value}</w:body>`,"application/xml").documentElement
+  expect(sameTableImportXml(parse(reviewed),parse(live))).toBe(false)
+  expect(sameLiveTableImportPreimageXml(parse(reviewed),parse(live))).toBe(true)
+  for(const changed of [
+    live.replace('w:w="1800"','w:w="2400"'),
+    live.replace("Item","Changed"),
+    live.replace("Older","Changed old content"),
+    live.replace('w:id="7"','w:id="9"'),
+    live.replace('w:author="Reviewer"','w:author="Other"'),
+    live.replace('w:date="2026-02-01T00:00:00Z"','w:date="2026-02-02T00:00:00Z"'),
+    live.replace('w:rsidR="ABCD5678"','w:rsidR="not-hex"'),
+    live.replace("<w:p>",'<w:p w:rsidR="ABCD5678">'),
+    live.replace('<w:tr w:rsidR="ABCD5678">','<w:tr w:rsidR="ABCD5678" w:rsidDel="12345678">'),
+  ]) expect(()=>assertWordChatTableImportPreimage(source,current(changed),inventory,proposal)).toThrow(WordChatTableImportError)
+  let error:WordChatTableImportError|undefined
+  try{assertWordChatTableImportPreimage(source,current(live.replace('w:w="1800"','w:w="2400"')),inventory,proposal)}catch(cause){error=cause as WordChatTableImportError}
+  expect(error?.code).toBe("live_table_preimage")
+  expect(error?.detail).toEqual({category:"attribute_value",path:"/w:tbl[1]/w:tblGrid[2]/w:gridCol[1]/@w:w"})
 })
