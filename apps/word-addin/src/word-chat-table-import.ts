@@ -22,7 +22,9 @@ const messages = {
 } as const
 export type WordChatTableImportErrorCode = keyof typeof messages
 type TargetReason = "table_geometry"|"target_qualification"|"target_binding"|"paragraph_inventory"|"paragraph_projection"|"story_structure"|"package_structure"|"target_unclassified"
-export type WordChatTableImportDiagnostic = TableImportXmlDifference | {category:"target_validation";path:"/target";reason:TargetReason} | {category:"unsupported_xml";path:string;reason:"compatibility_element"|"compatibility_attribute"|"unbound_prefix"|"qualified_type"|"comparison_unclassified"}
+type RelationshipFamily = "root"|"document"|"dependency"
+type FormattingReason = "part_not_allowed"|"part_missing"|"content_type"|"relationship_data"|"relationship_root"|"relationship_entry"|"relationship_ids"|"external_relationship"|"root_shape"|"root_link_match"|"relationship_link_match"|"relationship_id_mismatch"|"relationship_target_equivalent"
+export type WordChatTableImportDiagnostic = TableImportXmlDifference | {category:"target_validation";path:"/target";reason:TargetReason} | {category:"unsupported_xml";path:string;reason:"compatibility_element"|"compatibility_attribute"|"unbound_prefix"|"qualified_type"|"comparison_unclassified"} | {category:"formatting_dependencies";family:RelationshipFamily;reason:FormattingReason}
 /** Static public notice only; an original parser/native cause stays private.
  * Dispatch uncertainty remains the caller's responsibility, before using this notice. */
 export class WordChatTableImportError extends Error {
@@ -30,7 +32,7 @@ export class WordChatTableImportError extends Error {
   constructor(readonly code: WordChatTableImportErrorCode, cause?: unknown, readonly detail?:WordChatTableImportDiagnostic) {
     super(messages[code], cause === undefined ? undefined : { cause })
     this.name = "WordChatTableImportError"
-    this.diagnosticMessage=`${this.message} [${code}${detail?`: ${detail.category} at ${detail.path}${"reason" in detail?` (${detail.reason})`:""}`:""}]`
+    this.diagnosticMessage=`${this.message} [${code}${detail?`: ${detail.category}${"path" in detail?` at ${detail.path}`:` (${detail.family})`}${"reason" in detail?` (${detail.reason})`:""}`:""}]`
   }
 }
 const fail = (code: WordChatTableImportErrorCode, cause?: unknown, detail?:WordChatTableImportDiagnostic): never => { throw new WordChatTableImportError(code, cause, detail) }
@@ -95,12 +97,30 @@ function targetReason(cause:unknown):TargetReason {
   }
   return cause instanceof Error&&Object.prototype.hasOwnProperty.call(reasons,cause.message)?reasons[cause.message]!:"target_unclassified"
 }
-function relationships(part: Element) {
-  const root = children(data(part))
-  if (root.length !== 1 || root[0]!.namespaceURI !== REL || root[0]!.localName !== "Relationships") return fail("formatting_dependencies")
+const family = (name:string):RelationshipFamily => name==="/_rels/.rels"?"root":name==="/word/_rels/document.xml.rels"?"document":"dependency"
+const formattingFail = (reason:FormattingReason,kind:RelationshipFamily,cause?:unknown):never => fail("formatting_dependencies",cause,{category:"formatting_dependencies",family:kind,reason})
+function relationships(part: Element,kind:RelationshipFamily) {
+  let value:Element
+  try {value=data(part)}catch(cause){return formattingFail("relationship_data",kind,cause)}
+  const root = children(value)
+  if (root.length !== 1 || root[0]!.namespaceURI !== REL || root[0]!.localName !== "Relationships") return formattingFail("relationship_root",kind)
   const links = children(root[0]!)
-  if (links.some(e => e.namespaceURI !== REL || e.localName !== "Relationship" || !e.getAttribute("Id")) || new Set(links.map(e => e.getAttribute("Id"))).size !== links.length) return fail("formatting_dependencies")
+  if (links.some(e => e.namespaceURI !== REL || e.localName !== "Relationship" || !e.getAttribute("Id"))) return formattingFail("relationship_entry",kind)
+  if (new Set(links.map(e => e.getAttribute("Id"))).size !== links.length) return formattingFail("relationship_ids",kind)
   return links
+}
+/** Diagnostic only for ordinary empty OPC links. Extra markup stays generic;
+ * these observations never authorize a changed relationship or target. */
+function linkMismatch(link:Element,candidates:Element[],kind:RelationshipFamily):FormattingReason {
+  const attrs=(e:Element,omit:string[])=>Array.from(e.attributes).filter(a=>a.namespaceURI!=="http://www.w3.org/2000/xmlns/" && !omit.includes(a.name))
+    .map(a=>[a.namespaceURI,a.localName,a.value]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)))
+  const plain=(e:Element)=>!e.childNodes.length&&Array.from(e.attributes).every(a=>a.namespaceURI==="http://www.w3.org/2000/xmlns/"||!a.namespaceURI&&["Id","Type","Target","TargetMode"].includes(a.localName))
+  if(plain(link))for(const other of candidates){
+    if(!plain(other))continue
+    if(link.getAttribute("Id")!==other.getAttribute("Id")&&JSON.stringify(attrs(link,["Id"]))===JSON.stringify(attrs(other,["Id"])))return "relationship_id_mismatch"
+    if(kind==="root"&&link.getAttribute("Target")!==other.getAttribute("Target")&&link.getAttribute("Target")?.replace(/^\//,"")===other.getAttribute("Target")?.replace(/^\//,"")&&JSON.stringify(attrs(link,["Id","Target"]))===JSON.stringify(attrs(other,["Id","Target"])))return "relationship_target_equivalent"
+  }
+  return kind==="root"?"root_link_match":"relationship_link_match"
 }
 function closedBoundary(main: Element, table: Element) {
   const active = new Set<string>()
@@ -149,18 +169,21 @@ export function assertWordChatTableImportPreimage(sourceOoxml: string, currentOo
     if (name === MAIN) continue
     // The paired backend payload imports only formatting dependencies. Never
     // turn a complete capture (comments, settings, add-ins) into a transport.
-    if (name !== "/_rels/.rels" && !/^\/word\/(?:_rels\/document\.xml\.rels|styles\.xml|numbering\.xml|fontTable\.xml|theme\/[^/]+\.xml|(?:theme|_rels|fonts|media)\/.+)$/.test(name)) return fail("formatting_dependencies")
+    const kind=family(name)
+    if (name !== "/_rels/.rels" && !/^\/word\/(?:_rels\/document\.xml\.rels|styles\.xml|numbering\.xml|fontTable\.xml|theme\/[^/]+\.xml|(?:theme|_rels|fonts|media)\/.+)$/.test(name)) return formattingFail("part_not_allowed",kind)
     const fresh = current.get(name)
-    if (!fresh || part.getAttributeNS(PKG, "contentType") !== fresh.getAttributeNS(PKG, "contentType")) return fail("formatting_dependencies")
+    if (!fresh) return formattingFail("part_missing",kind)
+    if (part.getAttributeNS(PKG, "contentType") !== fresh.getAttributeNS(PKG, "contentType")) return formattingFail("content_type",kind)
     if (name.endsWith(".rels")) {
-      const oldLinks = relationships(part), newLinks = relationships(fresh)
+      const oldLinks = relationships(part,kind), newLinks = relationships(fresh,kind)
       for (const link of oldLinks) {
-        if (link.getAttribute("TargetMode") === "External") return fail("formatting_dependencies")
+        if (link.getAttribute("TargetMode") === "External") return formattingFail("external_relationship",kind)
         // Root relationship IDs have no content references. Document and
         // dependency IDs do, and must remain exactly the source identities.
         if (name === "/_rels/.rels") {
-          if (oldLinks.length !== 1 || link.getAttribute("Type") !== "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" || !newLinks.some(e => e.getAttribute("Type") === link.getAttribute("Type") && e.getAttribute("Target") === link.getAttribute("Target") && e.getAttribute("TargetMode") !== "External")) return fail("formatting_dependencies")
-        } else if (!newLinks.some(e => same(link, e))) return fail("formatting_dependencies")
+          if (oldLinks.length !== 1 || link.getAttribute("Type") !== "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument") return formattingFail("root_shape",kind)
+          if (!newLinks.some(e => e.getAttribute("Type") === link.getAttribute("Type") && e.getAttribute("Target") === link.getAttribute("Target") && e.getAttribute("TargetMode") !== "External")) return formattingFail(linkMismatch(link,newLinks,kind),kind)
+        } else if (!newLinks.some(e => same(link, e))) return formattingFail(linkMismatch(link,newLinks,kind),kind)
       }
     } else requireSame(data(part),data(fresh),"formatting_dependencies")
   }
@@ -183,7 +206,8 @@ export function assertWordChatTableImportFormatting(sourceOoxml: string, observe
   for (const [name, original] of source) {
     if (name === MAIN || name.endsWith(".rels")) continue
     const current = observed.get(name)
-    if (!current || original.getAttributeNS(PKG, "contentType") !== current.getAttributeNS(PKG, "contentType")) return fail("formatting_dependencies")
+    if (!current) return formattingFail("part_missing",family(name))
+    if (original.getAttributeNS(PKG, "contentType") !== current.getAttributeNS(PKG, "contentType")) return formattingFail("content_type",family(name))
     requireSame(data(original),data(current),"formatting_dependencies")
   }
 }

@@ -231,3 +231,34 @@ test("only valid addition-session export variation is ignored by the live source
   expect(error?.code).toBe("live_table_preimage")
   expect(error?.detail).toEqual({category:"attribute_value",path:"/w:tbl[1]/w:tblGrid[2]/w:gridCol[1]/@w:w"})
 })
+
+test("bare formatting failures report fixed families and reasons without paths, IDs or values", () => {
+  const check=(sourceDependencies:string,currentDependencies=root+links+style)=>()=>assertWordChatTableImportPreimage(pack(table,sourceDependencies),pack(p("Outside")+table+p("After"),currentDependencies),inventory,proposal)
+  const cases = [
+    ["dependency","part_not_allowed",check(root+links+style+part("/word/private-capture.xml","<private-capture/>"))],
+    ["dependency","part_missing",check(root+links+style,root+links)],
+    ["dependency","content_type",check(root+links+style.replace('pkg:contentType="application/xml"','pkg:contentType="private-value"'))],
+    ["root","relationship_data",check(root.replace("</pkg:part>","<pkg:xmlData/></pkg:part>")+links+style)],
+    ["root","relationship_root",check(part("/_rels/.rels","<private-capture/>")+links+style)],
+    ["root","relationship_entry",check(root.replace('Id="root"',"")+links+style)],
+    ["root","relationship_ids",check(part("/_rels/.rels",rels(rel("root","officeDocument","word/document.xml").repeat(2)))+links+style)],
+    ["root","external_relationship",check(root.replace('Id="root"','Id="root" TargetMode="External"')+links+style)],
+    ["root","root_shape",check(part("/_rels/.rels",rels(rel("one","officeDocument","word/document.xml")+rel("two","officeDocument","word/document.xml")))+links+style)],
+    ["root","root_link_match",check(root+links+style,root.replace('Target="word/document.xml"','Target="private-value.xml"')+links+style)],
+    ["root","relationship_target_equivalent",check(root+links+style,root.replace('Id="root"','Id="private-id"').replace('Target="word/document.xml"','Target="/word/document.xml"')+links+style)],
+    ["document","relationship_id_mismatch",check(root+links+style,root+links.replace('Id="format"','Id="private-id"')+style)],
+    ["document","relationship_link_match",check(root+links+style,root+links.replace('Target="styles.xml"','Target="private-value.xml"')+style)],
+    ["dependency","relationship_link_match",check(root+links+style+part("/word/theme/_rels/theme1.xml.rels",rels(rel("theme","image","../media/image1.png"))),root+links+style+part("/word/theme/_rels/theme1.xml.rels",rels(rel("theme","image","../media/private-value.png"))))],
+  ] as const
+  for(const [family,reason,run] of cases){
+    let error:WordChatTableImportError|undefined
+    try{run()}catch(cause){error=cause as WordChatTableImportError}
+    expect(error?.code).toBe("formatting_dependencies")
+    expect(error?.detail).toEqual({category:"formatting_dependencies",family,reason})
+    expect(error?.message).toBe(new WordChatTableImportError("formatting_dependencies").message)
+    expect(error?.diagnosticMessage).toContain(reason)
+    expect(error?.diagnosticMessage).not.toContain("private-")
+    expect(error?.diagnosticMessage).not.toContain(".xml")
+    expect(error?.detail).not.toHaveProperty("path")
+  }
+})
