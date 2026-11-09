@@ -186,9 +186,14 @@ export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:strin
        [cell,...referenceCells.slice(i,i+1)].some(c=>["gridSpan","vMerge","hMerge"].some(n=>c.getElementsByTagNameNS(W,n).length))) return fail()
     if(!metadata(cell) || !only(cell,["tcPr","p"]) || ps.length!==1 || !metadata(ps[0]!) || !only(ps[0]!,["pPr","ins"])) return fail()
     const p=ps[0]!, pp=named(p,"pPr"), pr=pp.length===1?named(pp[0]!,"rPr"):[], pm=pr.length===1?named(pr[0]!,"ins"):[]
-    if(pp.length!==1 || !noAttrs(pp[0]!) || pr.length!==1 || !noAttrs(pr[0]!) || pm.length!==1 || pm[0]!.childNodes.length || !inherited(pp[0]!,referenceCells[i]!) || !only(pr[0]!,["ins","b","bCs","i","iCs","u"])) return fail()
-    if(elements(pr[0]!).some(e=>e.localName!=="ins" && (!only(e,[]) || Array.from(e.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===W && a.localName==="val"))))) return fail()
+    if(pp.length!==1 || !noAttrs(pp[0]!) || pr.length!==1 || !noAttrs(pr[0]!) || pm.length!==1 || pm[0]!.childNodes.length || !inherited(pp[0]!,referenceCells[i]!) || !only(pr[0]!,["ins","b","bCs","i","iCs","u","rPrChange"])) return fail()
+    if(elements(pr[0]!).some(e=>!["ins","rPrChange"].includes(e.localName) && (!only(e,[]) || Array.from(e.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===W && a.localName==="val"))))) return fail()
     mark(pm[0]!)
+    const markProps=pr[0]!.cloneNode(true) as Element
+    for(const ins of named(markProps,"ins")) markProps.removeChild(ins)
+    const markFlags=directFlags(markProps), markChanges=named(pr[0]!,"rPrChange")
+    if(markFlags.bold || markFlags.italic || markFlags.underline || markChanges.length>1) return fail()
+    for(const change of markChanges) { mark(change);const old=named(change,"rPr");if(old.length!==1 || !only(change,["rPr"]) || !basic(old[0]!)) return fail();directFlags(old[0]) }
     let value=""
     const groups:WordChatCellRun[]=[]
     for(const ins of named(p,"ins")) {

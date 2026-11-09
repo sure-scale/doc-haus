@@ -4,7 +4,7 @@ type Collection<T> = { items: T[]; load(properties: string): void }
 type Paragraph = { uniqueLocalId: string; text: string; tableNestingLevel: number }
 type Font = { bold: boolean; italic: boolean; underline: string; load(properties: string): void }
 type Range = { font: Font }
-type Cell = { body: { paragraphs: Collection<Paragraph>; getRange(location: "Content"): { getReviewedText(version: "Current"): { value: string } }; insertText(text: string, location: "End"): Range } }
+type Cell = { body: { paragraphs: Collection<Paragraph>; getRange(location: "Content" | "Whole"): Range & { getReviewedText(version: "Current"): { value: string } }; insertText(text: string, location: "End"): Range } }
 type Table = {
   rowCount: number
   isUniform: boolean
@@ -68,6 +68,12 @@ export function queueNativeRow(context: NativeRowContext, prepared: PreparedNati
   prepared.table.addRows("End", 1, [cells.map(() => "")])
   const ranges = cells.flatMap((text, column) => {
     const body = prepared.table.getCell(prepared.rowCount, column).body
+    // A new cell inherits its paragraph mark separately from inserted text.
+    // Clear the whole new cell before applying any reviewed character spans.
+    const whole = body.getRange("Whole")
+    whole.font.bold = false
+    whole.font.italic = false
+    whole.font.underline = "None"
     const planned = runs?.[column]?.length ? runs[column]! : [{ text, bold: false, italic: false, underline: false }]
     return planned.map(run => {
       const range = body.insertText(run.text, "End")

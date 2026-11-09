@@ -1760,7 +1760,7 @@ async function nativeRowOrchestrationFixture(lostSync = false, reloadInvalidates
   const oldParas = [para("a","Old"),para("b","Old two")], newParas = [para("c",cells[0]!,0),para("d",cells[1]!,1)]
   const collection = <T>(items:T[]) => ({items,load() {}})
   const nativeTable = { get rowCount() { return applied ? 2 : 1 }, isUniform:true, get values() { return applied ? [["Old","Old two"],cells] : [["Old","Old two"]] }, load() {},
-    getCell(row:number,col:number) { const p = row ? newParas[col]! : oldParas[col]!; return {body:{paragraphs:collection([p]), getRange() { return {getReviewedText() { return {value:p.text} }} }, insertText() { return {font:{bold:true,italic:true,underline:"Single",load(){}}} }}} },
+    getCell(row:number,col:number) { const p = row ? newParas[col]! : oldParas[col]!; return {body:{paragraphs:collection([p]), getRange() { return {font:{bold:true,italic:true,underline:"Single",load(){}},getReviewedText() { return {value:p.text} }} }, insertText() { return {font:{bold:true,italic:true,underline:"Single",load(){}}} }}} },
     addRows() { queued = true; rowWrites++ }, }
   const body = { get paragraphs() { return { items:applied ? [...oldParas,...newParas] : oldParas, load(properties:string) { if (reloadInvalidates && applied) nestingInvalidated = !properties.includes("tableNestingLevel") } } }, tables:collection([nativeTable]),
     getRange() { return {getOoxml() {return {value:flatOpc(tableXml(applied ? addedXml : ""))}}, getReviewedText() {return {value:applied ? `Old\rOld two\r${cells.join("\r")}` : "Old\rOld two"}}, getTrackedChanges() {return collection([])}, getComments() {return collection([])} } } }
