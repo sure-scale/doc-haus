@@ -65,10 +65,14 @@ export type WordChatAuthoredTableRow = {
   authoredBase64: string; revisions: { id: string; family: string }[]
 }
 
-/** A verified oracle for deletion; never import it into Word. */
+/** The full DOCX remains a verification oracle. Only the separately verified,
+ * scoped tableImport pair is a candidate for enclosing-parent transport. */
 export type WordChatAuthoredTableRowDeletion = {
   kind: "table_row_delete"; proposalId: string; sourceSha256: string
   table: WordChatTableRowDeletionProposal["table"]; rowIndex: number; cells: string[]; author: "doc.haus"
   writerRequest: { source_sha256: string; target_handle: string; author: string }
   authoredBase64: string; revisions: { id: string; family: string }[]
+  /** Optional for older explicit contract mocks; ordinary preparation supplies
+   * both the complete parent preimage and its verified row-deletion result. */
+  tableImport?: { beforeOoxml: string; ooxml: string }
 }

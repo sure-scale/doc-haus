@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { assertWordChatTableImportPreimage } from "./word-chat-table-import"
+import { assertWordChatTableImportPreimage, assertWordChatTableImportRange, assertWordChatTableImportFormatting } from "./word-chat-table-import"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", P = "http://schemas.microsoft.com/office/2006/xmlPackage"
 const REL = "http://schemas.openxmlformats.org/package/2006/relationships", R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -61,8 +61,20 @@ test("compatibility prefix bindings and document siblings cannot hide a wider im
   expect(() => assertWordChatTableImportPreimage(compatibility(scoped,"urn:extension:original"), compatibility(fresh,"urn:extension:different"), inventory, proposal)).toThrow()
   const dependencyCompatibility = (xml: string, uri: string) => xml.replace('<w:styles ', `<w:styles xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:x="${uri}" mc:Ignorable="x" `)
   expect(() => assertWordChatTableImportPreimage(dependencyCompatibility(scoped,"urn:extension:original"), dependencyCompatibility(fresh,"urn:extension:different"), inventory, proposal)).toThrow()
+  expect(() => assertWordChatTableImportFormatting(dependencyCompatibility(scoped,"urn:extension:original"), dependencyCompatibility(fresh,"urn:extension:different"))).toThrow()
   const choice = (xml: string) => xml.replace("</w:styles>", '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:x="urn:extension"><mc:Choice Requires="x"/></mc:AlternateContent></w:styles>')
   expect(() => assertWordChatTableImportPreimage(choice(scoped), choice(fresh), inventory, proposal)).toThrow()
   const background = (xml: string) => xml.replace("<w:body>", '<w:background w:color="FFFFFF"/><w:body>')
   expect(() => assertWordChatTableImportPreimage(background(scoped), background(fresh), inventory, proposal)).toThrow()
+})
+
+test("complete native table ranges permit only matched section export context", () => {
+  const ids = proposal.table.rows.flat().map(cell => cell.id)
+  assertWordChatTableImportRange(scoped, fresh, ids, proposal)
+  assertWordChatTableImportRange(pack(table+'<w:sectPr w:rsidSect="12345678"/>'), fresh, ids, proposal)
+  expect(() => assertWordChatTableImportRange(pack(table+'<w:sectPr w:rsidSect="invalid"/>'), fresh, ids, proposal)).toThrow()
+  expect(() => assertWordChatTableImportRange(pack(table+p("After")), fresh, ids, proposal)).toThrow()
+  expect(() => assertWordChatTableImportRange(pack(table+'<w:sectPr><w:pgSz w:w="12345"/></w:sectPr>'), fresh, ids, proposal)).toThrow()
+  expect(() => assertWordChatTableImportRange(scoped, fresh, [...ids,"outside"], proposal)).toThrow()
+  expect(() => assertWordChatTableImportRange(scoped, fresh, ids.slice(1), proposal)).toThrow()
 })

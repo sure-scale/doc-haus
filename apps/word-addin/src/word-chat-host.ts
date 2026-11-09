@@ -4,7 +4,8 @@ import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWo
 import type { WordChatAuthoredTableRow, WordChatAuthoredTableRowDeletion } from "../../../dochaus/lib/word-chat-contract"
 import { prepareNativeRow, queueNativeRow, type NativeRowContext } from "./word-chat-native-row"
 import { nativeWordChatRowRefitWidths, verifyNativeWordChatAddedRow } from "./word-chat-native-row-verification"
-import { assertNativeWordChatRowDeletionTarget, verifyReviewedWordChatRowDeletionOracle, verifyNativeWordChatDeletedRow } from "./word-chat-native-row-delete"
+import { assertNativeWordChatRowDeletionTarget, verifyReviewedWordChatRowDeletionOracle, verifyNativeWordChatDeletedRow, verifyImportedWordChatDeletedRow } from "./word-chat-native-row-delete"
+import { assertWordChatTableImportPreimage, assertWordChatTableImportRange, assertWordChatTableImportFormatting } from "./word-chat-table-import"
 import { normalizeNativeWordChatCommentIds as normalizeNativeWordChatAnnotationIds } from "./word-chat-native-comments"
 import { assertNativeWordChatParagraphInsertionTarget, verifyNativeWordChatParagraphInsertion } from "./word-chat-native-paragraph-insert"
 import { assertNativeWordChatParagraphSplitTarget, verifyNativeWordChatParagraphSplit } from "./word-chat-native-paragraph-split"
@@ -730,8 +731,15 @@ export class WordChatHost {
       const source=await exportCurrent()
       if (!(source instanceof Uint8Array) || !source.length || source.length>16*1024*1024) throw new WordChatHostError("The current Word document is too large or unavailable to prepare this row. Your document is unchanged.")
       const oracle=await author(source)
-      await verifyReviewedWordChatRowDeletionOracle(source,oracle,proposal)
+      // Retain the exact strings being verified across subsequent Office reads;
+      // the author callback must not be able to replace the payload afterwards.
+      const tableImport=oracle?.tableImport===undefined ? undefined : {beforeOoxml:oracle.tableImport.beforeOoxml,ooxml:oracle.tableImport.ooxml}
+      await verifyReviewedWordChatRowDeletionOracle(source,{...oracle,tableImport},proposal)
       return await this.word.run(async context => {
+        if (tableImport !== undefined) {
+          confirmationNotice="Word could not confirm the imported table's tracked deletion and document preservation."
+          return this.importDeletedRow(context,proposal,identity,tableImport,mayDispatch)
+        }
         if (!context.document.body.tables) throw captureMismatch("Word cannot read the reviewed table.")
         const native=context as unknown as NativeRowContext, prepared=await prepareNativeRow(native,proposal.table)
         type DeleteRow={rowIndex:number;cellCount:number;isHeader:boolean;values:string[][];delete():void}
@@ -795,6 +803,116 @@ export class WordChatHost {
         throw failure
       }
       failure(error,"Word could not prepare the reviewed row deletion. Your document is unchanged.")
+    }
+  }
+
+  /** Import only a verified enclosing table. Paragraph IDs inside this parent
+   * may be renewed by Word; the imported-row verifier owns that scoped mapping.
+   * The old native deletion path remains available only for older no-pair oracles. */
+  private async importDeletedRow(context: WordChatContext, proposal: WordChatTableRowDeletionProposal, identity: string,
+    pair: {beforeOoxml:string;ooxml:string}, mayDispatch?: () => boolean): Promise<WordChatApplyResult> {
+    const body=context.document.body
+    if (!body.tables) throw captureMismatch("Word cannot read the complete reviewed table.")
+    type ImportTable=NativeTable & {getRange?(location:"Whole"):WordChatRange;rows:Collection<{rowIndex:number;cellCount:number;isHeader:boolean;values:string[][]}>}
+    const expectedValues=proposal.table.rows.map(row=>row.map(cell=>cell.text))
+    const expectedIds=proposal.table.rows.flat().map(cell=>cell.id)
+    const read=async () => {
+      const prepared=await prepareNativeRow(context as unknown as NativeRowContext,proposal.table)
+      const table=prepared.table as unknown as ImportTable
+      if (typeof table.getRange!=="function" || !table.rows) throw captureMismatch("Word cannot bind the complete reviewed table range.")
+      const range=table.getRange("Whole"), all=body.paragraphs
+      all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+      await context.sync()
+      const allIds=all.items.map(p=>p.uniqueLocalId), at=allIds.indexOf(expectedIds[0]!)
+      if (at<0 || expectedIds.some((id,i)=>allIds[at+i]!==id)) throw captureMismatch("The reviewed table paragraphs changed.")
+      const location=range.compareLocationWith(body.getRange("Whole"))
+      const before=at ? range.compareLocationWith(all.items[at-1]!.getRange("Whole")) : undefined
+      const after=at+expectedIds.length<all.items.length ? range.compareLocationWith(all.items[at+expectedIds.length]!.getRange("Whole")) : undefined
+      const xml=body.getRange("Whole").getOoxml(), scoped=range.getOoxml(), original=body.getRange("Content").getReviewedText("Original")
+      const rangeParagraphs=range.paragraphs
+      rangeParagraphs.load("items/uniqueLocalId,items/tableNestingLevel")
+      context.document.load("changeTrackingMode,trackFormatting")
+      table.load("rowCount,isUniform,values");table.rows.load("items/rowIndex,items/cellCount,items/isHeader,items/values")
+      const originalCells=proposal.cells.map((_,ci)=>table.getCell(proposal.rowIndex,ci).body as unknown as {getRange(location:"Content"):WordChatRange})
+        .map(cell=>cell.getRange("Content").getReviewedText("Original"))
+      await context.sync()
+      // Capture these IDs in the same read as the scoped OOXML, before another
+      // paragraph collection or reviewed-text call can advance the host batch.
+      const rangeIds=rangeParagraphs.items.map(p=>p.uniqueLocalId), beforeXml=xml.value, rangeXml=scoped.value
+      const originalText=original.value, tracking=context.document.changeTrackingMode, trackFormatting=context.document.trackFormatting
+      if (!INSIDE.has(location.value) || before && !["After","AdjacentAfter"].includes(before.value) || after && !["Before","AdjacentBefore"].includes(after.value) ||
+        rangeParagraphs.items.some(p=>p.tableNestingLevel!==1) || !table.isUniform || table.rowCount!==prepared.rowCount || JSON.stringify(table.values)!==JSON.stringify(expectedValues) ||
+        table.rows.items.length!==prepared.rowCount || table.rows.items.some((r,i)=>r.rowIndex!==i || r.cellCount!==prepared.width) || table.rows.items[proposal.rowIndex]!.isHeader!==false ||
+        originalCells.some((cell,i)=>cell.value!==proposal.cells[i]) || tracking!==prepared.tracking || trackFormatting!==prepared.trackFormatting)
+        throw captureMismatch("Word cannot confirm the complete table boundary or its reviewed cells.")
+      const inventory=await nativeInventory(context,all.items)
+      if (JSON.stringify(inventory.map(p=>p.id))!==JSON.stringify(allIds)) throw captureMismatch("The document paragraphs changed during capture.")
+      const finalXml=body.getRange("Whole").getOoxml(), finalRange=range.getOoxml()
+      rangeParagraphs.load("items/uniqueLocalId,items/tableNestingLevel")
+      all.load("items/uniqueLocalId,items/tableNestingLevel");context.document.load("changeTrackingMode,trackFormatting")
+      await context.sync()
+      if (!sameNativeWordChatBodySnapshot(beforeXml,finalXml.value) || !sameNativeWordChatBodySnapshot(rangeXml,finalRange.value) ||
+        JSON.stringify(rangeParagraphs.items.map(p=>p.uniqueLocalId))!==JSON.stringify(rangeIds) || JSON.stringify(all.items.map(p=>p.uniqueLocalId))!==JSON.stringify(allIds) ||
+        context.document.changeTrackingMode!==tracking || context.document.trackFormatting!==trackFormatting)
+        throw captureMismatch("The complete table changed during capture.")
+      assertWordChatTableImportRange(finalRange.value,finalXml.value,rangeIds,proposal)
+      assertWordChatTableImportPreimage(pair.beforeOoxml,finalXml.value,inventory,proposal)
+      return {range,rangeIds,rangeXml:finalRange.value,xml:finalXml.value,inventory,original:originalText,tracking,trackFormatting,rowCount:prepared.rowCount}
+    }
+    const initial=await read(), beforeState=await this.documentState(context), fresh=await read()
+    if (!sameNativeWordChatBodySnapshot(initial.xml,fresh.xml) || !sameNativeWordChatBodySnapshot(initial.rangeXml,fresh.rangeXml) ||
+      JSON.stringify(initial.inventory)!==JSON.stringify(fresh.inventory) || JSON.stringify(initial.rangeIds)!==JSON.stringify(fresh.rangeIds) ||
+      initial.original!==fresh.original || initial.tracking!==fresh.tracking || initial.trackFormatting!==fresh.trackFormatting)
+      throw captureMismatch("The complete table changed before deletion.")
+    if (mayDispatch && !mayDispatch()) throw new WordChatHostError("The Word pane closed before the row was deleted. Your document is unchanged.")
+    // Fence before even a synchronous insert or failed sync can have mutated
+    // Word. A failure must never unlock a replay of an ambiguous import.
+    this.applied.set(proposal.id,{identity,authors:[],uncertain:true})
+    try {
+      context.document.changeTrackingMode="Off"
+      fresh.range.insertOoxml(pair.ooxml,"Replace")
+      context.document.changeTrackingMode=fresh.tracking
+      context.document.trackFormatting=fresh.trackFormatting
+      await context.sync()
+      // The original Table proxy may have been replaced. Resolve the collection
+      // afresh, and use actual new paragraph identities for the strict verifier.
+      const tables=body.tables!
+      tables.load("items")
+      await context.sync()
+      const table=tables.items[proposal.table.tableIndex]
+      if (!table) throw Error("Imported table unavailable")
+      table.load("rowCount,isUniform")
+      const all=body.paragraphs, xml=body.getRange("Whole").getOoxml(), original=body.getRange("Content").getReviewedText("Original"), current=body.getRange("Content").getReviewedText("Current")
+      all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+      context.document.load("changeTrackingMode,trackFormatting")
+      const values=expectedValues.map((row,ri)=>row.map((_,ci)=>{
+        const cell=(table.getCell(ri,ci).body as unknown as {getRange(location:"Content"):WordChatRange}).getRange("Content")
+        return {current:cell.getReviewedText("Current"),original:cell.getReviewedText("Original")}
+      }))
+      await context.sync()
+      const afterXml=xml.value, afterOriginal=original.value, afterCurrent=current.value
+      if (context.document.changeTrackingMode!==fresh.tracking || context.document.trackFormatting!==fresh.trackFormatting || !table.isUniform || table.rowCount!==fresh.rowCount || afterOriginal!==fresh.original ||
+        values.some((row,ri)=>row.some((cell,ci)=>cell.current.value!==(ri===proposal.rowIndex ? "" : expectedValues[ri]![ci]) || ri===proposal.rowIndex && cell.original.value!==proposal.cells[ci])))
+        throw Error("Imported row reviewed text or tracking changed")
+      const inventory=await nativeInventory(context,all.items), afterState=await this.documentState(context)
+      if (afterState.current!==afterCurrent || JSON.stringify(beforeState.comments)!==JSON.stringify(afterState.comments) ||
+        afterState.paragraphs.length!==inventory.length || afterState.paragraphs.some((p,i)=>p.id!==inventory[i]!.id || p.text!==inventory[i]!.text))
+        throw Error("Imported row comments or Current text changed")
+      const finalXml=body.getRange("Whole").getOoxml()
+      all.load("items/uniqueLocalId,items/tableNestingLevel")
+      await context.sync()
+      if (!sameNativeWordChatBodySnapshot(afterXml,finalXml.value) || all.items.length!==inventory.length || all.items.some((p,i)=>p.uniqueLocalId!==inventory[i]!.id || p.tableNestingLevel!==inventory[i]!.tableNestingLevel))
+        throw Error("Imported row changed during confirmation")
+      const verified=verifyImportedWordChatDeletedRow(fresh.xml,finalXml.value,fresh.inventory,inventory,proposal)
+      assertWordChatTableImportFormatting(pair.beforeOoxml,finalXml.value)
+      this.applied.set(proposal.id,{identity,authors:verified.authors,uncertain:false})
+      return {status:"applied",tracked:true,saved:false,authors:verified.authors}
+    } finally {
+      if (this.applied.get(proposal.id)?.uncertain) {
+        context.document.changeTrackingMode=fresh.tracking
+        context.document.trackFormatting=fresh.trackFormatting
+        await context.sync()
+      }
     }
   }
 

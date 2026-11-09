@@ -3,6 +3,8 @@ import type { WordChatCellRun, WordChatPreparedAmendment, WordChatProposal, Word
 import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatParagraphMerge, validWordChatParagraphSplit, validWordChatListInsertion, wordChatListCaptureCurrent, validWordChatTableRowInsertion, validWordChatTableRowDeletion } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { authorDocxTableRowInsertion, docxTableRowInsertionTargets, type DocxTableRowInsertion } from "../../../dochaus/lib/docx-table-row-insertion"
 import { authorDocxTableRowDeletion, docxTableRowDeletionTargets, type DocxTableRowDeletion } from "../../../dochaus/lib/docx-table-row-deletion"
+import { prepareDocxTableRowDeletionImport } from "../../../dochaus/lib/docx-table-row-deletion-import"
+import type { WordChatAuthoredTableRowDeletion } from "../../../dochaus/lib/word-chat-contract"
 import { parseZip } from "../../../dochaus/lib/zip"
 
 export { MAX_WORD_AMENDMENT_OOXML_BYTES, WordAmendmentError, WordFormattingError } from "../../../dochaus/lib/docx-flat-opc"
@@ -138,8 +140,9 @@ export async function authorWordChatTableRow(snapshot: WordChatSnapshot, proposa
     author:"doc.haus", writerRequest, authoredBytes:authored.bytes, revisions:authored.revisions}
 }
 
-/** Prepare a source-bound deletion oracle, retaining the entire captured table. */
-export async function authorWordChatTableRowDeletion(snapshot: WordChatSnapshot, proposal: WordChatTableRowDeletionProposal, currentBytes: Uint8Array) {
+/** Prepare the full-DOCX verification oracle and a separately verified scoped
+ * parent-table import pair. Unsupported parent boundaries refuse preparation. */
+export async function authorWordChatTableRowDeletion(snapshot: WordChatSnapshot, proposal: WordChatTableRowDeletionProposal, currentBytes: Uint8Array): Promise<Omit<WordChatAuthoredTableRowDeletion, "authoredBase64"> & { authoredBytes: Uint8Array }> {
   if (!validWordChatTableRowDeletion(snapshot, proposal)) throw new Error("word_row_proposal_changed")
   if (!(currentBytes instanceof Uint8Array) || !currentBytes.length || currentBytes.length > MAX_ROW_SOURCE_BYTES) throw new Error("word_row_source_size")
   const source = new Uint8Array(currentBytes), table = structuredClone(proposal.table), cells = [...proposal.cells]
@@ -153,5 +156,6 @@ export async function authorWordChatTableRowDeletion(snapshot: WordChatSnapshot,
   if (eligible.source_sha256 !== discovered.source_sha256 || target.length !== 1) throw new Error("word_row_target_unsupported")
   const writerRequest: DocxTableRowDeletion = {source_sha256:eligible.source_sha256,target_handle:target[0]!.target_handle,author:"doc.haus"}
   const authored = await authorDocxTableRowDeletion(source, writerRequest)
-  return {kind:"table_row_delete" as const, proposalId:proposal.id, sourceSha256:eligible.source_sha256, table, rowIndex:proposal.rowIndex, cells, author:"doc.haus" as const, writerRequest, authoredBytes:authored.bytes, revisions:authored.revisions}
+  const { beforeOoxml, ooxml } = await prepareDocxTableRowDeletionImport(source, authored.bytes, writerRequest)
+  return {kind:"table_row_delete" as const, proposalId:proposal.id, sourceSha256:eligible.source_sha256, table, rowIndex:proposal.rowIndex, cells, author:"doc.haus" as const, writerRequest, authoredBytes:authored.bytes, revisions:authored.revisions, tableImport:{beforeOoxml,ooxml}}
 }

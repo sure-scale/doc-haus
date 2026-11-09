@@ -1,3 +1,4 @@
+import { sameTableImportXml } from "./word-chat-table-import-xml"
 import { DOMParser } from "@xmldom/xmldom"
 import type { WordChatTableRowDeletionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { assertNativeWordChatRowDeletionTarget } from "./word-chat-native-row-delete"
@@ -5,8 +6,6 @@ import { assertNativeWordChatRowDeletionTarget } from "./word-chat-native-row-de
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const PKG = "http://schemas.microsoft.com/office/2006/xmlPackage"
 const REL = "http://schemas.openxmlformats.org/package/2006/relationships"
-const XMLNS = "http://www.w3.org/2000/xmlns/"
-const MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 const MAIN = "/word/document.xml"
 type Inventory = Array<{ id: string; text: string; tableNestingLevel?: number }>
 const children = (n: Node) => Array.from(n.childNodes).filter((c): c is Element => c.nodeType === 1)
@@ -39,32 +38,7 @@ function body(part: Element) {
 }
 // Prefix differences and indentation are not content changes. Preserve every
 // actual attribute, including IDs, widths, spans and revision metadata.
-function canonical(node: Node): unknown {
-  if (node.nodeType === 1) {
-    const e = node as Element
-    if (e.namespaceURI === MC) return fail()
-    return [e.namespaceURI, e.localName, Array.from(e.attributes).filter(a => a.namespaceURI !== XMLNS)
-      .map(a => {
-        // Ignorable contains namespace prefixes, not ordinary string values.
-        // Its lexical equality alone does not establish the same semantics.
-        if (a.namespaceURI === MC) {
-          if (a.localName !== "Ignorable") return fail()
-          const bindings = a.value.trim().split(/\s+/).map(prefix => {
-            const uri = e.lookupNamespaceURI(prefix)
-            if (!uri) return fail()
-            return [prefix, uri]
-          })
-          return [a.namespaceURI, a.localName, a.value, bindings]
-        }
-        if (a.namespaceURI === "http://www.w3.org/2001/XMLSchema-instance" && a.localName === "type") return fail()
-        return [a.namespaceURI, a.localName, a.value]
-      }).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
-    Array.from(e.childNodes).map(canonical).filter(n => n !== undefined)]
-  }
-  if (node.nodeType === 3 || node.nodeType === 4) return node.nodeValue?.trim() || ["t", "delText", "binaryData"].includes((node.parentNode as Element)?.localName) ? ["text", node.nodeValue] : undefined
-  return [node.nodeType, node.nodeName, node.nodeValue]
-}
-const same = (a: Node, b: Node) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b))
+const same = sameTableImportXml
 function relationships(part: Element) {
   const root = children(data(part))
   if (root.length !== 1 || root[0]!.namespaceURI !== REL || root[0]!.localName !== "Relationships") return fail()
@@ -129,5 +103,41 @@ export function assertWordChatTableImportPreimage(sourceOoxml: string, currentOo
         } else if (!newLinks.some(e => same(link, e))) return fail()
       }
     } else if (!same(data(part), data(fresh))) return fail()
+  }
+}
+
+/** Bind an actual Table.getRange("Whole") read to the exact cell paragraph IDs.
+ * Word may export the body's terminal section as OOXML context; it is accepted
+ * only when identical to the full capture (apart from its qualified session
+ * rsid). A real adjacent paragraph is never part of this replacement range. */
+export function assertWordChatTableImportRange(rangeOoxml: string, fullOoxml: string, rangeParagraphIds: string[], proposal: WordChatTableRowDeletionProposal): void {
+  const expected = proposal.table.rows.flat().map(cell => cell.id)
+  if (!expected.length || JSON.stringify(expected) !== JSON.stringify(rangeParagraphIds) || new Set(rangeParagraphIds).size !== expected.length) return fail()
+  const scoped = body(parts(rangeOoxml).get(MAIN)!), whole = body(parts(fullOoxml).get(MAIN)!)
+  const nodes = children(scoped), table = named(whole, "tbl")[proposal.table.tableIndex]
+  if (!table || nodes.length < 1 || nodes.length > 2 || nodes[0]!.namespaceURI !== W || nodes[0]!.localName !== "tbl" || !same(nodes[0]!, table)) return fail()
+  if (nodes.length === 2) {
+    const context = nodes[1]!, terminal = children(whole).at(-1)
+    if (context.namespaceURI !== W || context.localName !== "sectPr" || terminal?.namespaceURI !== W || terminal.localName !== "sectPr") return fail()
+    const clean = (node: Element) => {
+      const copy = node.cloneNode(true) as Element
+      if (copy.hasAttributeNS(W, "rsidSect") && !/^[0-9a-fA-F]{8}$/.test(copy.getAttributeNS(W, "rsidSect")!)) return fail()
+      copy.removeAttributeNS(W, "rsidSect")
+      return copy
+    }
+    if (!same(clean(context), clean(terminal))) return fail()
+  }
+  closedBoundary(whole, table)
+}
+
+/** After the structural/revision verifier has proved the imported result and
+ * relationship graph, retain namespace-aware equality for the actual formatting
+ * parts too. Runtime identity mapping never authorizes changed style meaning. */
+export function assertWordChatTableImportFormatting(sourceOoxml: string, observedOoxml: string): void {
+  const source = parts(sourceOoxml), observed = parts(observedOoxml)
+  for (const [name, original] of source) {
+    if (name === MAIN || name.endsWith(".rels")) continue
+    const current = observed.get(name)
+    if (!current || original.getAttributeNS(PKG, "contentType") !== current.getAttributeNS(PKG, "contentType") || !same(data(original), data(current))) return fail()
   }
 }
