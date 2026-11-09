@@ -199,14 +199,16 @@ test("attribute presence diagnostics identify the actual added or removed expand
   expect(firstTableImportXmlDifference(after,before)).toEqual({category:"attribute_presence",path:"/w:tbl[1]/@w:id"})
 })
 
-test("only valid row rsidR export variation is ignored by the live source preimage", () => {
+test("only valid addition-session export variation is ignored by the live source preimage", () => {
   const reviewed = table.replace(p("Item"),'<w:p><w:del w:id="7" w:author="Reviewer" w:date="2026-02-01T00:00:00Z"><w:r><w:delText>Older</w:delText></w:r></w:del><w:ins w:id="8" w:author="Reviewer" w:date="2026-02-01T00:00:00Z"><w:r><w:t>Item</w:t></w:r></w:ins></w:p>')
     .replaceAll("<w:tr>",'<w:tr w:rsidR="1234ABCD">')
-  const live = reviewed.replaceAll('w:rsidR="1234ABCD"','w:rsidR="ABCD5678"')
+    .replaceAll("<w:p>",'<w:p w:rsidR="1234ABCD" w:rsidRDefault="1234ABCD">')
+    .replaceAll("<w:r>",'<w:r w:rsidR="1234ABCD">')
+  const live = reviewed.replaceAll('1234ABCD','ABCD5678')
   const source=pack(reviewed),current=(value:string)=>pack(p("Outside")+value+p("After")+"<w:sectPr/>")
   assertWordChatTableImportPreimage(source,current(live),inventory,proposal)
-  assertWordChatTableImportPreimage(source,current(live.replaceAll(' w:rsidR="ABCD5678"',"")),inventory,proposal)
-  assertWordChatTableImportPreimage(pack(reviewed.replaceAll(' w:rsidR="1234ABCD"',"")),current(live),inventory,proposal)
+  assertWordChatTableImportPreimage(source,current(live.replaceAll(/ w:rsidR(?:Default)?="ABCD5678"/g,"")),inventory,proposal)
+  assertWordChatTableImportPreimage(pack(reviewed.replaceAll(/ w:rsidR(?:Default)?="1234ABCD"/g,"")),current(live),inventory,proposal)
   const parse=(value:string)=>new DOMParser().parseFromString(`<w:body xmlns:w="${W}">${value}</w:body>`,"application/xml").documentElement
   expect(sameTableImportXml(parse(reviewed),parse(live))).toBe(false)
   expect(sameLiveTableImportPreimageXml(parse(reviewed),parse(live))).toBe(true)
@@ -218,7 +220,10 @@ test("only valid row rsidR export variation is ignored by the live source preima
     live.replace('w:author="Reviewer"','w:author="Other"'),
     live.replace('w:date="2026-02-01T00:00:00Z"','w:date="2026-02-02T00:00:00Z"'),
     live.replace('w:rsidR="ABCD5678"','w:rsidR="not-hex"'),
-    live.replace("<w:p>",'<w:p w:rsidR="ABCD5678">'),
+    live.replace('w:rsidRDefault="ABCD5678"','w:rsidRDefault="not-hex"'),
+    live.replace('<w:p ', '<w:p w:rsidP="ABCD5678" '),
+    live.replace('<w:r ', '<w:r w:rsidRPr="ABCD5678" '),
+    live.replace('<w:tbl>', '<w:tbl w:rsidR="ABCD5678">'),
     live.replace('<w:tr w:rsidR="ABCD5678">','<w:tr w:rsidR="ABCD5678" w:rsidDel="12345678">'),
   ]) expect(()=>assertWordChatTableImportPreimage(source,current(changed),inventory,proposal)).toThrow(WordChatTableImportError)
   let error:WordChatTableImportError|undefined

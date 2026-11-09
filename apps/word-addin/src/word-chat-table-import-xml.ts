@@ -25,16 +25,18 @@ export class TableImportXmlUnsupportedError extends Error {
 const childPath = (path:string,node:Node,index:number) => `${path}/${node.nodeType===1?safeName(node as Element):"node"}[${index+1}]`
 const bounded = (path:string) => path.split("/").slice(0,25).join("/")
 const fail = (path:string,reason:UnsupportedReason): never => { throw new TableImportXmlUnsupportedError(bounded(path),reason) }
-// A native body export can renew a row's editing-session identifier independently
+// A native body export can renew addition-session identifiers independently
 // of the file export. This policy is used only for that live source preimage,
 // never for oracle/capsule or post-import equality. All revision carriers remain.
-const liveRowSessionAttribute = (element:Element,attr:Attr) => element.namespaceURI===W && element.localName==="tr" && attr.namespaceURI===W && attr.localName==="rsidR" && /^[0-9a-fA-F]{8}$/.test(attr.value)
+const liveAdditionSessionAttribute = (element:Element,attr:Attr) => element.namespaceURI===W && attr.namespaceURI===W
+  && ((["tr","p","r"].includes(element.localName) && attr.localName==="rsidR") || (element.localName==="p" && attr.localName==="rsidRDefault"))
+  && /^[0-9a-fA-F]{8}$/.test(attr.value)
 
-function canonical(node: Node,path = node.nodeType===1?`/${safeName(node as Element)}[1]`:"/node[1]",liveRowSession=false): unknown {
+function canonical(node: Node,path = node.nodeType===1?`/${safeName(node as Element)}[1]`:"/node[1]",liveAdditionSession=false): unknown {
   if (node.nodeType === 1) {
     const e = node as Element
     if (e.namespaceURI === MC) return fail(path,"compatibility_element")
-    return [e.namespaceURI, e.localName, Array.from(e.attributes).filter(a => a.namespaceURI !== XMLNS && !(liveRowSession && liveRowSessionAttribute(e,a)))
+    return [e.namespaceURI, e.localName, Array.from(e.attributes).filter(a => a.namespaceURI !== XMLNS && !(liveAdditionSession && liveAdditionSessionAttribute(e,a)))
       .map(a => {
         // Ignorable contains namespace prefixes, not ordinary string values.
         // Its lexical equality alone does not establish the same semantics.
@@ -50,7 +52,7 @@ function canonical(node: Node,path = node.nodeType===1?`/${safeName(node as Elem
         if (a.namespaceURI === "http://www.w3.org/2001/XMLSchema-instance" && a.localName === "type") return fail(`${path}/@attribute`,"qualified_type")
         return [a.namespaceURI, a.localName, a.value]
       }).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
-    Array.from(e.childNodes).map((child,index)=>canonical(child,childPath(path,child,index),liveRowSession)).filter(n => n !== undefined)]
+    Array.from(e.childNodes).map((child,index)=>canonical(child,childPath(path,child,index),liveAdditionSession)).filter(n => n !== undefined)]
   }
   if (node.nodeType === 3 || node.nodeType === 4) return node.nodeValue?.trim() || ["t", "delText", "binaryData"].includes((node.parentNode as Element)?.localName) ? ["text", node.nodeValue] : undefined
   return [node.nodeType, node.nodeName, node.nodeValue]
@@ -61,13 +63,13 @@ export const sameLiveTableImportPreimageXml = (a:Node,b:Node) => JSON.stringify(
 /** Diagnostic only. Equality remains owned by the unchanged canonical predicate.
  * Names are expanded through a fixed vocabulary; no text, values, prefixes or
  * unknown element/attribute names are included in the returned path. */
-function firstDifference(a:Node,b:Node,liveRowSession=false):TableImportXmlDifference|undefined {
-  const visible=(node:Node)=>Array.from(node.childNodes).filter(child=>canonical(child,undefined,liveRowSession)!==undefined)
-  const attrs=(node:Element)=>Array.from(node.attributes).filter(attr=>attr.namespaceURI!==XMLNS && !(liveRowSession && liveRowSessionAttribute(node,attr)))
+function firstDifference(a:Node,b:Node,liveAdditionSession=false):TableImportXmlDifference|undefined {
+  const visible=(node:Node)=>Array.from(node.childNodes).filter(child=>canonical(child,undefined,liveAdditionSession)!==undefined)
+  const attrs=(node:Element)=>Array.from(node.attributes).filter(attr=>attr.namespaceURI!==XMLNS && !(liveAdditionSession && liveAdditionSessionAttribute(node,attr)))
     .sort((x,y)=>JSON.stringify([x.namespaceURI,x.localName,x.value]).localeCompare(JSON.stringify([y.namespaceURI,y.localName,y.value])))
   const result=(category:TableImportXmlDifference["category"],path:string):TableImportXmlDifference=>({category,path:bounded(path)})
   const visit=(left:Node,right:Node,path:string):TableImportXmlDifference|undefined=>{
-    if (liveRowSession?sameLiveTableImportPreimageXml(left,right):sameTableImportXml(left,right)) return
+    if (liveAdditionSession?sameLiveTableImportPreimageXml(left,right):sameTableImportXml(left,right)) return
     if (left.nodeType!==right.nodeType) return result("node_kind",path)
     if (left.nodeType===1) {
       const x=left as Element,y=right as Element
