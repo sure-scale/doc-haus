@@ -1,10 +1,13 @@
+import { isChatRecoveryMessage } from "../../../../../dochaus/lib/chat-recovery-message"
 import type { Part } from "../../api/session-view"
 import { getMessages } from "../../api/opencode/sessions"
 
-export function isDraftingRecoveryMessage(message: { parts: Part[] }) {
-  return message.parts.some(
-    (part) => part.type === "text" && /<dochaus-recovery\b[^>]*run-id="[^"]+"[^>]*progress-token="[^"]+"/i.test(part.text),
-  )
+export function isDraftingRecoveryMessage(message: { info: { id: string; sessionID?: string }; parts: Part[] }) {
+  return message.parts.some(part => part.type === "text" && isChatRecoveryMessage({
+    id: message.info.id,
+    sessionID: message.info.sessionID ?? part.sessionID,
+    text: part.text,
+  }))
 }
 
 export function lastVisibleUserMessage(messages: Awaited<ReturnType<typeof getMessages>>) {

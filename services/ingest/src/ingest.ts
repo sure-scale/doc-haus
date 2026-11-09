@@ -1,7 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { strFromU8, unzipSync } from "fflate"
-import mammoth from "mammoth"
 import { read, utils } from "xlsx"
 import { effectiveDocumentLinks, getDocumentRole, getDocumentSourceProvenance, insertChunk, listDocuments, listSourceDocuments, openDb, upsertDocument, type DocumentLinks } from "./db"
 import { DerivedChronologyExportError, recognizeChronologyExport } from "./chronology-export-origin"
@@ -15,9 +14,8 @@ import { canonicalArtifactIdentity, withArtifactMutationLocksAsync } from "../..
 import { chunkText } from "../../../dochaus/lib/chunk-text"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { writeListLabels } from "../../../dochaus/lib/docx-list-labels"
-import { writeLineBreaks } from "../../../dochaus/lib/docx-line-breaks"
 import { readDocxMarkup, type DocxMarkup } from "../../../dochaus/lib/docx-markup"
-import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
+import { docxTextViews, type StructuralMask } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { parseEmail, type ParsedEmail } from "../../../dochaus/lib/email"
 import { parseMsg, rtfToText } from "../../../dochaus/lib/msg"
@@ -192,7 +190,8 @@ async function ingestDocumentLocked(
   // registered, with nothing indexed, so search and review never rest on it.
   const { quality } = extraction
   const text = quality.status === "no_readable_text" ? "" : extraction.text
-  const sections = sectionize(text)
+  const structureMask = quality.status === "no_readable_text" ? undefined : extraction.structureMask
+  const sections = sectionize(text, structureMask)
 
   const db = openDb(matterDir, { commit: true })
   let preparedChunks: Array<{
@@ -252,6 +251,7 @@ async function ingestDocumentLocked(
       fileName,
       buffer,
       text,
+      structureMask,
       party,
       correlation,
       mutation,
@@ -355,6 +355,7 @@ async function commitIngestedDocument(
     fileName: string
     buffer: Buffer
     text: string
+    structureMask?: StructuralMask
     party: string
     correlation: string
     mutation: ActiveDocumentMutation
@@ -419,8 +420,9 @@ async function commitIngestedDocument(
           flagged: chunk.flagged,
         }),
       )
+      db.run("UPDATE documents SET structure_mask = ? WHERE id = ?", [JSON.stringify(input.structureMask ?? []), documentId])
       recordSections(db, input.docPath, input.fileName)
-      extractStructure(db, input.docPath, input.fileName, input.text)
+      extractStructure(db, input.docPath, input.fileName, input.text, input.structureMask)
       input.updateRegistry?.(db)
       // The bytes this write replaced are its backup until it settles.
       const backup = input.mutation.documentBackup
@@ -480,13 +482,13 @@ export function sourceTextRevision(text: string) {
 
 // `quality` is the extraction quality gate's result for the text
 // (extraction-quality.ts).
-export type ExtractedSourceText = { text: string; findings: InjectionFinding[]; quality: ExtractionQuality }
+export type ExtractedSourceText = { structureMask?: StructuralMask; text: string; findings: InjectionFinding[]; quality: ExtractionQuality }
 
 // A source document's normalized text, the findings normalization made and the
 // text's quality, as ingest indexes it.
 export async function extractSourceText(fileName: string, buffer: Buffer): Promise<ExtractedSourceText> {
-  const raw = await extractRawText(fileName, buffer)
-  return extractedText(raw.text, raw.facts)
+  const raw = await extractRawText(fileName, buffer, true)
+  return { ...extractedText(raw.text, raw.facts), ...(raw.mask ? { structureMask: raw.mask } : {}) }
 }
 
 // The same for an email already parsed, so one parse serves its text and its
@@ -522,7 +524,7 @@ export async function extractDocumentText(fileName: string, buffer: Buffer) {
   return normalizeExtractedText((await extractRawText(fileName, buffer)).text).text
 }
 
-async function extractRawText(fileName: string, buffer: Buffer): Promise<{ text: string; facts: ExtractionFacts }> {
+async function extractRawText(fileName: string, buffer: Buffer, structural = false): Promise<{ text: string; facts: ExtractionFacts; mask?: StructuralMask }> {
   const lower = fileName.toLowerCase()
   // Markdown is evidence, including its markup. Never render HTML or execute
   // links: every consumer uses this same normalized UTF-8 text and offsets.
@@ -541,7 +543,7 @@ async function extractRawText(fileName: string, buffer: Buffer): Promise<{ text:
   }
   if (lower.endsWith(".xlsx")) return xlsxToText(buffer)
   if (lower.endsWith(".zip")) return { text: zipToText(buffer), facts: { format: "archive" } }
-  return { text: (await mammoth.extractRawText({ buffer: writeLineBreaks(markTrackedChanges(await writeListLabels(buffer))) })).value, facts: { format: "docx" } }
+  return { ...await docxTextViews(await writeListLabels(buffer), { structural }), facts: { format: "docx" } }
 }
 
 // Spreadsheet sources (cap tables, waterfalls, payout models) are zip-based but

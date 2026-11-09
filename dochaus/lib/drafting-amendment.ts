@@ -44,6 +44,8 @@ export function amendmentText(amendment: Pick<Amendment, "operation" | "updated"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const W14 = "http://schemas.microsoft.com/office/word/2010/wordml"
+const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+const PACKAGE_RELS = "http://schemas.openxmlformats.org/package/2006/relationships"
 const BODY = "word/document.xml"
 // Leading underscore keeps the bookmark hidden in Word's bookmark list.
 const PREFIX = "_dh_"
@@ -170,9 +172,9 @@ export async function compareDocxWithPointers(original: Uint8Array, modified: Ui
   return withParagraphPointers(await (await docxodus()).compareDocuments(original, current, options), current)
 }
 
-// Docxodus 13 stamps every revision with a fixed date and gives its ignorable
-// markup fresh random ids, so regenerating an unchanged comparison changed its
-// bytes and showed regeneration time. A revision whose paragraph (else table
+// Docxodus stamps revisions with a comparison date and can regenerate
+// relationship ids, so an unchanged comparison can change its bytes and show
+// regeneration time. A revision whose paragraph (else table
 // row) reads exactly as in the previous export keeps that export's dates, when
 // the change was first made; other revisions take `date`, when this change was
 // applied. When nothing else differs, the previous export is kept whole.
@@ -180,8 +182,9 @@ export function withStableRevisionDates(bytes: Uint8Array, date: string, previou
   const stamp = new Date(date).toISOString().replace(/\.\d{3}Z$/, "Z")
   const earlier = earlierRevisions(previous)
   const parts = unzipSync(bytes)
+  const identities = relationshipIdentities(parts)
   for (const [name, doc] of revisionDocuments(parts)) {
-    const units = revisionUnits(doc)
+    const units = revisionUnits(doc, identities.get(name))
     for (const unit of units) {
       const dates = earlier?.dates.get(`${name}\n${unit.key}`)?.shift()
       unit.revisions.forEach((node, index) => node.setAttributeNS(W, "w:date", dates?.length === unit.revisions.length ? dates[index]! : stamp))
@@ -196,8 +199,9 @@ function earlierRevisions(previous?: Uint8Array) {
   try {
     if (!previous) return
     const parts = unzipSync(previous)
+    const identities = relationshipIdentities(parts)
     const dates = new Map<string, string[][]>()
-    for (const [name, doc] of revisionDocuments(parts)) for (const unit of revisionUnits(doc)) {
+    for (const [name, doc] of revisionDocuments(parts)) for (const unit of revisionUnits(doc, identities.get(name))) {
       const key = `${name}\n${unit.key}`
       dates.set(key, [...dates.get(key) ?? [], unit.revisions.map(node => node.getAttributeNS(W, "date")!)])
     }
@@ -212,7 +216,7 @@ function revisionDocuments(parts: Record<string, Uint8Array>) {
     ? [[name, new DOMParser().parseFromString(strFromU8(bytes), "application/xml")] as const] : [])
 }
 
-function revisionUnits(doc: Document) {
+function revisionUnits(doc: Document, identities = new Map<string, string>()) {
   const units = new Map<Element, Element[]>()
   for (const node of Array.from(doc.getElementsByTagNameNS(W, "*"))) {
     if (node.localName === "comment" || !node.hasAttributeNS(W, "date")) continue
@@ -222,7 +226,7 @@ function revisionUnits(doc: Document) {
   // Revision, bookmark and comment ids are numbered package-wide, so an earlier
   // change renumbers them; hidden paragraph pointers are artifact-scoped.
   return [...units].map(([unit, revisions]) => ({ revisions,
-    key: regeneratedMarkup(new XMLSerializer().serializeToString(unit), new Map())
+    key: regeneratedMarkup(new XMLSerializer().serializeToString(unit), identities)
       .replace(/ w:(?:date|id)="[^"]*"/g, "").replace(new RegExp(` w:name="${PREFIX}[^"]*"`, "g"), "") }))
 }
 
@@ -232,17 +236,61 @@ function enclosing(node: Node, name: string) {
   return null
 }
 
-// Package content apart from the comparator's random markup ids and new
-// relationship ids; a relationship id keeps its role through first appearance.
+// Package content apart from regenerated relationship ids.
+// Only declared relationship identities are interchangeable,
+// scoped to their owning part; an R-shaped content-control tag or target is data.
 function regenerated(parts: Record<string, Uint8Array>) {
-  const ids = new Map<string, string>()
+  const identities = relationshipIdentities(parts)
   return JSON.stringify(Object.keys(parts).toSorted().map(name => [name, /\.(?:xml|rels)$/.test(name)
-    ? regeneratedMarkup(strFromU8(parts[name]!), ids) : Buffer.from(parts[name]!).toString("base64")]))
+    ? regeneratedMarkup(strFromU8(parts[name]!), identities.get(relationshipOwner(name) ?? name)) : Buffer.from(parts[name]!).toString("base64")]))
 }
 
-function regeneratedMarkup(xml: string, ids: Map<string, string>) {
-  return xml.replace(/( [\w.-]+:Unid=")[0-9a-f]*"/g, '$1"')
-    .replace(/="(R[0-9a-f]{16})"/g, (_, id: string) => `="R${ids.get(id) ?? ids.set(id, String(ids.size)).get(id)}"`)
+function regeneratedMarkup(xml: string, identities?: Map<string, string>) {
+  if (!identities?.size) return xml
+  const doc = identityDocument(xml)
+  for (const element of Array.from(doc.getElementsByTagName("*"))) {
+    for (const attribute of Array.from(element.attributes)) {
+      const reference = attribute.namespaceURI === R && ["id", "embed", "link"].includes(attribute.localName)
+      const declaration = element.namespaceURI === PACKAGE_RELS && element.localName === "Relationship"
+        && !attribute.namespaceURI && attribute.localName === "Id"
+      const value = (reference || declaration) && identities.get(attribute.value)
+      if (value) attribute.value = value
+    }
+  }
+  return new XMLSerializer().serializeToString(doc)
+}
+
+/** Relationship ids are local to a source part, including the package root. */
+function relationshipOwner(name: string) {
+  if (name === "_rels/.rels") return ""
+  const match = /^(.*\/)?_rels\/([^/]+)\.rels$/.exec(name)
+  return match ? `${match[1] ?? ""}${match[2]}` : undefined
+}
+
+function relationshipIdentities(parts: Record<string, Uint8Array>) {
+  const result = new Map<string, Map<string, string>>()
+  // Temporary comparison labels must never alias an existing literal id,
+  // including an undeclared reference. A different prefix can only prevent
+  // deduplication; it cannot turn distinct package content into an equal key.
+  const markup = Object.entries(parts).filter(([name]) => /\.(?:xml|rels)$/.test(name)).map(([, bytes]) => strFromU8(bytes))
+  let prefix = "DocHausRelationship"
+  while (markup.some(xml => xml.includes(prefix))) prefix += "Z"
+  for (const [name, bytes] of Object.entries(parts)) {
+    const owner = relationshipOwner(name)
+    if (owner === undefined) continue
+    const identities = new Map<string, string>()
+    for (const element of Array.from(identityDocument(strFromU8(bytes)).getElementsByTagNameNS(PACKAGE_RELS, "Relationship"))) {
+      const id = element.getAttribute("Id")
+      if (id && /^R[0-9a-f]{16}$/.test(id)) identities.set(id, `${prefix}${identities.size}`)
+    }
+    result.set(owner, identities)
+  }
+  return result
+}
+
+function identityDocument(xml: string) {
+  const fail = (message: string) => { throw new Error(`invalid_docx_xml:${message}`) }
+  return new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(xml, "application/xml")
 }
 
 function pointerDocument(parts: Record<string, Uint8Array>) {

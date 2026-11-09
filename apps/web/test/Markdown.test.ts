@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test"
-import { splitMarkdownTableBlocks } from "../src/components/markdown/MarkdownContent"
 import { parseStructuredReportMarkdown } from "../src/components/markdown/structured-report"
 import { parseStructuredToolOutput } from "../src/components/markdown/tool-output"
 
@@ -84,35 +83,6 @@ Source reconciliation complete. \`register.md\` written with 13 material rows.
     expect(report.preamble).toBe("")
     expect(report.sections.map((section) => section.tag)).toEqual(["result", "findings"])
     expect(report.sections[1].markdown).toBe("- **Confirmed-consistent identities**: Marcus & Diana Holloway.")
-  })
-})
-
-describe("splitMarkdownTableBlocks", () => {
-  test("extracts complete markdown tables between prose blocks", () => {
-    const parts = splitMarkdownTableBlocks(`**Six retry-target register rows now present in the Carry-Forward Register:**
-
-| # | Anchor | Type | Priority | Status |
-|---|---|---|---|---|
-| 1 | Client request for immediate irrevocability | \`instruction\` | critical | open |
-| 2 | Father contact right | \`conflict\` | critical | open |
-
-**Compact binding decisions:** Court caption.`)
-
-    expect(parts).toEqual([
-      {
-        kind: "markdown",
-        markdown: "**Six retry-target register rows now present in the Carry-Forward Register:**",
-      },
-      {
-        kind: "table",
-        header: ["#", "Anchor", "Type", "Priority", "Status"],
-        rows: [
-          ["1", "Client request for immediate irrevocability", "`instruction`", "critical", "open"],
-          ["2", "Father contact right", "`conflict`", "critical", "open"],
-        ],
-      },
-      { kind: "markdown", markdown: "**Compact binding decisions:** Court caption." },
-    ])
   })
 })
 

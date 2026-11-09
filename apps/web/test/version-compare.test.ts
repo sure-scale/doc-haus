@@ -8,7 +8,7 @@ import CompareDialog from "../src/components/CompareDialog"
 import { RevisionPresentation } from "docxodus"
 import BlacklineViewer, { BLACKLINE_RENDER_OPTIONS, ComparePanel, changeBlock, hunkLocation, hunkPieces, saveDocx } from "../src/components/BlacklineViewer"
 import { excerpt, wordDiff } from "../src/components/redline"
-import CompareAnswer, { chatCompare } from "../src/components/chat/CompareAnswer"
+import CompareAnswer, { answerSegments, chatCompare } from "../src/components/chat/CompareAnswer"
 import CompareView from "../src/components/chat/CompareView"
 import { toTurns, type ListedChange } from "../src/components/chat/turn-model"
 import DocumentUpload from "../src/components/DocumentUpload"
@@ -521,6 +521,99 @@ describe("chat compare card", () => {
     expect(chatCompare(turn(meta).compares)).toBeUndefined()
     expect(chatCompare(turnOf([{ ...meta, hunks }, { compare: { ...meta.compare, right: "Their draft (2).docx" }, hunks }]).compares)).toBeUndefined()
     expect(chatCompare(undefined)).toBeUndefined()
+  })
+
+  test("comparison labels in Markdown examples remain literal and do not consume later prose", () => {
+    const examples = [
+      "```text\n**C1** — Literal example, not a reviewed comparison.\n```",
+      "    **C1** — Literal example, not a reviewed comparison.",
+      "> **C1** — Literal example, not a reviewed comparison.",
+      "`**C1** — Literal example, not a reviewed comparison.`",
+      "**C1, `C2`** — Literal example, not a reviewed comparison.",
+      "\\*\\*C1\\*\\* — Literal example, not a reviewed comparison.",
+      "- Example:\n\n      **C1** — Literal example, not a reviewed comparison.",
+    ]
+    const compare = turn({ ...meta, hunks }).compares![0]!
+    for (const example of examples) {
+      const text = `Example only:\n\n${example}\n\nActual note.`
+      expect(answerSegments(text)).toEqual([{ markdown: text }])
+      const html = renderToStaticMarkup(createElement(CompareAnswer, { text, compare, onOpen: () => {} }))
+      expect(html).not.toContain('class="change-row"')
+      expect(html).not.toContain('title="Show C1 in the blackline"')
+      expect(html).toContain("Literal example, not a reviewed comparison.")
+      expect(html).toContain("Actual note.")
+    }
+  })
+
+  test("streamed fenced comparison examples have the same literal interpretation after reload", () => {
+    const compare = turn({ ...meta, hunks }).compares![0]!
+    for (const tail of ["", "\n```", "\n```\nActual note."]) {
+      const text = "```text\n**C1** — Example only." + tail
+      expect(answerSegments(text)).toEqual([{ markdown: text }])
+      const props = { text, compare, onOpen: () => {} }
+      const streamed = renderToStaticMarkup(createElement(CompareAnswer, props))
+      const reloaded = renderToStaticMarkup(createElement(CompareAnswer, JSON.parse(JSON.stringify({ text, compare }))))
+      expect(streamed).not.toContain('class="change-row"')
+      expect(reloaded).toBe(streamed)
+    }
+  })
+
+  test("real comparison entries retain their notes while Markdown blocks and unknown entries stay complete", () => {
+    const text = [
+      "1. **C1** · Delivery — Minor — Favors neither party: genuine note",
+      "   continued with `literal **C2**`.",
+      "",
+      "```text",
+      "**C2** — Example only.",
+      "```",
+      "Actual note after the example.",
+      "",
+      "- **C99** · Unknown entry remains a list item.",
+      "",
+      "**C2** · The actual deletion.",
+    ].join("\n")
+    const compare = turn({ ...meta, hunks }).compares![0]!
+    const html = renderToStaticMarkup(createElement(CompareAnswer, { text, compare, onOpen: () => {} }))
+    expect(html.match(/class="change-row"/g)).toHaveLength(2)
+    expect(html).toContain("genuine note continued with <code>literal **C2**</code>.")
+    expect(html).toContain("**C2** — Example only.")
+    expect(html).toContain("Actual note after the example.")
+    expect(html).toContain("<li><strong>C99</strong> · Unknown entry remains a list item.</li>")
+    expect(html).toContain("The actual deletion.")
+  })
+
+  test("qualified comparison labels preserve their entire source", () => {
+    const compare = turn({ ...meta, hunks }).compares![0]!
+    for (const label of ["C1 not C2", "C1 except C2", "C1 remains unapproved"]) {
+      const text = `- **${label}** · The latter remains unapproved.`
+      const html = renderToStaticMarkup(createElement(CompareAnswer, { text, compare, onOpen: () => {} }))
+      expect(html).not.toContain('class="change-row"')
+      expect(html).not.toContain('title="Show C1 in the blackline"')
+      expect(html).toContain(`<li><strong>${label}</strong> · The latter remains unapproved.</li>`)
+    }
+  })
+
+  test("an unresolved member of a grouped entry keeps every ID visible after reload", () => {
+    const compare = turn({ ...meta, hunks }).compares![0]!
+    const text = "- **C1,C99** · The latter remains unapproved."
+    const props = { text, compare }
+    const html = renderToStaticMarkup(createElement(CompareAnswer, { ...props, onOpen: () => {} }))
+    expect(html).not.toContain('class="change-row"')
+    expect(html).not.toContain('title="Show C1 in the blackline"')
+    expect(html).toContain("<li><strong>C1,C99</strong> · The latter remains unapproved.</li>")
+    expect(renderToStaticMarkup(createElement(CompareAnswer, JSON.parse(JSON.stringify(props))))).toBe(html)
+  })
+
+  test("complete known ID lists accept the producer comma and legacy dot or and separators", () => {
+    const compare = turn({ ...meta, hunks }).compares![0]!
+    for (const label of ["C1, C2", "C1 · C2", "C1 and C2"]) {
+      const text = `**${label}** · Both reviewed changes.`
+      const html = renderToStaticMarkup(createElement(CompareAnswer, { text, compare, onOpen: () => {} }))
+      expect(html.match(/class="change-row"/g)).toHaveLength(1)
+      expect(html).toContain('title="Show C1 in the blackline"')
+      expect(html).toContain('title="Show C2 in the blackline"')
+      expect(html).toContain("Both reviewed changes.")
+    }
   })
 })
 

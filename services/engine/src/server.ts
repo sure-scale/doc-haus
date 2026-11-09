@@ -19,6 +19,7 @@ import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { WellKnown } from "@opencode/core/wellknown"
 import { Watcher } from "@opencode/core/filesystem/watcher"
 import { nativeFailureEvidenceLogger } from "./native-failure-evidence"
+import { DOCUMENT_AMENDMENT_LEGAL_OUTPUT } from "../../../dochaus/lib/document-amendment-legal-contract"
 import { generateMatterText } from "./generation"
 import { createRoutes } from "@opencode/server/routes"
 import { requestRef } from "@opencode/server/location"
@@ -497,7 +498,8 @@ async function generateText(request: Request, locations: Context.Service.Shape<t
   if (!actual || actual === root || !actual.startsWith(root + path.sep))
     return Response.json({ error: "Matter is outside the workspace or unavailable" }, { status: 403 })
   const body:unknown = await request.json().catch(() => undefined)
-  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).join(",") !== "prompt" ||
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !["prompt", "outputContract"].includes(key)) ||
+    ("outputContract" in body && body.outputContract !== DOCUMENT_AMENDMENT_LEGAL_OUTPUT) ||
     !("prompt" in body) || typeof body.prompt !== "string" || !body.prompt.trim() || Buffer.byteLength(body.prompt) > 1_048_576)
     return Response.json({ error: "Provide only a nonempty prompt within the input limit." }, { status: 400 })
   const ready = await managedReadinessResponse(request, locations, actual)
@@ -507,13 +509,13 @@ async function generateText(request: Request, locations: Context.Service.Shape<t
   const trace = { source: "engine_generate_endpoint", directory: actual, prompt: body.prompt, prompt_sha256: sha256(body.prompt), started_at: new Date().toISOString() }
   const began = Date.now()
   try {
-    const data = await runEngine(generateMatterText(body.prompt).pipe(
+    const data = await runEngine(generateMatterText(body.prompt, "outputContract" in body ? DOCUMENT_AMENDMENT_LEGAL_OUTPUT : undefined).pipe(
       Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(actual) }))),
       // Same engine-wide model admission queue as native sessions; the usage stays with the response.
       Effect.provideService(LLMClient.Service, client),
     ),{signal:request.signal})
     if (tracing) void appendTrace(tracing, "generations", "stateless", { ...trace, model: data.model, text: data.text, usage: data.usage, elapsed_ms: Date.now() - began })
-    return Response.json({ data: { ...data, elapsed_ms: Date.now() - began } })
+    return Response.json({ data: { ...data, elapsed_ms: Date.now() - began } }, { status: data.error ? data.error.code === "invalid_structured_output" ? 422 : 503 : 200 })
   } catch(error) {
     if (tracing) void appendTrace(tracing, "generations", "stateless", { ...trace, error: describeError(error), elapsed_ms: Date.now() - began })
     console.warn("[matter-generation] configured generation failed",diagnosticErrorMetadata(error))

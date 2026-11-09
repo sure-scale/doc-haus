@@ -12,7 +12,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const XML = "http://www.w3.org/XML/1998/namespace"
 const BODY = "word/document.xml"
-const BREAK_MARKUP = /<(?:[\w.-]+:)?br[\s/>]/
+const BREAK_MARKUP = /<(?:[^\s<>/:]+:)?br[\s/>]/
 const REMOVALS = ["del", "moveFrom"]
 
 export function writeLineBreaks(buffer: Buffer): Buffer {

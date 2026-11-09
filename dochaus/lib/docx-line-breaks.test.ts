@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import mammoth from "mammoth"
-import { strToU8, zipSync } from "fflate"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { writeLineBreaks } from "./docx-line-breaks"
 import { markTrackedChanges } from "./docx-tracked-text"
 
@@ -39,4 +39,14 @@ test("a line break in a pending deletion is not read as current wording", async 
   expect(await text(markup)).toBe("Kept line joined.\n\n")
   const inserted = docx(`<w:p>${run("Kept line")}<w:ins w:id="2" w:author="Reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:br/></w:r></w:ins>${run("Proposed line.")}</w:p>`)
   expect(await text(inserted)).toBe("Kept line\nProposed line.\n\n")
+})
+
+test("Unicode namespace prefixes preserve line breaks while foreign tags stay untouched", async () => {
+  const source = docx(`<w:p>${run("First")}<w:r><w:br/></w:r>${run("Second")}</w:p>`)
+  const parts = unzipSync(source), xml = strFromU8(parts["word/document.xml"]!)
+  const unicode = Buffer.from(zipSync({ ...parts, "word/document.xml": strToU8(xml.replaceAll("w:", "δοκ:").replace("xmlns:w=", "xmlns:δοκ=")) }))
+  expect(await text(unicode)).toBe(await text(source))
+  expect(await text(unicode)).toBe("First\nSecond\n\n")
+  const foreign = Buffer.from(zipSync({ ...parts, "word/document.xml": strToU8(xml.replace("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "urn:unrelated")) }))
+  expect(writeLineBreaks(foreign)).toBe(foreign)
 })

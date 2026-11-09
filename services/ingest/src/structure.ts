@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite"
 import { createHash } from "node:crypto"
 import { getMeta, setMeta } from "./db"
-import { proposedView } from "../../../dochaus/lib/docx-tracked-text"
+import { proposedView, type StructuralMask } from "../../../dochaus/lib/docx-tracked-text"
 
 // Deterministic legal-document structure extraction. Each extractor is
 // signal-driven and optional: it records marked definitions, numbered
@@ -11,7 +11,11 @@ import { proposedView } from "../../../dochaus/lib/docx-tracked-text"
 // carries verbatim text plus offsets. Bump VERSION whenever a pattern changes so
 // existing matters re-extract at next boot (server.ts) or ingest (ingest.ts).
 
-export const VERSION = "3"
+export const VERSION = "4"
+
+// Every supported non-Word extractor returns literal text. Other legacy names
+// may have used the DOCX fallback and need source-derived provenance first.
+const STRUCTURE_READY = "(structure_mask IS NOT NULL OR lower(name) GLOB '*.txt' OR lower(name) GLOB '*.csv' OR lower(name) GLOB '*.md' OR lower(name) GLOB '*.markdown' OR lower(name) GLOB '*.pdf' OR lower(name) GLOB '*.rtf' OR lower(name) GLOB '*.eml' OR lower(name) GLOB '*.msg' OR lower(name) GLOB '*.xlsx' OR lower(name) GLOB '*.zip')"
 
 // Quoted defined term: starts uppercase, single line, sane length. Straight or
 // curly quotes — extracted text carries both.
@@ -202,11 +206,11 @@ export function clearStructure(db: Database, docPath: string) {
     db.run(`DELETE FROM ${table} WHERE doc_path = ?`, [docPath])
 }
 
-export function extractStructure(db: Database, docPath: string, docName: string, text: string) {
-  clearStructure(db, docPath)
+export function extractStructure(db: Database, docPath: string, docName: string, text: string, mask?: StructuralMask) {
   // Patterns read a Word markup's proposed wording; a stored definition keeps
   // the verbatim paragraph, labels included.
-  const view = proposedView(text)
+  const view = proposedView(text, mask)
+  clearStructure(db, docPath)
   for (const t of extractDefinedTerms(view))
     db.run(
       "INSERT INTO defined_terms (doc_path, doc_name, term, definition, char_start, char_end) VALUES (?, ?, ?, ?, ?, ?)",
@@ -296,13 +300,13 @@ export type Section = {
   charEnd: number
 }
 
-export function sectionize(text: string): Section[] {
+export function sectionize(text: string, mask?: StructuralMask): Section[] {
   const sections: Section[] = []
   let current: Section = { label: "Preamble", title: "Preamble", number: null, opening: true, text: "", charStart: 0, charEnd: 0 }
   let offset = 0
   // Headings are read from a Word markup's proposed wording, so a label does not
   // hide an inserted heading and a deleted one does not open a section.
-  const view = proposedView(text).split("\n")
+  const view = proposedView(text, mask).split("\n")
 
   for (const [index, line] of text.split("\n").entries()) {
     // PDF extractors can emit Markdown headings; strip hashes so "## 7.2 Termination"
@@ -389,13 +393,13 @@ type SectionRow = {
 // heading closes every open Markdown heading at its level or deeper, and a
 // section with no numbered parent belongs to the innermost Markdown heading
 // still open. Nothing else is inferred from the text.
-export function documentSections(text: string) {
+export function documentSections(text: string, mask?: StructuralMask) {
   // The reconstructed text normally ends with the newline sectionize counts
   // after the last line; sectionize the text before it so the last span ends
   // with the text. Text without that newline still counts one past its end, and
   // leading blank lines sectionize drops belong to no section, so the first span
   // starts at 0 and the last ends at text.length below: the spans tile the text.
-  const sections = sectionize(text.endsWith("\n") ? text.slice(0, -1) : text)
+  const sections = sectionize(text.endsWith("\n") ? text.slice(0, -1) : text, mask)
   const rows: SectionRow[] = []
   const numbered: Array<{ number: string; row: SectionRow }> = []
   const markdown: Array<{ level: number; row: SectionRow }> = []
@@ -508,15 +512,16 @@ export function chunkSection(section: { text: string; charStart: number }) {
 }
 
 // Backfill matters indexed before structure extraction existed (or before the
-// current pattern VERSION). Text comes back out of the chunks themselves, so no
-// re-parse of the source file is needed.
+// current pattern VERSION). Text comes back out of the chunks themselves. Legacy
+// Word rows without source-derived masks retain their cached projections until
+// re-ingest: punctuation cannot recover whether old wording was actually deleted.
 export function migrateStructure(db: Database) {
   if (getMeta(db, "structure_version") === VERSION) return 0
-  const docs = db.query("SELECT doc_path, name FROM documents WHERE role = 'source'").all() as Array<{
+  const docs = db.query(`SELECT doc_path, name FROM documents WHERE role = 'source' AND ${STRUCTURE_READY}`).all() as Array<{
     doc_path: string
     name: string
   }>
-  for (const doc of docs) extractStructure(db, doc.doc_path, doc.name, reconstructText(db, doc.doc_path))
+  for (const doc of docs) extractStructure(db, doc.doc_path, doc.name, reconstructText(db, doc.doc_path), documentMask(db, doc.doc_path))
   setMeta(db, "structure_version", VERSION)
   return docs.length
 }
@@ -526,7 +531,7 @@ export function migrateStructure(db: Database) {
 // (right after writing them) and the backfill below write the same rows.
 export function recordSections(db: Database, docPath: string, docName: string) {
   const text = reconstructText(db, docPath)
-  const sections = documentSections(text)
+  const sections = documentSections(text, documentMask(db, docPath))
   db.run("DELETE FROM sections WHERE doc_path = ?", [docPath])
   const insert = db.query(
     "INSERT INTO sections (doc_path, doc_name, ordinal, parent_ordinal, depth, label, heading, char_start, char_end, structure_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -561,12 +566,16 @@ export function revision(text: string) {
 // rows (documentSections, recordSections, revision, reconstructText) change, so
 // existing matters re-record at next boot (server.ts) or ingest (ingest.ts).
 // 2: rev hashes the untrimmed canonical text, rebuilt without truncating
-// overwrites.
-const SECTIONS_VERSION = "2"
+// overwrites. 3: revision ranges come from explicit extraction masks; legacy
+// rows without masks retain literal text until re-ingest.
+const SECTIONS_VERSION = "3"
 
 // Backfill matters indexed before sections were recorded or before the current
 // SECTIONS_VERSION, plus any source document still without a rev, and drop
-// sections no source document owns. Like the structure backfill it reads the
+// sections no source document owns. Legacy Word rows without masks retain
+// existing sections and ordinals; absent projections wait for re-ingest.
+// Missing canonical text revisions are backfilled independently.
+// Like the structure backfill it reads the
 // chunks, which is what ingest records from too, so a backfilled document
 // matches a fresh ingest. One transaction never leaves a matter half-recorded.
 // With nothing to do it costs the single query below.
@@ -582,12 +591,28 @@ export function migrateSections(db: Database) {
   const current = state.version === SECTIONS_VERSION
   if (current && !state.unrecorded && !state.orphaned) return 0
   const docs = db
-    .query(`SELECT doc_path, name FROM documents WHERE role = 'source'${current ? " AND rev IS NULL" : ""}`)
+    .query(`SELECT doc_path, name FROM documents WHERE role = 'source' AND ${STRUCTURE_READY}${current ? " AND rev IS NULL" : ""}`)
     .all() as Array<{ doc_path: string; name: string }>
+  // Canonical text identity does not depend on interpreting revision markers.
+  // Preserve/withhold legacy structure, but give its stored text the same rev
+  // that source snapshot staging computes before taking the registry lock.
+  const legacy = db.query(`SELECT doc_path FROM documents WHERE role = 'source' AND rev IS NULL AND NOT ${STRUCTURE_READY}`)
+    .all() as Array<{ doc_path: string }>
   db.transaction(() => {
     db.run("DELETE FROM sections WHERE doc_path NOT IN (SELECT doc_path FROM documents WHERE role = 'source')")
     for (const doc of docs) recordSections(db, doc.doc_path, doc.name)
+    for (const doc of legacy) db.run("UPDATE documents SET rev = ? WHERE doc_path = ?", [revision(reconstructText(db, doc.doc_path)), doc.doc_path])
     setMeta(db, "sections_version", SECTIONS_VERSION)
   })()
-  return docs.length
+  return docs.length + legacy.length
+}
+
+// Absent legacy metadata is literal text. Never recover authority from a summary.
+function documentMask(db: Database, docPath: string): StructuralMask | undefined {
+  const row = db.query("SELECT structure_mask FROM documents WHERE doc_path = ?").get(docPath) as { structure_mask: string | null } | null
+  if (!row?.structure_mask) return
+  const value: unknown = JSON.parse(row.structure_mask)
+  if (!Array.isArray(value) || !value.every(item => Array.isArray(item) && item.length === 2 && item.every(Number.isSafeInteger)))
+    throw new Error("invalid_structural_mask")
+  return value as StructuralMask
 }

@@ -21,7 +21,7 @@ export function prepareMarkdownRenderText(content: string) {
         "resourceTitleString", "definitionDestinationString", "definitionTitleString",
       ].includes(scope))
       scopes.pop()
-      return token.type === "characterReference" && text
+      return ["characterReference", "characterEscape"].includes(token.type) && text
         ? [{ start: token.start.offset!, end: token.end.offset!,
             value: decodeString(content.slice(token.start.offset!, token.end.offset!)) }]
         : []
@@ -42,7 +42,7 @@ export function prepareMarkdownRenderText(content: string) {
             return reference.value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
           }), text) + close)
       if (xml.includes(prefix) || [...counts.values()].some(count => count !== 1))
-        throw new Error("Markdown render text did not preserve every exact character reference token.")
+        throw new Error("Markdown render text did not preserve every exact literal text token.")
       parts["word/document.xml"] = strToU8(xml)
       return zipSync(parts, { mtime: new Date(1980, 0, 1) })
     },

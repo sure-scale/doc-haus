@@ -1,3 +1,4 @@
+import { isChatRecoveryMessage } from "../../../dochaus/lib/chat-recovery-message"
 import { createHash, randomUUID } from "node:crypto"
 import { existsSync, readFileSync, readdirSync, lstatSync } from "node:fs"
 import path from "node:path"
@@ -233,7 +234,7 @@ export async function recentChronologyInstructions(
             .map((part) => String(part.text))
             .join("\n")
             .trim()
-          if (!words || /<dochaus-recovery\b/i.test(words)) return []
+          if (!words || isChatRecoveryMessage({ id: row.info.id, sessionID: session.id, text: words })) return []
           const created = record(row.info.time) && typeof row.info.time.created === "number" ? row.info.time.created : 0
           return [{ words, created }]
         })

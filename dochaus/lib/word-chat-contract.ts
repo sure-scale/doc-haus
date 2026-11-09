@@ -7,6 +7,7 @@ export type WordChatMode = "auto" | "qa" | "redline"
 export type WordChatAttachment = { kind: "source" | "playbook" | "upload"; id: string; hash: string }
 export type WordChatMaterial = WordChatAttachment & { name: string; description?: string; provenance: "saved-version" | "instructions" | "request-upload" }
 import type { WordChatSnapshot, WordChatProposal, WordChatTableRowInsertionProposal, WordChatTableRowProposal, WordChatTableRowDeletionProposal, WordChatCellRun } from "./word-chat-amendment-contract"
+import type { ConversationAmendmentDisposition } from "./conversation-context"
 export type { WordChatProposal } from "./word-chat-amendment-contract"
 export type WordChatContext = WordChatSnapshot
 export type WordChatSource = { id: string; contentHash?: string; name: string; quote: string; location: string; provenance: "word-buffer" | "saved-version" | "instructions" | "request-upload" }
@@ -23,6 +24,7 @@ export type WordChatTurn = {
   answer: string
   answerFormat?: "segments-v1"
   answerParts?: WordChatAnswerPart[]
+  disposition?: ConversationAmendmentDisposition
   status: "running" | "complete" | "cancelled" | "error"
   sources: WordChatSource[]
   attachments: WordChatMaterial[]

@@ -1,5 +1,8 @@
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
+import mammoth from "mammoth"
+import { writeLineBreaks } from "./docx-line-breaks"
+import { normalizeUntrustedText } from "./untrusted-text"
 
 // Plain-text extraction (mammoth) keeps tracked insertions as ordinary text and
 // drops tracked deletions and moves, so a counterparty markup reads as if every
@@ -13,7 +16,7 @@ const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const XML = "http://www.w3.org/XML/1998/namespace"
 const BODY = "word/document.xml"
 const COMMENTS = "word/comments.xml"
-const REVISION_MARKUP = /<(?:[\w.-]+:)?(?:ins|del|moveFrom|moveTo)[\s/>]/
+const REVISION_MARKUP = /<(?:[^\s<>/:]+:)?(?:ins|del|moveFrom|moveTo)[\s/>]/
 const KINDS = ["ins", "del", "moveFrom", "moveTo"]
 const REMOVALS = ["del", "moveFrom"]
 const LABEL: Record<string, string> = {
@@ -24,7 +27,7 @@ const LABEL: Record<string, string> = {
 }
 const MAX_NAMED_AUTHORS = 5
 
-export function markTrackedChanges(buffer: Buffer): Buffer {
+export function markTrackedChanges(buffer: Buffer, options: { structural?: true } = {}): Buffer {
   const body = unzipSync(buffer, { filter: file => file.name === BODY })[BODY]
   if (!body || !REVISION_MARKUP.test(strFromU8(body))) return buffer
   const parts = unzipSync(buffer)
@@ -45,60 +48,77 @@ export function markTrackedChanges(buffer: Buffer): Buffer {
   for (const group of [...groups].reverse()) {
     if (labelled.has(group)) {
       const label = `${LABEL[group[0]!.localName]}${byline(group[0]!)}: `
-      group[0]!.parentNode!.insertBefore(textRun(doc, group[0]!, `[${label}`), group[0]!)
+      group[0]!.parentNode!.insertBefore(textRun(doc, group[0]!, options.structural ? blankText(`[${label}`) : `[${label}`), group[0]!)
       const last = group[group.length - 1]!
-      last.parentNode!.insertBefore(textRun(doc, last, "]"), last.nextSibling)
+      last.parentNode!.insertBefore(textRun(doc, last, options.structural ? " " : "]"), last.nextSibling)
     }
     // A removal with no wording (a break or symbol) stays unread, as mammoth reads it.
     for (const element of group)
-      if (labelled.has(group) || !REMOVALS.includes(element.localName)) unwrap(element)
+      if (labelled.has(group) || !REMOVALS.includes(element.localName)) {
+        if (options.structural && REMOVALS.includes(element.localName)) blankRevision(element)
+        unwrap(element)
+      }
       else element.parentNode!.removeChild(element)
   }
   if (!labelled.size) return buffer
   const container = doc.getElementsByTagNameNS(W, "body")[0]!
-  container.insertBefore(paragraph(doc, container, summary([...labelled], commentCount(parts[COMMENTS]))), container.firstChild)
+  const notice = summary([...labelled], commentCount(parts[COMMENTS]))
+  container.insertBefore(paragraph(doc, container, options.structural ? blankText(notice) : notice), container.firstChild)
   parts[BODY] = strToU8(new XMLSerializer().serializeToString(doc))
   // mammoth reads the copy once and discards it, so it is stored uncompressed.
   return Buffer.from(zipSync(parts, { level: 0 }))
 }
 
-const LABEL_START = /\[Tracked (insertion|deletion|move from here|move to here)(?: by [^\]\n:]*)?: /y
-const SUMMARY = /^\[This Word file contains [^\]\n]*\]/
-
-/** The labelled text as pattern extractors (headings, defined terms, parties,
- * amendment operations) should read it: same length and line breaks, with the
- * summary line, each label and the wording a pending change would remove
- * blanked, which leaves the proposed wording at its offsets. Brackets inside
- * revision wording nest, and a label never runs past its paragraph, so an
- * unpaired bracket misreads at most one paragraph. Text that does not open with
- * the summary line has no labels and is returned as is. */
-export function proposedView(text: string) {
-  const summary = SUMMARY.exec(text)?.[0].length
-  if (!summary) return text
+// Structural interpretation is supplied by extraction, never inferred from source
+// punctuation. Legacy documents without this projection keep literal text until
+// re-ingested; canonical source text and all citation offsets remain unchanged.
+export type StructuralMask = [number, number][]
+export function proposedView(text: string, mask: StructuralMask = []) {
+  if (!mask.length) return text
+  let previous = 0
   const view = text.split("")
-  const blank = (from: number, to: number) => { for (let at = from; at < to; at++) if (view[at] !== "\n") view[at] = " " }
-  blank(0, summary)
-  const open: { removal: boolean; brackets: number }[] = []
-  for (let at = summary; at < text.length; at++) {
-    if (text[at] === "\n" && text[at + 1] === "\n") open.length = 0
-    if (text[at] === "[") {
-      LABEL_START.lastIndex = at
-      const label = LABEL_START.exec(text)
-      if (label) {
-        open.push({ removal: label[1] === "deletion" || label[1] === "move from here", brackets: 0 })
-        blank(at, at + label[0].length)
-        at += label[0].length - 1
-        continue
-      }
-      if (open.length) open.at(-1)!.brackets++
-    } else if (text[at] === "]" && open.length && !open.at(-1)!.brackets) {
-      open.pop()
-      blank(at, at + 1)
-      continue
-    } else if (text[at] === "]" && open.length) open.at(-1)!.brackets--
-    if (open.some(frame => frame.removal)) blank(at, at + 1)
+  for (const [from, to] of mask) {
+    if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < previous || to <= from || to > text.length)
+      throw new Error("invalid_structural_mask")
+    for (let at = from; at < to; at++) if (view[at] !== "\n" && view[at] !== "\r") view[at] = " "
+    previous = to
   }
   return view.join("")
+}
+
+export function structuralMask(text: string, view: string): StructuralMask {
+  if (text.length !== view.length) throw new Error("structural_text_offset_mismatch")
+  const ranges: StructuralMask = []
+  for (let at = 0; at < text.length; at++) {
+    if (text[at] === view[at]) continue
+    if (view[at] !== " " || /[\r\n]/.test(text[at]!)) throw new Error("invalid_structural_text")
+    const last = ranges.at(-1)
+    if (last?.[1] === at) last[1]++
+    else ranges.push([at, at + 1])
+  }
+  return ranges
+}
+
+/** Two views of the same XML extraction. Only actual revision DOM nodes and
+ * labels we insert are masked; identical marker-like source text stays literal. */
+export async function docxTextViews(buffer: Buffer, options: { structural?: boolean } = { structural: true }) {
+  const labelled = markTrackedChanges(buffer)
+  const text = (await mammoth.extractRawText({ buffer: writeLineBreaks(labelled) })).value
+  if (!options.structural || labelled === buffer) return { text, mask: [] as StructuralMask }
+  const view = normalizeUntrustedText((await mammoth.extractRawText({ buffer: writeLineBreaks(markTrackedChanges(buffer, { structural: true })) })).value).text
+  return { text, mask: structuralMask(normalizeUntrustedText(text).text, view) }
+}
+
+// Preserve invisible scalars until the shared normalizer removes them from both
+// views. Mask UTF-16 units so astral text keeps the canonical offsets too.
+function blankText(text: string) {
+  return text.replace(/[^\r\n]/gu, char => normalizeUntrustedText(char).text ? " ".repeat(char.length) : char)
+}
+function blankRevision(element: Element) {
+  for (const node of Array.from(element.getElementsByTagNameNS(W, "*"))) {
+    if (["t", "delText"].includes(node.localName)) node.textContent = blankText(node.textContent ?? "")
+    if (node.localName === "tab") node.parentNode!.replaceChild(textRun(element.ownerDocument!, node, " ").firstChild!, node)
+  }
 }
 
 function parse(xml: string) {

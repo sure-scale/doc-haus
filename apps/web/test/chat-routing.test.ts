@@ -184,10 +184,11 @@ describe("chat dispatch", () => {
   test("recognizes a durable recovery user message even without the legacy synthetic flag", () => {
     expect(
       isDraftingRecoveryMessage({
+        info: { id: "msg_recovery_msg_failed", sessionID: "ses_current" },
         parts: [
           {
             type: "text",
-            text: '<dochaus-recovery kind="malformed-tool" run-id="run_current" progress-token="abc123" />\nContinue.',
+            text: '<dochaus-recovery kind="malformed-tool" run-id="ses_current" progress-token="malformed:msg_failed" />\nContinue.',
           },
         ],
       } as never),
@@ -231,12 +232,12 @@ describe("chat dispatch", () => {
           parts: [],
         },
         {
-          info: { id: "msg_recovery", role: "user" },
+          info: { id: "msg_recovery_msg_failed", sessionID: "ses_current", role: "user" },
           parts: [
             text(
               "part-recovery",
-              "msg_recovery",
-              '<dochaus-recovery kind="malformed-tool" run-id="run_current" progress-token="abc123" />\nContinue.',
+              "msg_recovery_msg_failed",
+              '<dochaus-recovery kind="malformed-tool" run-id="ses_current" progress-token="malformed:msg_failed" />\nContinue.',
             ),
           ],
         },
@@ -437,7 +438,7 @@ describe("chat dispatch", () => {
 
   test("restores the malformed recovery bound from the current user activity", () => {
     const marker = (id: string) => ({
-      info: { id, role: "user" },
+      info: { id: `msg_recovery_${id}`, sessionID: "ses_current", role: "user" },
       parts: [
         {
           type: "text",
@@ -465,7 +466,7 @@ describe("chat dispatch", () => {
       parts: [{ type: "reasoning", text: 'call:search-document{"query":"term"}' }],
     })
     const recovery = (id: string) => ({
-      info: { id: `msg_recovery_${id}`, role: "user" },
+      info: { id: `msg_recovery_${id}`, sessionID: "ses_chat", role: "user" },
       parts: [{ type: "text", text: `<dochaus-recovery kind="malformed-tool" run-id="ses_chat" progress-token="malformed:${id}" />` }],
     })
     // "draft" starts a lean run in its own sessions, so it never holds a chat turn.

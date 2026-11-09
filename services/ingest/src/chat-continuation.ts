@@ -1,3 +1,4 @@
+import { isChatRecoveryMessage } from "../../../dochaus/lib/chat-recovery-message"
 import { createHash } from "node:crypto"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { engineV2Fetch } from "../../../dochaus/lib/engine-v2"
@@ -313,9 +314,9 @@ async function requireCurrentContinuation(directory: string, input: ChatContinua
     !malformedToolFailure(failed)
   ) throw new ChatContinuationConflictError("The interrupted model turn is no longer the current recoverable failure.")
   const boundary = messages.findLastIndex(message =>
-    isUserMessage(message) && !/<dochaus-recovery\b/i.test(messageText(message)))
+    isUserMessage(message) && !isChatRecoveryMessage({ id: message.info.id, sessionID: input.sessionID, text: messageText(message) }))
   const recoveries = messages.slice(boundary + 1).filter(message =>
-    isUserMessage(message) && /<dochaus-recovery\b[^>]*kind="malformed-tool"/i.test(messageText(message))).length
+    isUserMessage(message) && isChatRecoveryMessage({ id: message.info.id, sessionID: input.sessionID, text: messageText(message) })).length
   if (recoveries >= MAX_MALFORMED_TOOL_RECOVERIES_PER_TURN)
     throw new ChatContinuationConflictError("The interrupted turn exhausted its bounded malformed-output recovery attempts.")
 }
@@ -386,7 +387,7 @@ async function engineJson(directory: string, endpoint: string, options: EngineRe
   return response?.ok ? response.json().catch(() => undefined) : undefined
 }
 
-function isUserMessage(message: unknown): message is Record<string, unknown> {
+function isUserMessage(message: unknown): message is Record<string, unknown> & { info: Record<string, unknown> } {
   return isRecord(message) && isRecord(message.info) && message.info.role === "user"
 }
 
