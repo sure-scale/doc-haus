@@ -1824,6 +1824,43 @@ test("large table omits deletion guidance while retaining append guidance", asyn
   } finally {modelRawOutput=undefined}
 })
 
+test("table context distinguishes ordinary cell wording from structural row proposals", async () => {
+  const id = await newConversation()
+  const paragraphs = ["Field", "Reading", "Status", "Current cell wording."].map((text, index) => ({ id: `wording-cell-${index}`, text }))
+  const table = { tableIndex: 0, rows: [paragraphs.slice(0, 2), paragraphs.slice(2)] }
+  const native = { ...context, text: paragraphs.map(paragraph => paragraph.text).join("\r"), paragraphs, table }
+  const request = (text: string) => post("send", { conversationId: id, scope: "document", text, requestId: crypto.randomUUID(), attachments: [], mode: "redline", context: native })
+  const answerParts = [{ type: "text", text: "Prepared for review; no change has been applied." }, { type: "reference", sourceId: "word", quote: paragraphs[3]!.text }]
+  try {
+    modelStructuredRawOutput = JSON.stringify({ answerParts, proposal: { before: paragraphs[3]!.text, after: "Revised cell wording.", explanation: "Change only the requested cell wording.", openItems: [] } })
+    const wording = (await (await request("Revise only the wording in the existing Status cell, preserving the table and other content.")).json() as { turn: WordChatTurn }).turn
+    const prompt = sessionContext(wording.id)
+    expect(prompt).toContain("Ordinary wording within one captured table-cell paragraph")
+    expect(prompt).toContain("standard proposal.before/proposal.after")
+    expect(prompt).toContain("rowProposal is only for structural row insertion or deletion")
+    expect(prompt).toContain("Table context does not establish native eligibility")
+    expect(wording.status).toBe("complete"); expect(wording.error).toBeUndefined()
+    expect(wording.proposal?.before).toBe(paragraphs[3]!.text)
+    expect(wording.proposal?.after).toBe("Revised cell wording.")
+    expect(wording.proposal?.target.paragraphs.map(paragraph => paragraph.id)).toEqual([paragraphs[3]!.id])
+    expect(wording.rowProposal).toBeUndefined(); expect(reviewSessions(wording.id)).toHaveLength(1)
+    expect(suppliedContext(prompt).table.rows).toEqual([["Field", "Reading"], ["Status", "Current cell wording."]])
+
+    modelStructuredRawOutput = JSON.stringify({ answerParts, rowProposal: { cells: ["Added field", "Added reading"], explanation: "Append the requested row.", openItems: [] } })
+    const inserted = (await (await request("Append one new row to the table.")).json() as { turn: WordChatTurn }).turn
+    expect(inserted.proposal).toBeUndefined(); expect(inserted.rowProposal?.kind).toBe("table_row_insert")
+    expect(reviewSessions(inserted.id)).toHaveLength(1)
+    modelStructuredRawOutput = JSON.stringify({ answerParts, rowProposal: { action: "delete", cells: table.rows[1]!.map(cell => cell.text), explanation: "Delete only the requested existing row.", openItems: [] } })
+    const deleted = (await (await request("Delete the existing Status row.")).json() as { turn: WordChatTurn }).turn
+    expect(deleted.proposal).toBeUndefined(); expect(deleted.rowProposal?.kind).toBe("table_row_delete")
+    expect(reviewSessions(deleted.id)).toHaveLength(1)
+
+    modelStructuredRawOutput = JSON.stringify({ answerParts: [{ type: "reference", sourceId: "word", quote: "Unprovided cell quotation." }], proposal: { before: paragraphs[3]!.text, after: "Revised cell wording.", explanation: "Change.", openItems: [] } })
+    const invalid = (await (await request("Revise the existing Status cell.")).json() as { turn: WordChatTurn }).turn
+    expect(invalid.status).toBe("error"); expect(invalid.proposal).toBeUndefined(); expect(invalid.rowProposal).toBeUndefined()
+  } finally { modelStructuredRawOutput = undefined }
+})
+
 test("table prompt canonical citations preserve cell text without JSON row delimiters", async () => {
   const id = await newConversation(), paragraphs = ['Label "Quoted"', "Value", "A | B", "Ordinary entry"].map((text, index) => ({ id: `citation-cell-${index}`, text }))
   const native = { ...context, text: paragraphs.map(p => p.text).join("\r"), paragraphs, table: { tableIndex: 0, rows: [paragraphs.slice(0, 2), paragraphs.slice(2)] } }
