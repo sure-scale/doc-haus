@@ -55,6 +55,38 @@ export function verifiedConsequenceFindings(output: unknown, context: WordChatCo
   })
 }
 
+
+type ConsequencePassage = WordConsequenceFinding["passage"]
+type VerifiedJudgment = { effect: "changed" | "unchanged" | "uncertain"; findings: WordConsequenceFinding[]; dependencyPassages: ConsequencePassage[] }
+/** Validate transport/evidence only. The focused model decides whether the
+ * dependency and change in operation are substantively supported. */
+export function verifiedConsequenceJudgment(output: unknown, context: WordChatContext, key: string, allowed: Set<string>, targetId: string): VerifiedJudgment | undefined {
+  if (!record(output) || !["changed", "unchanged", "uncertain"].includes(String(output.effect)) || !Array.isArray(output.findings)) return
+  const effect = output.effect as VerifiedJudgment["effect"]
+  const dependency = output.dependency
+  let dependencyPassages: ConsequencePassage[] = []
+  if (dependency !== null) {
+    if (!record(dependency) || typeof dependency.explanation !== "string" || !dependency.explanation.trim() || dependency.explanation.length > 2000 || !Array.isArray(dependency.passages) || !dependency.passages.length || dependency.passages.length > 12) return
+    for (const passage of dependency.passages) {
+      if (!record(passage) || typeof passage.paragraphId !== "string" || !allowed.has(passage.paragraphId) || typeof passage.quote !== "string" || !passage.quote.trim() || passage.quote.length > 4000 || !context.paragraphs.some(p => p.id === passage.paragraphId && p.text.includes(passage.quote as string))) return
+    }
+    dependencyPassages = dependency.passages as ConsequencePassage[]
+    if (!dependencyPassages.some(p => p.paragraphId === targetId)) return
+  }
+  // An unchanged rule can qualify meaning without becoming a consequence.
+  // Contradictory attached findings are invalid, not a successful no-finding.
+  if (effect === "unchanged") return output.findings.length ? undefined : { effect, findings: [], dependencyPassages }
+  if (!dependencyPassages.some(p => p.paragraphId === targetId) || !output.findings.length) return
+  const findings = verifiedConsequenceFindings(output, context, key, allowed)
+  const kind = effect === "changed" ? "effect" : "uncertain"
+  if (findings.length !== output.findings.length || findings.some(f => f.passage.paragraphId !== targetId || f.kind !== kind)) return
+  return { effect, findings, dependencyPassages }
+}
+
+const JUDGMENT_CONTRACT = `Compare the operation of targetPassage before and after the exact proposed amendment, using relatedContext for material qualifications. Decide one effect: "changed" if the amendment changes this passage's legal meaning or operation through a supported dependency; "unchanged" if it does not; "uncertain" only when a supported dependency makes the amendment's effect materially indeterminate. A pre-existing ambiguity, shared topic or merely possible future event is not by itself a new consequence. Do not invent a trigger, measurement basis, linkage or client decision to make a relationship. If the text establishes no amendment-dependent change, choose unchanged. A provision whose operation is expressly independent can qualify the interpretation without being a new consequence. Explain hypothetical effects; never claim an edit was applied.
+Return JSON {"effect":"changed","dependency":{"explanation":"the actual supported relationship, including material qualification","passages":[{"paragraphId":"supplied ID","quote":"exact excerpt"}]},"findings":[{"title":"brief consequence","explanation":"what differs because of the amendment, why, and any material uncertainty","kind":"effect","passage":{"paragraphId":"target passage ID","quote":"exact excerpt"},"related":[{"paragraphId":"supporting ID","quote":"exact excerpt"}]}]}. Every non-null dependency must include an exact targetPassage quotation, including an unchanged material qualification. For unchanged, findings must be empty; retain an evidence-linked dependency when the unchanged provision materially limits or qualifies the proposed change, otherwise dependency is null. For changed or uncertain, dependency must identify the supported relationship with an exact targetPassage quotation, and findings must be nonempty with kind effect or uncertain respectively. Do not report uncertainty about unrelated or already-existing issues. No edits, replacement wording or blanket assurance.`
+const MEANING_QUALIFICATION_CONTRACT = `Qualify only what the exact before/after proposal changes in meaning, using the retrieved source passages that materially govern that change. This is a focused reconciliation of the local delta with actual dependency evidence, not a new document-wide review. provisionalLocalAnalysis is an earlier target-only retrieval hint and may contain missing-context statements; reassess those against the passages now supplied and discard statements resolved by that evidence. An unchanged independent rule may limit the proposed change without becoming a new consequence. Do not invent relationships from a shared subject, pre-existing ambiguity or merely possible future event. Distinguish the proposed change from unchanged qualifications. Return JSON {"meaning":"brief qualified before/after comparison","uncertainties":["only a remaining material unanswered question about the amendment's meaning"]}. Return uncertainties:[] if retrieved evidence resolves the local question. Missing context is a gap only when an identified supported dependency makes it material; absence alone is not a gap. Preserve genuine unresolved material facts or instructions. Do not repeat the per-passage findings, claim full-document assurance or propose edits.`
+
 export function installWordConsequences(d: Dependencies) {
   // Notification subscriptions contain only currently admitted cancellations.
   // All recovery, inputs and progress live in native session metadata/history.
@@ -112,6 +144,12 @@ export function installWordConsequences(d: Dependencies) {
     let submitted = 0
     const jobs = rows.filter(s => s.metadata?.type === "word-consequence-job")
     let running = jobs.filter(s => s.metadata?.assessmentId === assessment.id && !s.time?.idle && !s.outcome).length
+    async function maySubmit() {
+      if (historical || !enabled()) return false
+      const current = await d.api(auth, `/api/session/${assessment.id}`) as Session
+      const currentMeta = metadata(auth, root, current)
+      return enabled() && !currentMeta.cancelled && !currentMeta.stale && !currentMeta.disabled
+    }
     async function job(stage: string, contract: string, context: object): Promise<Job | undefined> {
       if (!historical && !enabled()) return
       const live = await d.api(auth, `/api/session/${assessment.id}`) as Session
@@ -129,16 +167,16 @@ export function installWordConsequences(d: Dependencies) {
           const admitted = Array.isArray(messages) && messages.some(m => record(m) && record(m.info) && m.info.id === messageID) || Array.isArray(inbox) && inbox.some(m => record(m) && m.id === messageID)
           // A lost creation/context response can leave an unprompted native
           // session. Inspect native admission before retrying the same identity.
-          if (!admitted && enabled()) await d.submit(auth, cached.id, messageID, prompt, "Answer only the focused consequence question in the supplied context.")
+          if (!admitted && await maySubmit()) await d.submit(auth, cached.id, messageID, prompt, "Answer only the focused consequence question in the supplied context.")
         }
         return readJob(auth, cached)
       }
       if (historical || running >= 4 || submitted >= 4) return
       const nativeId = `ses_consequence_job_${wordChatHash(`${assessment.id}:${key}`).slice(0, 36)}`
-      const native = await d.api(auth, "/api/session", "POST", { id: nativeId, parentID: root, title: stage === "meaning" ? "Understand proposed change" : stage === "discovery" ? "Find related passages" : "Check related passage", agent: "document-reviewer", model: d.model(), permissions: DENY_TOOLS,
+      const native = await d.api(auth, "/api/session", "POST", { id: nativeId, parentID: root, title: (stage === "meaning" || stage === "meaning-qualification") ? "Understand proposed change" : stage === "discovery" ? "Find related passages" : "Check related passage", agent: "document-reviewer", model: d.model(), permissions: DENY_TOOLS,
         metadata: { type: "word-consequence-job", document: auth.grant.document_id, assessmentId: assessment.id, key, stage, contextMode: "supplied" } satisfies JobMeta }) as Session
       jobs.push(native); submitted++; running++
-      if (!enabled()) { await d.stop(auth, native.id); return }
+      if (!await maySubmit()) { await d.stop(auth, native.id); return }
       // Stable message identity makes reconnect/retry idempotent in the engine.
       await d.submit(auth, native.id, `msg_consequence_${wordChatHash(native.id).slice(0, 36)}`, prompt, "Answer only the focused consequence question in the supplied context.")
       return { session: native, running: true, failed: false }
@@ -171,9 +209,9 @@ export function installWordConsequences(d: Dependencies) {
     if (!meaning || meaning.running) return publish(result)
     if (meaning.failed || typeof meaning.output?.meaning !== "string") { result.status = "partial"; result.gaps.push("The proposed change in meaning could not be assessed."); active.delete(assessment.id); return publish(result) }
     if (!meaning.output.meaning.trim() || meaning.output.meaning.length > 6000) { result.status = "partial"; result.gaps.push("The meaning comparison could not be read."); return publish(result) }
-    result.meaning = meaning.output.meaning
+    // Target-only interpretation is provisional. It helps retrieval but cannot
+    // publish absent-context claims before actual qualifications are retrieved.
     const change = { ...base, meaning: meaning.output.meaning }
-    if (Array.isArray(meaning.output.uncertainties)) result.gaps.push(...meaning.output.uncertainties.filter((s): s is string => typeof s === "string").slice(0, 12))
     const candidates = new Map<string, Candidate>()
     const terms = new Set((meta.proposal.before + " " + meta.proposal.after).toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? [])
     for (const paragraph of meta.context.paragraphs) {
@@ -203,6 +241,8 @@ export function installWordConsequences(d: Dependencies) {
     // another batch are included rather than missing from an early conclusion.
     if (discovering) return publish(result)
     let checking = false
+    const qualificationIds = new Set<string>()
+    const dependencyDecisions: { paragraphId: string; effect: VerifiedJudgment["effect"] }[] = []
     for (const candidate of candidates.values()) {
       const p = meta.context.paragraphs.find(p => p.id === candidate.paragraphId)!
       const at = meta.context.paragraphs.indexOf(p)
@@ -218,15 +258,30 @@ export function installWordConsequences(d: Dependencies) {
       }
       if (retrieving) { checking = true; continue }
       if (dependencyGap) { result.gaps.push("Material qualifications for a related passage could not be retrieved completely."); continue }
+      // Preserve retrieved qualifications even when this candidate is unchanged;
+      // they may explain why the proposal leaves another rule independent.
+      for (const pid of dependencyIds) qualificationIds.add(pid)
       const supporting = [...new Map([...meta.context.paragraphs.filter(p => dependencyIds.has(p.id)), ...meta.context.paragraphs.slice(Math.max(0, at - 1), at + 2), ...meta.context.paragraphs.filter(p => meta.proposal.targetIds.includes(p.id))].map(p => [p.id, p])).values()]
       if (supporting.reduce((n, p) => n + p.text.length, 0) > 24000) { result.gaps.push("A related passage needs additional targeted context before it can be checked."); continue }
-      const checked = await job("judgment", 'Assess only the effect of this proposed change on targetPassage, using relatedContext for material exceptions and dependencies. Explain hypothetical consequences, never claim the proposal was applied. Return JSON {"findings":[{"title":"brief consequence","explanation":"reason, dependency and uncertainty","kind":"effect or uncertain","passage":{"paragraphId":"target passage ID","quote":"exact current excerpt"},"related":[{"paragraphId":"supporting ID","quote":"exact excerpt"}]}]}. Use kind "uncertain" if evidence cannot determine the effect. Return findings:[] when no consequence is identified for this passage; this is not assurance of safety. No edits or suggested replacement wording.', { ...change, targetPassage: p, relatedContext: supporting })
+      const checked = await job("judgment", JUDGMENT_CONTRACT, { ...change, targetPassage: p, relatedContext: supporting })
       if (!checked || checked.running) { checking = true; continue }
-      if (checked.failed || !Array.isArray(checked.output?.findings)) { result.gaps.push("A related passage could not be checked."); continue }
-      const findings = verifiedConsequenceFindings(checked.output, meta.context, String(checked.session.metadata?.key), new Set(supporting.map(p => p.id)))
-      if (findings.length !== checked.output.findings.length || findings.some(f => f.passage.paragraphId !== p.id)) { result.gaps.push("A consequence was withheld because its source quotation could not be verified."); continue }
-      result.coverage.checked++; result.findings.push(...findings)
+      const judgment = !checked.failed && verifiedConsequenceJudgment(checked.output, meta.context, String(checked.session.metadata?.key), new Set(supporting.map(p => p.id)), p.id)
+      if (!judgment) { result.gaps.push("A related passage's effect or supporting evidence could not be verified."); continue }
+      result.coverage.checked++; result.findings.push(...judgment.findings)
+      dependencyDecisions.push({ paragraphId: p.id, effect: judgment.effect })
+      for (const passage of judgment.dependencyPassages) qualificationIds.add(passage.paragraphId)
     }
+    if (!checking) {
+      const qualifications = meta.context.paragraphs.filter(p => qualificationIds.has(p.id))
+      if (qualifications.reduce((n, p) => n + p.text.length, 0) > 24000) result.gaps.push("The meaning comparison needs a focused review of additional material qualifications.")
+      else {
+        const qualified = await job("meaning-qualification", MEANING_QUALIFICATION_CONTRACT, { ...base, provisionalLocalAnalysis: meaning.output, dependencyPassages: qualifications, dependencyDecisions, coverageIncomplete: result.gaps.length > 0 })
+        if (!qualified || qualified.running) checking = true
+        else if (qualified.failed || typeof qualified.output?.meaning !== "string" || !qualified.output.meaning.trim() || qualified.output.meaning.length > 6000 || !Array.isArray(qualified.output.uncertainties) || qualified.output.uncertainties.length > 12 || !qualified.output.uncertainties.every(u => typeof u === "string" && u.trim().length > 0 && u.length <= 2000)) result.gaps.push("The meaning comparison could not be qualified against its material dependencies.")
+        else { result.meaning = qualified.output.meaning; result.gaps.push(...qualified.output.uncertainties as string[]) }
+      }
+    }
+
     result.status = checking ? "running" : result.gaps.length ? "partial" : "complete"
     if (!checking) active.delete(assessment.id)
     return publish(result)

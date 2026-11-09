@@ -1855,7 +1855,7 @@ test("consequence bridge uses native normalized sessions and stays outside foreg
     expect(turn.proposal).toBeDefined()
     amend = false
     engineHook = async (native, tail) => {
-      if (native.metadata.type === "word-consequence-job" && tail === "/prompt") modelRawOutput = JSON.stringify(native.metadata.stage === "meaning" ? { meaning: "Delivery moves from Tuesday to Wednesday.", uncertainties: [] } : { candidates: [] })
+      if (native.metadata.type === "word-consequence-job" && tail === "/prompt") modelRawOutput = JSON.stringify(["meaning", "meaning-qualification"].includes(String(native.metadata.stage)) ? { meaning: "Delivery moves from Tuesday to Wednesday.", uncertainties: [] } : { candidates: [] })
     }
     const admitted = await post("assess", { conversationId: id, requestId: "native-consequence", turnId: turn.id, context })
     expect(admitted.status).toBe(200)
@@ -1872,7 +1872,7 @@ test("consequence bridge uses native normalized sessions and stays outside foreg
     const reopened = await (await post("conversation", { conversationId: id })).json() as { turns: WordChatTurn[] }
     expect(reopened.turns.map(t => t.id)).toEqual([turn.id])
     const nativeJobs = [...sessions.values()].filter(s => s.parentID === id && s.metadata.type === "word-consequence-job")
-    expect(nativeJobs.map(s => s.metadata.stage)).toEqual(["meaning", "discovery"])
+    expect(nativeJobs.map(s => s.metadata.stage)).toEqual(["meaning", "discovery", "meaning-qualification"])
     expect(nativeJobs.every(s => admissions.some(a => a.session === s.id && a.tail === "/synthetic"))).toBe(true)
     expect((await post("assessment", { conversationId: "different-conversation", assessmentId: assessment.id, context })).status).toBe(503)
   } finally { amend = false; engineHook = undefined; modelRawOutput = undefined }

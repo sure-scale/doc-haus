@@ -3,7 +3,7 @@ import { Hono } from "hono"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { installWordConsequences, consequenceContextKey, verifiedConsequenceFindings } from "./word-consequences"
+import { installWordConsequences, consequenceContextKey, verifiedConsequenceFindings, verifiedConsequenceJudgment } from "./word-consequences"
 import { writeWordChatPreferences } from "./word-chat-preferences"
 import type { WordChatAuth } from "./word-chat-context"
 import type { WordChatContext, WordChatTurn } from "../../../dochaus/lib/word-chat-contract"
@@ -19,6 +19,7 @@ function harness() {
   writeWordChatPreferences({ consequences: true })
   const auth = { matter: { dir: "/synthetic/matter" }, grant: { document_id: "document", token_hash: "token" } } as WordChatAuth
   const rows = new Map<string, Native>(), outputs = new Map<string, object>(), stopped: string[] = [], submitted: Native[] = [], prompts: string[] = []
+  let outputFor: ((stage: string, prompt: string, fallback: object) => object) | undefined
   let now = 1, hold = "", withFinding = true, failSubmission = false, onRead: ((route: string) => void) | undefined
   const root: Native = { id: "conversation", directory: auth.matter.dir, metadata: { type: "word-chat", document: "document" }, time: { created: now++, updated: 1 } }; rows.set(root.id, root)
   const turn: Native = { id: "amendment", directory: auth.matter.dir, parentID: root.id, time: { created: now++, updated: 1 }, metadata: { type: "word-chat-turn", kind: "amendment", document: "document", input: { text: "Shorten the payment deadline.", attachments: [] }, sources: [] } }; rows.set(turn.id, turn)
@@ -26,8 +27,11 @@ function harness() {
     proposal: { id: "proposal", documentId: "document", before: context.paragraphs[0]!.text, after: "Payment is due in ten days.", explanation: "Requested change.", openItems: [], createdAt: context.capturedAt, target: { id: "target", text: context.paragraphs[0]!.text, paragraphs: [context.paragraphs[0]!], startOffset: 0, endOffset: context.paragraphs[0]!.text.length, capturedAt: context.capturedAt, saved: false } } }
   const complete = (s: Native) => {
     const stage = s.metadata.stage
-    const output = stage === "meaning" ? { meaning: "The deadline becomes earlier.", uncertainties: [] } : stage === "discovery" ? { candidates: [{ paragraphId: "p2", relatedParagraphIds: ["p3"] }, { paragraphId: "p3", relatedParagraphIds: [] }] } : stage === "dependencies" ? { paragraphIds: ["p3"] } : { findings: withFinding ? [{ title: "Interest starts earlier", explanation: "The deadline change may advance interest, subject to the holiday exception.", kind: "effect", passage: { paragraphId: "p2", quote: "Interest follows the payment deadline." }, related: [{ paragraphId: "p3", quote: "An exception applies on holidays." }] }] : [] }
-    if (stage === "judgment" && prompts.find(p => p.startsWith(s.id))?.includes('"targetPassage":{"id":"p3"')) (output as { findings: unknown[] }).findings = []
+    const prompt = prompts.find(p => p.startsWith(s.id)) ?? ""
+    const exception = prompt.includes('"targetPassage":{"id":"p3"')
+    const dependency = { explanation: "The timing depends on the amended deadline, subject to the exception.", passages: [{ paragraphId: "p2", quote: context.paragraphs[1]!.text }, { paragraphId: "p3", quote: context.paragraphs[2]!.text }] }
+    let output: object = stage === "meaning" || stage === "meaning-qualification" ? { meaning: "The deadline becomes earlier.", uncertainties: [] } : stage === "discovery" ? { candidates: [{ paragraphId: "p2", relatedParagraphIds: ["p3"] }, { paragraphId: "p3", relatedParagraphIds: [] }] } : stage === "dependencies" ? { paragraphIds: ["p3"] } : { effect: exception || !withFinding ? "unchanged" : "changed", dependency, findings: !exception && withFinding ? [{ title: "Interest starts earlier", explanation: "The deadline change may advance interest, subject to the holiday exception.", kind: "effect", passage: { paragraphId: "p2", quote: "Interest follows the payment deadline." }, related: [{ paragraphId: "p3", quote: "An exception applies on holidays." }] }] : [] }
+    output = outputFor?.(String(stage), prompt, output) ?? output
     outputs.set(s.id, output); s.time.idle = now++; s.outcome = "succeeded"
   }
   let app = new Hono(), dispose = () => {}
@@ -56,7 +60,7 @@ function harness() {
   const assess = (requestId = "one", current = context) => post("assess", { conversationId: root.id, requestId, turnId: turn.id, context: current })
   const poll = (assessmentId: string, current = context) => post("assessment", { conversationId: root.id, assessmentId, context: current })
   async function settled(id: string, current = context) { let r = await poll(id, current); for (let i = 0; i < 9 && r.body.status === "running"; i++) r = await poll(id, current); return r }
-  return { rows, outputs, stopped, submitted, prompts, turn, reviewed, assess, poll, post, settled, complete, install, dispose: () => dispose(), failNextSubmit: () => { failSubmission = true }, hold: (stage: string) => { hold = stage }, finding: (value: boolean) => { withFinding = value }, onRead: (f: (route: string) => void) => { onRead = f } }
+  return { rows, outputs, stopped, submitted, prompts, turn, reviewed, assess, poll, post, settled, complete, install, dispose: () => dispose(), outputFor: (f: (stage: string, prompt: string, fallback: object) => object) => { outputFor = f }, failNextSubmit: () => { failSubmission = true }, hold: (stage: string) => { hold = stage }, finding: (value: boolean) => { withFinding = value }, onRead: (f: (route: string) => void) => { onRead = f } }
 }
 test("current Word quotation checks reject invented evidence and mark inference", () => {
   const f = { title: "Effect", explanation: "Possible change", kind: "effect", passage: { paragraphId: "p2", quote: "Interest follows" } }
@@ -83,7 +87,7 @@ test("unchanged successful jobs are reused and prior native results remain histo
   const h = harness(); try { const a = await h.assess(); await h.settled(a.body.id); const count = h.submitted.length; const same = await h.assess("same"); const r = await h.settled(same.body.id); expect(h.submitted.length).toBe(count); expect(r.body.history?.[0]?.status).toBe("stale"); expect(r.body.history?.[0]?.findings.length).toBe(1); const changed = { ...context, text: context.text + "\rUnrelated address.", paragraphs: [...context.paragraphs, { id: "p4", text: "Unrelated address." }] }; const next = await h.assess("added", changed); await h.settled(next.body.id, changed); expect(h.submitted.filter(s => s.metadata.stage === "meaning").length).toBe(1); expect(h.submitted.filter(s => s.metadata.stage === "judgment").length).toBe(3) } finally { h.dispose() }
 })
 test("invalid candidate IDs and quotations cannot become complete no-finding results", async () => {
-  for (const stage of ["discovery", "judgment"]) { const h = harness(); h.hold(stage); try { const a = await h.assess(); await h.settled(a.body.id); const jobs = h.submitted.filter(s => s.metadata.stage === stage); for (const s of jobs) { h.complete(s); h.outputs.set(s.id, stage === "discovery" ? { candidates: [{ paragraphId: "invented", relatedParagraphIds: [] }] } : { findings: [{ title: "Invalid", explanation: "Unsupported", kind: "effect", passage: { paragraphId: "p2", quote: "invented" } }] }) } const r = await h.settled(a.body.id); expect(r.body.status).toBe("partial"); expect(r.body.gaps.length).toBeGreaterThan(0); if (stage === "judgment") expect(r.body.findings).toEqual([]); else expect(r.body.coverage.reviewed).toBe(0) } finally { h.dispose() } }
+  for (const stage of ["discovery", "judgment"]) { const h = harness(); h.hold(stage); try { const a = await h.assess(); await h.settled(a.body.id); const jobs = h.submitted.filter(s => s.metadata.stage === stage); for (const s of jobs) { h.complete(s); h.outputs.set(s.id, stage === "discovery" ? { candidates: [{ paragraphId: "invented", relatedParagraphIds: [] }] } : { effect: "changed", dependency: { explanation: "A supported timing dependency.", passages: [{ paragraphId: "p2", quote: context.paragraphs[1]!.text }] }, findings: [{ title: "Invalid", explanation: "Unsupported", kind: "effect", passage: { paragraphId: "p2", quote: "invented" } }] }) } const r = await h.settled(a.body.id); expect(r.body.status).toBe("partial"); expect(r.body.gaps.length).toBeGreaterThan(0); if (stage === "judgment") expect(r.body.findings).toEqual([]); else expect(r.body.coverage.reviewed).toBe(0) } finally { h.dispose() } }
 })
 test("narrowed scope does not resurrect earlier matter evidence; application status invalidates old output", async () => {
   const h = harness(); try { h.turn.metadata.sources = [{ id: "old-matter", name: "Earlier matter", provenance: "saved-version", quote: "PRIVATE EARLIER MATERIAL" }]; h.rows.set("new-question", { ...h.turn, id: "new-question", time: { created: 100, updated: 100 }, metadata: { ...h.turn.metadata, kind: "chat", input: { text: "Use only this document.", attachments: [] }, sources: [] } }); const a = await h.assess(); const r = await h.settled(a.body.id); expect(r.body.status).toBe("complete"); expect(h.prompts.join("\n")).not.toContain("PRIVATE EARLIER MATERIAL"); h.reviewed.proposalApplied = true; expect((await h.poll(a.body.id)).body.status).toBe("stale") } finally { h.dispose() }
@@ -131,4 +135,75 @@ test("disabled reconnect keeps the most recent result as explicitly historical",
     expect(result.body.history?.at(-1)?.status).toBe("disabled")
     expect(result.body.history?.at(-1)?.findings.length).toBe(1)
   } finally { h.dispose() }
+})
+
+test("explicit unchanged judgment retains qualifications and rejects contradictory findings", () => {
+  const finding = { title: "Still applies", explanation: "The proposal leaves this independent rule unchanged.", kind: "effect", passage: { paragraphId: "p3", quote: context.paragraphs[2]!.text } }
+  const dependency = { explanation: "This qualification limits the amended rule independently.", passages: [finding.passage] }
+  const result = verifiedConsequenceJudgment({ effect: "unchanged", dependency, findings: [] }, context, "unchanged", new Set(["p3"]), "p3")
+  expect(result?.findings).toEqual([])
+  expect(result?.dependencyPassages).toEqual([finding.passage])
+  expect(verifiedConsequenceJudgment({ effect: "unchanged", dependency, findings: [finding] }, context, "contradiction", new Set(["p3"]), "p3")).toBeUndefined()
+  expect(verifiedConsequenceJudgment({ effect: "unchanged", dependency, findings: [] }, context, "wrong-target", new Set(["p2", "p3"]), "p2")).toBeUndefined()
+  expect(verifiedConsequenceJudgment({ effect: "uncertain", dependency: null, findings: [{ ...finding, kind: "uncertain" }] }, context, "speculative", new Set(["p3"]), "p3")).toBeUndefined()
+})
+test("provisional target-only gaps stay unpublished and retrieved qualifications resolve them", async () => {
+  const h = harness(); h.hold("meaning-qualification")
+  h.outputFor((stage, prompt, fallback) => {
+    if (stage === "meaning") return { meaning: "The deadline changes, but an exception is not yet supplied.", uncertainties: ["The exception text is not yet available."] }
+    if (stage === "meaning-qualification") {
+      expect(prompt).toContain('"dependencyPassages"')
+      expect(prompt).toContain(context.paragraphs[2]!.text)
+      return { meaning: "The deadline becomes earlier, subject to the unchanged holiday exception.", uncertainties: [] }
+    }
+    return fallback
+  })
+  try {
+    const a = await h.assess(); const pending = await h.settled(a.body.id)
+    expect(pending.body.status).toBe("running")
+    expect(pending.body.meaning).toBeUndefined()
+    expect(pending.body.gaps).not.toContain("The exception text is not yet available.")
+    const final = h.submitted.find(s => s.metadata.stage === "meaning-qualification")!; h.complete(final)
+    const result = await h.settled(a.body.id)
+    expect(result.body.status).toBe("complete")
+    expect(result.body.meaning).toContain("unchanged holiday exception")
+    expect(result.body.gaps).toEqual([])
+    const count = h.submitted.length
+    const replay = await h.assess("qualified-replay"); await h.settled(replay.body.id)
+    expect(h.submitted.length).toBe(count)
+  } finally { h.dispose() }
+})
+test("a supported material uncertainty survives focused meaning qualification", async () => {
+  const h = harness()
+  h.outputFor((stage, prompt, fallback) => {
+    if (stage === "judgment" && prompt.includes('"targetPassage":{"id":"p2"')) return { effect: "uncertain", dependency: { explanation: "The amount depends on the amended deadline and an unresolved governing date.", passages: [{ paragraphId: "p2", quote: context.paragraphs[1]!.text }] }, findings: [{ title: "The amount depends on an unresolved date", explanation: "The deadline changes the calculation, but the governing date needs confirmation.", kind: "uncertain", passage: { paragraphId: "p2", quote: context.paragraphs[1]!.text } }] }
+    if (stage === "meaning-qualification") return { meaning: "The deadline becomes earlier, with a remaining question about the dependent calculation.", uncertainties: ["The governing date for the dependent calculation needs confirmation."] }
+    return fallback
+  })
+  try { const a = await h.assess(); const result = await h.settled(a.body.id); expect(result.body.status).toBe("partial"); expect(result.body.findings.map(f => f.kind)).toEqual(["uncertain"]); expect(result.body.gaps).toEqual(["The governing date for the dependent calculation needs confirmation."]) } finally { h.dispose() }
+})
+test("cancel during native creation or recovery cannot admit a background prompt", async () => {
+  const creating = harness()
+  try {
+    creating.onRead(route => {
+      if (route !== "/api/session") return
+      const admitted = [...creating.rows.values()].find(s => s.metadata.type === "word-consequence-assessment")
+      if (admitted) admitted.metadata.cancelled = true
+    })
+    const result = await creating.assess()
+    expect(result.body.status).toBe("cancelled")
+    expect(creating.submitted).toEqual([])
+    expect(creating.stopped.length).toBe(1)
+  } finally { creating.dispose() }
+  const recovering = harness()
+  try {
+    recovering.failNextSubmit()
+    expect((await recovering.assess()).status).toBe(503)
+    recovering.onRead(route => {
+      if (route.endsWith("/inbox")) [...recovering.rows.values()].find(s => s.metadata.type === "word-consequence-assessment")!.metadata.cancelled = true
+    })
+    const result = await recovering.assess()
+    expect(result.body.status).toBe("cancelled")
+    expect(recovering.submitted).toEqual([])
+  } finally { recovering.dispose() }
 })
