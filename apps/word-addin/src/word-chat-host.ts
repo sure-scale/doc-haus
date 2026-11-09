@@ -5,7 +5,7 @@ import type { WordChatAuthoredTableRow, WordChatAuthoredTableRowDeletion } from 
 import { prepareNativeRow, queueNativeRow, type NativeRowContext } from "./word-chat-native-row"
 import { nativeWordChatRowRefitWidths, verifyNativeWordChatAddedRow } from "./word-chat-native-row-verification"
 import { assertNativeWordChatRowDeletionTarget, verifyReviewedWordChatRowDeletionOracle, verifyNativeWordChatDeletedRow, verifyImportedWordChatDeletedRow } from "./word-chat-native-row-delete"
-import { assertWordChatTableImportPreimage, assertWordChatTableImportRange, assertWordChatTableImportFormatting } from "./word-chat-table-import"
+import { assertWordChatTableImportPreimage, assertWordChatTableImportRange, assertWordChatTableImportFormatting, WordChatTableImportError } from "./word-chat-table-import"
 import { normalizeNativeWordChatCommentIds as normalizeNativeWordChatAnnotationIds } from "./word-chat-native-comments"
 import { assertNativeWordChatParagraphInsertionTarget, verifyNativeWordChatParagraphInsertion } from "./word-chat-native-paragraph-insert"
 import { assertNativeWordChatParagraphSplitTarget, verifyNativeWordChatParagraphSplit } from "./word-chat-native-paragraph-split"
@@ -722,6 +722,9 @@ export class WordChatHost {
     // Only static descriptions reach the card. Keep native errors as causes;
     // their messages can contain document content or other private values.
     let confirmationNotice = "Word could not finish checking the deleted row with its document API."
+    let preparationNotice = "Word could not prepare the reviewed row deletion. Your document is unchanged."
+    let pairedImport = false
+    const preparing = (notice: string) => { preparationNotice = `${notice} Your document is unchanged.` }
     const confirm = (condition: boolean, notice: string) => {
       if (condition) return
       confirmationNotice = notice
@@ -734,11 +737,14 @@ export class WordChatHost {
       // Retain the exact strings being verified across subsequent Office reads;
       // the author callback must not be able to replace the payload afterwards.
       const tableImport=oracle?.tableImport===undefined ? undefined : {beforeOoxml:oracle.tableImport.beforeOoxml,ooxml:oracle.tableImport.ooxml}
+      pairedImport = tableImport !== undefined
+      if (pairedImport) preparing("The prepared row deletion could not be verified against the current document file.")
       await verifyReviewedWordChatRowDeletionOracle(source,{...oracle,tableImport},proposal)
+      if (pairedImport) preparing("Word could not begin reading the complete reviewed table.")
       return await this.word.run(async context => {
         if (tableImport !== undefined) {
           confirmationNotice="Word could not confirm the imported table's tracked deletion and document preservation."
-          return this.importDeletedRow(context,proposal,identity,tableImport,mayDispatch)
+          return this.importDeletedRow(context,proposal,identity,tableImport,preparing,mayDispatch)
         }
         if (!context.document.body.tables) throw captureMismatch("Word cannot read the reviewed table.")
         const native=context as unknown as NativeRowContext, prepared=await prepareNativeRow(native,proposal.table)
@@ -802,7 +808,10 @@ export class WordChatHost {
         failure.notice = `${confirmationNotice} Check the change in Word. Use Undo if needed; do not apply it again.`
         throw failure
       }
-      failure(error,"Word could not prepare the reviewed row deletion. Your document is unchanged.")
+      if (pairedImport && error instanceof WordChatTableImportError) {
+        throw new WordChatHostError(`${error.message} Your document is unchanged.`, "unchanged", {cause:error})
+      }
+      failure(error,preparationNotice)
     }
   }
 
@@ -810,16 +819,18 @@ export class WordChatHost {
    * may be renewed by Word; the imported-row verifier owns that scoped mapping.
    * The old native deletion path remains available only for older no-pair oracles. */
   private async importDeletedRow(context: WordChatContext, proposal: WordChatTableRowDeletionProposal, identity: string,
-    pair: {beforeOoxml:string;ooxml:string}, mayDispatch?: () => boolean): Promise<WordChatApplyResult> {
+    pair: {beforeOoxml:string;ooxml:string}, preparing: (notice:string) => void, mayDispatch?: () => boolean): Promise<WordChatApplyResult> {
     const body=context.document.body
     if (!body.tables) throw captureMismatch("Word cannot read the complete reviewed table.")
     type ImportTable=NativeTable & {getRange?(location:"Whole"):WordChatRange;rows:Collection<{rowIndex:number;cellCount:number;isHeader:boolean;values:string[][]}>}
     const expectedValues=proposal.table.rows.map(row=>row.map(cell=>cell.text))
     const expectedIds=proposal.table.rows.flat().map(cell=>cell.id)
     const read=async () => {
+      preparing("Word could not bind the reviewed table to its current rows and cells.")
       const prepared=await prepareNativeRow(context as unknown as NativeRowContext,proposal.table)
       const table=prepared.table as unknown as ImportTable
       if (typeof table.getRange!=="function" || !table.rows) throw captureMismatch("Word cannot bind the complete reviewed table range.")
+      preparing("Word could not read the complete table range and its boundaries.")
       const range=table.getRange("Whole"), all=body.paragraphs
       all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
       await context.sync()
@@ -845,8 +856,10 @@ export class WordChatHost {
         table.rows.items.length!==prepared.rowCount || table.rows.items.some((r,i)=>r.rowIndex!==i || r.cellCount!==prepared.width) || table.rows.items[proposal.rowIndex]!.isHeader!==false ||
         originalCells.some((cell,i)=>cell.value!==proposal.cells[i]) || tracking!==prepared.tracking || trackFormatting!==prepared.trackFormatting)
         throw captureMismatch("Word cannot confirm the complete table boundary or its reviewed cells.")
+      preparing("Word could not reconcile the document's current paragraph text and prior changes.")
       const inventory=await nativeInventory(context,all.items)
       if (JSON.stringify(inventory.map(p=>p.id))!==JSON.stringify(allIds)) throw captureMismatch("The document paragraphs changed during capture.")
+      preparing("Word could not refresh the complete table range before deletion.")
       const finalXml=body.getRange("Whole").getOoxml(), finalRange=range.getOoxml()
       rangeParagraphs.load("items/uniqueLocalId,items/tableNestingLevel")
       all.load("items/uniqueLocalId,items/tableNestingLevel");context.document.load("changeTrackingMode,trackFormatting")
@@ -855,11 +868,15 @@ export class WordChatHost {
         JSON.stringify(rangeParagraphs.items.map(p=>p.uniqueLocalId))!==JSON.stringify(rangeIds) || JSON.stringify(all.items.map(p=>p.uniqueLocalId))!==JSON.stringify(allIds) ||
         context.document.changeTrackingMode!==tracking || context.document.trackFormatting!==trackFormatting)
         throw captureMismatch("The complete table changed during capture.")
+      preparing("Word could not verify the complete table range before deletion.")
       assertWordChatTableImportRange(finalRange.value,finalXml.value,rangeIds,proposal)
+      preparing("The complete table could not be matched to the prepared deletion.")
       assertWordChatTableImportPreimage(pair.beforeOoxml,finalXml.value,inventory,proposal)
       return {range,rangeIds,rangeXml:finalRange.value,xml:finalXml.value,inventory,original:originalText,tracking,trackFormatting,rowCount:prepared.rowCount}
     }
-    const initial=await read(), beforeState=await this.documentState(context), fresh=await read()
+    const initial=await read()
+    preparing("Word could not read the document's comments and prior tracked changes.")
+    const beforeState=await this.documentState(context), fresh=await read()
     if (!sameNativeWordChatBodySnapshot(initial.xml,fresh.xml) || !sameNativeWordChatBodySnapshot(initial.rangeXml,fresh.rangeXml) ||
       JSON.stringify(initial.inventory)!==JSON.stringify(fresh.inventory) || JSON.stringify(initial.rangeIds)!==JSON.stringify(fresh.rangeIds) ||
       initial.original!==fresh.original || initial.tracking!==fresh.tracking || initial.trackFormatting!==fresh.trackFormatting)

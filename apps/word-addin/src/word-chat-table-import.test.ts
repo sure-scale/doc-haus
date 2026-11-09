@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { assertWordChatTableImportPreimage, assertWordChatTableImportRange, assertWordChatTableImportFormatting } from "./word-chat-table-import"
+import { assertWordChatTableImportPreimage, assertWordChatTableImportRange, assertWordChatTableImportFormatting, WordChatTableImportError, type WordChatTableImportErrorCode } from "./word-chat-table-import"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", P = "http://schemas.microsoft.com/office/2006/xmlPackage"
 const REL = "http://schemas.openxmlformats.org/package/2006/relationships", R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -77,4 +77,58 @@ test("complete native table ranges permit only matched section export context", 
   expect(() => assertWordChatTableImportRange(pack(table+'<w:sectPr><w:pgSz w:w="12345"/></w:sectPr>'), fresh, ids, proposal)).toThrow()
   expect(() => assertWordChatTableImportRange(scoped, fresh, [...ids,"outside"], proposal)).toThrow()
   expect(() => assertWordChatTableImportRange(scoped, fresh, ids.slice(1), proposal)).toThrow()
+})
+
+
+test("categorical import notices distinguish failed boundaries without exposing captured content", () => {
+  const ids = proposal.table.rows.flat().map(cell => cell.id)
+  const enclosed = table.replace(p("Item"), '<w:p><w:bookmarkStart w:id="9" w:name="inside"/><w:r><w:t>Item</w:t></w:r><w:bookmarkEnd w:id="9"/></w:p>')
+  const cases: Array<[WordChatTableImportErrorCode, () => void]> = [
+    ["package_xml", () => assertWordChatTableImportPreimage("<!DOCTYPE package><private-capture/>", fresh, inventory, proposal)],
+    ["document_context", () => assertWordChatTableImportPreimage(scoped, fresh.replace("<w:body>", '<w:body xml:space="preserve">'), inventory, proposal)],
+    ["table_preimage", () => assertWordChatTableImportPreimage(scoped, fresh.replace('w:w="1800"', 'w:w="2400"'), inventory, proposal)],
+    ["table_boundary", () => assertWordChatTableImportPreimage(pack(enclosed), pack(p("Outside")+enclosed+p("After")), inventory, proposal)],
+    ["formatting_dependencies", () => assertWordChatTableImportPreimage(scoped, fresh.replace('w:val="22"', 'w:val="28"'), inventory, proposal)],
+    ["range_paragraphs", () => assertWordChatTableImportRange(scoped, fresh, [...ids,"private-capture"], proposal)],
+    ["range_table", () => assertWordChatTableImportRange(scoped.replace('w:w="1800"', 'w:w="2400"'), fresh, ids, proposal)],
+    ["range_section", () => assertWordChatTableImportRange(pack(table+'<w:sectPr><w:pgSz w:w="12345"/></w:sectPr>'), fresh, ids, proposal)],
+    ["formatting_dependencies", () => assertWordChatTableImportFormatting(scoped, fresh.replace('w:val="22"', 'w:val="28"'))],
+  ]
+  const notices = new Set<string>()
+  for (const [code, reject] of cases) {
+    let caught: unknown
+    try { reject() } catch (error) { caught = error }
+    expect(caught).toBeInstanceOf(WordChatTableImportError)
+    const error = caught as WordChatTableImportError
+    expect(error.code).toBe(code)
+    expect(error.message).toBe(new WordChatTableImportError(code).message)
+    expect(error.message).not.toContain("private-capture")
+    expect(error.message).not.toContain("styles.xml")
+    expect(error.message).not.toContain("<")
+    notices.add(error.message)
+  }
+  expect(notices.size).toBe(8)
+})
+
+test("wrapped native binding and unsupported XML causes stay private behind static notices", () => {
+  let binding: unknown
+  try { assertWordChatTableImportPreimage(scoped, fresh, inventory.map((p,i) => i === 1 ? {...p,id:"private-capture"} : p), proposal) }
+  catch (error) { binding = error }
+  expect(binding).toBeInstanceOf(WordChatTableImportError)
+  expect((binding as WordChatTableImportError).code).toBe("table_preimage")
+  expect((binding as WordChatTableImportError).cause).toBeInstanceOf(Error)
+  expect((binding as WordChatTableImportError).message).not.toContain("private-capture")
+  const choice = (xml: string) => xml.replace("</w:styles>", '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Fallback/></mc:AlternateContent></w:styles>')
+  let unsupported: unknown
+  try { assertWordChatTableImportPreimage(choice(scoped), choice(fresh), inventory, proposal) }
+  catch (error) { unsupported = error }
+  expect(unsupported).toBeInstanceOf(WordChatTableImportError)
+  expect((unsupported as WordChatTableImportError).code).toBe("formatting_dependencies")
+  expect((unsupported as WordChatTableImportError).cause).toBeInstanceOf(Error)
+  const privateCause = new Error("private-capture <w:p>secret text</w:p> /private/styles.xml")
+  const safe = new WordChatTableImportError("package_xml", privateCause)
+  expect(safe.cause).toBe(privateCause)
+  expect(safe.message).not.toContain("private-capture")
+  expect(safe.message).not.toContain("secret text")
+  expect(safe.message).not.toContain("styles.xml")
 })

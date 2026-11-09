@@ -51,12 +51,12 @@ function office(options:{failure?:string;tracking?:string;formatting?:boolean}={
   return flat({...base,[MAIN]:main(tableXml()+extra)})
  }
  const paragraphs=texts.map((text,i)=>({get uniqueLocalId(){return localId(i)},get text(){return current(i)},tableNestingLevel:i>0&&i<5?1:0,styleBuiltIn:"Normal",spaceBefore:0,spaceAfter:0,lineSpacing:12,load(_properties:string){},getRange(_location?:string){return paragraphRange(i,text)}}))
- const paragraphRange=(i:number,text:string)=>({kind:"paragraph",index:i,getReviewedText(view:string){return {value:view==="Original"?text:current(i)}},getOoxml(){return {value:flat({...base,[MAIN]:main(state.applied&&(i===3||i===4)?deletedCell(text,i===3?2:4).replace(/^<w:tc><w:tcPr>.*?<\/w:tcPr>/,"").replace(/<\/w:tc>$/,""):para(text))})}}})
- const range={paragraphs:collection(()=>failure==="partial-ids"?paragraphs.slice(1,4):failure==="leak-ids"?paragraphs.slice(0,5):paragraphs.slice(1,5)),getOoxml(){return {value:scopedXml()}},compareLocationWith(other:{kind?:string;index?:number}){return {value:failure==="overlap"&&other.kind==="paragraph"?"Overlap":other.kind==="paragraph"?(other.index===0?"AdjacentAfter":"AdjacentBefore"):"Inside"}},insertOoxml(xml:string,location:string){state.writes.push({xml,location,tracking});if(failure==="insert-throw")throw Error("PRIVATE native insert");state.queued=true;return range}}
- const nativeTable=(createdAfter:boolean)=>({rowCount:2,isUniform:true,get values(){return [[current(1),current(2)],[current(3),current(4)]]},rows:collection(()=>[0,1].map(ri=>({rowIndex:ri,cellCount:2,isHeader:false,values:[[current(1+ri*2),current(2+ri*2)]],delete(){throw Error("Legacy deletion must not dispatch")}}))),load(_properties:string){},getRange(location:"Whole"){state.rangeLocations.push(location);return range},getCell(ri:number,ci:number){if(state.applied&&!createdAfter)throw Error("Stale table proxy");const i=1+ri*2+ci;return {body:{paragraphs:collection(()=>[paragraphs[i]!]),getRange(){return paragraphRange(i,texts[i]!)}}}}})
- const bodyRange={kind:"body",getOoxml(){return {value:full()}},getReviewedText(view:string){return {value:(view==="Original"?texts:texts.map((_,i)=>current(i))).join("\r")}},getTrackedChanges(){return collection(()=>[])},getComments(){return collection(()=>state.applied&&failure==="post-comments"?[{author:"Reviewer",content:"Changed",resolved:false}]:[])}}
+ const paragraphRange=(i:number,text:string)=>({kind:"paragraph",index:i,getReviewedText(view:string){if(failure==="read-paragraph"&&i===0)throw Error("PRIVATE paragraph text");return {value:view==="Original"?text:current(i)}},getOoxml(){return {value:flat({...base,[MAIN]:main(state.applied&&(i===3||i===4)?deletedCell(text,i===3?2:4).replace(/^<w:tc><w:tcPr>.*?<\/w:tcPr>/,"").replace(/<\/w:tc>$/,""):para(text))})}}})
+ const range={paragraphs:collection(()=>failure==="partial-ids"?paragraphs.slice(1,4):failure==="leak-ids"?paragraphs.slice(0,5):paragraphs.slice(1,5)),getOoxml(){return {value:scopedXml()}},compareLocationWith(other:{kind?:string;index?:number}){if(failure==="read-range")throw Error("PRIVATE range detail");return {value:failure==="overlap"&&other.kind==="paragraph"?"Overlap":other.kind==="paragraph"?(other.index===0?"AdjacentAfter":"AdjacentBefore"):"Inside"}},insertOoxml(xml:string,location:string){state.writes.push({xml,location,tracking});if(failure==="insert-throw")throw Error("PRIVATE native insert");state.queued=true;return range}}
+ const nativeTable=(createdAfter:boolean)=>({rowCount:2,isUniform:true,get values(){return [[current(1),current(2)],[current(3),current(4)]]},rows:collection(()=>[0,1].map(ri=>({rowIndex:ri,cellCount:2,isHeader:false,values:[[current(1+ri*2),current(2+ri*2)]],delete(){throw Error("Legacy deletion must not dispatch")}}))),load(_properties:string){if(failure==="read-binding")throw Error("PRIVATE table detail")},getRange(location:"Whole"){state.rangeLocations.push(location);return range},getCell(ri:number,ci:number){if(state.applied&&!createdAfter)throw Error("Stale table proxy");const i=1+ri*2+ci;return {body:{paragraphs:collection(()=>[paragraphs[i]!]),getRange(){return paragraphRange(i,texts[i]!)}}}}})
+ const bodyRange={kind:"body",getOoxml(){return {value:full()}},getReviewedText(view:string){return {value:(view==="Original"?texts:texts.map((_,i)=>current(i))).join("\r")}},getTrackedChanges(){return collection(()=>[])},getComments(){if(failure==="read-comments")throw Error("PRIVATE comment content");return collection(()=>state.applied&&failure==="post-comments"?[{author:"Reviewer",content:"Changed",resolved:false}]:[])}}
  const document={body:{paragraphs:collection(()=>paragraphs),tables:collection(()=>[nativeTable(state.applied)]),getRange(){return bodyRange}},get changeTrackingMode(){return tracking},set changeTrackingMode(value:string){state.modes.push(value);tracking=value},get trackFormatting(){return formatting},set trackFormatting(value:boolean){state.formats.push(value);formatting=value},load(_props:string){},saved:false}
- const word={async run(fn:(context:unknown)=>Promise<unknown>){state.runs++;return fn({document,async sync(){if(state.queued){state.queued=false;state.applied=true;if(failure==="restore-ignored")formatting=!formatting;if(failure==="lost-sync"&&!state.failed){state.failed=true;throw Error("PRIVATE lost sync")}}}})}} as WordChatWord
+ const word={async run(fn:(context:unknown)=>Promise<unknown>){state.runs++;if(failure==="read-start")throw Error("PRIVATE context detail");return fn({document,async sync(){if(state.queued){state.queued=false;state.applied=true;if(failure==="restore-ignored")formatting=!formatting;if(failure==="lost-sync"&&!state.failed){state.failed=true;throw Error("PRIVATE lost sync")}}}})}} as WordChatWord
  const host=new WordChatHost(word,()=>true)
  const apply=(payload=oracle(),mayDispatch?:()=>boolean)=>host.applyRowDeletion(proposal,async()=>source,async()=>{state.authorCalls++;return payload},mayDispatch)
  return {state,document,apply}
@@ -110,4 +110,26 @@ test("dispatch or post-proof failure restores both settings and fences an uncert
   await expect(fixture.apply()).rejects.toMatchObject({mutationState:"uncertain"})
   expect(fixture.state.authorCalls).toBe(1);expect(fixture.state.writes).toHaveLength(1)
  }
+})
+
+
+test("paired preparation failures identify safe read phases without exposing native content",async()=>{
+ const cases=[
+  ["read-start","Word could not begin reading the complete reviewed table."],
+  ["read-binding","Word could not bind the reviewed table to its current rows and cells."],
+  ["read-range","Word could not read the complete table range and its boundaries."],
+  ["read-paragraph","Word could not reconcile the document's current paragraph text and prior changes."],
+  ["read-comments","Word could not read the document's comments and prior tracked changes."],
+ ] as const
+ for(const [failure,message] of cases){
+  const fixture=office({failure})
+  const error=await fixture.apply().catch(error=>error as WordChatHostError)
+  expect(error).toMatchObject({mutationState:"unchanged",message:`${message} Your document is unchanged.`})
+  expect((error as WordChatHostError).cause).toBeInstanceOf(Error)
+  expect((error as WordChatHostError).message).not.toContain("PRIVATE")
+  expect(fixture.state.writes).toHaveLength(0);expect(fixture.state.modes).toEqual([])
+ }
+ const fixture=office(),payload=oracle();payload.proposalId="different"
+ await expect(fixture.apply(payload)).rejects.toMatchObject({mutationState:"unchanged",message:"The prepared row deletion could not be verified against the current document file. Your document is unchanged."})
+ expect(fixture.state.runs).toBe(0)
 })
