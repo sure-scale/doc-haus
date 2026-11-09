@@ -339,13 +339,16 @@ export function nativeWordChatParagraphCurrentText(xml: string): string | undefi
   } catch { return }
 }
 
-/** Reconcile only the exact reviewed-text ambiguity where Current retains
- * deleted runs. Original and the paragraph's own XML must independently agree;
- * arbitrary API differences and unmodelled inline content are never repaired. */
+/** Keep already-correct API views under the existing XML text grammar. Repair
+ * only the exact reviewed-text ambiguity where Current retains deleted runs;
+ * that repair requires the narrower supported inline grammar below. */
 export function reconcileNativeWordChatParagraphText(xml: string, current: string, original: string): string {
   const fail = (): never => { throw new Error("Native paragraph reviewed text mismatch") }
   const { nodes } = content(parse(xml, 16_000_000), true, true)
   if (nodes.length !== 1) return fail()
+  const paragraph = nodes[0]!
+  if (original !== text(paragraph, "Original")) return fail()
+  if (current === text(paragraph, "Current")) return current
   const views = { Current: "", Original: "", Markup: "" }
   const children = (node: Element) => {
     if (Array.from(node.childNodes).some(n => n.nodeType !== 1 && (n.nodeType !== 3 || Boolean(n.nodeValue?.trim())))) return fail()
@@ -377,7 +380,7 @@ export function reconcileNativeWordChatParagraphText(xml: string, current: strin
       } else return fail()
     })
   }
-  walk(nodes[0]!, "p")
+  walk(paragraph, "p")
   if (original !== views.Original || current !== views.Current && current !== views.Markup) return fail()
   return views.Current
 }

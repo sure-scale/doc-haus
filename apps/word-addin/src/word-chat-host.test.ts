@@ -89,6 +89,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     windowsText: false,
     bodyOoxmlAfterWrite: undefined as undefined | (() => string),
     paragraphReviewedAfterWrite: undefined as undefined | ((id: string, version: string) => string | undefined),
+    paragraphReviewed: undefined as undefined | ((id: string, version: string) => string | undefined),
     postwriteParagraphExports: [] as string[],
   }
   const text = () => state.paragraphs.map((p) => p.text).join(state.separator)
@@ -276,8 +277,9 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       if (version === "Original" && state.listInsertions && this.start === 0 && this.end === text().length) return {value:state.listOriginal}
       const paragraphs = state.paragraphs.filter(p => { const at = position(p.id); return this.start <= at.start && at.end <= this.end })
       const complete = paragraphs.length && position(paragraphs[0]!.id).start === this.start && position(paragraphs.at(-1)!.id).end === this.end
-      if (this.paragraphContent && complete && paragraphs.length === 1 && state.writes.length) {
-        const override = state.paragraphReviewedAfterWrite?.(paragraphs[0]!.id, version ?? "Current")
+      if (this.paragraphContent && complete && paragraphs.length === 1) {
+        const id = paragraphs[0]!.id, view = version ?? "Current"
+        const override = (state.writes.length ? state.paragraphReviewedAfterWrite?.(id, view) : undefined) ?? state.paragraphReviewed?.(id, view)
         if (override !== undefined) return { value: override }
       }
       const deletedMark = (p: NativeParagraph) => {
@@ -622,6 +624,45 @@ test("native reviewed text refuses inconsistent Original and arbitrary Current w
     expect(state.writes).toHaveLength(1)
     await expect(host.apply(input)).rejects.toThrow("may already contain this change")
     expect(state.writes).toHaveLength(1)
+  }
+})
+
+test("native reviewed text retains an already-correct rich revised neighbour during capture and an ordinary edit", async () => {
+  for (const rich of [
+    '<w:hyperlink w:anchor="reference"><w:r><w:t>Reference</w:t></w:r></w:hyperlink>',
+    '<w:fldSimple w:instr="REF reference"><w:r><w:t>Reference</w:t></w:r></w:fldSimple>',
+    '<w:sdt><w:sdtPr/><w:sdtContent><w:r><w:t>Reference</w:t></w:r></w:sdtContent></w:sdt>',
+  ]) {
+    const { state, host, text } = office(["Old clause.", "Reference added"], true)
+    const neighbour = `<w:p>${rich}<w:ins w:id="1" w:author="Earlier reviewer"><w:r><w:t xml:space="preserve"> added</w:t></w:r></w:ins></w:p>`
+    state.paragraphXml.set("paragraph-1", neighbour)
+    state.revisions = [["Old clause.".length + 1 + "Reference".length, "Old clause.".length + 1 + "Reference added".length]]
+    state.paragraphReviewed = (id, view) => id !== "paragraph-1" ? undefined : view === "Original" ? "Reference" : "Reference added"
+    state.selection = [0, 3]
+    const snapshot = await host.capture(true)
+    expect(snapshot.paragraphs).toEqual([{ id: "paragraph-0", text: "Old clause." }, { id: "paragraph-1", text: "Reference added" }])
+    expect((await host.apply({ proposalId: "rich-revised-neighbour", target: snapshot.selection!, replacement: "New" })).status).toBe("applied")
+    expect(text()).toBe("New clause.\rReference added")
+    expect(state.paragraphXml.get("paragraph-1")).toBe(neighbour)
+    expect(state.writes).toHaveLength(1)
+    const at = text().indexOf("Reference")
+    state.selection = [at, at + "Reference added".length]
+    const protectedTarget = (await host.selection())!
+    await expect(host.apply({ proposalId: "rich-target-protection", target: protectedTarget, replacement: "Reference revised" })).rejects.toThrow("contains existing revisions")
+    expect(state.writes).toHaveLength(1)
+  }
+})
+
+test("native reviewed text still refuses a rich revised neighbour with mismatched API views", async () => {
+  for (const wrong of ["Current", "Original"]) {
+    const { state, host } = office(["Old clause.", "Reference added"], true)
+    state.paragraphXml.set("paragraph-1", '<w:p><w:hyperlink w:anchor="reference"><w:r><w:t>Reference</w:t></w:r></w:hyperlink><w:ins w:id="1"><w:r><w:t xml:space="preserve"> added</w:t></w:r></w:ins></w:p>')
+    state.paragraphReviewed = (id, view) => id !== "paragraph-1" ? undefined : view === wrong ? "Wrong API wording" : view === "Original" ? "Reference" : "Reference added"
+    state.selection = [0, 3]
+    const target = (await host.selection())!
+    await expect(host.capture(true)).rejects.toThrow()
+    await expect(host.apply({ proposalId: `rich-revised-mismatch-${wrong}`, target, replacement: "New" })).rejects.toThrow()
+    expect(state.writes).toHaveLength(0)
   }
 })
 

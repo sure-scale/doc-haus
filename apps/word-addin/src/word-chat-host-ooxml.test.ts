@@ -643,5 +643,18 @@ test("reviewed paragraph reconciliation refuses missing, ambiguous and unmodelle
     '<w:ins><w:del><w:r><w:delText>Value</w:delText></w:r></w:del></w:ins>',
     '<w:del><w:r><w:t>Value</w:t></w:r></w:del>',
     '<w:r><w:t>Value</w:t><w:instrText>FIELD</w:instrText></w:r>',
-  ]) expect(() => reconcileNativeWordChatParagraphText(flat(`<w:p>${inline}</w:p>`), "Value", "Value")).toThrow()
+  ]) expect(() => reconcileNativeWordChatParagraphText(flat(`<w:p>${inline}</w:p>`), "ValueValue", "Value")).toThrow()
+})
+
+test("reviewed paragraph reconciliation preserves correct rich views without repairing ambiguous rich content", () => {
+  for (const rich of [
+    '<w:hyperlink w:anchor="reference"><w:r><w:t>Reference</w:t></w:r></w:hyperlink>',
+    '<w:fldSimple w:instr="REF reference"><w:r><w:t>Reference</w:t></w:r></w:fldSimple>',
+    '<w:sdt><w:sdtContent><w:r><w:t>Reference</w:t></w:r></w:sdtContent></w:sdt>',
+  ]) {
+    const xml = flat(`<w:p>${rich}<w:ins><w:r><w:t xml:space="preserve"> new</w:t></w:r></w:ins><w:del><w:r><w:delText xml:space="preserve"> old</w:delText></w:r></w:del></w:p>`)
+    expect(reconcileNativeWordChatParagraphText(xml, "Reference new", "Reference old")).toBe("Reference new")
+    expect(() => reconcileNativeWordChatParagraphText(xml, "Reference new old", "Reference old")).toThrow()
+    expect(() => reconcileNativeWordChatParagraphText(xml, "Reference new", "Wrong original")).toThrow()
+  }
 })
