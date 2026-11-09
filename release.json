@@ -1,5 +1,5 @@
 {
-  "version": 24,
-  "name": "2.4.0",
-  "notes": "- Clearer plans for work involving several documents, attachments and templates, with the client’s position, intended reader and date style carried through drafting.\n- More focused checks against source facts and instructions to identify omissions, conflicting sources and unsupported wording.\n- Drafting notes assembled from checked sections, with document references and clearer explanations of changes, qualifications and open points.\n- Better handling of missing facts, drafting permissions and saved answers, keeping unresolved facts visible and avoiding repeated questions.\n- More reliable pause and resume, reuse of completed work, and recovery from temporary connection or provider-capacity interruptions.\n- More reliable Word paragraph and table editing, with highlighted template values and editable missing fields in batch preview.\n- Background-assistant controls and clearer AI usage reporting by agent."
+  "version": 25,
+  "name": "2.4.1",
+  "notes": "- More faithful Word numbering and document imports, preserving escaped punctuation and tracked-change context.\n- More reliable amendment proposals, with clearer explanations when a requested Word change is unsupported and the same strict source checks.\n- Better tables, comparisons and drafting notes in chat, preserving literal text, code and qualifications when conversations are streamed or reopened.\n- Word review cards stop sending edits after their pane closes.\n\nKnown limitation: removing inherited bold, italic or underline remains unsupported outside Word."
 }
