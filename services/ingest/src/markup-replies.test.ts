@@ -44,7 +44,7 @@ const block = (prompt: string, tag: string) => {
 const revision = (text: string) => listed.revisions.find(row => row.text.includes(text))!
 const VALID = JSON.stringify({ reply: "Forty-five days works for us if [[stock report cadence]] is agreed.", open_items: ["Confirm the stock report cadence."] })
 /** The supply agreement with each edit's `from` (found once) replaced in its part and each renamed reviewer renamed throughout, uploaded as `name` and listed. */
-async function variant(name: string, edits: [part: string, from: string, to: string][], renamed: Record<string, string> = {}) {
+async function variant(name: string, edits: [part: string, from: string, to: string][], renamed: Record<string, string> = {}, existing?: "keep-both") {
   const files = unzipSync(new Uint8Array(counterpartyMarkupDocx()))
   for (const part of Object.keys(files)) if (part.endsWith(".xml"))
     for (const [from, to] of Object.entries(renamed)) files[part] = strToU8(strFromU8(files[part]!).split(from).join(to))
@@ -55,6 +55,7 @@ async function variant(name: string, edits: [part: string, from: string, to: str
   }
   const form = new FormData()
   form.append("file", new File([zipSync(files)], name))
+  if (existing) form.append("existing", existing)
   expect((await request(`/matters/${matter.id}/documents`, { method: "POST", body: form })).status).toBe(200)
   return await (await request(`/matters/${matter.id}/documents/markup?name=${name}`)).json() as View
 }
@@ -266,7 +267,8 @@ test("an instruction planted in the clause's plain text, outside any change or c
 
 test("a reply that repeats the planted text is returned for the lawyer to check, with the matching wording named, and no correction", async () => {
   const name = "supply-repeated.docx"
-  const view = await variant(name, [["word/comments.xml", comments[0]!.text, plantedComment]])
+  // Deliberately keep a separate copy of the earlier supply-planted-root fixture.
+  const view = await variant(name, [["word/comments.xml", comments[0]!.text, plantedComment]], {}, "keep-both")
   const reply = `On "${plantedComment}": forty-five days works for us.`
   answers(JSON.stringify({ reply, open_items: [] }))
   const response = await draft({ base_sha256: view.version.sha256, thread: 0 }, undefined, name)
