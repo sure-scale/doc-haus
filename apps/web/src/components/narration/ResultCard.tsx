@@ -1,4 +1,4 @@
-import { documentContentUrl } from "../../api/ingest/documents"
+import { documentDownloadUrl } from "../../api/ingest/exports"
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
 import DraftedList from "../drafting/DraftedList"
 import { addedDraftNote, checklistFindingsCount, draftedGroups, findingsTitle, OUTPUT_ROLE, type DraftedOutput } from "../drafting/model"
@@ -81,7 +81,7 @@ export default function ResultCard({
               {loneCombined ? (
                 <CombinedDownload matterId={matterId} name={loneCombined} />
               ) : (
-                <a href={documentContentUrl(matterId, lone.name)} download={lone.name}>
+                <a href={documentDownloadUrl(matterId, lone.name)} download={lone.name}>
                   Download
                 </a>
               )}
@@ -146,7 +146,7 @@ function ReviewRow({
         {combined ? (
           <CombinedDownload matterId={matterId} name={combined} />
         ) : (
-          <a href={documentContentUrl(matterId, output.name)} download={output.name} aria-label={`Download ${output.name}`}>
+          <a href={documentDownloadUrl(matterId, output.name)} download={output.name} aria-label={`Download ${output.name}`}>
             Download
           </a>
         )}
@@ -159,7 +159,7 @@ function ReviewRow({
  * file saved in the matter. */
 function CombinedDownload({ matterId, name }: { matterId: string; name: string }) {
   return (
-    <a href={documentContentUrl(matterId, name)} download={name} aria-label={`Download ${name}`} title="Download the memo and the draft as one .docx">
+    <a href={documentDownloadUrl(matterId, name)} download={name} aria-label={`Download ${name}`} title="Download the memo and the draft as one .docx">
       Download
     </a>
   )

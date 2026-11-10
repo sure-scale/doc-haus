@@ -1,7 +1,8 @@
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
-import type { ChronologyCoverage } from "../../../dochaus/lib/chronology"
+import type { Chronology, ChronologyCoverage } from "../../../dochaus/lib/chronology"
+import { readPinnedSourceVersions } from "../../../dochaus/lib/source-version-dependencies"
 import {
   CHRONOLOGY_EXPORT_LABEL,
   type ChronologyExportRequest,
@@ -19,7 +20,10 @@ export function chronologyExportSnapshot(
   input: ChronologyExportRequest,
   now = Date.now(),
 ): ChronologyExportSnapshot {
-  const saved = readChronology(directory)
+  return snapshotFromSaved(directory, matterId, input, now, readChronology(directory))
+}
+
+function snapshotFromSaved(directory: string, matterId: string, input: ChronologyExportRequest, now: number, saved: Chronology): ChronologyExportSnapshot {
   if (saved.revision !== input.expectedRevision)
     throw new ChronologyError(
       "The chronology changed. Refresh the export preview before downloading.",
@@ -121,6 +125,20 @@ export function chronologyExportSnapshot(
   }
 }
 
+function sourceVersions(directory: string, saved: Chronology, input: ChronologyExportRequest) {
+  const ids = new Set(input.eventIds)
+  const selected = saved.events.filter(event => !event.supersededBy?.length && (input.includeHidden || !event.hidden)
+    && (input.scope !== "filtered" || ids.has(event.id)))
+  const dates = selected.flatMap(event => [event.date, ...event.accounts.map(account => account.date)])
+  // Projection adds current pending coverage for newly arrived sources. Only
+  // saved coverage/evidence/date pins describe the work this export contains.
+  return readPinnedSourceVersions(directory, [
+    ...saved.coverage.map(source => ({ name: source.documentName, sha256: source.version })),
+    ...selected.flatMap(event => event.accounts.flatMap(account => account.evidence.map(evidence => ({ name: evidence.documentName, sha256: evidence.version })))),
+    ...dates.flatMap(date => date.relative ? [{ name: date.relative.anchorDocument, sha256: date.relative.anchorVersion }] : []),
+  ])
+}
+
 function publicCoverage(source: ChronologyCoverage): ChronologyCoverage {
   return {
     sourceId: source.sourceId,
@@ -155,11 +173,13 @@ export async function writeChronologyExport(
     directory,
     [name, ".dochaus/chronology.json", ".dochaus/source-corpus"],
     async () => {
-      const snapshot = chronologyExportSnapshot(directory, matterId, input, now)
+      const saved = readChronology(directory)
+      const basis = sourceVersions(directory, saved, input)
+      const snapshot = snapshotFromSaved(directory, matterId, input, now, saved)
       const buffer = await serialize(snapshot)
       const written = await writeDeliverable(directory, name, buffer, {
         precondition: { kind: "create" },
-        version: { origin: "generated", actor, label: CHRONOLOGY_EXPORT_LABEL },
+        version: { origin: "generated", actor, label: CHRONOLOGY_EXPORT_LABEL, sourceVersions: basis },
       })
       // The deliverable writer adds stable paragraph pointers. Return the exact
       // canonical bytes whose hash was captured in document_versions.

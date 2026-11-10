@@ -1,6 +1,7 @@
 import DocumentExchanges from "./DocumentExchanges"
 import SourceBasisNotice from "./SourceBasisNotice"
 import { linkedReturnContentUrl } from "../api/ingest/exchanges"
+import { fetchDocumentExportBytes } from "../api/ingest/exports"
 import { useEffect, useId, useRef, useState } from "react"
 import type { CompareParams } from "../api/ingest/compare"
 import { humanizeError } from "../api/ingest/errors"
@@ -251,7 +252,7 @@ export default function VersionsPanel({
   async function download(version: DocumentVersion) {
     setRowError(undefined)
     try {
-      saveVersionFile(await fetchVersionBytes(matterId, version.id), name, version.number)
+      saveVersionFile(await (version.ext === ".docx" ? fetchDocumentExportBytes(matterId, { versionId: version.id }) : fetchVersionBytes(matterId, version.id)), name, version.number)
     } catch (cause) {
       const reason = unavailableReason(cause)
       if (reason) onUnavailable(version.id, reason)

@@ -17,6 +17,7 @@ import { templateBatchRoutes, withTemplateBatches } from "./template-batch-route
 import { registeredCombinedParts } from "./combined-output"
 import { DocumentExchangeError, readDocumentExchangeRequest } from "./document-exchanges"
 import { documentExchangeRoutes } from "./document-exchange-routes"
+import { documentExportRoutes, prepareDocumentExportCopy } from "./document-export"
 import { clauseHistoryRoutes } from "./clause-history"
 import { documentLabelRoutes } from "./document-labels"
 import { pdfPassageRoutes } from "./pdf-page"
@@ -114,6 +115,7 @@ import { recoverDocumentMutations } from "./document-mutation"
 import { appendAcceptedChangesToNotes } from "./notes-addendum"
 import {
   findVersionBySha,
+  readAvailableDocumentVersions,
   oneLine,
   purgeVersionBytes,
   sweepRemovedVersionBytes,
@@ -172,7 +174,7 @@ process.on("unhandledRejection", (reason) => {
 // on localhost; a wildcard would let any site in a user's browser hit this
 // service. Non-browser callers (curl, the opencode server) send no Origin and are
 // unaffected.
-const localCors = cors({ origin: (origin) => (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null), exposeHeaders: ["X-DocHaus-Revision-Notice", "X-DocHaus-Export-Name", "X-DocHaus-Chronology-Revision", "X-DocHaus-Batch-Missing", "X-DocHaus-Draft-Number", "X-DocHaus-Exchange-Id"] })
+const localCors = cors({ origin: (origin) => (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null), exposeHeaders: ["X-DocHaus-Revision-Notice", "X-DocHaus-Export-Name", "X-DocHaus-Chronology-Revision", "X-DocHaus-Export-Version", "X-DocHaus-Export-Identity", "X-DocHaus-Source-Version", "X-DocHaus-Source-Sha256", "X-DocHaus-Batch-Missing", "X-DocHaus-Draft-Number", "X-DocHaus-Exchange-Id"] })
 app.use("*", async (c, next) => {
   if (wordTokenPath(c.req.path)) return wordCors(c, next)
   if (/^Bearer /i.test(c.req.header("Authorization") ?? ""))
@@ -221,6 +223,7 @@ app.route("/", updateRoutes(new RepoUpdater(updateRoot, updateRuntime), async ()
 
 app.route("/", documentLabelRoutes(matterDir))
 app.route("/", chronologyRoutes(matterDir))
+app.route("/matters", documentExportRoutes({ directory: matterDir, proposals: (directory, source) => redlinedDocumentView(directory, source, source.bytes) }))
 // The page a PDF citation's excerpt starts on, for the web viewer's #page=N.
 app.route("/", pdfPassageRoutes(matterDir))
 app.route("/", answerDraftRoutes(matterDir))
@@ -683,9 +686,9 @@ app.post("/matters/:id/documents", async (c) => {
   if (chronologyOrigin !== undefined && chronologyOrigin !== "supplied-chronology")
     return c.json({ error: "Acknowledge the imported snapshot as supplied chronology, or leave its origin unset." }, 400)
   const buffer = Buffer.from(await file.arrayBuffer())
-  // Bytes the matter already keeps for the document of that name add nothing,
-  // whatever the choice: the upload is reported as a duplicate of the version
-  // that holds them (#268).
+  // Renamed identical bytes need a separate-copy choice too; a deliberate
+  // keep-both may create that other document. Same-name duplicates retain their
+  // existing current/earlier-version and repair behavior (#268).
   const duplicate = duplicateUpload(dir, name, buffer, existing)
   if (duplicate) return c.json(duplicate, 409)
   // A replace saves the upload as the next version of the document it replaces.
@@ -1210,6 +1213,29 @@ app.get("/matters/:id/redlines", async (c) => {
   })
 })
 
+async function redlinedDocumentView(dir: string, target: { name: string; docPath: string }, original: Uint8Array) {
+  const protectedWord = Boolean(readWorkingDocx(dir, target.docPath))
+  const db = existsSync(path.join(dir, ".dochaus", "legal.db")) ? openDb(dir) : undefined
+  const pending = (() => {
+    if (!db) return []
+    try { return listPendingRedlines(db, target.docPath) }
+    finally { db.close() }
+  })()
+  const options = pending.length ? proposalRevisionOptions(dir, target.docPath) : {}
+  try { assertExclusiveRedlineSingleton(pending) }
+  catch (error) { throw new DocumentExchangeError(error instanceof Error ? error.message : "The mixed change list cannot be previewed.", "preview_conflict") }
+  const state = await redlineState(original, pending, options, proposalDocumentRole(dir, target.docPath), target.docPath)
+  const rows = pending.filter((row) => !((paragraphSpacingProposalMarker(row) || paragraphInsertionProposalMarker(row)) && row.doc_path !== target.docPath) && !redlineStaleReason(row, state, protectedWord))
+  try {
+    const bytes = await buildRedlined(original, rows, state, options)
+    const disclosure = rows.length && !layeredRedline(rows, options) ? await sourceRevisionDisclosure(original) : undefined
+    return { bytes, notice: disclosure?.message }
+  } catch (error) {
+    if (error instanceof RedlinePreviewConflictError) throw new DocumentExchangeError(error.message, "preview_conflict")
+    throw error
+  }
+}
+
 // The redlined view: the saved .docx with every pending proposal applied as
 // native tracked changes, so the viewer renders them green/red (on an uploaded
 // source, written beside the tracked changes the file already holds). Falls
@@ -1225,29 +1251,14 @@ app.get("/matters/:id/documents/redlined", async (c) => {
     const target = readDocumentTarget(dir, name)
     if (!target || !existsSync(target.docPath)) return c.notFound()
     const original = await Bun.file(target.docPath).bytes()
-    const protectedWord = Boolean(readWorkingDocx(dir, target.docPath))
-    const db = existsSync(path.join(dir, ".dochaus", "legal.db")) ? openDb(dir) : undefined
-    const pending = (() => {
-      if (!db) return []
-      try {
-        return listPendingRedlines(db, target.docPath)
-      } finally {
-        db.close()
-      }
-    })()
-    const options = pending.length ? proposalRevisionOptions(dir, target.docPath) : {}
-    try { assertExclusiveRedlineSingleton(pending) } catch (error) { return c.json({error:error instanceof Error ? error.message : "The mixed change list cannot be previewed."},409) }
-    const state = await redlineState(original, pending, options,proposalDocumentRole(dir,target.docPath),target.docPath)
-    const rows = pending.filter((row) => !((paragraphSpacingProposalMarker(row) || paragraphInsertionProposalMarker(row)) && row.doc_path !== target.docPath) && !redlineStaleReason(row, state, protectedWord))
     try {
-      const bytes = await buildRedlined(original, rows, state, options)
-      const disclosure = rows.length && !layeredRedline(rows, options) ? await sourceRevisionDisclosure(original) : undefined
+      const { bytes, notice } = await redlinedDocumentView(dir, target, original)
       return new Response(new Uint8Array(bytes), {
         headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-          ...(disclosure ? { "X-DocHaus-Revision-Notice": encodeURIComponent(disclosure.message) } : {}) },
+          ...(notice ? { "X-DocHaus-Revision-Notice": encodeURIComponent(notice) } : {}) },
       })
     } catch(error) {
-      if (error instanceof RedlinePreviewConflictError) return c.json({error:error.message},409)
+      if (error instanceof DocumentExchangeError) return c.json({error:error.message},409)
       throw error
     }
   })
@@ -1329,58 +1340,83 @@ app.get("/matters/:id/compare", async (c) => {
   const flag = (key: string) => c.req.query(key) !== "0"
   const options = { ignoreFormatting: flag("ignoreFormatting"), detectMoves: flag("moves"), headersFooters: flag("headers") }
   const labels = { left: label("leftLabel", left), right: label("rightLabel", right) }
-  // A document deleted, or between the two renames of a replacement, since it was resolved.
-  const read = (file: string) => Bun.file(file).bytes().catch((error: unknown) => {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined
-    throw error
-  })
-  const sideBytes = async (side: Side) => {
-    if (!side.version) return (await read(side.docPath!)) ?? unknown(side.name)
-    return readVersionBytes(dir, side.version) ?? refuse(409, "version_damaged", `The kept bytes of ${side.display} are missing or damaged.`)
-  }
-  const leftBytes = await sideBytes(left)
-  if (leftBytes instanceof Response) return leftBytes
-  const rightBytes = await sideBytes(right)
-  if (rightBytes instanceof Response) return rightBytes
-  // Pending proposals apply to the working file, so a version other than the one
-  // it holds has none.
-  const pendingFor = (side: Side) => {
-    if (!side.version) return pendingRedlinesForDoc(dir, side.docPath!).length
-    const working = side.current ? readDocumentTarget(dir, side.name) : undefined
-    return working && existsSync(working.docPath) && sha256Hex(readFileSync(working.docPath)) === side.version.sha256
-      ? pendingRedlinesForDoc(dir, working.docPath).length : 0
-  }
-  const pending = { left: pendingFor(left), right: pendingFor(right) }
-  const versionOf = (side: Side) => side.version ? { version: { id: side.version.id, number: side.version.number } } : {}
-  const comparison = await compareVersions(
-    { bytes: leftBytes, label: labels.left },
-    { bytes: rightBytes, label: labels.right },
-    options,
-    new Date().toISOString(),
-  ).catch((error: unknown) => {
-    console.warn("[compare] comparison failed", diagnosticErrorMetadata(error))
-    return undefined
-  })
-  if (!comparison)
-    return refuse(422, "compare_failed", `${left.name} and ${right.name} could not be compared. One of them may be damaged or not a standard Word file: open it in Word, save it again and retry.`)
-  const blacklineName = `Blackline - ${left.display} vs ${right.display}.docx`
-  if (c.req.query("format") === "json")
-    return c.json({
-      left: { name: left.name, label: labels.left, trackedChanges: comparison.left, pendingProposals: pending.left, ...versionOf(left) },
-      right: { name: right.name, label: labels.right, trackedChanges: comparison.right, pendingProposals: pending.right, ...versionOf(right) },
-      options,
-      attribution: comparison.attribution,
-      changes: comparison.changes,
-      untracked: comparison.untracked,
-      proposals: comparison.proposals,
-      blacklineName,
+  const exportCopy = c.req.query("exportCopy") === "1" && c.req.query("format") !== "json"
+  const renderComparison = async () => {
+    // A document deleted, or between the two renames of a replacement, since it was resolved.
+    const read = (file: string) => Bun.file(file).bytes().catch((error: unknown) => {
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined
+      throw error
     })
-  return new Response(new Uint8Array(comparison.blackline), {
-    headers: {
-      "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "Content-Disposition": c.req.query("download") === "1" ? attachmentDocumentDisposition(blacklineName) : inlineDocumentDisposition(blacklineName),
-    },
-  })
+    const sideBytes = async (side: Side) => {
+      if (!side.version) return (await read(side.docPath!)) ?? unknown(side.name)
+      return readVersionBytes(dir, side.version) ?? refuse(409, "version_damaged", `The kept bytes of ${side.display} are missing or damaged.`)
+    }
+    const leftBytes = await sideBytes(left)
+    if (leftBytes instanceof Response) return leftBytes
+    const rightBytes = await sideBytes(right)
+    if (rightBytes instanceof Response) return rightBytes
+    // Pending proposals apply to the working file, so a version other than the one
+    // it holds has none.
+    const pendingFor = (side: Side) => {
+      if (!side.version) return pendingRedlinesForDoc(dir, side.docPath!).length
+      const working = side.current ? readDocumentTarget(dir, side.name) : undefined
+      return working && existsSync(working.docPath) && sha256Hex(readFileSync(working.docPath)) === side.version.sha256
+        ? pendingRedlinesForDoc(dir, working.docPath).length : 0
+    }
+    const pending = { left: pendingFor(left), right: pendingFor(right) }
+    const versionOf = (side: Side) => side.version ? { version: { id: side.version.id, number: side.version.number } } : {}
+    const sourcePin = (side: Side, bytes: Uint8Array) => {
+      const retained = side.version ?? readCurrentVersion(dir, side.name)?.current
+      return retained?.sha256 === sha256Hex(bytes) ? { versionId: retained.id, sha256: retained.sha256 } : undefined
+    }
+    const leftPin = sourcePin(left, leftBytes), rightPin = sourcePin(right, rightBytes)
+    const comparison = await compareVersions(
+      { bytes: leftBytes, label: labels.left },
+      { bytes: rightBytes, label: labels.right },
+      options,
+      new Date().toISOString(),
+    ).catch((error: unknown) => {
+      console.warn("[compare] comparison failed", diagnosticErrorMetadata(error))
+      return undefined
+    })
+    if (!comparison)
+      return refuse(422, "compare_failed", `${left.name} and ${right.name} could not be compared. One of them may be damaged or not a standard Word file: open it in Word, save it again and retry.`)
+    const blacklineName = `Blackline - ${left.display} vs ${right.display}.docx`
+    if (c.req.query("format") === "json")
+      return c.json({
+        left: { name: left.name, label: labels.left, trackedChanges: comparison.left, pendingProposals: pending.left, ...versionOf(left) },
+        right: { name: right.name, label: labels.right, trackedChanges: comparison.right, pendingProposals: pending.right, ...versionOf(right) },
+        options,
+        attribution: comparison.attribution,
+        changes: comparison.changes,
+        untracked: comparison.untracked,
+        proposals: comparison.proposals,
+        blacklineName,
+      })
+    let prepared: ReturnType<typeof prepareDocumentExportCopy> | undefined
+    if (exportCopy) {
+      try {
+        prepared = prepareDocumentExportCopy(dir, { bytes: comparison.blackline,
+          sourceVersionId: rightPin?.versionId, sourceSha256: rightPin?.sha256,
+          relatedSources: leftPin ? [leftPin] : [],
+        })
+      } catch (error) {
+        if (error instanceof DocumentExchangeError) return refuse(error.status, error.code, error.message)
+        throw error
+      }
+    }
+    return new Response(new Uint8Array(prepared?.bytes ?? comparison.blackline), {
+      headers: {
+        "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ...(prepared ? { "Cache-Control": "no-store", "X-DocHaus-Export-Identity": prepared.versionId ? "retained-version" : "unrecorded" } : {}),
+        ...(prepared?.versionId ? { "X-DocHaus-Source-Version": prepared.versionId, "X-DocHaus-Source-Sha256": prepared.sha256! } : {}),
+        "Content-Disposition": c.req.query("download") === "1" ? attachmentDocumentDisposition(blacklineName) : inlineDocumentDisposition(blacklineName),
+      },
+    })
+  }
+  // Only explicit sharing-copy preparation takes the existing source locks.
+  // Raw comparison/source reads keep their original read-only behavior.
+  return exportCopy ? withArtifactMutationLocksAsync(dir, [left.name, right.name, ".dochaus/source-corpus"], renderComparison) : renderComparison()
 })
 
 // Accept a single redline: bake it into the canonical .docx (the new accepted
@@ -2056,13 +2092,25 @@ function acceptVersion(c: Context, redlineIDs: number[]): VersionWrite {
  * stores them again; a keep-both of the working file's bytes is still a
  * duplicate, as only a replace repairs them), an email or zip file whose
  * attachments are not all in yet (uploading it again brings them in), or the
- * same bytes under another name (another document). */
+ * same bytes under another name after an explicit keep-both choice. */
 function duplicateUpload(directory: string, name: string, bytes: Uint8Array, existing: unknown) {
   const target = readDocumentTarget(directory, name)
-  if (!target || !existsSync(target.docPath)) return
+  if (!target) return
   const db = openDb(directory)
   const role = (() => { try { return getDocumentRole(db, target.docPath) } finally { db.close() } })()
-  if (!role || (role === "source" && isContainerName(target.name) && containerAttachmentsPending(directory, target.docPath))) return
+  if (!role) {
+    if (existing === "keep-both") return
+    const sha256 = sha256Hex(bytes)
+    for (const kept of readAvailableDocumentVersions(directory)) {
+      if (kept.sha256 !== sha256 || !readVersionBytes(directory, kept)) continue
+      const source = readDocumentTarget(directory, kept.name)
+      if (!source || (existsSync(source.docPath) && isContainerName(source.name) && containerAttachmentsPending(directory, source.docPath))) continue
+      return { error: `${name} is identical to version ${kept.number} of ${kept.name}. Nothing new was stored. Choose Keep both to add a separate document.`, code: "duplicate" as const,
+        name: kept.name, document_id: kept.document_id, version: { id: kept.id, number: kept.number, current: Boolean(kept.current) }, can_keep_both: true }
+    }
+    return
+  }
+  if (!existsSync(target.docPath) || (role === "source" && isContainerName(target.name) && containerAttachmentsPending(directory, target.docPath))) return
   const sha256 = sha256Hex(bytes)
   const working = sha256Hex(readFileSync(target.docPath)) === sha256
   const found = findVersionBySha(directory, target.name, sha256)

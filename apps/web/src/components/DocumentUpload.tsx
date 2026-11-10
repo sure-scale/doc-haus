@@ -46,6 +46,7 @@ type Upload = {
   // duplicate: identical to a version the matter already keeps; nothing saved.
   status: "queued" | "uploading" | "reading" | "ready" | "not_indexed" | "failed" | "exists" | "duplicate" | "chronology" | "return"
   returnInspection?: ReturnInspection
+  canKeepBoth?: boolean
   error?: string
   // A ready Word file saved with pending tracked changes: the notice stays in
   // its row until dismissed.
@@ -163,7 +164,11 @@ export default function DocumentUpload({
     try {
       if (/\.docx$/i.test(upload.file.name) && !upload.choice && documents.some(item => /\.docx$/i.test(item.name))) {
         const inspection = await inspectReturnedFile(matterId, upload.file)
-        if (inspection.kind !== "new-document" && inspection.kind !== "duplicate") {
+        // Same-name duplicates retain the row's current/earlier-version and
+        // Restore handling. A renamed duplicate needs an explicit separate-copy
+        // decision before the ordinary upload can create another document.
+        const sameName = documents.some(item => item.name.toLowerCase() === upload.file.name.toLowerCase())
+        if (inspection.kind !== "new-document" && (inspection.kind !== "duplicate" || !sameName)) {
           update(upload.key, { status: "return", returnInspection: inspection })
           return
         }
@@ -924,7 +929,8 @@ export function failedUpload(error: unknown, file: File): Partial<Upload> {
   if (error instanceof DocumentExistsError) return { status: "exists", existing: { name: error.existing, role: error.role } }
   if (error instanceof DuplicateUploadError) {
     const earlier = error.version && !error.version.current ? { name: error.existing, version: { id: error.version.id, number: error.version.number } } : undefined
-    return { status: "duplicate", error: duplicateMessage(error.existing, error.version), match: earlier }
+    return { status: "duplicate", error: duplicateMessage(error.existing, error.version), match: earlier,
+      ...(error.canKeepBoth ? { canKeepBoth: true } : {}) }
   }
   const failed = { status: "failed" as const, error: humanizeError(error, `Could not read ${file.name}.`) }
   return error instanceof UploadFailedError && error.status < 500 ? failed : { ...failed, retryable: true }
@@ -1002,6 +1008,7 @@ export function UploadRow({ upload, onRetry, onChoose, onDismiss, onRestore }: {
         )}
         {(upload.status === "duplicate" || upload.notice) && !(match && confirming) && (
           <span className="upload-actions">
+            {upload.status === "duplicate" && upload.canKeepBoth && <button type="button" className="icon-btn" onClick={() => onChoose("keep-both")}>Keep both</button>}
             {/* The file is an earlier version: making it current again is
                 usually what the lawyer meant by uploading it. */}
             {match && (

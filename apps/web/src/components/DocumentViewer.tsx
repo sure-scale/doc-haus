@@ -20,6 +20,7 @@ import {
 import { convertPdfToDocx, documentContentUrl, fetchDocumentText, locatePdfPassage, matterDocumentKind, type PdfPassagePage } from "../api/ingest/documents"
 import type { CompareParams } from "../api/ingest/compare"
 import { fetchVersionBytes, type DocumentVersion, type RestoreResult } from "../api/ingest/versions"
+import { fetchDocumentExportBytes } from "../api/ingest/exports"
 import { fetchDocumentMarkup, MarkupRefusedError, type DocumentMarkup, type MarkupDecisionResult, type MarkupRevision } from "../api/ingest/markup"
 import { getPreferences } from "../api/ingest/preferences"
 import { formatDateTime } from "../lib/format"
@@ -644,8 +645,8 @@ function WordDocumentViewer({
   async function download(tracked: boolean) {
     setError(undefined)
     try {
-    if (shown) return saveVersionFile(await fetchVersionBytes(matterId, shown.id), name, shown.number)
-    const bytes = tracked ? await fetchRedlinedBytes(matterId, name, setRevisionNotice) : await (async () => {
+    if (shown) return saveVersionFile(await (shown.ext === ".docx" ? fetchDocumentExportBytes(matterId, { versionId: shown.id }) : fetchVersionBytes(matterId, shown.id)), name, shown.number)
+    const bytes = /\.docx$/i.test(name) ? await fetchDocumentExportBytes(matterId, { name, proposals: tracked }, setRevisionNotice) : await (async () => {
       const current = await fetch(documentContentUrl(matterId, name))
       if (!current.ok) throw new Error(`Could not download ${name} (${current.status})`)
       return new Uint8Array(await current.arrayBuffer())
@@ -1054,7 +1055,7 @@ export function DownloadActions({ redlines, preview, onDownload, version, onSend
   redlines: Redline[]
   preview: boolean
   onDownload: (tracked: boolean) => void
-  // An older version open in the viewer downloads exactly as kept.
+  // An older version downloads its saved wording as a prepared sharing copy.
   version?: number
   onSend?: () => void
 }) {
@@ -1070,7 +1071,7 @@ export function DownloadActions({ redlines, preview, onDownload, version, onSend
   const downloadTitle = "Download the saved Word file. Proposals you have not accepted are left out."
   if (!onSend && (version !== undefined || !redlines.some((row) => !row.stale))) {
     return (
-      <button onClick={() => onDownload(false)} title={version !== undefined ? `Download version ${version} exactly as kept` : downloadTitle}>
+      <button onClick={() => onDownload(false)} title={version !== undefined ? `Download a copy of version ${version}` : downloadTitle}>
         {download}
         <span className="viewer-action-label">{version !== undefined ? `Download version ${version}` : "Download"}</span>
       </button>

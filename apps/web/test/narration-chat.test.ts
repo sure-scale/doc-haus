@@ -330,7 +330,7 @@ test("a combined document downloads as its one file; the draft stays the page an
   const html = renderResult(combined)
   const page = html.slice(html.indexOf('<div class="result-document">'), html.indexOf('<ul class="result-stack"'))
   expect(page).toContain("<h4>Supply note - clean.docx</h4>")
-  expect(page).toMatch(/<a href="[^"]*\/matters\/m1\/documents\/content\?name=Supply%20note\.docx" download="Supply note\.docx" aria-label="Download Supply note\.docx"/)
+  expect(page).toMatch(/<a href="[^"]*\/matters\/m1\/documents\/export\?name=Supply%20note\.docx" download="Supply note\.docx" aria-label="Download Supply note\.docx"/)
   expect(page).not.toContain('download="Supply note - clean.docx"')
   const stack = html.slice(html.indexOf('<ul class="result-stack"'), html.indexOf('<details class="result-files"'))
   expect(stack).toContain('aria-label="Review Supply note - cover note.docx"')
@@ -339,7 +339,7 @@ test("a combined document downloads as its one file; the draft stays the page an
   expect(html).toContain('All generated files <span class="result-file-count">4</span>')
   // Without the combined file the page downloads the draft itself, as before.
   const plain = renderResult(lean({ ...combined, documents: { ...combined.documents!, documents: parts }, combined_output: null }))
-  expect(plain).toMatch(/<a href="[^"]*\/matters\/m1\/documents\/content\?name=Supply%20note%20-%20clean\.docx" download="Supply note - clean\.docx">Download<\/a>/)
+  expect(plain).toMatch(/<a href="[^"]*\/matters\/m1\/documents\/export\?name=Supply%20note%20-%20clean\.docx" download="Supply note - clean\.docx">Download<\/a>/)
   expect(plain).toContain('All generated files <span class="result-file-count">3</span>')
   expect(renderResult(lean({ ...done, combined_output: null }))).toBe(renderResult(done))
 })

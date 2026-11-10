@@ -237,6 +237,10 @@ test("an identical upload is refused as a duplicate of the version that holds it
   // A file from before versions were kept has no version to name.
   scriptXhr(409, JSON.stringify({ error: "Old.docx is already in this matter as Old.docx. Nothing new was stored.", code: "duplicate", name: "Old.docx", document_id: null, version: null }))
   expect(await uploadDocument("matter", new File(["same"], "Old.docx")).catch((error: unknown) => error)).toMatchObject({ existing: "Old.docx", version: null })
+  scriptXhr(409, JSON.stringify({ code: "duplicate", name: "Original.pdf", can_keep_both: true, version: { id: "v-1", number: 1, current: true } }))
+  const renamed = await uploadDocument("matter", new File(["same"], "Renamed.pdf")).catch((error: unknown) => error)
+  expect(renamed).toMatchObject({ existing: "Original.pdf", canKeepBoth: true })
+  expect(failedUpload(renamed, new File(["same"], "Renamed.pdf"))).toMatchObject({ status: "duplicate", canKeepBoth: true })
 })
 
 // A refusal the service gives for this file (unsupported, unreadable, too large)

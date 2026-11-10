@@ -308,10 +308,58 @@ test("an identical upload is reported as a duplicate and stores nothing", async 
   expect(await storedFiles()).toEqual(stored)
   expect(await counts()).toEqual(before)
 
-  // The same bytes under another name are another document, uploaded as before.
-  const renamed = await upload("Another notice.pdf", current)
+  // Renaming identical bytes still requires a deliberate separate-copy choice.
+  const refused = await upload("Another notice.pdf", current)
+  expect(refused.status).toBe(409)
+  expect(await refused.json()).toMatchObject({ code: "duplicate", name: NOTICE_PDF, can_keep_both: true })
+  const renamed = await upload("Another notice.pdf", current, { existing: "keep-both" })
   expect(renamed.status).toBe(200)
   expect((await renamed.json() as { version: Captured }).version).toMatchObject({ number: 1, origin: "upload" })
+})
+
+test("F1 renamed byte-identical ordinary uploads require explicit keep-both and leave history untouched on refusal", async () => {
+  const original = "Retained original.docx", renamed = "Renamed identical copy.docx"
+  const created = await matterRoute("/deliverables", { method: "POST", body: form(original, await plain("A neutral paragraph retained exactly for duplicate identification.")) })
+  expect(created.status).toBe(200)
+  const bytes = await observe(original)
+  const prior = await history(original)
+  const files = await documentFiles(), stored = await storedFiles()
+
+  for (const fields of [{}, { existing: "replace" }] as Record<string, string>[]) {
+    const response = await upload(renamed, bytes, fields)
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({ code: "duplicate", name: original, can_keep_both: true,
+      version: { id: prior.working_version, number: 1, current: true } })
+    expect(await documentFiles()).toEqual(files)
+    expect(await storedFiles()).toEqual(stored)
+    expect(await history(original)).toEqual(prior)
+    expect(await exists(path.join(matter.dir, renamed))).toBe(false)
+  }
+
+  // Missing working bytes do not erase a retained duplicate under a new name.
+  // Same-name repair remains a separate path; restore the test's original file.
+  await rm(path.join(matter.dir, original))
+  try {
+    const absentWorking = await upload(renamed, bytes)
+    expect(absentWorking.status).toBe(409)
+    expect(await absentWorking.json()).toMatchObject({ code: "duplicate", name: original, can_keep_both: true })
+    expect(await storedFiles()).toEqual(stored)
+    expect(await exists(path.join(matter.dir, renamed))).toBe(false)
+  } finally { await writeFile(path.join(matter.dir, original), bytes) }
+
+  const kept = await upload(renamed, bytes, { existing: "keep-both" })
+  expect(kept.status).toBe(200)
+  const result = await kept.json() as { version: Captured }
+  expect(result.version).toMatchObject({ number: 1, parent: null, origin: "upload", created: true })
+  expect(result.version.document_id).not.toBe(prior.document!.id)
+  expect(await observe(renamed)).toEqual(bytes)
+  expect(await history(original)).toEqual(prior)
+  expect((await history(renamed)).versions).toHaveLength(1)
+  // A missing working file under its own registered name can still be repaired.
+  await rm(path.join(matter.dir, renamed))
+  const repaired = await upload(renamed, bytes, { existing: "replace" })
+  expect(repaired.status).toBe(200)
+  expect(await observe(renamed)).toEqual(bytes)
 })
 
 test("compare takes version ids, with the version before the right side as the default left", async () => {

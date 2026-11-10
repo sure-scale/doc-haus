@@ -58,6 +58,31 @@ export function readMatterSourceVersions(directory: string): SourceVersionSnapsh
   }, { versions: [], complete: false })
 }
 
+/** Resolve a saved source hash, never today's source set. A hash repeated in
+ * several retained versions does not identify which version was admitted. */
+export function readPinnedSourceVersions(directory: string, pins: { name: string; sha256: string | undefined }[]): SourceVersionSnapshot {
+  return readDb(directory, db => {
+    const versions = new Map<string, SourceVersionSnapshot["versions"][number]>()
+    const seen = new Set<string>()
+    let complete = pins.length > 0
+    for (const pin of pins) {
+      if (typeof pin.name !== "string" || pin.name !== path.basename(pin.name) || !pin.name || typeof pin.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(pin.sha256)) { complete = false; continue }
+      const key = path.basename(canonicalArtifactIdentity(directory, pin.name))
+      const identity = JSON.stringify([key, pin.sha256])
+      if (seen.has(identity)) continue
+      seen.add(identity)
+      const rows = db.query(`SELECT d.id AS documentId,v.id AS versionId,v.sha256,v.ext,v.removed,d.removed_at
+        FROM versioned_documents d JOIN document_versions v ON v.document_id=d.id
+        WHERE d.name_key=? AND v.sha256=?`).all(key, pin.sha256) as (SourceVersionSnapshot["versions"][number] & { ext: string; removed: string | null; removed_at: number | null })[]
+      if (rows.length !== 1) { complete = false; continue }
+      const row = rows[0]!
+      versions.set(row.versionId, { documentId: row.documentId, versionId: row.versionId, sha256: row.sha256 })
+      if (row.removed || row.removed_at !== null || retainedSha(directory, row, row.ext) !== row.sha256) complete = false
+    }
+    return { versions: [...versions.values()].sort((left, right) => left.versionId.localeCompare(right.versionId)), complete }
+  }, { versions: [], complete: false })
+}
+
 /** Derived at read time: a received, revised, deleted, redacted or externally
  * changed source immediately makes all saved dependents visibly stale. */
 export function readSourceDependencyStatus(directory: string, snapshot: SourceVersionSnapshot | null | undefined, connection?: Database): SourceDependencyStatus {

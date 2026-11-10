@@ -67,6 +67,7 @@ export function chronologyRoutes(resolveMatter: (id: string) => string) {
       "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       "Content-Disposition": attachmentDocumentDisposition(exported.name),
       "X-DocHaus-Export-Name": exported.name,
+      "X-DocHaus-Export-Version": exported.version.id,
       "X-DocHaus-Chronology-Revision": String(exported.revision),
       "Cache-Control": "no-store",
     })

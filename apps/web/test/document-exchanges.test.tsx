@@ -307,7 +307,7 @@ test("authenticated email inspection preserves explicit base and recipient choic
   } finally { await view.cleanup() }
 })
 
-test("a normal renamed upload offers return matching once; explicit keep separate bypasses reinspection", async () => {
+test.each(["matched", "duplicate"] as const)("a normal renamed %s upload requires a decision; explicit keep separate bypasses reinspection", async kind => {
   const xhrBefore = Object.getOwnPropertyDescriptor(globalThis, "XMLHttpRequest")
   const forms: FormData[] = []; let refreshed = 0
   const incoming = [new File(["reviewed synthetic return"], "Renamed.docx")]
@@ -322,13 +322,17 @@ test("a normal renamed upload offers return matching once; explicit keep separat
     const { default: DocumentUpload } = await import("../src/components/DocumentUpload")
     return createElement(DocumentUpload, { matterId: "matter", documents, incoming, onIncoming: () => {}, onView: () => {}, onUploaded: () => { refreshed++ } })
   }, request => {
-    if (request.url.pathname.endsWith("/returns/inspect")) return Response.json(inspection())
+    if (request.url.pathname.endsWith("/returns/inspect")) return Response.json(inspection(kind === "duplicate" ? { kind, sha256: candidate.sha256 } : {}))
     if (request.url.pathname.endsWith("/versions")) return Response.json(saved())
     throw new Error(`Unexpected normal upload request: ${request.url.pathname}`)
   })
   try {
     expect(Boolean(view.container.querySelector('dialog[aria-label="Review returned file"]'))).toBe(true)
     expect(forms).toHaveLength(0)
+    if (kind === "duplicate") {
+      expect(view.text()).toContain("This copy is already kept")
+      expect(Boolean(view.button("Save returned version and compare"))).toBe(false)
+    }
     expect(view.requests.filter(request => request.url.pathname.endsWith("/returns/inspect"))).toHaveLength(1)
     await view.click("Add as separate document")
     expect(forms).toHaveLength(1); expect(forms[0]!.get("existing")).toBe("keep-both")

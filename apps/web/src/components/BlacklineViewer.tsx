@@ -79,7 +79,7 @@ export default function BlacklineViewer({ matterId, params, focus, onClose }: { 
     setBlackline(undefined)
     setHtml(undefined)
     setRenderError(undefined)
-    fetchBlacklineBytes(matterId, params).then(
+    fetchBlacklineBytes(matterId, params, { exportCopy: true }).then(
       (bytes) => !cancelled && setBlackline(bytes),
       (cause) => !cancelled && setRenderError(humanizeError(cause, "Could not show the blackline.")),
     )
