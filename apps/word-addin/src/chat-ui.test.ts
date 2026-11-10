@@ -196,7 +196,7 @@ test("row refinement sends the pinned proposal and preserves a draft if capture 
   } finally { f.restore() }
 })
 
-test("scope, history and New share the composer row; attachments retain draft and exact optional context without settings", async () => {
+test("scope, conversations and New share the composer row; attachments retain draft and exact optional context without settings", async () => {
   const f = fixture()
   try {
     await f.chat.ready
@@ -227,6 +227,10 @@ test("clause History is a temporary read-only surface preserving the draft, cont
   const f = fixture({ host: { history: async () => { loads++; return data }, historySource: async () => { throw new Error("unused") }, apply: async () => { applied++ } } })
   try {
     await f.chat.ready; await Bun.sleep(0)
+    expect(f.get("document-actions").hidden).toBe(false)
+    expect(f.get("form").contains(f.get("clause-history"))).toBe(false)
+    expect(f.get("clause-history").textContent).toBe("Clause history")
+    expect(f.page.document.getElementById(f.get("clause-history").getAttribute("aria-describedby")!)?.textContent).toBe("View earlier wording of the current paragraph.")
     const message = f.get<HTMLTextAreaElement>("message"); message.value = "Keep this draft"
     const context = f.get("chips").textContent, calls = f.calls.length
     f.click("clause-history"); await Bun.sleep(0)

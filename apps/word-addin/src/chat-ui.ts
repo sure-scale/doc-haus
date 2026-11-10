@@ -35,7 +35,11 @@ export type ChatHost = {
 /** Mount once. Hiding a feature tab never remounts or submits the conversation. */
 export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHost) {
   root.dataset.documentName = host.documentName
-  root.innerHTML = `<section data-chat="clause-history-panel" id="chat-clause-history" class="chat-clause-history" aria-label="Clause history" hidden></section>
+  root.innerHTML = `<div data-chat="document-actions" class="chat-document-actions" role="group" aria-label="Document actions" hidden>
+    <button data-chat="clause-history" class="chat-subtle" type="button" title="View earlier wording of the current paragraph" aria-describedby="chat-clause-history-hint" aria-expanded="false" aria-controls="chat-clause-history">Clause history</button>
+    <span id="chat-clause-history-hint" class="chat-document-hint">View earlier wording of the current paragraph.</span>
+  </div>
+  <section data-chat="clause-history-panel" id="chat-clause-history" class="chat-clause-history" aria-label="Clause history" hidden></section>
   <section data-chat="conversations" id="chat-conversations" class="chat-conversations" aria-label="Conversations" hidden>
     <div class="chat-panel-heading"><h2>Conversations</h2><button data-chat="conversations-close" class="chat-subtle" type="button">Done</button></div><div data-chat="conversation-list" class="chat-conversation-list"></div>
   </section>
@@ -73,7 +77,6 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     <textarea data-chat="message" aria-label="Message doc.haus" placeholder="Ask doc.haus…" rows="2"></textarea>
     <div class="chat-composer-actions">
       <button data-chat="attach" class="chat-subtle" type="button" aria-expanded="false">＋ Attach</button>
-      <button data-chat="clause-history" class="chat-subtle" type="button" title="View saved history of the paragraph at the Word cursor" aria-expanded="false" aria-controls="chat-clause-history">History</button>
       <div data-chat="mode" class="chat-mode"><button data-chat="mode-toggle" class="chat-subtle chat-mode-toggle" type="button" aria-label="Response mode: Auto" aria-haspopup="menu" aria-expanded="false" aria-controls="chat-mode-picker"><span data-chat="mode-label">Auto</span><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"/></svg></button>
         <div data-chat="mode-picker" id="chat-mode-picker" class="chat-mode-picker" role="menu" aria-label="Response mode" hidden>
           <button data-chat="mode-auto" type="button" role="menuitemradio" aria-checked="true" tabindex="0"><span>Auto</span><small>Choose for this request</small></button>
@@ -89,7 +92,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   const message = get<HTMLTextAreaElement>("message")
   const history = get("history"), scroller = get("scroll"), activity = get("activity")
   let clauseHistory: ReturnType<typeof mountClauseHistory> | undefined
-  button("clause-history").hidden = !host.history || !host.historySource
+  get("document-actions").hidden = button("clause-history").hidden = !host.history || !host.historySource
   const now = host.now ?? Date.now
   const schedule = host.schedule ?? ((run: () => void, delay: number) => { const id = setTimeout(run, delay); return () => clearTimeout(id) })
   let preferences: WordChatPreferences = { defaultScope: "document", suggestions: true }
