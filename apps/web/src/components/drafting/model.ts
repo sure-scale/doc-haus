@@ -241,10 +241,10 @@ export function openItemTag(item: LeanOpenItem) {
   return item.kind === "checklist_open" ? "Left open" : "In the notes"
 }
 
-/** An item's detail as the lawyer reads it: the run cites a quotation's source
- * as "[source: <id>]", which reads here as where the words come from. */
+/** Detail is source-bearing prose, not a transport for inferred source tags.
+ * Keep literal placeholders, nested names and qualifications exactly as saved. */
 export function openItemDetail(item: LeanOpenItem) {
-  return item.detail.replace(/\[source:\s*([^\]]*?)\s*\]/g, (_, source: string) => (source === "request" ? "(from the request)" : `(from ${source})`))
+  return item.detail
 }
 
 // The class only. Whether a repair round or reinspection ran is in the item's
