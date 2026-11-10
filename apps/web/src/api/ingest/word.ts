@@ -23,9 +23,10 @@ const wordUrl = (matterId: string, name?: string) => `${INGEST_URL}/matters/${en
 
 function chatPreferences(value: unknown): WordChatPreferences {
   if (!value || typeof value !== "object" || !("defaultScope" in value) || !("suggestions" in value) ||
-    value.defaultScope !== "document" && value.defaultScope !== "matter" || typeof value.suggestions !== "boolean")
+    value.defaultScope !== "document" && value.defaultScope !== "matter" || typeof value.suggestions !== "boolean" ||
+    "consequences" in value && typeof value.consequences !== "boolean")
     throw new Error("Could not confirm Word chat defaults. Try again.")
-  return { defaultScope: value.defaultScope, suggestions: value.suggestions }
+  return { defaultScope: value.defaultScope, suggestions: value.suggestions, consequences: !("consequences" in value) || value.consequences !== false }
 }
 
 export async function fetchWordChatPreferences(): Promise<WordChatPreferences> {

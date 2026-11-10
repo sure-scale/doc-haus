@@ -523,6 +523,30 @@ test("current context reads unsaved body without requiring a selection and empty
   expect(state.selected).toBe(0)
 })
 
+test("consequence navigation selects verified wording without changing the document", async () => {
+  const { state, host, text } = office(["A clause with a clear obligation.", "Another clause."])
+  const target = (await host.selection())!
+  const before = text(), tracking = state.tracking, saved = state.saved
+  expect(await host.navigate(target)).toBe(true)
+  expect(state.selected).toBe(1)
+  expect(text()).toBe(before)
+  expect(state.writes).toHaveLength(0)
+  expect(state.modeChanges).toHaveLength(0)
+  expect(state.tracking).toBe(tracking)
+  expect(state.saved).toBe(saved)
+})
+
+test("consequence navigation refuses stale or missing paragraph identities", async () => {
+  const { state, host } = office()
+  const target = (await host.selection())!
+  state.paragraphs[0]!.text = "The wording has changed."
+  expect(await host.navigate(target)).toBe(false)
+  state.paragraphs[0]!.text = target.paragraphs[0]!.text
+  expect(await host.navigate({ ...target, paragraphs: [{ ...target.paragraphs[0]!, id: "missing" }] })).toBe(false)
+  expect(state.selected).toBe(0)
+  expect(state.writes).toHaveLength(0)
+})
+
 test("selecting a whole paragraph with its paragraph mark yields the paragraph text and a current target", async () => {
   const { state, host } = office(["First clause.", "Second clause.", "Third clause."])
   const first = "First clause."

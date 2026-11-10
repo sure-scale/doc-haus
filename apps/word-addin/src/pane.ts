@@ -6,7 +6,7 @@ import { configureConnectionRecovery, createPaneRenderer } from "./pane-render"
 import { setupLatestVersion } from "./latest-version"
 import { ChatRequestError, chatClient } from "./chat-client"
 import { mountWordChat } from "./chat-ui"
-import { captureCurrentWordContext, captureWordChatSelection, wordChatTableTarget, applyReviewedProposal, applyReviewedTableRow, applyWordChatRowDeletion, WordChatHostError } from "./word-chat-host"
+import { captureCurrentWordContext, captureWordReviewContext, captureWordChatSelection, navigateWordChatTarget, wordChatTableTarget, applyReviewedProposal, applyReviewedTableRow, applyWordChatRowDeletion, WordChatHostError } from "./word-chat-host"
 import { watchWordChatSelection } from "./word-chat-selection"
 import { openChatAttachments } from "./chat-attachments"
 import { preferRoomyPane } from "./feature-tabs"
@@ -99,7 +99,9 @@ async function main(): Promise<void> {
     const conversation = mountWordChat(chatPanel, chat, {
       documentName: link.documentName,
       capture: captureCurrentWordContext,
+      captureReview: captureWordReviewContext,
       captureSelection: captureWordChatSelection,
+      navigate: navigateWordChatTarget,
       tableTarget: wordChatTableTarget,
       watchSelection: watchWordChatSelection,
       openAttachments: options => openChatAttachments(chat, options),
