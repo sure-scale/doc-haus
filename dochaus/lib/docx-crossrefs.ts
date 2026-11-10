@@ -71,6 +71,7 @@ export async function linkCrossReferences(bytes: Uint8Array, options: CrossRefer
   if (!opened) return bytes
   try {
     const doc = opened.documents[BODY]!
+    assertUnambiguousReferenceBookmarks(doc)
     const rows = opened.paragraphs.filter(row => row.part === BODY).map(row => {
       const label = row.metadata.list?.generatedLabel?.trim() || undefined
       return { node: row.node, text: row.match.text, label, clause: label !== undefined && clauses.has(String(row.metadata.list!.numId)),
@@ -204,6 +205,7 @@ export async function linkCrossReferences(bytes: Uint8Array, options: CrossRefer
  * cross-reference check (consistency.ts). */
 export function referenceFields(bytes: Uint8Array): ReferenceFields {
   const doc = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)[BODY]!), "application/xml")
+  assertUnambiguousReferenceBookmarks(doc)
   const marks = new Map<string, Element>()
   for (const start of elements(doc, "bookmarkStart")) {
     const name = start.getAttributeNS(W, "name")
@@ -224,6 +226,26 @@ export function referenceFields(bytes: Uint8Array): ReferenceFields {
     if (links.length) found.set(own, links)
   }
   return found
+}
+
+// A REF's name and its native start/end identity must not select among multiple
+// bookmarks. Refuse before producing target evidence or rewriting a cached
+// reference. Missing targets keep the existing removed-target handling; names
+// unused by supported REF fields are outside this decision.
+function assertUnambiguousReferenceBookmarks(doc: Document) {
+  const names = new Set(elements(doc, "p").flatMap(paragraph => paragraphFields(paragraph)
+    .flatMap(field => { const ref = refInstruction(field); return ref ? [ref.name] : [] })))
+  if (!names.size) return
+  const starts = elements(doc, "bookmarkStart"), ends = elements(doc, "bookmarkEnd")
+  for (const name of names) {
+    const matches = starts.filter(start => start.getAttributeNS(W, "name") === name)
+    if (matches.length > 1) throw new Error("ambiguous_docx_reference_bookmark")
+    if (!matches.length) continue
+    const id = matches[0]!.getAttributeNS(W, "id")
+    if (starts.filter(start => start.getAttributeNS(W, "id") === id).length > 1
+      || ends.filter(end => end.getAttributeNS(W, "id") === id).length > 1)
+      throw new Error("ambiguous_docx_reference_bookmark")
+  }
 }
 
 // ------------------------------------------------------------------ fields

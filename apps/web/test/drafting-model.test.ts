@@ -263,13 +263,13 @@ test("the open items list never caps away an unresolved checklist finding and co
   expect(plain).not.toContain("Show all")
 })
 
-test("an open item names its source in plain words, never as the run's source tag", () => {
+test("open-item prose preserves source annotations and literal bracketed examples", () => {
   const requested = { ...item("r1", "omission", "disclosed"), detail: 'The request asked for "one file named supply pack" [source: request], but the run delivers it in "supply pack (2).docx".' }
-  const quoted = { ...item("q1", "omission", "disclosed"), detail: 'The terms say "net 30 days" [source: Supply terms.docx] and "net 45 days" [source:  Order form.docx ].' }
-  const html = renderToStaticMarkup(createElement(OpenItems, { items: [requested, quoted], titles: new Map() }))
-  expect(html).not.toContain("[source:")
-  expect(html).toContain("&quot;one file named supply pack&quot; (from the request), but the run delivers")
-  expect(html).toContain("&quot;net 30 days&quot; (from Supply terms.docx) and &quot;net 45 days&quot; (from Order form.docx).")
+  const literal = { ...item("q1", "omission", "disclosed"), detail: 'Keep `[source: supplied later]` and [source: Terms [execution].docx] literal; no answer has been supplied.' }
+  const html = renderToStaticMarkup(createElement(OpenItems, { items: [requested, literal], titles: new Map() }))
+  expect(html).toContain('&quot;one file named supply pack&quot; [source: request], but the run delivers')
+  expect(html).toContain(literal.detail)
+  expect(html).not.toContain("(from ")
 })
 
 test("drafted outputs nest the redline and notes under a single draft", () => {

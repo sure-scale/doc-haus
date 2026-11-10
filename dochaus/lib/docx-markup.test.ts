@@ -5,7 +5,8 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { Database } from "bun:sqlite"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
-import { counterpartyItems, readDocxMarkup, readMarkupComments } from "./docx-markup"
+import { counterpartyItems, readDocxMarkup, readMarkupComments, savedMarkupParagraphs } from "./docx-markup"
+import { contextMatches } from "../../apps/web/src/components/change-timeline"
 import { currentDocumentView } from "./current-document-retrieval"
 import { docxodus } from "./docxodus"
 import { exportDocxComments, readDocxCommentParagraphs } from "./docx-comments"
@@ -35,6 +36,41 @@ const edited = (part: string, edit: (xml: string) => string) => repackaged(count
 const by = (author: string) => `w:author="${author}" w:date="${dates[author]}"`
 const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`
 const inserted = (id: number, author: string, text: string) => `<w:ins w:id="${id}" ${by(author)}>${run(text)}</w:ins>`
+
+test("complete same-session history context retains long-paragraph qualifications beyond the SDK preview", async () => {
+  const opening = "The parties shall exchange written delivery records after each consignment. ".repeat(4)
+  const ending = " days, except while the invoice is disputed."
+  const bytes = edited("word/document.xml", xml => xml.replace(/<w:body>[\s\S]*<w:sectPr\/>/, `<w:body><w:p>${run(opening)}<w:del w:id="101" ${by(AVERY)}><w:r><w:delText>thirty</w:delText></w:r></w:del>${inserted(102, AVERY, "forty-five")}${run(ending)}</w:p><w:sectPr/>`))
+  const before = createHash("sha256").update(bytes).digest("hex")
+  const expected = `${opening}forty-five${ending}`
+  const session = (await docxodus()).openDocxSession(bytes, { persistAnchorIds: true, trackedChanges: "render_inline" })
+  try {
+    const preview = Object.values(session.project().anchorIndex).find(anchor => anchor.kind === "p")!.textPreview
+    expect(preview.length).toBeLessThan(expected.length)
+    expect(contextMatches(preview, expected)).toBe(false)
+  } finally { session.close() }
+  const markup = await readDocxMarkup(bytes)
+  expect(markup.revisions.map(row => row.kind)).toEqual(["delete", "insert"])
+  for (const row of markup.revisions) {
+    expect(row.locations).toEqual([{ paragraph: 1, context: expected }])
+    expect(contextMatches(row.locations[0]!.context, expected)).toBe(true)
+    expect(contextMatches(row.locations[0]!.context, expected.replace("except while", "including while"))).toBe(false)
+  }
+  expect(createHash("sha256").update(bytes).digest("hex")).toBe(before)
+})
+
+test("persisted paragraph identity lookup refuses duplicates and never falls back to text or ordinal", () => {
+  const wrap = (body: string) => `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:pt="http://powertools.codeplex.com/2011"><w:body>${body}</w:body></w:document>`
+  const p = (id: string, text: string) => `<w:p pt:Unid="${id}">${run(text)}</w:p>`
+  const bytes = zipSync({ "word/document.xml": strToU8(wrap(p("unique", "Same text") + p("duplicate", "First") + p("duplicate", "Second") + p("duplicate", "Third"))), "word/header1.xml": strToU8(wrap(p("unique", "Header text"))) })
+  const paragraphAt = savedMarkupParagraphs(bytes)
+  expect(paragraphAt("/word/document.xml", "unique")?.textContent).toBe("Same text")
+  expect(paragraphAt("/word/header1.xml", "unique")?.textContent).toBe("Header text")
+  expect(paragraphAt("/word/document.xml", "duplicate")).toBeUndefined()
+  expect(paragraphAt("/word/document.xml", "missing")).toBeUndefined()
+  expect(paragraphAt("/word/missing.xml", "unique")).toBeUndefined()
+  expect(paragraphAt("/word/document.xml", "")).toBeUndefined()
+})
 
 test("every tracked change and comment is listed with its author, kind, date and place", async () => {
   const markup = await readDocxMarkup(counterpartyMarkupDocx())

@@ -34,6 +34,24 @@ test("each line break in a paragraph reads as a newline", async () => {
   expect(await text(mixed)).toBe("Before.After.\nLast.\n\n")
 })
 
+test("Word carriage returns preserve text lines and revision handling like text-wrapping breaks", async () => {
+  const source = docx(`<w:p>${run("First")}<w:r><w:cr/></w:r>${run("Second")}</w:p>`)
+  const before = strFromU8(unzipSync(source)["word/document.xml"]!)
+  expect(await text(source)).toBe("First\nSecond\n\n")
+  const parts = unzipSync(source)
+  const unicode = Buffer.from(zipSync({ ...parts, "word/document.xml": strToU8(before.replaceAll("w:", "δοκ:").replace("xmlns:w=", "xmlns:δοκ=")) }))
+  expect(await text(unicode)).toBe("First\nSecond\n\n")
+  const foreign = docx(`<w:p>${run("First")}<w:r><x:cr xmlns:x="urn:unrelated"/></w:r>${run("Second")}</w:p>`)
+  expect(writeLineBreaks(foreign)).toBe(foreign)
+  for (const kind of ["del", "moveFrom"]) {
+    const removed = docx(`<w:p>${run("Kept")}<w:${kind} w:id="7" w:author="Reviewer"><w:r><w:cr/></w:r></w:${kind}>${run(" joined.")}</w:p>`)
+    expect(await text(removed)).toBe("Kept joined.\n\n")
+  }
+  const inserted = docx(`<w:p>${run("Kept")}<w:ins w:id="8" w:author="Reviewer"><w:r><w:cr/></w:r></w:ins>${run("New line.")}</w:p>`)
+  expect(await text(inserted)).toBe("Kept\nNew line.\n\n")
+  expect(strFromU8(unzipSync(source)["word/document.xml"]!)).toBe(before)
+})
+
 test("a line break in a pending deletion is not read as current wording", async () => {
   const markup = docx(`<w:p>${run("Kept line")}<w:del w:id="1" w:author="Reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:br/></w:r></w:del>${run(" joined.")}</w:p>`)
   expect(await text(markup)).toBe("Kept line joined.\n\n")

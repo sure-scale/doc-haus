@@ -1,3 +1,4 @@
+import { isUserConversation } from "../../../../dochaus/lib/session-visibility"
 import { readBrowserValue, writeBrowserValue } from "../browser-storage"
 import { useEffect, useState, type ReactNode } from "react"
 import { Link, NavLink, useMatch, useNavigate, useSearchParams } from "react-router-dom"
@@ -88,11 +89,9 @@ export default function Sidebar({
           list
             // Chats only: drop subagent runs (parentID), sessions the runtime
             // owns (drafting stages and the narrator carry metadata.dochaus_role
-            // and have no chat to show), and our system-titled sessions —
-            // workflow runs and legacy chats carry a "doc.haus" title; real chats
-            // are titled from the user's first message. A drafting run's own
+            // and have no chat to show). A drafting run's own
             // conversation stays: it shows the request and the run's narration.
-            .filter((s) => !s.parentID && (draftingRun(s.metadata) || !runtimeOwned(s.metadata)) && !/^doc\.haus/i.test(s.title ?? ""))
+            .filter(isUserConversation)
             .map((s) => ({
               id: s.id,
               title: draftingRun(s.metadata) ? "Drafting run" : s.title?.trim() || "Untitled conversation",
@@ -391,10 +390,6 @@ export default function Sidebar({
       </div>
     </aside>
   )
-}
-
-function runtimeOwned(metadata: unknown) {
-  return typeof metadata === "object" && metadata !== null && "dochaus_role" in metadata
 }
 
 function draftingRun(metadata: unknown) {

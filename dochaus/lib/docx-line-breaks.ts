@@ -12,7 +12,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const XML = "http://www.w3.org/XML/1998/namespace"
 const BODY = "word/document.xml"
-const BREAK_MARKUP = /<(?:[^\s<>/:]+:)?br[\s/>]/
+const BREAK_MARKUP = /<(?:[^\s<>/:]+:)?(?:br|cr)[\s/>]/
 const REMOVALS = ["del", "moveFrom"]
 
 export function writeLineBreaks(buffer: Buffer): Buffer {
@@ -20,8 +20,8 @@ export function writeLineBreaks(buffer: Buffer): Buffer {
   if (!body || !BREAK_MARKUP.test(strFromU8(body))) return buffer
   const fail = (message: string) => { throw new Error(`invalid_docx_xml:${message}`) }
   const doc = new DOMParser({ errorHandler: { warning: () => {}, error: () => {}, fatalError: fail } }).parseFromString(strFromU8(body), "application/xml")
-  const breaks = Array.from(doc.getElementsByTagNameNS(W, "br")).filter(element =>
-    ["", "textWrapping"].includes(element.getAttributeNS(W, "type") ?? "") && !removed(element))
+  const breaks = ["br", "cr"].flatMap(name => Array.from(doc.getElementsByTagNameNS(W, name))).filter(element =>
+    (element.localName === "cr" || ["", "textWrapping"].includes(element.getAttributeNS(W, "type") ?? "")) && !removed(element))
   if (!breaks.length) return buffer
   for (const element of breaks) {
     const prefix = element.prefix ? `${element.prefix}:` : ""

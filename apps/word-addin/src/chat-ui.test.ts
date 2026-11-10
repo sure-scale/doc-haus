@@ -1038,9 +1038,12 @@ test("mixed review shows the replacement and collapsed layout, and applies the e
 })
 
 test("Apply uncertainty hides every action and affected context, while pre-import errors with the same text remain retryable", async () => {
-  for (const mutationState of ["unchanged", "uncertain"] as const) {
+  for (const mutationState of ["unchanged", "uncertain"] as const) for (const noticeText of [undefined,
+    "Word could not confirm preservation of the paragraph formatting.",
+    "Word could not finish projecting the changed document structure. Check the change in Word. Use Undo if needed; do not apply it again.",
+    "doc.haus could not confirm the native operation status after the Word change. Check the change in Word. Use Undo if needed; do not apply it again."]) {
     let calls = 0
-    const error = Object.assign(new Error("Word could not confirm the imported change. Inspect it and use Undo if needed."), { mutationState })
+    const error = Object.assign(new Error("Word could not confirm the imported change. Inspect it and use Undo if needed."), { mutationState, notice: noticeText })
     const f = fixture({ turns: [turn({ kind: "amendment", proposal })], host: { apply: async () => { calls++; throw error } } })
     try {
       await f.chat.ready
@@ -1052,7 +1055,7 @@ test("Apply uncertainty hides every action and affected context, while pre-impor
       const notice = f.root.querySelector('.chat-proposal-error[role="alert"]')!
       expect(message.value).toBe("Keep my next message"); expect(f.get("activity").textContent).toBe("")
       if (mutationState === "uncertain") {
-        expect(notice.textContent).toBe("Check the change in Word. Use Undo if needed.")
+        expect(notice.textContent).toBe(noticeText ?? "Check the change in Word. Use Undo if needed.")
         expect(actions()).toHaveLength(0)
         expect(f.get("chips").textContent).not.toContain("Refining amendment"); expect(f.get("chips").textContent).not.toContain("Selected Word text")
         expect(message.placeholder).toBe("Ask doc.haus…")
@@ -1508,4 +1511,63 @@ test("declining the latest proposal never restarts review of a superseded older 
     expect((admissions[0]!.input as { turnId: string }).turnId).toBe("turn-one")
     expect(f.calls.some(call => call.action === "assessment-cancel")).toBe(true)
   } finally { f.restore() }
+})
+
+test("Check in Word reads the existing reviewed deletion without Apply or a model request",async()=>{
+ let release!:()=>void
+ const wait=new Promise<void>(done=>{release=done})
+ const checked:unknown[]=[],applied:unknown[]=[]
+ const f=fixture({turns:[turn({kind:"amendment",rowProposal:deletedRow})],host:{
+  async checkRow(value,request){checked.push({value,request});await wait;return {status:"ready"}},
+  async applyRow(value){applied.push(value)},
+ }})
+ try{
+  await f.chat.ready
+  const find=(text:string)=>[...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(b=>b.textContent===text)!
+  const check=find("Check in Word");check.click();check.click()
+  expect(checked).toEqual([{value:deletedRow,request:{conversationId:"conversation-one",turnId:"turn-one"}}])
+  expect(find("Apply").disabled).toBe(true)
+  expect(f.root.textContent).not.toContain("Applied in Word")
+  release();await Bun.sleep(0)
+  expect(applied).toEqual([])
+  expect(f.calls.filter(c=>["send","suggest","prepare"].includes(c.action))).toEqual([])
+  expect(f.root.textContent).toContain("Ready to apply. Your document is unchanged.")
+  expect(f.root.textContent).not.toContain("Applied in Word")
+  expect(find("Check in Word").disabled).toBe(false);expect(find("Apply").disabled).toBe(false)
+  find("Apply").click();await Bun.sleep(0)
+  expect(applied).toEqual([deletedRow])
+ }finally{release();f.restore()}
+})
+
+test("Check in Word shows a safe refusal and leaves the proposal available",async()=>{
+ const f=fixture({turns:[turn({kind:"amendment",rowProposal:deletedRow})],host:{async checkRow(){throw new Error("The complete table could not be matched [live_table_preimage]. Your document is unchanged.")},async applyRow(){throw new Error("Must not apply")}}})
+ try{
+  await f.chat.ready
+  const find=(text:string)=>[...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(b=>b.textContent===text)!
+  find("Check in Word").click();await Bun.sleep(0)
+  expect(f.root.textContent).toContain("[live_table_preimage]")
+  expect(f.root.textContent).not.toContain("Ready to apply")
+  expect(f.root.textContent).not.toContain("Applied in Word")
+  expect(find("Apply").disabled).toBe(false);expect(find("Check in Word").disabled).toBe(false)
+  expect(f.calls.filter(c=>["send","suggest"].includes(c.action))).toEqual([])
+ }finally{f.restore()}
+ const add=fixture({turns:[turn({kind:"amendment",rowProposal})],host:{async checkRow(){return {status:"ready"}}}})
+ try{await add.chat.ready;expect(add.root.textContent).not.toContain("Check in Word")}finally{add.restore()}
+})
+
+
+test("Check in Word readiness is cleared when a later Apply recheck refuses",async()=>{
+ const f=fixture({turns:[turn({kind:"amendment",rowProposal:deletedRow})],host:{async checkRow(){return {status:"ready"}},async applyRow(){throw new Error("The reviewed table could not be matched. Your document is unchanged.")}}})
+ try{
+  await f.chat.ready
+  const find=(text:string)=>[...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(b=>b.textContent===text)!
+  find("Check in Word").click();await Bun.sleep(0)
+  expect(f.root.textContent).toContain("Ready to apply")
+  find("Apply").click();await Bun.sleep(0)
+  expect(f.root.textContent).toContain("The reviewed table could not be matched")
+  expect(f.root.textContent).not.toContain("Ready to apply")
+  expect(f.root.textContent).not.toContain("Applied in Word")
+  expect(find("Check in Word").disabled).toBe(false)
+ }finally{f.restore()}
+
 })

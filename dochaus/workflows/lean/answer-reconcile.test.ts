@@ -118,14 +118,53 @@ test("answers that can all be followed record nothing and the run goes on", asyn
   expect(model.count(AGENT.draft)).toBeGreaterThan(0)
 })
 
-test("a reading cut off at its output limit finds no conflict, as one never passing its check does, and is not read again", async () => {
+test("conflict discovery cut off at its output limit stops drafting without caching agreement", async () => {
   const { directory, model, run, adoptBoth } = twoQuestions(() => () => { throw new OutputLimitError("The model's reply reached its output limit before giving any answer.") })
   await run()
   adoptBoth()
-  expect((await run()).status).toBe("completed")
+  expect(await run()).toMatchObject({ status: "failed", stop_reason: expect.stringContaining("could not be verified") })
   expect(reconciliationCalls(model).length).toBe(1)
+  expect(model.count(AGENT.draft)).toBe(0)
   expect(combined(directory)).toEqual([])
+  expect(readLeanJson(directory, "answer-reconcile.json")).toMatchObject({ verification_failed: true })
+  expect(readLeanJson(directory, "answer-reconcile.json")).not.toHaveProperty("conflicts")
+
+  enqueueLeanRequest(directory, { kind: "continue" })
+  expect((await run()).status).toBe("failed")
+  expect(reconciliationCalls(model).length).toBe(1)
+})
+
+test.each([
+  ["malformed JSON", "The comparison could not be completed."],
+  ["missing conflicts list", JSON.stringify({ compatible: true })],
+  ["unknown answer references", JSON.stringify({ conflicts: [{ questions: ["q-absent", "q-missing"], conflict: CONFLICT }] })],
+])("exhausted conflict discovery is not agreement: %s", async (_name, reply) => {
+  let corrected = false
+  const { directory, model, run, adoptBoth, ids } = twoQuestions(() => () => corrected ? JSON.stringify({ conflicts: [] }) : reply)
+  expect((await run()).status).toBe("blocked")
+  adoptBoth()
+  expect(await run()).toMatchObject({ status: "failed", stop_reason: expect.stringContaining("could not be verified") })
+  const calls = reconciliationCalls(model)
+  expect(calls).toHaveLength(LEAN_MAX_RETRIES + 1)
+  expect(new Set(calls.map(row => row.sessionID)).size).toBe(1)
+  expect(model.count(AGENT.draft)).toBe(0)
+  expect(readLeanJson(directory, "answer-reconcile.json")).toMatchObject({ verification_failed: true })
+  expect(readLeanJson(directory, "answer-reconcile.json")).not.toHaveProperty("conflicts")
+
+  // An unchanged Continue cannot replenish discovery's retry allowance.
+  enqueueLeanRequest(directory, { kind: "continue" })
+  expect((await run()).status).toBe("failed")
+  expect(reconciliationCalls(model)).toHaveLength(calls.length)
+
+  // A genuine changed human answer reopens discovery, and only its checked
+  // empty result admits drafting and replaces the failed result.
+  corrected = true
+  enqueueLeanRequest(directory, { kind: "answer", question_id: ids()[1], answer: "Keep the price unchanged if delivery is late." })
+  expect((await run()).status).toBe("completed")
+  expect(reconciliationCalls(model)).toHaveLength(calls.length + 1)
+  expect(model.count(AGENT.draft)).toBeGreaterThan(0)
   expect(readLeanJson(directory, "answer-reconcile.json")).toMatchObject({ conflicts: [] })
+  expect(readLeanJson(directory, "answer-reconcile.json")).not.toHaveProperty("verification_failed")
 })
 
 test("a conflict naming an unknown question or a single one is sent back for a retry", async () => {

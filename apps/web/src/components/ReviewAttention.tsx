@@ -305,6 +305,9 @@ export function CompareSummary({ comparison, onOpen }: { comparison: GridColumnC
     }
   }, [open])
 
+  if (comparison.status === "unavailable")
+    return <p className="review-compare-note">No AI comparison: {comparison.summary}</p>
+
   return (
     <div
       ref={root}

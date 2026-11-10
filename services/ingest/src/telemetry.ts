@@ -1,3 +1,4 @@
+import { isUserConversation } from "../../../dochaus/lib/session-visibility"
 import { Database } from "bun:sqlite"
 import { existsSync, statSync } from "node:fs"
 import path from "node:path"
@@ -296,11 +297,9 @@ function readCurrentSession(matterDir: string, sessions: UsageSession[], session
 
 // The conversation list's rule: a top-level chat the lawyer started, or a
 // drafting run's own conversation; never a background agent or a throwaway
-// job session (review table cells, routing), which carry a "doc.haus" title.
+// job session (review table cells, routing), identified by role metadata.
 function conversation(parentID: string | null, native: UsageSession | undefined, group: UsageGroup) {
-  if (group === "background" || parentID || native?.parentID || /^doc\.haus/i.test(native?.title ?? "")) return false
-  const role = native?.metadata?.dochaus_role
-  return role === undefined || role === "lean-drafting-owner"
+  return group !== "background" && !parentID && isUserConversation(native ?? {})
 }
 
 function tokenStatus(tokens: number): "ok" | "warn" | "fail" {

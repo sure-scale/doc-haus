@@ -181,6 +181,65 @@ test("lost settlement acknowledgement reads terminal status without replay", asy
   expect(writes).toEqual([1]); expect(f.events.filter(event => event === "read")).toHaveLength(1)
 })
 
+test("settlement failure notice preserves the cause and pending fence without replay or Save", async () => {
+  for (const mode of ["unavailable", "mismatched"] as const) {
+    const f = fixture("owned"), command = f.transport.nativeOperation!, cause = new Error("PRIVATE token=secret <w:body> /path/document.docx")
+    const calls: string[] = []
+    f.transport.nativeOperation = async (...args) => {
+      const request = args[2]; calls.push(request.action)
+      if (request.action === "settle") {
+        if (mode === "unavailable") throw cause
+        // A readable but still-pending response cannot confirm settlement.
+        return command(args[0], args[1], { action: "read" })
+      }
+      if (request.action === "read" && mode === "unavailable") throw new Error("read unavailable")
+      return command(...args)
+    }
+    await f.sync.start(); let writes = 0
+    const error = await f.sync.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => { writes++; f.bytes = 2 })
+      .then(() => undefined, error => error as Error & { notice?: string; mutationState: string })
+    expect(error?.mutationState).toBe("uncertain")
+    expect(error?.notice).toBe("doc.haus could not confirm the native operation status after the Word change. Check the change in Word. Use Undo if needed; do not apply it again.")
+    expect(error?.notice).not.toMatch(/PRIVATE|secret|token=|<w:|\/path/)
+    if (mode === "unavailable") expect(error?.cause).toBe(cause)
+    else expect(error?.cause).toBeInstanceOf(Error)
+    expect(calls).toEqual(mode === "unavailable" ? ["begin", "settle", "read"] : ["begin", "settle"])
+    expect((await f.transport.lease("inspect", "base-one")).nativeOperation?.state).toBe("pending")
+    expect(f.sync.snapshot().canSave).toBe(false)
+    expect(await f.sync.save()).toBe(false)
+    await expect(f.sync.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => { writes++ })).rejects.toThrow()
+    expect(writes).toBe(1); expect(f.events).not.toContain("upload"); expect(f.events).not.toContain("native-save")
+  }
+})
+
+test("cancellation settlement failure has its own static notice without claiming a Word write", async () => {
+  for (const mode of ["closed", "refused"] as const) {
+    const f = fixture("owned"), command = f.transport.nativeOperation!, entered = deferred(), release = deferred()
+    const cause = new Error("PRIVATE token=secret"), calls: string[] = []
+    f.transport.nativeOperation = async (...args) => {
+      calls.push(args[2].action)
+      if (args[2].action === "settle" || args[2].action === "read") throw cause
+      const result = await command(...args)
+      if (mode === "closed" && args[2].action === "begin") { entered.resolve(); await release.promise }
+      return result
+    }
+    await f.sync.start(); let edits = 0
+    const promise = f.sync.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => {
+      edits++
+      throw Object.assign(new Error("Unchanged preflight refusal"), { mutationState: "unchanged" })
+    })
+    if (mode === "closed") { await entered.promise; f.sync.dispose(); release.resolve() }
+    const error = await promise.then(() => undefined, error => error as Error & { notice?: string; mutationState: string })
+    expect(error?.mutationState).toBe("uncertain")
+    expect(error?.notice).toBe("doc.haus could not confirm cancellation of the native operation before editing. Keep this Word file; do not apply the proposal again.")
+    expect(error?.cause).toBe(cause)
+    expect(calls).toEqual(["begin", "settle", "read"])
+    expect(edits).toBe(mode === "closed" ? 0 : 1)
+    expect(f.sync.snapshot().canSave).toBe(false)
+    expect(f.events).not.toContain("upload"); expect(f.events).not.toContain("native-save")
+  }
+})
+
 test("pane reconstruction cannot reapply or save an indeterminate native operation", async () => {
   const f = fixture("owned")
   await f.sync.start()

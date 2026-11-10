@@ -1,4 +1,5 @@
 import { isChatRecoveryMessage } from "../../../dochaus/lib/chat-recovery-message"
+import { isMalformedToolOutput } from "../../../dochaus/lib/malformed-tool-output"
 import { createHash } from "node:crypto"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { engineV2Fetch } from "../../../dochaus/lib/engine-v2"
@@ -323,20 +324,11 @@ async function requireCurrentContinuation(directory: string, input: ChatContinua
 
 function malformedToolFailure(message: Record<string, unknown>) {
   if (!Array.isArray(message.parts)) return false
-  const toolSyntax = /(?:<\|tool_call\|>|call:[a-z][\w-]*\s*\{)/i
-  const printedToolSyntax = message.parts.some(part =>
-    isRecord(part) &&
-    (part.type === "reasoning" || (part.type === "text" && part.synthetic !== true)) &&
-    typeof part.text === "string" &&
-    toolSyntax.test(part.text))
-  const hasAnswer = message.parts.some(part =>
-    isRecord(part) &&
-    part.type === "text" &&
-    part.synthetic !== true &&
-    typeof part.text === "string" &&
-    /[\p{L}\p{N}]/u.test(part.text) &&
-    !toolSyntax.test(part.text))
-  return printedToolSyntax && !hasAnswer
+  return isMalformedToolOutput(message.parts.filter(isRecord).map(part => ({
+    type: typeof part.type === "string" ? part.type : "",
+    text: part.text,
+    synthetic: part.synthetic,
+  })))
 }
 
 function requireMatchingClaim(claim: Claim, input: ChatContinuationInput, hash: string) {

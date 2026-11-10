@@ -1,3 +1,4 @@
+import { isUserConversation } from "../../../dochaus/lib/session-visibility"
 import { chartCaption, chartData } from "../../../dochaus/lib/dashboard-chart"
 import { checkPlan, type Chart } from "../../../dochaus/lib/dashboard-plan"
 import { listMatters, listPlaybooks, workspaceRoot } from "./matter"
@@ -143,7 +144,7 @@ export function templateAvailability(id: string, data: Practice, period: Period,
   if (id === "recent") return query("matters", "all")
   if (id === "drafts") return query("drafts", "all")
   if (id === "activity") {
-    const count = rows.flatMap(row => row.sessions).filter(session => !session.parentID && !/^doc\.haus/i.test(session.title ?? "") && (session.metadata?.dochaus_role === undefined || session.metadata.dochaus_role === "lean-drafting-owner") && withinDays(session.time.created, activityDays(zone, now), zone, now)).length
+    const count = rows.flatMap(row => row.sessions).filter(session => isUserConversation(session) && withinDays(session.time.created, activityDays(zone, now), zone, now)).length
     return count ? { status: unread ? "partial" : "available", usable: true, total: count } : { status: unread ? "unavailable" : "empty", usable: false, reason: "No recent conversations." }
   }
   if (id === "week") {
@@ -184,7 +185,7 @@ export async function dashboardInventory(period: unknown, timeZone: unknown) {
   const zone = timeZone as string, snapshot = await practice(), data = snapshot.data
   const metrics = Object.fromEntries((["matters", "conversations", "spend", "drafts", "tokens", "documents"] as const).map(metric => {
     const periods = Object.fromEntries((["month", "last-month", "quarter", "all"] as const).map(p => [p, (metric === "documents" || metric === "drafts") && p !== "all" ? { status: "unavailable", usable: false, reason: "This dataset is available across all time only." } : chartAvailability({ type: "chart", title: "Total", metric, groupBy: "none", form: "stat", period: p }, data, p, zone)])) as Record<Period, Availability>
-    const times = metric === "matters" ? data.matters.map(row => row.matter.created_at) : metric === "spend" ? [...data.matters.flatMap(row => row.costs), ...data.workspace?.costs ?? []].map(cost => cost.time) : metric === "conversations" ? data.matters.flatMap(row => row.sessions.filter(session => !session.parentID && !/^doc\.haus/i.test(session.title ?? "") && (session.metadata?.dochaus_role === undefined || session.metadata.dochaus_role === "lean-drafting-owner")).map(session => session.time.created)) : metric === "tokens" ? data.matters.flatMap(row => row.sessions.map(session => session.time.created)) : []
+    const times = metric === "matters" ? data.matters.map(row => row.matter.created_at) : metric === "spend" ? [...data.matters.flatMap(row => row.costs), ...data.workspace?.costs ?? []].map(cost => cost.time) : metric === "conversations" ? data.matters.flatMap(row => row.sessions.filter(session => isUserConversation(session)).map(session => session.time.created)) : metric === "tokens" ? data.matters.flatMap(row => row.sessions.map(session => session.time.created)) : []
     const valid = times.filter(Number.isFinite)
     return [metric, { ...periods[metric === "documents" || metric === "drafts" ? "all" : period], periods, ...(valid.length ? { firstAt: Math.min(...valid), lastAt: Math.max(...valid) } : {}), ...(metric === "drafts" ? { note: "Latest finished run per matter; all time only." } : metric === "documents" ? { note: "Current source documents; all time only." } : metric === "tokens" ? { note: "Session totals by session start date." } : {}) }]
   }))

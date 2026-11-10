@@ -1,8 +1,18 @@
 import { expect, test } from "bun:test"
-import { checkPlan } from "../lib/dashboard-plan"
+import { chartKey, checkPlan } from "../lib/dashboard-plan"
 import dashboardPlan from "../tool/dashboard-plan"
 
-const chart = { type: "chart", title: "Spend", metric: "spend", groupBy: "day", form: "line", period: "month" }
+const chart = { type: "chart", title: "Spend", metric: "spend", groupBy: "day", form: "line", period: "month" } as const
+
+test("literal delimiters in distinct client and matter filters do not merge chart identities", () => {
+  const checked = checkPlan({ widgets: [{ ...chart, client: "|Acme" }, { ...chart, matter: "Acme|" }] })
+  expect(checked.errors).toBeUndefined()
+  expect(checked.plan?.widgets).toHaveLength(2)
+  const [first, second] = checked.plan!.widgets
+  if (first!.type !== "chart" || second!.type !== "chart") throw new Error("Expected checked charts")
+  expect(chartKey(first!)).not.toBe(chartKey(second!))
+  expect(checkPlan({ widgets: [first, { ...first, title: "Different title" }] }).errors?.join(" ")).toContain("repeats widgets[0]")
+})
 
 test("the tool returns only the checked spec, never model-supplied figures", async () => {
   const result = await dashboardPlan.execute({ widgets: [{ ...chart, title: " Spend ", values: [999], total: 999 }], unsupported: [] }, {} as never)
@@ -35,7 +45,7 @@ test("unsupported and conflicting filters do not enter an accepted plan", () => 
 test("chart sources preserve old plans and reject unapproved mappings", () => {
   const old = checkPlan({ widgets: [chart] })
   expect(old.plan?.widgets[0]).toEqual(chart)
-  const source = { kind: "local-query", query: "practice-chart", version: 1 }
+  const source = { kind: "local-query", query: "practice-chart", version: 1 } as const
   expect(checkPlan({ widgets: [{ ...chart, source }] }).plan?.widgets[0]).toEqual({ ...chart, source })
   for (const source of [{ kind: "local-query", query: "other", version: 1 }, { kind: "local-query", query: "practice-chart", version: 2 }, { kind: "local-query", query: "practice-chart", version: 1, url: "/other" }]) {
     expect(checkPlan({ widgets: [{ ...chart, source }] }).errors).toBeDefined()
@@ -49,9 +59,9 @@ test("source documents have no date groupings; token charts use session-start pe
 })
 
 test("agent groupings and the background filter are spend-only and keep their filter", () => {
-  const agents = { ...chart, groupBy: "agent", form: "list" }
+  const agents = { ...chart, groupBy: "agent", form: "list" } as const
   expect(checkPlan({ widgets: [agents] }).plan?.widgets[0]).toEqual(agents)
-  const background = { ...chart, groupBy: "matter", form: "bars", agentGroup: "background", limit: 5 }
+  const background = { ...chart, groupBy: "matter", form: "bars", agentGroup: "background", limit: 5 } as const
   expect(checkPlan({ widgets: [background] }).plan?.widgets[0]).toEqual(background)
   expect(checkPlan({ widgets: [{ ...background, agentGroup: "work" }, background] }).plan?.widgets).toHaveLength(2)
   expect(checkPlan({ widgets: [{ ...agents, metric: "tokens" }] }).errors?.join(" ")).toContain("only spend is recorded per agent")

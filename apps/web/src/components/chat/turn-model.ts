@@ -66,6 +66,22 @@ export type Turn = {
   ack?: string
 }
 
+// Native tool metadata can outlive its producer version. Admit card fields by
+// shape; the original tool output remains readable when metadata is unavailable.
+const record = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value))
+const optionalString = (value: unknown) => value === undefined || typeof value === "string"
+function citation(value: unknown): value is Citation {
+  return record(value) && typeof value.documentName === "string" && typeof value.docPath === "string"
+    && typeof value.section === "string" && typeof value.excerpt === "string" && optionalString(value.structuralPath)
+    && Number.isSafeInteger(value.charStart) && (value.charStart as number) >= 0
+    && Number.isSafeInteger(value.charEnd) && (value.charEnd as number) > (value.charStart as number)
+    && (value.score === undefined || typeof value.score === "number" && Number.isFinite(value.score))
+}
+function todoList(value: unknown): Todo[] | undefined {
+  return Array.isArray(value) && value.every(item => record(item) && typeof item.content === "string"
+    && typeof item.status === "string" && typeof item.priority === "string") ? value : undefined
+}
+
 // The passages a turn's answer rests on: search-document's retrieved passages
 // and the quotations cite verified. An agent that finds its passages with exact
 // lookups (get-section, define) anchors them only through cite, so reading
@@ -74,7 +90,10 @@ function citationsOf(parts: Part[]) {
   return parts
     .filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool")
     .filter((p) => (p.tool === "search-document" || p.tool === "cite") && p.state.status === "completed")
-    .flatMap((p) => ((p.state as { metadata?: { citations?: Citation[] } }).metadata?.citations ?? []))
+    .flatMap((p) => {
+      const value = p.state.status === "completed" ? p.state.metadata?.citations : undefined
+      return Array.isArray(value) ? value.filter(citation) : []
+    })
 }
 
 // Reduce a turn's parts to its visible text, cited passages, and
@@ -101,9 +120,9 @@ function todosOf(parts: Part[]): Todo[] {
     .filter((p) => p.tool === "todowrite")
     .at(-1)
   if (!last) return []
-  const fromInput = "input" in last.state ? (last.state.input as { todos?: Todo[] } | undefined)?.todos : undefined
+  const fromInput = "input" in last.state ? todoList(last.state.input?.todos) : undefined
   const fromOutput =
-    last.state.status === "completed" ? (last.state.metadata as { todos?: Todo[] } | undefined)?.todos : undefined
+    last.state.status === "completed" ? todoList(last.state.metadata?.todos) : undefined
   return fromInput ?? fromOutput ?? []
 }
 
@@ -131,7 +150,11 @@ function comparesOf(parts: Part[]): VersionCompare[] {
     const options = (compare?.options ?? {}) as Record<string, unknown>
     const counts = (compare?.counts ?? {}) as Record<string, unknown>
     const text = (value: unknown) => typeof value === "string" && value.length > 0
-    if (!compare || !text(compare.left) || !text(compare.right) || typeof counts.changes !== "number" || typeof counts.untracked !== "number") continue
+    if (!record(compare) || !text(compare.left) || !text(compare.right)
+      || !Number.isSafeInteger(counts.changes) || (counts.changes as number) < 0
+      || !Number.isSafeInteger(counts.untracked) || (counts.untracked as number) < 0
+      || compare.options !== undefined && (!record(compare.options)
+        || ["ignoreFormatting", "detectMoves", "headersFooters"].some(key => options[key] !== undefined && typeof options[key] !== "boolean"))) continue
     const entry: VersionCompare = {
       left: compare.left as string,
       right: compare.right as string,
@@ -140,8 +163,8 @@ function comparesOf(parts: Part[]): VersionCompare[] {
       ignoreFormatting: options.ignoreFormatting !== false,
       detectMoves: options.detectMoves !== false,
       headersFooters: options.headersFooters !== false,
-      changes: counts.changes,
-      untracked: counts.untracked,
+      changes: counts.changes as number,
+      untracked: counts.untracked as number,
       hunks: [],
     }
     const key = JSON.stringify([entry.left, entry.right, entry.leftLabel, entry.rightLabel, entry.ignoreFormatting, entry.detectMoves, entry.headersFooters])
@@ -172,10 +195,13 @@ function redlinesOf(parts: Part[]): RedlineProposal[] {
     .filter((p) => (p.tool === "redline" || p.tool === "tracked-changes") && p.state.status === "completed")
     .flatMap((p) => {
       const meta = (p.state as { metadata?: Record<string, unknown> }).metadata ?? {}
-      const document = meta.document as string | undefined
-      if (!document) return []
-      const oldText = (p.tool === "redline" ? meta.oldText : meta.find) as string | undefined
-      const newText = (p.tool === "redline" ? meta.replacement : meta.replace) as string | undefined
+      const document = meta.document
+      const oldText = p.tool === "redline" ? meta.oldText : meta.find
+      const newText = p.tool === "redline" ? meta.replacement : meta.replace
+      if (typeof document !== "string" || !document || !optionalString(oldText) || !optionalString(newText)
+        || oldText === undefined && newText === undefined || !optionalString(meta.comment)
+        || meta.redline !== undefined && (!Number.isSafeInteger(meta.redline) || (meta.redline as number) < 1)
+        || meta.formatting !== undefined && !record(meta.formatting)) return []
       return [{ id: meta.redline as number | undefined, document, oldText: oldText ?? "", newText: newText ?? "", comment: meta.comment as string | undefined, formatting: meta.formatting as Record<string, unknown> | undefined }]
     })
 }
@@ -198,7 +224,8 @@ function partsToSteps(parts: Part[], matter: string, pool?: Part[]): Step[] {
       // The completeness self-audit gets its own card (TodoView); keep its raw
       // todowrite calls out of the step timeline so they do not read as a dozen
       // repeated "Todowrite" steps alongside the narrated work.
-      if (p.tool === "todowrite") return []
+      if (p.tool === "todowrite" && (todoList("input" in p.state ? p.state.input?.todos : undefined)
+        ?? todoList(p.state.status === "completed" ? p.state.metadata?.todos : undefined)) !== undefined) return []
       const status = toolStepStatus(p)
       const childID =
         pool && p.tool === "task"
@@ -220,10 +247,8 @@ function partsToSteps(parts: Part[], matter: string, pool?: Part[]): Step[] {
       // it executed, not just the output, so a step that returns "['main.py']" is
       // auditable. The source is what ran; the output is only its echo, useless on
       // its own. Prepend the code; keep the output beneath it when there is one.
-      const code =
-        p.tool === "python_run_python_code"
-          ? ((input?.python_code ?? input?.code ?? input?.source) as string | undefined)
-          : undefined
+      const codeInput = p.tool === "python_run_python_code" ? input?.python_code ?? input?.code ?? input?.source : undefined
+      const code = typeof codeInput === "string" ? codeInput : undefined
       const body =
         code?.trim() && raw?.trim()
           ? `${code.trim()}\n\n--- output ---\n${raw.trim()}`

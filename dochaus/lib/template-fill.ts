@@ -10,6 +10,7 @@ import { withTemplateStyleIds } from "./template-seed"
 import { shadeOpenItemsInDocx, shadeTextsInDocx } from "./open-items"
 import { FILLED_VALUE_FILL } from "./marker-patterns"
 import { OPTIONAL_FIELD, type RowFill } from "./template-batch"
+import { prepareMarkdownRenderText } from "./markdown-render-text"
 
 // The deterministic template fill: the one path that turns library template
 // bytes plus placeholder values and optional-component choices into a new
@@ -38,18 +39,27 @@ export class TemplateContentError extends Error {}
 
 export async function fillTemplate(template: Uint8Array, options: TemplateFillOptions) {
   const dx = await docxodus()
-  const session = dx.openDocxSession(template, {})
+  let session = dx.openDocxSession(template, {})
+  const restoreCode = (text: ReturnType<typeof prepareMarkdownRenderText>) => {
+    if (!text.hasCode) return
+    let restored: Uint8Array
+    try { restored = text.restore(session.save()) } finally { session.close() }
+    session = dx.openDocxSession(restored, {})
+  }
 
   if (options.content) {
     // The seed's single empty paragraph is the insertion anchor; the whole
     // markdown body goes in as one multi-block insert, then the seed is dropped.
     const seed = Object.keys(session.project().anchorIndex).find((id) => id.startsWith("p:"))!
-    const inserted = session.insertParagraph(seed, "after", splitBlocks(options.content))
+    const text = prepareMarkdownRenderText(splitBlocks(options.content), { codeOnly: true })
+    const inserted = session.insertParagraph(seed, "after", text.markdown)
     if (!inserted.success) {
       session.close()
       throw new TemplateContentError(inserted.error?.message ?? JSON.stringify(inserted.error))
     }
     session.deleteBlock(seed)
+    // Fills/omissions must see real code text and its template placeholders.
+    restoreCode(text)
   }
 
   // Omitted optional components go first: a component is its `[optional: name]`-marked
@@ -98,12 +108,14 @@ export async function fillTemplate(template: Uint8Array, options: TemplateFillOp
       missedReplaces.push(r.clause)
       continue
     }
-    const inserted = session.insertParagraph(anchor.id, "after", splitBlocks(r.replacement))
+    const text = prepareMarkdownRenderText(splitBlocks(r.replacement), { codeOnly: true })
+    const inserted = session.insertParagraph(anchor.id, "after", text.markdown)
     if (!inserted.success) {
       missedReplaces.push(r.clause)
       continue
     }
     session.deleteBlock(anchor.id)
+    restoreCode(text)
   }
 
   // Kept optional components lose their marker so it never reaches the draft,

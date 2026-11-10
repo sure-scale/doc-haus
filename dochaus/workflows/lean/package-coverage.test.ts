@@ -747,23 +747,22 @@ describe("listings merged", () => {
   const APPROVED = listedRow()
   const RELEASED = listedRow({ act: "release the deposit", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works"] })
 
-  test("an act either run lists is kept once, the first run's acts first and in their order", () => {
-    // The same words, or words within or around them, from the same source are one act, however each run describes it.
+  test("overlapping quotes preserve distinct candidate wording until VERIFY, in sample order", () => {
     const reworded = listedRow({ act: "release of the deposit", quote: "then releases the deposit", parties: ["Kestrel Works"] })
     const around = listedRow({ act: "committee approval", quote: "Prepare the papers so that the Orchard Committee approves the revised schedule." })
     // The same act directed from another source is kept: each quote is its own instruction.
     const fromSource = listedRow({ act: "release the deposit", source: SOURCE, quote: RELEASE, parties: ["Kestrel Works"] })
-    expect(mergeCoverageActs([RELEASED, APPROVED], [reworded, fromSource, around])).toEqual([RELEASED, APPROVED, fromSource])
+    expect(mergeCoverageActs([RELEASED, APPROVED], [reworded, fromSource, around, { ...RELEASED }])).toEqual([RELEASED, APPROVED, reworded, fromSource, around])
     // An act only the second run lists is kept, and either run listing nothing keeps the other's acts.
     expect(mergeCoverageActs([APPROVED], [RELEASED])).toEqual([APPROVED, RELEASED])
     expect([mergeCoverageActs([], [APPROVED]), mergeCoverageActs([APPROVED], [])]).toEqual([[APPROVED], [APPROVED]])
   })
 
-  test("one run copying an email's bold marks and the other leaving them out list one act", () => {
+  test("quote presentation variants remain candidates for the independent verifier", () => {
     const marked = listedRow({ act: "open the account", source: "instructions.eml", quote: "Open an account at **Wren Bank** in Exeter.", parties: ["the officers"] })
     const plain = listedRow({ act: "open a bank account", source: "instructions.eml", quote: "Open an account at Wren Bank in Exeter.", parties: ["the officers"] })
-    expect(mergeCoverageActs([marked], [plain])).toEqual([marked])
-    expect(mergeCoverageActs([plain], [marked])).toEqual([plain])
+    expect(mergeCoverageActs([marked], [plain])).toEqual([marked, plain])
+    expect(mergeCoverageActs([plain], [marked])).toEqual([plain, marked])
   })
 })
 

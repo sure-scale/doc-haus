@@ -43,6 +43,23 @@ test("a stored chart is checked again and retains its pin after reload", () => {
   expect(saved).toMatchObject(current)
 })
 
+test("legacy delimiter keys reload from complete settings and keep distinct pins and filters", () => {
+  const client: Chart = { ...chart, client: "|Acme" }
+  const matter: Chart = { ...chart, matter: "Acme|" }
+  const legacyKey = "chart|spend|client|bars|dashboard||Acme|||"
+  const saved = readDashboards({ active: "custom", dashboards: [{ id: "custom", name: "My work", period: "all", stages: {}, widgets: [
+    { key: legacyKey, widget: client, pinned: true }, { key: legacyKey, widget: matter, pinned: false },
+  ] }] })
+  const widgets = saved.dashboards[0]!.widgets!
+  expect(widgets).toHaveLength(2)
+  expect(widgets.map(item => item.widget)).toEqual([client, matter])
+  expect(widgets[0]!.key).not.toBe(widgets[1]!.key)
+  const replaced = applyPlan(widgets.slice(0, 1), plan([matter]))
+  expect(replaced).toEqual([widgets[0]!, instance(matter)])
+  expect(readDashboards(JSON.parse(JSON.stringify({ ...saved, dashboards: [{ ...saved.dashboards[0], widgets: replaced }] }))))
+    .toEqual({ ...saved, dashboards: [{ ...saved.dashboards[0], widgets: replaced }] })
+})
+
 test("AI limitations stay with their dashboard after a browser reload", () => {
   const current = { active: "costs", dashboards: [
     { id: "costs", name: "Costs", period: "month", widgets: [instance(chart)], stages: {}, notes: ["Time per fee earner is not tracked."] },

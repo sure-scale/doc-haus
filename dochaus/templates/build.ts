@@ -24,6 +24,7 @@ import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { withParagraphPointers } from "../lib/drafting-amendment"
 import { splitBlocks } from "../lib/markdown"
+import { prepareMarkdownRenderText } from "../lib/markdown-render-text"
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -182,11 +183,12 @@ console.log(`built ${base}`)
 const dx = await docxodus()
 const session = dx.openDocxSession(await Bun.file(base).bytes(), {})
 const seed = Object.keys(session.project().anchorIndex).find((id) => id.startsWith("p:"))!
-const inserted = session.insertParagraph(seed, "after", splitBlocks(NDA_BODY))
+const text = prepareMarkdownRenderText(splitBlocks(NDA_BODY), { codeOnly: true })
+const inserted = session.insertParagraph(seed, "after", text.markdown)
 if (!inserted.success) throw new Error(`nda insert failed: ${inserted.error?.message}`)
 session.deleteBlock(seed)
 const nda = path.join(here, "..", "..", "demo", "templates", "nda.docx")
 mkdirSync(path.dirname(nda), { recursive: true })
-await Bun.write(nda, withParagraphPointers(session.save()))
+await Bun.write(nda, withParagraphPointers(text.restore(session.save())))
 session.close()
 console.log(`built ${nda}`)

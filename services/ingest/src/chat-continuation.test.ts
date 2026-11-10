@@ -155,6 +155,24 @@ describe("chat continuation admission", () => {
 })
 
 describe("chat continuation currentness", () => {
+  test("literal protocol examples are refused before any durable admission", async () => {
+    for (const text of ['```json\ncall:task{"input":true}\n```', 'Here is an example: `call:task{"input":true}`.', 'call:task{"input":true}\nThis is an example.']) {
+      const f = engine()
+      f.history[1] = { ...f.history[1], content: [{ type: "text", text: text.slice(0, 12) }, { type: "text", text: text.slice(12) }] }
+      await expect(dispatchChatContinuation(f.directory, f.input, f.options))
+        .rejects.toThrow("no longer the current recoverable failure")
+      expect(f.state.posts).toBe(0)
+      expect(claims(f.directory)).toEqual([])
+    }
+  })
+
+  test("protocol split across native parts remains recoverable", async () => {
+    const f = engine()
+    f.history[1] = { ...f.history[1], content: [{ type: "reasoning", text: "<|tool_" }, { type: "reasoning", text: 'call|>call:task{"description":"continue"}' }] }
+    expect(await dispatchChatContinuation(f.directory, f.input, f.options)).toMatchObject({ accepted: true, attempted: true })
+    expect(f.state.posts).toBe(1)
+  })
+
   test("rejects client-minted identities and a turn that already answered", async () => {
     const f = engine()
     await expect(dispatchChatContinuation(f.directory, input({ messageID: "msg_recovery_client_minted" }), f.options))

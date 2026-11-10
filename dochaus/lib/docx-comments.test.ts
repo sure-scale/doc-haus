@@ -89,6 +89,44 @@ describe("native Word comment export", () => {
     expect(doc.getElementsByTagNameNS(W, "p")[0].getElementsByTagNameNS(W, "commentRangeStart").length).toBe(0)
   })
 
+  test("structural row and cell deletions are deleted evidence, never accepted comment targets", async () => {
+    const p = (text: string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`
+    const tc = (text: string, properties = "") => `<w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/>${properties}</w:tcPr>${p(text)}</w:tc>`
+    const revision = (kind: string, id: number) => `<w:${kind} w:id="${id}" w:author="Earlier reviewer" w:date="2026-10-20T09:00:00Z"/>`
+    for (const kind of ["row", "cell"] as const) {
+      const removed = kind === "row" ? `<w:tr><w:trPr>${revision("del", 70)}</w:trPr>${tc("Removed condition.")}${tc("Removed exception.")}</w:tr>`
+        : `<w:tr>${tc("Removed condition.", revision("cellDel", 70))}${tc("Retained neighbour.")}</w:tr>`
+      const table = `<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid><w:tr>${tc("Heading one")}${tc("Heading two")}</w:tr>${removed}</w:tbl>`
+      const source = withBody(clean, table + p("After the table."))
+      const before = xml(source, "word/document.xml")
+      const accepted = await (await docxodus()).docxDiffAcceptRevisions(source)
+      const current = readDocxCommentParagraphs(source).map(row => row.paragraph_text)
+      expect(current).toEqual(readDocxCommentParagraphs(accepted).map(row => row.paragraph_text))
+      expect(current).not.toContain("Removed condition.")
+      expect(readDocxRevisionText(source).deleted_text).toEqual(kind === "row" ? ["Removed condition.", "Removed exception."] : ["Removed condition."])
+      const output = exportDocxComments(source, [comment("wrong-current", { paragraph_text: "Removed condition." }),
+        comment("retained", { paragraph_text: "After the table." }), comment("deleted", { deleted_paragraph_text: "Removed condition." })])
+      expect(output.unresolved.map(row => row.id)).toEqual(["wrong-current"])
+      expect(output.attached.map(row => [row.id, row.anchor_kind])).toEqual([["retained", undefined], ["deleted", "deleted"]])
+      const deleted = readDocxComments(output.bytes).find(row => row.comment_id === output.attached[1]!.comment_id)!
+      expect(deleted.markers.every(marker => marker.paragraph_index === null && marker.accepted_paragraph_text === "" && marker.deleted_paragraph_text === "Removed condition.")).toBe(true)
+      expect(readDocxCommentParagraphs(output.bytes).map(row => row.paragraph_text)).toEqual(current)
+      expect(revisions(xml(output.bytes, "word/document.xml"))).toEqual(revisions(before))
+      expect(xml(source, "word/document.xml")).toBe(before)
+      // Same ordinary text with only the structural deletion carrier removed stays current.
+      const control = withBody(clean, (table + p("After the table.")).replace(revision(kind === "row" ? "del" : "cellDel", 70), ""))
+      expect(readDocxCommentParagraphs(control).map(row => row.paragraph_text)).toContain("Removed condition.")
+      expect(readDocxRevisionText(control).deleted_text).toEqual([])
+      const property = kind === "row" ? "trPr" : "tcPr"
+      const carrier = revision(kind === "row" ? "del" : "cellDel", 70)
+      for (const dormant of [`<w:${property}Change w:id="71" w:author="Earlier reviewer"><w:${property}>${carrier}</w:${property}></w:${property}Change>`,
+        carrier.replace(/w:(del|cellDel)/, 'x:$1 xmlns:x="urn:unrelated"')]) {
+        const unchanged = withBody(clean, (table + p("After the table.")).replace(carrier, dormant))
+        expect(readDocxCommentParagraphs(unchanged).map(row => row.paragraph_text)).toContain("Removed condition.")
+      }
+    }
+  })
+
   test("preserves existing native comments and relationships and allocates collision-free IDs", () => {
     const first = exportDocxComments(clean, [comment("first", { paragraph_text: UNCHANGED })])
     const before = unzipSync(first.bytes)

@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite"
 import { chmodSync, mkdirSync } from "node:fs"
 import path from "node:path"
-import { chartKey, checkPlan, TEMPLATES, type PlanWidget } from "../../../dochaus/lib/dashboard-plan"
+import { chartKey, checkPlan, matchesStoredChartKey, TEMPLATES, type PlanWidget } from "../../../dochaus/lib/dashboard-plan"
 import { workspaceRoot } from "./matter"
 
 const PERIODS = ["month", "last-month", "quarter", "all"]
@@ -50,7 +50,8 @@ function widgetList(value: unknown): Widget[] {
     if (!checked.plan) throw new DashboardStateError("One of the saved dashboard widgets cannot be displayed.")
     const widget = checked.plan.widgets[0]!
     const key = widget.type === "chart" ? chartKey(widget) : widget.type
-    if (item.key !== key || keys.has(key)) throw new DashboardStateError("Saved dashboard widgets need distinct, valid keys.")
+    const matches = widget.type === "chart" ? matchesStoredChartKey(item.key, widget) : item.key === key
+    if (!matches || keys.has(key)) throw new DashboardStateError("Saved dashboard widgets need distinct, valid keys.")
     keys.add(key)
     return { key, widget, pinned: item.pinned }
   })

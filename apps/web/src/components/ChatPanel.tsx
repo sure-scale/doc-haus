@@ -25,7 +25,8 @@ import { QUICK_BANNER, quickDraftAnswer } from "./chat/quick-draft"
 import { getPreferences } from "../api/ingest/preferences"
 import { useToast } from "./Toast"
 import CitationView from "./CitationView"
-import IssuesView, { parseIssues, stripIssues } from "./IssuesView"
+import IssuesView from "./IssuesView"
+import { issueReport } from "./chat/issue-report"
 import TodoView from "./TodoView"
 import Markdown from "./markdown/Markdown"
 import { isEmptyAnswer, readTurn, type VersionCompare } from "./chat/turn-model"
@@ -611,7 +612,7 @@ export default function ChatPanel({
       <>
         {legend && <p className="quick-draft-legend">{legend}</p>}
         {quick.form && legendMissing}
-        {answer(stripIssues(quick.text))}
+        {answer(quick.text)}
         {settled && !quick.listed && quick.placeholders.length > 0 && (
           <p className="quick-draft-open" role="note">
             Open items in the draft: {quick.placeholders.join(", ")}
@@ -629,16 +630,16 @@ export default function ChatPanel({
       <>
         {legend && <p className="quick-draft-legend">{legend}</p>}
         {legendMissing}
-        {answer(stripIssues(text))}
+        {answer(text)}
       </>
     )
   }
-  const agentAnswer = (agentName: string | undefined, text: string, settled: boolean, compares?: VersionCompare[]) =>
-    agentName === QUICK_DRAFT
-      ? quickAnswer(text, settled)
-      : agentName === CLIENT_SUMMARY
-        ? clientAnswer(text)
-        : answer(stripIssues(text), compares)
+  const agentAnswer = (agentName: string | undefined, text: string, settled: boolean, compares?: VersionCompare[]) => {
+    if (agentName === QUICK_DRAFT) return quickAnswer(text, settled)
+    if (agentName === CLIENT_SUMMARY) return clientAnswer(text)
+    const report = issueReport(text, agentName)
+    return <>{answer(report.text, compares)}<IssuesView issues={report.issues} /></>
+  }
 
   const narrationView = own && matterId && (
     <DraftingNarration
@@ -875,7 +876,6 @@ export default function ChatPanel({
                   {t.agent === QUICK_DRAFT && !t.error && !isEmptyAnswer(t.text) && quickBanner(i)}
                   <StepsPanel steps={t.steps} busy={false} answered={!isEmptyAnswer(t.text)} />
                   {t.text && !isEmptyAnswer(t.text) && agentAnswer(t.agent, t.text, true, t.compares)}
-                  <IssuesView issues={parseIssues(t.text)} />
                   {t.error && <div className="msg-error">{t.error}</div>}
                   {t.stopped && !t.superseded && (
                     <p className="msg-stopped" role="note">
@@ -949,7 +949,6 @@ export default function ChatPanel({
                 </span>
                 {stopping ? "Stopping" : (activity ?? "Working")}
               </p>
-              <IssuesView issues={parseIssues(live.text)} />
               <TodoView todos={live.todos} />
               <CitationView citations={live.citations} matterId={matterId} documents={documents} />
               {live.text && <RedlineView redlines={live.redlines} onView={onViewDocument} />}

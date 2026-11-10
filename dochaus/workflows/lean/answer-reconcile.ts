@@ -20,16 +20,16 @@ import { answeredQuestions, readLeanJson, readLeanText, shortHash, undecidedQues
 // answered questions it names. Each conflict becomes one open question for the
 // lawyer, advised as every asked question is, whose answer settles the point in
 // place of the answers it names (`replaces`). The result is kept under the
-// answers' content key, so an unchanged set is not read again; a reply that
-// never passes its check finds no conflict, and a runtime error or a pause
-// records nothing, so the next pass reads the set again.
+// answers' content key, so an unchanged set is not read again. Discovery that
+// never passes its check stops without certifying compatibility; a runtime
+// error or a pause records nothing, so the next pass reads the set again.
 // Each candidate is independently verified. An exhausted verification stops
 // on the same content key, without certifying compatibility.
 
 const RECONCILE_FILE = "answer-reconcile.json"
 /** Keys the saved result: a change to the job's prompt or to what it reads
  * reads every set of answers again. */
-const RECONCILE_CONTRACT = "answer-reconcile-2-verified-conflicts"
+const RECONCILE_CONTRACT = "answer-reconcile-3-verified-discovery"
 const CONFLICT_PREFIX = "answer-conflict-"
 /** The closing sentence of a conflict question, quoting the questions whose answers it replaces. */
 const REPLACES = "This answer settles the point in place of the answers to"
@@ -54,7 +54,11 @@ export async function reconcileAnswers(directory: string, state: LeanState, deps
   if (record(saved) && saved.input_sha === input_sha && saved.verification_failed === true) throw new UnverifiedConflictError()
   let conflicts = record(saved) && saved.input_sha === input_sha && Array.isArray(saved.conflicts) ? saved.conflicts as AnswerConflict[] : undefined
   if (!conflicts) {
-    const proposed = await findConflicts(directory, state, deps, answered, request, updates, titles)
+    const proposed = await findConflicts(directory, state, deps, answered, request, updates, titles).catch(error => {
+      if (error instanceof UnverifiedConflictError && !deps.pause?.aborted)
+        writeLeanText(directory, RECONCILE_FILE, `${JSON.stringify({ input_sha, verification_failed: true }, null, 2)}\n`)
+      throw error
+    })
     if (!proposed || deps.pause?.aborted) return []
     const verified: AnswerConflict[] = []
     const failures: unknown[] = []
@@ -167,9 +171,9 @@ export function answersToReconcile(directory: string) {
   return answeredQuestions(directory).filter(question => !undecidedQuestion(question))
 }
 
-/** The conflicts the job finds, none when its retries run out or its reply is
- * cut off at the output limit, or undefined on any other runtime error, a
- * pause or a settings change, which the runner acts on. */
+/** Only a checked discovery reply can report no conflicts. Exhausted checks
+ * and an output-limit stop cannot establish compatibility; other runtime
+ * errors return undefined for the runner to act on. */
 async function findConflicts(directory: string, state: LeanState, deps: LeanDeps, answered: Question[], request: string, updates: string, titles: ReadonlyMap<string, string>): Promise<AnswerConflict[] | undefined> {
   const agent = LEAN_STAGE_AGENTS.reconcile
   const at = { stage: "intake" as const, step: "reconcile answers" }
@@ -191,10 +195,10 @@ async function findConflicts(directory: string, state: LeanState, deps: LeanDeps
       appendLeanEvent(directory, { ...at, event: "checker", attempt: index, issues, wait_ms: leanElapsedMs(asked, checkedAt), check_ms: leanElapsedMs(checkedAt) })
       if (checked.conflicts && !worded.length) return checked.conflicts.map(row => ({ ...row, conflict: inLawyerWords(directory, row.conflict) }))
     }
-    return []
+    throw new UnverifiedConflictError()
   } catch (error) {
-    // A reply cut off before any answer finds no conflict, like one that never passes its check.
-    if (error instanceof OutputLimitError) return []
+    if (error instanceof OutputLimitError) throw new UnverifiedConflictError()
+    if (error instanceof UnverifiedConflictError) throw error
     // A runtime error, a pause or a settings change: the runner acts on it.
     return undefined
   }

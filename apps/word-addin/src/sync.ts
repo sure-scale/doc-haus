@@ -24,6 +24,17 @@ export interface Checkpoints {
 const nativeUnknown = "The status of a Word operation could not be confirmed. Keep this Word file and its local edits. Check the document status in the matter in doc.haus; if it shows an unconfirmed Word change, choose Create saved copy. The copy will not include unsent Word edits."
 const nativeRecovery = "A Word change could not be confirmed. Keep this Word file and its local edits. In the matter in doc.haus, choose Create saved copy for this document; the copy will not include unsent Word edits."
 
+// The card already displays static uncertain notices. Retain the original
+// transport cause internally; never interpolate it into the customer message.
+function nativeSettlementFailure(message: string, cause: unknown, confirmed: boolean) {
+  return Object.assign(new Error(message, { cause }), {
+    mutationState: "uncertain" as const,
+    notice: confirmed
+      ? "doc.haus could not confirm the native operation status after the Word change. Check the change in Word. Use Undo if needed; do not apply it again."
+      : "doc.haus could not confirm cancellation of the native operation before editing. Keep this Word file; do not apply the proposal again.",
+  })
+}
+
 type NativeOperation = { sequence: number; operationId: string | null; state: "idle" | "pending" | "confirmed" | "not-dispatched" }
 type ProposalBinding = { conversationId: string; turnId: string }
 type NativeIntent = { intent: "amendment"; proposal: ProposalBinding } | { intent: "refresh"; expectedCurrent: string }
@@ -513,6 +524,38 @@ export class WordSync {
     this.nativeUncertain = false
   }
 
+  /** Authorize a read-only check through the existing reviewed-operation gate.
+   * A check can prepare an oracle but never confirms a dispatched Word change. */
+  async localInspection<T>(proposal: ProposalBinding, read: (identity: {base:string;generation:string}) => Promise<T>): Promise<T> {
+    let value!: T
+    let rejected: unknown
+    let readFailed = false
+    const complete = await this.enqueue(async () => {
+      try {
+        if (!proposal?.conversationId || !proposal.turnId) throw documentStateError("Review the proposal again before checking it.")
+        if (this.pending) throw documentStateError("Finish the pending Save before checking the table.")
+        await this.inspect(false)
+        // Claim the ordinary lease without marking document content dirty.
+        if (!this.latestUncertain && !this.nativeUncertain && this.connection?.nativeOperation?.state !== "pending" &&
+          this.connection?.version.state === "current" && this.connection.lease.state === "available")
+          this.connection = await this.transport.lease("claim", this.base)
+        if (!this.canWrite()) throw documentStateError(this.blockedMessage())
+        if (!this.connection?.nativeOperation) throw documentStateError("This Word connection needs an update before checking the table.")
+        const identity = {base:this.base,generation:this.connection.lease.generation!}
+        if (this.closed) throw documentStateError("The Word pane closed before the table was checked.")
+        const operation = await this.beginNative(identity.base,identity.generation,this.connection.nativeOperation.sequence,{intent:"amendment",proposal})
+        try {
+          if (this.closed) throw documentStateError("The Word pane closed before the table was checked.")
+          value = await read(identity)
+        } catch (error) { rejected = error; readFailed = true }
+        try { await this.settleNative(operation,"not-dispatched") }
+        catch (cause) { throw nativeSettlementFailure(this.blockedMessage(),cause,false) }
+      } catch (error) { rejected = error; throw error }
+    })
+    if (!complete || readFailed) throw rejected instanceof Error ? rejected : documentStateError(this.state.message)
+    return value
+  }
+
   /** Reviewed changes share Save's queue. BEGIN is committed before the host
    * callback; only that uninterrupted callback may queue native writes. */
   async localEdit<T>(proposal: ProposalBinding, edit: (identity: { base: string; generation: string }) => Promise<T>): Promise<T> {
@@ -535,19 +578,19 @@ export class WordSync {
         operation = await this.beginNative(identity.base, identity.generation, this.connection.nativeOperation.sequence, { intent: "amendment", proposal })
         if (this.closed) {
           try { await this.settleNative(operation, "not-dispatched") }
-          catch { throw Object.assign(new Error(this.blockedMessage()), { mutationState: "uncertain" }) }
+          catch (cause) { throw nativeSettlementFailure(this.blockedMessage(), cause, false) }
           throw documentStateError("The Word pane closed before the change was applied.")
         }
         try { value = await edit(identity) }
         catch (error) {
           if (error && typeof error === "object" && "mutationState" in error && error.mutationState === "unchanged") {
             try { await this.settleNative(operation, "not-dispatched") }
-            catch { throw Object.assign(new Error(this.blockedMessage()), { mutationState: "uncertain" }) }
+            catch (cause) { throw nativeSettlementFailure(this.blockedMessage(), cause, false) }
           }
           throw error
         }
         try { await this.settleNative(operation, "confirmed") }
-        catch { throw Object.assign(new Error(this.blockedMessage()), { mutationState: "uncertain" }) }
+        catch (cause) { throw nativeSettlementFailure(this.blockedMessage(), cause, true) }
         this.content = "changed"
         this.show("not-saved", "Applied in Word. Choose Save when you’re ready.")
       } catch (error) {

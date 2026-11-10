@@ -102,22 +102,50 @@ async function run(reply: Reply, setup: (directory: string) => void = () => {}, 
 }
 
 describe("WHAT samples", () => {
-  test("the union over samples that fail, list nothing or list overlapping acts keeps each act once", async () => {
-    const { model, result, record } = await run((job, _attempt, sample) => job !== "what" ? valid(job, 0, 0)
+  test("overlapping samples reach VERIFY before its explicit same-act decision merges them", async () => {
+    const reworded = { act: "license the boat storage", source: "request", quote: "grants the Harbourlight Rowing Club a licence" }
+    const { model, result, record } = await run((job, _attempt, sample) => job === "verify" ? indexed("verify", [KEEP, { ...KEEP, decision: "same", same_as: 0 }, KEEP]) : job !== "what" ? valid(job, 0, 0)
       : [
           { acts: [{ act: "grant the licence", source: "request", quote: "words the lawyer never wrote" }] },
           { acts: [] },
           { acts: [GRANT] },
           // A reworded act on part of the same words, and the other act.
-          { acts: [{ act: "license the boat storage", source: "request", quote: "grants the Harbourlight Rowing Club a licence" }, APPROVE] },
+          { acts: [reworded, APPROVE] },
         ][sample])
     expect(result).toEqual({ status: "done", outputs: ["acts.json"], openItems: [] })
     expect(record?.status).toBe("listed")
     expect(listedOnly(record)).toEqual([GRANT, APPROVE])
+    expect(model.asked("verify")[0]!.text).toContain(JSON.stringify(reworded.act))
+    expect(record?.verify?.merged).toEqual([{ ...reworded, into: 0 }])
     const perSample = model.asked("what").reduce((counts, prompt) => counts.set(prompt.sessionID, (counts.get(prompt.sessionID) ?? 0) + 1), new Map<string, number>())
     // The failing sample is retried to the limit; the empty one is asked once.
     expect([...perSample.values()]).toEqual([LEAN_MAX_RETRIES + 1, 1, 1, 1])
     expect(record?.issues).toEqual([])
+  })
+
+  test("distinct acts sharing one exact quote reach verification and both downstream jobs", async () => {
+    const grant = { ...GRANT, quote: REQUEST }, approve = { ...APPROVE, quote: REQUEST }
+    const { model, record } = await run((job, attempt, sample) => job === "what"
+      ? [{ acts: [grant] }, { acts: [approve] }, { acts: [{ ...grant }] }, { acts: [] }][sample]
+      : valid(job, attempt, sample))
+    expect(listedOnly(record)).toEqual([grant, approve])
+    expect(record?.issues).toEqual([])
+    expect(record?.verify).toEqual({ excluded: [], merged: [] })
+    for (const job of ["verify", "who", "how"] as const) {
+      expect(model.asked(job)).toHaveLength(1)
+      const shown = JSON.parse(model.asked(job)[0]!.text.split("<acts>\n")[1]!.split("\n</acts>")[0]!)
+      expect(shown.map(({ index, act, source, quote }: ListedAct & { index: number }) => ({ index, act, source, quote })))
+        .toEqual([{ index: 0, ...grant }, { index: 1, ...approve }])
+    }
+    expect(record?.acts.map(act => [act.who, act.how])).toEqual([[GRANT_WHO, GRANT_HOW], [APPROVE_WHO, APPROVE_HOW]])
+  })
+
+  test("WHAT deduplicates exact records but preserves differing act case and quote wording", () => {
+    const { directory } = matter()
+    const upper = { ...GRANT, act: GRANT.act.toUpperCase() }
+    const wider = { ...GRANT, quote: REQUEST }
+    expect(parseActList(JSON.stringify({ acts: [GRANT, { ...GRANT }, upper, wider] }), directory))
+      .toEqual({ issues: [], value: [GRANT, upper, wider] })
   })
 
   test("samples that all list nothing record none, and WHO and HOW are not asked", async () => {

@@ -62,8 +62,13 @@ export function readDocxRevisionText(bytes: Uint8Array) {
   const parts = unzipSync(bytes)
   if (!parts[BODY]) throw new Error("invalid_docx_package")
   const body = parse(strFromU8(parts[BODY]))
-  const text = (names: string[]) => names.flatMap(name => elements(body, W, name).map(row => elements(row, W, "*").map(wordText).join(""))).filter(Boolean)
-  return { inserted_text: text(["ins", "moveTo"]), deleted_text: text(["del", "moveFrom"]) }
+  const text = (names: string[], outsideStructuralDeletion = false) => names.flatMap(name => elements(body, W, name)
+    .filter(row => !outsideStructuralDeletion || !structuralDeletion(row))
+    .map(row => elements(row, W, "*").map(wordText).join(""))).filter(Boolean)
+  // Structural carriers contain no text themselves. Their ordinary cell text
+  // is deleted evidence too, once per paragraph, including any inline deletions.
+  const removedParagraphs = elements(body, W, "p").filter(paragraph => structuralDeletion(paragraph)).map(deletedText).filter(Boolean)
+  return { inserted_text: text(["ins", "moveTo"]), deleted_text: [...text(["del", "moveFrom"], true), ...removedParagraphs] }
 }
 
 /** The WordprocessingML elements Word writes for a tracked revision. */
@@ -416,7 +421,20 @@ function owningParagraph(node: Node) {
     if (parent.nodeType === 1 && (parent as Element).namespaceURI === W && (parent as Element).localName === "p") return parent
   return null
 }
-function inDeletedContent(node: Node) {
+/** Only direct, current property carriers delete a row or cell. A historical
+ * trPrChange/tcPrChange snapshot or foreign-namespace lookalike does not. */
+function structuralDeletion(node: Node) {
+  for (let parent: Node | null = node; parent; parent = parent.parentNode) {
+    if (parent.nodeType !== 1 || (parent as Element).namespaceURI !== W) continue
+    const element = parent as Element
+    const property = element.localName === "tr" ? "trPr" : element.localName === "tc" ? "tcPr" : undefined
+    const carrier = element.localName === "tr" ? "del" : "cellDel"
+    if (property && childElements(element, property).some(properties => childElements(properties, carrier).length > 0)) return element
+  }
+  return undefined
+}
+function inDeletedContent(node: Node, structural = true) {
+  if (structural && structuralDeletion(node)) return true
   for (let parent: Node | null = node; parent; parent = parent.parentNode)
     if (parent.nodeType === 1 && (parent as Element).namespaceURI === W && ["del", "moveFrom"].includes((parent as Element).localName)) return true
   return false
@@ -433,7 +451,9 @@ function wordText(node: Element) {
 }
 function paragraphPIDs(paragraph: Element) {
   return elements(paragraph, W, "bookmarkStart")
-    .filter(mark => owningParagraph(mark) === paragraph && !inDeletedContent(mark))
+    // A deleted row's native paragraph pointers remain useful as artifact-local
+    // annotation metadata; its paragraphs never enter the accepted inventory.
+    .filter(mark => owningParagraph(mark) === paragraph && !inDeletedContent(mark, false))
     .flatMap(mark => {
       const name = mark.getAttributeNS(W, "name") ?? ""
       return name.startsWith("_dh_") ? [name.slice(4)] : []

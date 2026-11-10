@@ -47,14 +47,13 @@ export function markAt(node: Element) {
   return mark && paragraph ? { mark, paragraph } : undefined
 }
 
-const letters = (text: string) => text.normalize("NFC").replace(/[^\p{L}\p{N}]/gu, "")
+const contextText = (text: string) => text.normalize("NFC").replace(/\s+/gu, " ").trim()
 
-// The reader's preview is the paragraph's opening, "…" when cut. Only letters
-// and digits are compared, so spacing, punctuation and pilcrows never matter.
+// Rendering can change whitespace, but punctuation and word boundaries still
+// distinguish paragraphs. A truncated preview cannot establish correspondence
+// with a longer paragraph; without complete context, leave its history unplaced.
 export function contextMatches(context: string, painted: string) {
-  const want = letters(context)
-  const have = letters(painted)
-  return context.endsWith("…") ? have.startsWith(want) : have === want
+  return contextText(context) === contextText(painted)
 }
 
 function paintedText(paragraph: Element) {
@@ -65,8 +64,8 @@ function paintedText(paragraph: Element) {
 
 // Whether the page counts paragraphs as the reader does: every located body
 // change's preview matches the paragraph painted at its ordinal, an empty
-// preview (a deleted, blank or image-only paragraph) a paragraph with no
-// letters or digits left. One mismatch (a text box the page paints inline,
+// preview (a deleted, blank or image-only paragraph) an empty paragraph after
+// removing known rendered decorations. One mismatch (a text box the page paints inline,
 // say) turns revisions off for the whole document, since a shifted count would
 // put every later change on the wrong clause.
 export function revisionsLineUp(paragraphs: Element[], revisions: MarkupRevision[]) {

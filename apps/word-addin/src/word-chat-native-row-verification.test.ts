@@ -3,7 +3,7 @@ import { nativeWordChatRowRefitWidths, verifyNativeWordChatInsertedRow } from ".
 const PKG="http://schemas.microsoft.com/office/2006/xmlPackage", W="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const wrap=(body:string, comment="Text", rsid="00112233")=>`<pkg:package xmlns:pkg="${PKG}" xmlns:w="${W}"><pkg:part pkg:name="/word/document.xml"><pkg:xmlData><w:document><w:body>${body}</w:body></w:document></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/comments.xml"><pkg:xmlData><w:comments><w:comment w:id="1" w:author="Reviewer"><w:p w:rsidR="${rsid}" w:rsidRDefault="${rsid}"><w:r><w:t>${comment}</w:t></w:r></w:p></w:comment></w:comments></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/settings.xml"><pkg:xmlData><w:settings><w:rsids><w:rsid w:val="${rsid}"/></w:rsids></w:settings></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/styles.xml"><pkg:xmlData><w:styles><w:style w:styleId="Normal"/></w:styles></pkg:xmlData></pkg:part></pkg:package>`
 const stamp='w:author="Reviewer" w:date="2026-01-01T00:00:00Z"'
-const cell=(text:string, mark:number, content:number, change=false)=>`<w:tc><w:tcPr/><w:p><w:pPr><w:rPr><w:ins w:id="${mark}" ${stamp}/><w:b/></w:rPr></w:pPr><w:ins w:id="${content}" ${stamp}><w:r>${change?`<w:rPr><w:rPrChange w:id="9" ${stamp}><w:rPr><w:b/></w:rPr></w:rPrChange></w:rPr>`:""}<w:t>${text}</w:t></w:r></w:ins></w:p></w:tc>`
+const cell=(text:string, mark:number, content:number, change=false)=>`<w:tc><w:tcPr/><w:p><w:pPr><w:rPr><w:ins w:id="${mark}" ${stamp}/></w:rPr></w:pPr><w:ins w:id="${content}" ${stamp}><w:r>${change?`<w:rPr><w:rPrChange w:id="9" ${stamp}><w:rPr><w:b/></w:rPr></w:rPrChange></w:rPr>`:""}<w:t>${text}</w:t></w:r></w:ins></w:p></w:tc>`
 const old='<w:tr><w:tc><w:tcPr/><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:tc><w:tc><w:tcPr/><w:p><w:r><w:t>Old two</w:t></w:r></w:p></w:tc></w:tr>'
 const row=`<w:tr><w:trPr><w:ins w:id="1" ${stamp}/></w:trPr>${cell("New",2,3,true)}${cell("Value",4,5)}</w:tr>`
 const body=(extra:string)=>`<w:tbl><w:tblPr/><w:tblGrid/>${old}${extra}</w:tbl>`
@@ -12,6 +12,41 @@ const verify=(xml:string)=>verifyNativeWordChatInsertedRow(before,xml,0,1,["New"
 test("native inserted row verifies plain text, tracked carriers and narrow volatile dependencies",()=>{
   expect(verify(after)).toEqual({authors:["Reviewer"]})
   for(const changed of [after.replace('w:id="1" '+stamp,'w:id="1" w:author="Other" w:date="2026-01-01T00:00:00Z"'),after.replace('>New<','>Wrong<'),after.replace('<w:ins w:id="1"','<w:del w:id="1"').replace('/></w:trPr>','/></w:trPr>'),after.replace('<w:rPr><w:rPrChange','<w:rPr><w:b/><w:rPrChange'),after.replace('w:id="9"','w:id="3"'),after.replace('>Text<','>Changed<'),after.replace('w:styleId="Normal"','w:styleId="Other"'),after.replace('AABBCCDD','arbitrary'),after.replace('<w:tcPr/><w:p><w:pPr>','<w:tcPr/><w:drawing/><w:p><w:pPr>'),after.replace('<w:tcPr/><w:p><w:pPr>','<w:tcPr><w:tcW w:w="1200" w:type="dxa"/></w:tcPr><w:p><w:pPr>'),after.replace('<w:pPr><w:rPr>','<w:pPr w:foo="1"><w:rPr>')]) expect(()=>verify(changed)).toThrow()
+})
+
+test("new cell paragraph marks are plain even when Word records clearing inherited formatting",()=>{
+  const marker=`<w:ins w:id="2" ${stamp}/>`
+  const changed=(props:string)=>after.replace(marker,marker+props)
+  const record=`<w:rPrChange w:id="10" ${stamp}><w:rPr><w:b/><w:i/><w:u w:val="single"/></w:rPr></w:rPrChange>`
+  expect(verify(after)).toEqual({authors:["Reviewer"]})
+  expect(verify(changed('<w:b w:val="0"/><w:i w:val="false"/><w:u w:val="none"/>'+record))).toEqual({authors:["Reviewer"]})
+  for(const props of ['<w:b/>','<w:bCs/>','<w:i/>','<w:u w:val="single"/>',record.replace('w:id="10"','w:id="3"'),record.replace('<w:b/>','<w:sz w:val="28"/>'),record.replace('<w:b/>','<w:b w:val="maybe"/>'),record.replace('w:author="Reviewer"','w:author="Other"'),record+record]) expect(()=>verify(changed(props))).toThrow()
+})
+
+test("clearing a newly inserted paragraph mark may record its prior insertion carrier",()=>{
+  const marker=`<w:ins w:id="2" ${stamp}/>`
+  const prior=`<w:ins w:id="11" ${stamp}/>`
+  const history=(old:string)=>`<w:rPrChange w:id="10" ${stamp}><w:rPr>${old}</w:rPr></w:rPrChange>`
+  const changed=(old:string,current="")=>after.replace(marker,marker+current+history(old))
+  expect(verify(changed(prior+"<w:b/>"))).toEqual({authors:["Reviewer"]})
+  expect(verify(changed(prior))).toEqual({authors:["Reviewer"]})
+  for(const old of [
+    prior.replace('w:author="Reviewer"','w:author="Other"')+"<w:b/>",
+    prior.replace("2026-01-01T00:00:00Z","2026-01-02T00:00:00Z")+"<w:b/>",
+    prior.replace('w:id="11"','w:id="3"')+"<w:b/>",
+    prior+prior,
+    prior+prior.replace('w:id="11"','w:id="12"'),
+    prior.replace("/>","><w:b/></w:ins>"),
+    prior.replace("w:ins","w:del")+"<w:b/>",
+    prior.replace("/>",' w:extra="value"/>')+"<w:b/>",
+    prior+"<w:sz w:val=\"24\"/>",
+    prior+"<w:b w:val=\"maybe\"/>",
+    prior+"<w:b/><w:b/>",
+    prior+"<w:b/><w:bCs w:val=\"0\"/>",
+  ]) expect(()=>verify(changed(old))).toThrow()
+  for(const current of ['<w:b/>','<w:i/>','<w:u w:val="single"/>']) expect(()=>verify(changed(prior+"<w:b/>",current))).toThrow()
+  // The allowance is only for paragraph-mark history, never character runs.
+  expect(()=>verify(after.replace('<w:rPr><w:b/></w:rPr></w:rPrChange>',`<w:rPr>${prior}<w:b/></w:rPr></w:rPrChange>`))).toThrow()
 })
 
 const space=(text:string)=>/^\s|\s$/.test(text)?' xml:space="preserve"':""

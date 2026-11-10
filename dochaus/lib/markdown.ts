@@ -1,4 +1,5 @@
 import type { DocxSession } from "docxodus"
+import { parse, postprocess, preprocess } from "micromark"
 import { visibleLines, type VisibleLine } from "./markdown-visible-text"
 
 // Docxodus's insertParagraph follows markdown soft-wrap: consecutive non-blank
@@ -13,22 +14,27 @@ import { visibleLines, type VisibleLine } from "./markdown-visible-text"
 // left to break and would print literally, so it is dropped. Code fences keep
 // their text as written.
 export function splitBlocks(markdown: string) {
-  let fenced = false
-  return markdown
-    .split("\n")
-    .filter((line) => !isAlignmentWrapper(line))
-    .map((line) => {
-      if (FENCE.test(line)) {
-        fenced = !fenced
-        return line
-      }
-      return fenced ? line : withoutHardBreak(line)
-    })
-    .filter((line) => line.trim())
-    .join("\n\n")
+  // Fence character/length, indentation and container prefixes belong to the
+  // Markdown parser. Keep each complete code block's source lines together;
+  // paragraph boundaries, alignment wrappers and hard breaks apply to prose.
+  const code = postprocess(parse().document().write(preprocess()(markdown, undefined, true)))
+    .flatMap(([event, token]) => event === "enter" && ["codeFenced", "codeIndented"].includes(token.type)
+      ? [{ first: token.start.line - 1, last: token.end.line - 1 }] : [])
+  const lines = markdown.split("\n")
+  const blocks: string[] = []
+  let range = 0
+  for (let line = 0; line < lines.length; line++) {
+    const literal = code[range]
+    if (literal && line === literal.first) {
+      blocks.push(lines.slice(line, literal.last + 1).join("\n"))
+      line = literal.last
+      range++
+    } else if (lines[line]!.trim() && !isAlignmentWrapper(lines[line]!)) {
+      blocks.push(withoutHardBreak(lines[line]!))
+    }
+  }
+  return blocks.join("\n\n")
 }
-
-const FENCE = /^ {0,3}(?:```|~~~)/
 
 /** `line` without a final hard-break backslash: one that is the last
  * character and not itself escaped. */

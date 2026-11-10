@@ -4,6 +4,7 @@ import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { withParagraphPointers } from "../lib/drafting-amendment"
 import { lintTemplateBody, splitBlocks } from "../lib/markdown"
+import { prepareMarkdownRenderText } from "../lib/markdown-render-text"
 import { isTemplateDraftDirectory, TEMPLATE_DRAFT_REVIEW_MESSAGE } from "../lib/template-draft-client"
 
 // doc.haus create-template tool. Adds a new reusable drafting template to the
@@ -46,17 +47,26 @@ export default tool({
     await ctx.ask({ permission: "create-template", patterns: [name], metadata: { template: name } })
 
     const dx = await docxodus()
-    const session = dx.openDocxSession(await Bun.file(path.join(templatesDir, "_base.docx")).bytes(), {})
+    let session = dx.openDocxSession(await Bun.file(path.join(templatesDir, "_base.docx")).bytes(), {})
 
     // The seed's single empty paragraph is the insertion anchor; the whole markdown
     // body goes in as one multi-block insert, then the seed paragraph is dropped.
     const anchor = Object.keys(session.project().anchorIndex).find((id) => id.startsWith("p:"))!
-    const inserted = session.insertParagraph(anchor, "after", splitBlocks(args.content))
+    const text = prepareMarkdownRenderText(splitBlocks(args.content), { codeOnly: true })
+    const inserted = session.insertParagraph(anchor, "after", text.markdown)
     if (!inserted.success) {
       session.close()
       return `Template build failed: ${inserted.error?.message ?? JSON.stringify(inserted.error)}`
     }
     session.deleteBlock(anchor)
+
+    // Restore before placeholder discovery: template variables inside literal
+    // code retain the same discovery/fill behavior as other template text.
+    if (text.hasCode) {
+      let restored: Uint8Array
+      try { restored = text.restore(session.save()) } finally { session.close() }
+      session = dx.openDocxSession(restored, {})
+    }
 
     const placeholders = session.findPlaceholders().map((p) => p.match.text)
     const bytes = withParagraphPointers(session.save())

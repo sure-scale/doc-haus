@@ -69,6 +69,21 @@ test("current Word quotation checks reject invented evidence and mark inference"
   expect(consequenceContextKey({ ...context, capturedAt: "later", saved: true })).toBe(consequenceContextKey(context))
   expect(consequenceContextKey({ ...context, truncated: true })).not.toBe(consequenceContextKey(context))
 })
+test("canonical source coverage reaches consequence prompts without duplicating verification passages", async () => {
+  const h = harness()
+  try {
+    h.turn.metadata.sources = [{id:"admitted-guidance",name:"Guidance",location:"Attached guidance",provenance:"instructions",quote:"Bounded evidence",passages:["Bounded evidence CANONICAL_PRIVATE_TAIL"],complete:false}]
+    const admitted = await h.assess(); await h.settled(admitted.body.id)
+    expect(h.prompts.join("\n")).toContain('"complete":false')
+    expect(h.prompts.join("\n")).toContain('"quote":"Bounded evidence"')
+    expect(h.prompts.join("\n")).not.toContain("CANONICAL_PRIVATE_TAIL")
+    for (const prompt of h.prompts) {
+      const supplied = JSON.parse(prompt.split("\n").at(-2)!) as {context:{evidence:{passages?:string[]}[]}}
+      expect(supplied.context.evidence.every(source => !Object.hasOwn(source,"passages"))).toBe(true)
+    }
+    expect(h.prompts.join("\n")).toContain("never complete document semantics")
+  } finally { h.dispose() }
+})
 test("split native jobs resume after reconnect, keep foreground independent and expose meaning/coverage", async () => {
   const h = harness(); try { const a = await h.assess(); expect(a.body.status).toBe("running"); expect(h.submitted.map(s => s.metadata.stage)).toEqual(["meaning"]); h.install(); const r = await h.settled(a.body.id); expect(r.body.status).toBe("complete"); expect(r.body.meaning).toBe("The deadline becomes earlier."); expect(r.body.coverage).toEqual({ reviewed: 3, total: 3, candidates: 2, checked: 2 }); expect(r.body.findings[0]?.related?.[0]?.paragraphId).toBe("p3"); expect(h.turn.outcome).toBeUndefined(); expect(h.submitted.every(s => s.parentID === "conversation" && s.metadata.type !== "word-chat-turn")).toBe(true); expect((await h.post("assessment", { conversationId: "conversation", context })).body.id).toBe(a.body.id) } finally { h.dispose() }
 })

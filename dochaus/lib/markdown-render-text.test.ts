@@ -21,12 +21,19 @@ test("escaped pipes and emphasis stay literal inside rendered DOCX table cells",
   expect(xml).not.toContain("DocHausText")
 })
 
-test("only text escapes are protected; code and Markdown link destinations retain their syntax", () => {
+test("text escapes and code are protected; Markdown link destinations retain their syntax", () => {
   const source = "Literal \\*term\\* \\| &#124; [label](https://example.invalid/a\\(b\\))\n\n`A\\|B`\n\n```text\nA\\|B\n```\n\n    A\\|B"
   const prepared = prepareMarkdownRenderText(source).markdown
   expect(prepared).not.toContain("Literal \\*")
   expect(prepared).toContain("https://example.invalid/a\\(b\\)")
   expect(prepared).toContain("`A\\|B`")
-  expect(prepared).toContain("```text\nA\\|B\n```")
-  expect(prepared).toContain("    A\\|B")
+  expect(prepared).not.toContain("```text")
+  expect(prepared).not.toContain("    A\\|B")
+})
+
+test("code restoration does not change the existing prose character-reference contract", async () => {
+  const { bytes } = await renderMarkdownToDocx("A&#10;B", undefined, undefined, { numbering: false, styleTemplate: false })
+  const doc = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)["word/document.xml"]!), "application/xml")
+  expect(doc.getElementsByTagNameNS(W, "br").length).toBe(0)
+  expect(Array.from(doc.getElementsByTagNameNS(W, "t")).map(text => text.textContent).join("")).toBe("A\nB")
 })

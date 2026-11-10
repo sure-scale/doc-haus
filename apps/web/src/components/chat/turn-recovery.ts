@@ -2,6 +2,7 @@ import type { Part } from "../../api/session-view"
 import { getMessages } from "../../api/opencode/sessions"
 import { isDraftingRecoveryMessage } from "./drafting-recovery"
 import { errorOf } from "./turn-model"
+import { isMalformedToolOutput } from "../../../../../dochaus/lib/malformed-tool-output"
 
 export const MAX_MALFORMED_TOOL_RECOVERIES = 2
 const STALL_TIMEOUT_MS = 30 * 60_000
@@ -29,19 +30,7 @@ export function stalledAbortFailureMessage(error: unknown) {
 }
 
 export function malformedToolRecoveryToken(message: { info: { id: string }; parts: Part[] }) {
-  const toolSyntax = /(?:<\|tool_call\|>|call:[a-z][\w-]*\s*\{)/i
-  const printedToolSyntax = message.parts.some(
-    (part) =>
-      (part.type === "reasoning" || (part.type === "text" && !part.synthetic)) && toolSyntax.test(part.text),
-  )
-  const hasAnswer = message.parts.some(
-    (part) =>
-      part.type === "text" &&
-      !part.synthetic &&
-      /[\p{L}\p{N}]/u.test(part.text) &&
-      !toolSyntax.test(part.text),
-  )
-  return printedToolSyntax && !hasAnswer ? `malformed:${message.info.id}` : undefined
+  return isMalformedToolOutput(message.parts) ? `malformed:${message.info.id}` : undefined
 }
 
 // The progress token of a matter chat whose latest model turn printed tool-call

@@ -5,6 +5,7 @@ import type { WordChatAuthoredTableRowDeletion } from "../../../dochaus/lib/word
 import { assertNativeWordChatInlineDependencies, projectNativeWordChatBody } from "./word-chat-host-ooxml"
 import { normalizeNativeWordChatCommentIds } from "./word-chat-native-comments"
 import { nativeWordChatPeopleGrowth } from "./word-chat-native-people"
+import { verifyWordChatTableImportArtifact } from "./word-chat-table-import-artifact"
 
 type Inventory = Array<{ id: string; text: string; tableNestingLevel?: number }>
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", W14 = "http://schemas.microsoft.com/office/word/2010/wordml", W16 = "http://schemas.microsoft.com/office/word/2023/wordml/word16du", PKG = "http://schemas.microsoft.com/office/2006/xmlPackage", XMLNS = "http://www.w3.org/2000/xmlns/"
@@ -158,14 +159,67 @@ function revisionNodes(body: Element) {
   }
   visit(body, "body"); return result
 }
-export function verifyNativeWordChatDeletedRow(beforeXml: string, afterXml: string, beforeInventory: Inventory, afterInventory: Inventory, proposal: WordChatTableRowDeletionProposal): { authors: string[] } {
+/** A parent import can renew persisted row/paragraph identities. Prove their
+ * ordered bijection before normalizing only the parsed observed copy; the
+ * unchanged inverse and whole-body proof still own every other XML property. */
+function normalizeParentParagraphIds(before:Document,after:Document,oldTable:Element,newTable:Element) {
+  const reject=()=>fail("parent persisted paragraph mapping")
+  const entries=(table:Element)=>{
+    const found:Array<{path:string;node:Element}>=[],rows=named(table,"tr")
+    rows.forEach((row,ri)=>{
+      found.push({path:`tr[${ri}]`,node:row})
+      named(row,"tc").forEach((cell,ci)=>named(cell,"p").forEach((p,pi)=>found.push({path:`tr[${ri}]/tc[${ci}]/p[${pi}]`,node:p})))
+    })
+    if(table.getElementsByTagNameNS(W,"tr").length!==rows.length||table.getElementsByTagNameNS(W,"p").length!==found.length-rows.length)return reject()
+    return found
+  }
+  const old=entries(oldTable),now=entries(newTable)
+  if(old.length!==now.length||old.some((entry,i)=>entry.path!==now[i]!.path||entry.node.hasAttributeNS(W14,"paraId")!==now[i]!.node.hasAttributeNS(W14,"paraId")||entry.node.hasAttributeNS(W14,"textId")!==now[i]!.node.hasAttributeNS(W14,"textId")||entry.node.getAttributeNS(W14,"textId")!==now[i]!.node.getAttributeNS(W14,"textId")))return reject()
+  const all=(doc:Document)=>Array.from(doc.getElementsByTagName("*"))
+  const valid=(id:string)=>/^[0-9a-fA-F]{8}$/.test(id)&&parseInt(id,16)>0&&parseInt(id,16)<0x80000000
+  for(const doc of [before,after]){
+    const ids=all(doc).filter(e=>e.hasAttributeNS(W14,"paraId")).map(e=>e.getAttributeNS(W14,"paraId")!)
+    if(ids.some(id=>!valid(id))||new Set(ids.map(id=>id.toUpperCase())).size!==ids.length)return reject()
+  }
+  const mapped=old.filter(entry=>entry.node.hasAttributeNS(W14,"paraId"))
+  const ids=new Set([...old,...now].filter(entry=>entry.node.hasAttributeNS(W14,"paraId")).map(entry=>entry.node.getAttributeNS(W14,"paraId")!.toUpperCase()))
+  for(const [doc,inside] of [[before,new Set(old.map(e=>e.node))],[after,new Set(now.map(e=>e.node))]] as const){
+    for(const node of all(doc))for(const attr of Array.from(node.attributes)){
+      if(inside.has(node)&&attr.namespaceURI===W14&&attr.localName==="paraId")continue
+      // Fail closed on any attribute consumer, including one within the table.
+      // This does not claim to decode embedded/binary reference formats.
+      for(const token of attr.value.matchAll(/(?:^|[^0-9a-f])([0-9a-f]{8})(?=$|[^0-9a-f])/gi))if(ids.has(token[1]!.toUpperCase()))return reject()
+    }
+  }
+  for(const entry of mapped){
+    const observed=now[old.indexOf(entry)]!.node,attr=observed.getAttributeNodeNS(W14,"paraId")!
+    observed.setAttributeNS(W14,attr.name,entry.node.getAttributeNS(W14,"paraId")!)
+  }
+}
+function verifyDeletedRow(beforeXml: string, afterXml: string, beforeInventory: Inventory, afterInventory: Inventory, proposal: WordChatTableRowDeletionProposal, parentImport: boolean): { authors: string[] } {
   assertNativeWordChatRowDeletionTarget(beforeXml, beforeInventory, proposal)
   const before = projectNativeWordChatBody(beforeXml, beforeInventory), after = projectNativeWordChatBody(afterXml, afterInventory)
   const deleted = new Set(proposal.table.rows[proposal.rowIndex]!.map(c => c.id))
-  if (before.paragraphs.length !== after.paragraphs.length || before.paragraphs.some((x, i) => { const y = after.paragraphs[i]; return !y || x.id !== y.id || (!deleted.has(x.id) && x.path !== y.path) || x.nesting !== y.nesting || y.text !== (deleted.has(x.id) ? "" : x.text) })) return fail("native preservation")
+  const tableIds = new Set(proposal.table.rows.flat().map(cell => cell.id))
+  const first = before.paragraphs.find(p => p.id === proposal.table.rows[0]![0]!.id)
+  const tablePath = first?.path.match(/^(body\/tbl\[\d+\])\/tr\[/)?.[1]
+  if (!tablePath) return fail("native preservation")
+  const inside = (path: string) => path.startsWith(`${tablePath}/`)
+  // A complete parent import can allocate new runtime paragraph identities
+  // inside that parent. Bind a bijection by the full, ordered table projection;
+  // outside identities remain exact. Persisted XML IDs are still checked below.
+  if (parentImport) {
+    const old = before.paragraphs.filter(p => inside(p.path)), now = after.paragraphs.filter(p => inside(p.path))
+    if (old.length !== tableIds.size || now.length !== old.length || old.some(p => !tableIds.has(p.id)) || new Set(now.map(p => p.id)).size !== now.length ||
+      before.paragraphs.some((p, i) => inside(p.path) !== Boolean(after.paragraphs[i] && inside(after.paragraphs[i]!.path)))) return fail("parent paragraph mapping")
+  }
+  if (before.paragraphs.length !== after.paragraphs.length || before.paragraphs.some((x, i) => { const y = after.paragraphs[i]; return !y || (!(parentImport && inside(x.path)) && x.id !== y.id) || (!deleted.has(x.id) && x.path !== y.path) || x.nesting !== y.nesting || y.text !== (deleted.has(x.id) ? "" : x.text) })) return fail("native preservation")
   assertNativeWordChatInlineDependencies(beforeXml, afterXml)
-  const old = flat(beforeXml), now = flat(afterXml), oldRow = target(old.body, proposal).row, currentRow = tableRow(now.body, proposal).row
+  const old = flat(beforeXml), now = flat(afterXml), oldTarget=target(old.body,proposal),currentTarget=tableRow(now.body,proposal)
+  if(parentImport)normalizeParentParagraphIds(old.doc,now.doc,oldTarget.table,currentTarget.table)
+  const oldRow=oldTarget.row,currentRow=currentTarget.row
   const proof = inverse(oldRow, currentRow, true)
+  if (parentImport && [...proof.authors].some(author => author !== "doc.haus")) return fail("imported revision author")
   currentRow.parentNode!.replaceChild(oldRow.cloneNode(true), currentRow)
   const normalized = flat(normalizeNativeWordChatCommentIds(beforeXml, new XMLSerializer().serializeToString(now.doc)))
   const dependencyParts = (doc: Document) => {
@@ -247,6 +301,15 @@ export function verifyNativeWordChatDeletedRow(beforeXml: string, afterXml: stri
   if (!eq(canonical(old.body, true), canonical(normalized.body, true))) throw Error("body mismatch")
   return { authors: [...proof.authors] }
 }
+/** Existing native row execution must retain every runtime paragraph ID. */
+export function verifyNativeWordChatDeletedRow(beforeXml: string, afterXml: string, beforeInventory: Inventory, afterInventory: Inventory, proposal: WordChatTableRowDeletionProposal): { authors: string[] } {
+  return verifyDeletedRow(beforeXml, afterXml, beforeInventory, afterInventory, proposal, false)
+}
+/** Complete-table import permits a proved bijection only inside that table.
+ * No inventory is fabricated or relabelled to make the native verifier pass. */
+export function verifyImportedWordChatDeletedRow(beforeXml: string, afterXml: string, beforeInventory: Inventory, afterInventory: Inventory, proposal: WordChatTableRowDeletionProposal): { authors: string[] } {
+  return verifyDeletedRow(beforeXml, afterXml, beforeInventory, afterInventory, proposal, true)
+}
 /** The reviewed SDK artifact is evidence only and is never imported into Word. */
 export async function verifyReviewedWordChatRowDeletionOracle(source: Uint8Array, oracle: WordChatAuthoredTableRowDeletion, proposal: WordChatTableRowDeletionProposal): Promise<void> {
   const max = 16 * 1024 * 1024, aggregate = 64 * 1024 * 1024
@@ -279,4 +342,5 @@ export async function verifyReviewedWordChatRowDeletionOracle(source: Uint8Array
   if ([...proof.ids].some(id => oldIds.has(id))) return fail("reviewed oracle")
   actual.parentNode!.replaceChild(old.cloneNode(true), actual)
   if (!eq(canonical(da.documentElement), canonical(db.documentElement))) return fail("reviewed oracle")
+  if (oracle.tableImport !== undefined) verifyWordChatTableImportArtifact(a, b, oracle.tableImport, proposal)
 }
