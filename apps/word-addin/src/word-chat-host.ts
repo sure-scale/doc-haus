@@ -500,6 +500,25 @@ export class WordChatHost {
     try { return await this.word.run(context => this.readSelection(context)) }
     catch (error) { failure(error, "Word could not read that selection. Select ordinary text in the main document and try again.") }
   }
+  /** History reads the full Current paragraph even when the selection is only
+   * a cursor. Runtime paragraph IDs are not persisted cross-version identity. */
+  async historyParagraph(): Promise<import("../../../dochaus/lib/clause-history-contract").ClauseHistoryRequest["paragraph"]> {
+    this.ready()
+    try {
+      return await this.word.run(async context => {
+        const selection = context.document.getSelection()
+        selection.paragraphs.load("items/uniqueLocalId")
+        const location = selection.compareLocationWith(context.document.body.getRange())
+        await context.sync()
+        if (!INSIDE.has(location.value)) throw new WordChatHostError("Place the cursor in a paragraph in the main document to view its history.")
+        if (selection.paragraphs.items.length !== 1) throw new WordChatHostError("Place the cursor in one paragraph, or select wording within one paragraph, to view its history.")
+        const current = selection.paragraphs.items[0]!.getRange("Content").getReviewedText("Current")
+        await context.sync()
+        if (!current.value.trim() || current.value.length > LIMIT) throw new WordChatHostError("Choose a paragraph with up to 24,000 characters to view its history.")
+        return { scope: "body", text: current.value }
+      })
+    } catch (error) { failure(error, "Word could not read this paragraph. Place the cursor in a paragraph in the main document and try History again.") }
+  }
   private async readSelection(context: WordChatContext): Promise<WordChatTarget | undefined> {
     this.ready()
     const selection = context.document.getSelection()
@@ -1502,11 +1521,13 @@ export class WordChatHost {
       const mixed = input.formatting !== undefined && input.replacement !== input.target.text
       const afterParts = input.replacement.split("\r"), plan = wordChatApplyPlan(input.target, input.replacement, nativeFinalFormatting || mixed ? undefined : input.formatting)
       if (!plan.supported) throw new WordChatHostError(plan.reason)
-      if (nativeText && (plan.structure || plan.paragraphs.length !== 1)) throw new WordChatHostError("Word can apply wording changes within one paragraph. Refine this change to one paragraph, or make the structural change directly in Word.")
+      if (nativeText && plan.structure) throw new WordChatHostError("Word can apply wording changes while keeping the existing paragraph boundaries. Make the structural change directly in Word.")
       if (mixed && (!validWordChatFormatting(input.target, input.formatting, input.replacement) || plan.structure?.kind === "delete")) throw new WordChatHostError("This change needs a smaller reviewed amendment. Your Word document is unchanged.")
       const expected = plan.paragraphs
       const formatting = input.formatting !== undefined
       const snapshot = await this.word.run(context => this.importSnapshot(context, input.target, formatting || wordingImport, wordingImport, false, nativeText, (nativeText || formatting && !mixed)))
+      if (nativeText && input.target.paragraphs.length > 1 && snapshot.nesting.some(level => level !== 0))
+        throw new WordChatHostError("Review wording within one table cell at a time. Your document is unchanged.")
       // Shared Docxodus authoring is read-only. No Office proxy or canonical
       // write is kept pending while that service authors the reviewed result.
       const authored = await input.author({ ooxml: snapshot.ooxml })
@@ -1637,44 +1658,60 @@ export class WordChatHost {
   private async applyNativeText(context: WordChatContext, input: WordChatApplyInput, identity: string,
     fresh: Awaited<ReturnType<WordChatHost["importSnapshot"]>>, authored: WordChatAuthoredAmendment, expected: string[]): Promise<WordChatApplyResult> {
     const target = input.target, paragraph = target.paragraphs[0]!
-    if (expected.length !== 1 || input.replacement === target.text) throw new WordChatHostError("Refine this change to one paragraph before applying it. Your Word document is unchanged.")
+    if (expected.length !== target.paragraphs.length || input.replacement === target.text)
+      throw new WordChatHostError("Keep the existing paragraph boundaries before applying this wording change. Your document is unchanged.")
     if (input.mayDispatch && !input.mayDispatch()) throw new WordChatHostError("The Word pane closed before the change was applied. Your document is unchanged.")
     const before = await this.documentState(context)
     const at = before.paragraphs.findIndex(item => item.id === paragraph.id)
-    if (at < 0 || at !== fresh.index || before.paragraphs[at]!.text !== paragraph.text)
+    if (at < 0 || at !== fresh.index || target.paragraphs.some((p, i) => before.paragraphs[at + i]?.id !== p.id || before.paragraphs[at + i]?.text !== p.text))
       throw captureMismatch("Word returned a different paragraph before the change.")
-    let hunks: ReturnType<typeof authoredWordChatWordingHunks>
-    try { hunks = authoredWordChatWordingHunks(authored.ooxml, paragraph.text, expected[0]!, target.startOffset, target.endOffset) }
-    catch { throw new WordChatHostError("Word cannot safely map this authored wording to the reviewed passage. Your document is unchanged.") }
-    if (hunks.some(hunk => hunk.after.length > 0 && !uniformWordChatFormatting(fresh.ooxml, hunk.start, hunk.end)))
-      throw new WordChatHostError("A changed span crosses character formatting, so Word cannot replace it safely here. Your document is unchanged.")
-    if (!sameWordChatHunkFormatting(fresh.ooxml, authored.ooxml, hunks))
-      throw new WordChatHostError("The authored wording changes character formatting outside the reviewed change. Your document is unchanged.")
+    const indices = target.paragraphs.map((_, i) => at + i)
+    let planned: Array<{ paragraph: WordChatTarget["paragraphs"][number]; hunks: ReturnType<typeof authoredWordChatWordingHunks> }>
+    try {
+      if (!fresh.projection) throw new Error("Missing native wording projection")
+      const authoredProjection = projectNativeWordChatBody(authored.ooxml, target.paragraphs.map((p, i) => ({ id: p.id, text: expected[i]! })))
+      planned = target.paragraphs.map((p, i) => {
+        const beforeXml = fresh.projection!.scope([at + i]), afterXml = authoredProjection.scope([i])
+        const hunks = p.text === expected[i] ? [] : authoredWordChatWordingHunks(afterXml, p.text, expected[i]!, i === 0 ? target.startOffset : 0, i === target.paragraphs.length - 1 ? target.endOffset : p.text.length)
+        if (!hunks.length && !sameWordChatParagraphContent(beforeXml, afterXml)) throw new Error("Unchanged authored paragraph differs")
+        if (hunks.some(hunk => hunk.after.length > 0 && !uniformWordChatFormatting(beforeXml, hunk.start, hunk.end)))
+          throw new WordChatHostError("A changed span crosses character formatting, so Word cannot replace it safely here. Your document is unchanged.")
+        if (!sameWordChatHunkFormatting(beforeXml, afterXml, hunks))
+          throw new WordChatHostError("The authored wording changes character formatting outside the reviewed change. Your document is unchanged.")
+        return { paragraph: p, hunks }
+      })
+    } catch (error) {
+      if (error instanceof WordChatHostError) throw error
+      throw new WordChatHostError("Word cannot safely map this authored wording to the reviewed passage. Your document is unchanged.")
+    }
     const paragraphRange = context.document.getParagraphByUniqueLocalId(paragraph.id).getRange("Content")
-    const ranges: Array<{ hunk: typeof hunks[number]; range: WordChatRange }> = []
-    for (const hunk of hunks) {
-      const start = await point(context, paragraphRange, paragraph.text, hunk.start)
-      const end = await point(context, paragraphRange, paragraph.text, hunk.end)
-      const range = start.expandTo(end); range.load("text"); ranges.push({ hunk, range })
+    const lastParagraphRange = context.document.getParagraphByUniqueLocalId(target.paragraphs.at(-1)!.id).getRange("Content")
+    const ranges: Array<{ hunk: ReturnType<typeof authoredWordChatWordingHunks>[number]; range: WordChatRange }> = []
+    for (const plan of planned) {
+      const range = context.document.getParagraphByUniqueLocalId(plan.paragraph.id).getRange("Content")
+      for (const hunk of plan.hunks) {
+        const start = await point(context, range, plan.paragraph.text, hunk.start)
+        const end = await point(context, range, plan.paragraph.text, hunk.end)
+        const span = start.expandTo(end); span.load("text"); ranges.push({ hunk, range: span })
+      }
     }
     await context.sync()
     if (ranges.some(item => item.range.text !== item.hunk.before)) throw captureMismatch("Word could not confirm each reviewed wording span.")
-    const expectedParagraph = paragraph.text.slice(0, target.startOffset) + input.replacement + paragraph.text.slice(target.endOffset)
     // Preserve Word's real story delimiters (including table cell/row marks),
     // rather than reconstructing body text from paragraph names joined by CR.
     const bodyRange = context.document.body.getRange("Content")
     const prefix = bodyRange.getRange("Start").expandTo(paragraphRange.getRange("Start")).getReviewedText("Current")
-    const suffix = paragraphRange.getRange("End").expandTo(bodyRange.getRange("End")).getReviewedText("Current")
+    const suffix = lastParagraphRange.getRange("End").expandTo(bodyRange.getRange("End")).getReviewedText("Current")
     const all = context.document.body.paragraphs
     all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
     const bodyXml = context.document.body.getRange("Whole").getOoxml()
     await context.sync()
     const pre = projectNativeWordChatBody(bodyXml.value, await nativeInventory(context, all.items))
-    if (!fresh.projection || !sameNativeProjectionGeometry(fresh.projection, pre) || !sameWordChatTargetSnapshot(pre.scope([at]), fresh.ooxml) ||
+    if (!fresh.projection || !sameNativeProjectionGeometry(fresh.projection, pre) || !sameWordChatTargetSnapshot(pre.scope(indices), fresh.ooxml) ||
         !fresh.adjacent.every(item => { const i = pre.paragraphs.findIndex(p => p.id === item.id); return i >= 0 && sameWordChatParagraphContent(item.ooxml, pre.scope([i])) }))
       throw captureMismatch("Word returned different XML for the reviewed paragraph or its neighbours before the change.")
-    if (before.current !== prefix.value + paragraph.text + suffix.value) throw captureMismatch("Word returned inconsistent surrounding document text.")
-    const expectedText = prefix.value + expectedParagraph + suffix.value
+    if (before.current !== prefix.value + target.paragraphs.map(p => p.text).join("\r") + suffix.value) throw captureMismatch("Word returned inconsistent surrounding document text.")
+    const expectedText = prefix.value + expected.join("\r") + suffix.value
     if (input.mayDispatch && !input.mayDispatch()) throw new WordChatHostError("The Word pane closed before the change was applied. Your document is unchanged.")
     // All reads are complete. Fence before queuing tracking or any write; a
     // lost final sync is uncertain and must never trigger a second dispatch.
@@ -1703,15 +1740,14 @@ export class WordChatHost {
       const inventory = await nativeInventory(context, afterAll.items)
       phaseNotice = "Word could not finish projecting the changed document structure."
       const post = projectNativeWordChatBody(afterBodyXml.value, inventory)
-      const targetAfter = post.scope([at])
       phaseNotice = "Word could not finish evaluating the wording preservation checks."
       const { added, missing } = newWordChatRevisions(before.changes, after.changes)
       const wanted = authored.revisions.filter(change => change.type !== "Formatted")
       const texts = (changes: Array<{ type: string; text: string }>, type: string) => changes.filter(change => change.type === type).map(change => change.text).sort()
       const authors = [...new Set(added.map(change => change.author).filter(Boolean))]
       const sameParagraphs = after.paragraphs.length === before.paragraphs.length &&
-        after.paragraphs.every((item, index) => item.id === before.paragraphs[index]!.id && (index !== at ||
-          item.text === expectedParagraph) && (index === at || JSON.stringify(item) === JSON.stringify(before.paragraphs[index])))
+        after.paragraphs.every((item, index) => item.id === before.paragraphs[index]!.id && (index >= at && index < at + expected.length
+          ? item.text === expected[index - at] : JSON.stringify(item) === JSON.stringify(before.paragraphs[index])))
       // Checked in order; the first failing stage is kept as the cause.
       const checks: Array<[string, string, () => boolean]> = [
         ["text-tracking-mode", "Word could not confirm that the original tracking settings were restored.", () => context.document.changeTrackingMode === fresh.tracking],
@@ -1721,8 +1757,8 @@ export class WordChatHost {
         ["text-new-revisions", "Word could not confirm the new wording revisions.", () => added.length > 0 && added.every(change => ["Added", "Deleted"].includes(change.type) && Boolean(change.author)) &&
           JSON.stringify(texts(added, "Added")) === JSON.stringify(texts(wanted, "Added")) && JSON.stringify(texts(added, "Deleted")) === JSON.stringify(texts(wanted, "Deleted"))],
         ["text-geometry", "Word could not confirm preservation of the document structure.", () => sameNativeProjectionGeometry(pre, post)],
-        ["text-paragraph-properties", "Word could not confirm preservation of the paragraph formatting.", () => sameWordChatParagraphProperties(pre.scope([at]), targetAfter)],
-        ["text-hunk-formatting", "Word could not confirm preservation of the character formatting.", () => sameWordChatHunkFormatting(pre.scope([at]), targetAfter, hunks)],
+        ["text-paragraph-properties", "Word could not confirm preservation of the paragraph formatting.", () => indices.every(index => sameWordChatParagraphProperties(pre.scope([index]), post.scope([index])))],
+        ["text-hunk-formatting", "Word could not confirm preservation of the character formatting.", () => planned.every((plan, i) => sameWordChatHunkFormatting(pre.scope([at + i]), post.scope([at + i]), plan.hunks))],
         ["text-adjacent", "Word could not confirm preservation of the neighbouring paragraphs.", () => fresh.adjacent.every(item => { const i = post.paragraphs.findIndex(p => p.id === item.id); return i >= 0 && sameNativeWordChatParagraphContent(pre.scope([i]), post.scope([i])) })],
         ["text-comments", "Word could not confirm preservation of the document comments.", () => JSON.stringify(after.comments) === JSON.stringify(before.comments)],
       ]
@@ -1736,8 +1772,8 @@ export class WordChatHost {
       this.applied.set(input.proposalId, { identity, authors, uncertain: false })
       return { status: "applied", tracked: true, saved: false, authors, target: input.replacement.trim() ? {
         ...target, id: crypto.randomUUID(), text: input.replacement,
-        paragraphs: [{ id: paragraph.id, text: expectedParagraph }],
-        startOffset: target.startOffset, endOffset: target.startOffset + input.replacement.length,
+        paragraphs: target.paragraphs.map((p, i) => ({ id: p.id, text: expected[i]! })),
+        startOffset: target.startOffset, endOffset: (expected.length === 1 ? target.startOffset : 0) + input.replacement.split("\r").at(-1)!.length,
         saved: false, capturedAt: new Date().toISOString(),
       } : undefined }
     } catch (cause) {
@@ -1820,6 +1856,7 @@ const host = () => defaultHost ??= new WordChatHost()
 export const captureCurrentWordContext = (includeSelection = false, pinned?: WordChatTarget) => host().capture(includeSelection, pinned)
 export const captureWordReviewContext = () => host().captureReview()
 export const captureWordChatSelection = () => host().selection()
+export const captureWordHistoryParagraph = () => host().historyParagraph()
 export const navigateWordChatTarget = (target: WordChatTarget) => host().navigate(target)
 export const wordChatTableTarget = (target: WordChatTarget, place = false) => host().tableTarget(target, place)
 export const applyReviewedProposal = (proposal: import("../../../dochaus/lib/word-chat-amendment-contract").WordChatProposal,

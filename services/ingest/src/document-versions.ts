@@ -5,6 +5,7 @@ import path from "node:path"
 import { strFromU8, unzipSync } from "fflate"
 import { canonicalArtifactIdentity } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { purgeWordHandouts } from "./word-handouts"
+import { parseSourceVersionSnapshot, readSourceDependencyStatus, type SourceDependencyStatus, type SourceVersionSnapshot } from "../../../dochaus/lib/source-version-dependencies"
 
 // Document versions (#268, phase 1). A document is the logical file ("the
 // services agreement") with a stable id; a version is the exact bytes a doc.haus
@@ -37,14 +38,14 @@ export type VersionOrigin = (typeof VERSION_ORIGINS)[number]
 
 /** What the writer knows about a write. */
 export type VersionProvenance = { origin: VersionOrigin; actor?: string; run?: string | null; label?: string | null }
-export type VersionEventKind = "accept" | "reject" | "restore"
+export type VersionEventKind = "accept" | "reject" | "restore" | "sent" | "received"
 /** Why a kept version's bytes were deleted: a later redaction of its document. */
 export type VersionRemoval = "redaction"
 export type VersionEventInput = { kind: VersionEventKind; actor?: string; detail?: Record<string, unknown> }
 /** A writer's version capture: its provenance, the matter document the new
  * version was derived from (a conversion's PDF, a copy's original) and the
  * event the write records (an accept, a restore). */
-export type VersionWrite = VersionProvenance & { derivedFrom?: string; event?: VersionEventInput; parent?: string }
+export type VersionWrite = VersionProvenance & { derivedFrom?: string; event?: VersionEventInput; parent?: string; sourceVersions?: SourceVersionSnapshot | null }
 
 export type VersionRow = {
   id: string
@@ -55,6 +56,7 @@ export type VersionRow = {
   bytes: number
   parent: string | null
   derived_from: string | null
+  source_versions?: string | null
   origin: VersionOrigin
   actor: string
   run: string | null
@@ -111,6 +113,7 @@ export function createVersionTables(db: Database) {
       bytes INTEGER NOT NULL,
       parent TEXT,
       derived_from TEXT,
+      source_versions TEXT,
       origin TEXT NOT NULL,
       actor TEXT NOT NULL DEFAULT 'unknown',
       run TEXT,
@@ -123,6 +126,8 @@ export function createVersionTables(db: Database) {
   // removed: why the version's stored bytes were deleted (VersionRemoval).
   if (!(db.query("PRAGMA table_info(document_versions)").all() as { name: string }[]).some((column) => column.name === "removed"))
     db.run("ALTER TABLE document_versions ADD COLUMN removed TEXT")
+  if (!(db.query("PRAGMA table_info(document_versions)").all() as { name: string }[]).some((column) => column.name === "source_versions"))
+    db.run("ALTER TABLE document_versions ADD COLUMN source_versions TEXT")
   db.run("CREATE INDEX IF NOT EXISTS document_versions_sha ON document_versions(sha256)")
   // version_id: the version an accept or restore made, or the version a reject
   // left current. detail: JSON (redline ids, the restored version).
@@ -131,12 +136,29 @@ export function createVersionTables(db: Database) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       document_id TEXT NOT NULL,
       version_id TEXT,
-      kind TEXT NOT NULL CHECK (kind IN ('accept', 'reject', 'restore')),
+      kind TEXT NOT NULL CHECK (kind IN ('accept', 'reject', 'restore', 'sent', 'received')),
       actor TEXT NOT NULL DEFAULT 'unknown',
       detail TEXT,
       created_at INTEGER NOT NULL
     )
   `)
+  // Preserve the existing events and their IDs while widening the original
+  // phase-one CHECK constraint. Opening an already-current store stays read-only.
+  const eventSchema = (db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'document_version_events'").get() as { sql: string }).sql
+  if (!eventSchema.includes("'sent'")) db.transaction(() => {
+    const sequence = (db.query("SELECT seq FROM sqlite_sequence WHERE name='document_version_events'").get() as { seq: number } | null)?.seq ?? 0
+    db.run("ALTER TABLE document_version_events RENAME TO document_version_events_phase_one")
+    db.run(`CREATE TABLE document_version_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, document_id TEXT NOT NULL, version_id TEXT,
+      kind TEXT NOT NULL CHECK (kind IN ('accept', 'reject', 'restore', 'sent', 'received')),
+      actor TEXT NOT NULL DEFAULT 'unknown', detail TEXT, created_at INTEGER NOT NULL
+    )`)
+    db.run("INSERT INTO document_version_events SELECT * FROM document_version_events_phase_one")
+    db.run("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='document_version_events'", [sequence])
+    db.run("DROP TABLE document_version_events_phase_one")
+  })()
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS document_exchange_request ON document_version_events(json_extract(detail,'$.requestId'))
+    WHERE kind IN ('sent','received') AND json_valid(detail)`)
 }
 
 export const sha256Hex = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
@@ -176,7 +198,9 @@ export function versionFile(matterDir: string, version: Pick<VersionRow, "docume
 // holding the new entries are synced, so the store never holds a partial
 // version and a committed row's bytes survive a crash. Bytes already stored are
 // not written again; missing or damaged ones are written afresh.
-function storeVersionBytes(matterDir: string, documentId: string, sha256: string, ext: string, bytes: Uint8Array) {
+export function storeVersionPayload(matterDir: string, documentId: string, sha256: string, ext: string, bytes: Uint8Array) {
+  if (!/^[a-f0-9-]{36}$/.test(documentId) || !/^[a-f0-9]{64}$/.test(sha256) || !/^\.[a-z0-9]{1,10}$/.test(ext) || sha256Hex(bytes) !== sha256)
+    throw new Error("Invalid retained version payload.")
   const file = versionFile(matterDir, { document_id: documentId, sha256, ext })
   if (existsSync(file) && sha256Hex(readFileSync(file)) === sha256) return
   const directory = path.dirname(file)
@@ -201,6 +225,8 @@ function storeVersionBytes(matterDir: string, documentId: string, sha256: string
     rmSync(temporary, { force: true })
   }
 }
+
+const storeVersionBytes = storeVersionPayload
 
 function syncDirectory(directory: string) {
   // Windows cannot fsync a directory handle (EPERM/EISDIR), so only files are synced there.
@@ -240,7 +266,7 @@ function insertVersion(
   document: VersionedDocumentRow,
   bytes: Uint8Array,
   sha256: string,
-  provenance: VersionProvenance,
+  provenance: VersionWrite,
   parent: string | null,
   derivedFrom: string | null,
   now: number,
@@ -251,12 +277,13 @@ function insertVersion(
   const number = ((db.query("SELECT MAX(number) AS n FROM document_versions WHERE document_id = ?").get(document.id) as { n: number | null }).n ?? 0) + 1
   const row: VersionRow = {
     id: randomUUID(), document_id: document.id, number, sha256, ext, bytes: bytes.byteLength, parent, derived_from: derivedFrom,
+    source_versions: provenance.sourceVersions ? JSON.stringify(provenance.sourceVersions) : null,
     origin: provenance.origin, actor: oneLine(provenance.actor) || UNKNOWN_ACTOR, run: oneLine(provenance.run) || null,
     label: oneLine(provenance.label) || null, created_at: now, removed: null,
   }
   db.run(
-    "INSERT INTO document_versions (id, document_id, number, sha256, ext, bytes, parent, derived_from, origin, actor, run, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [row.id, row.document_id, row.number, row.sha256, row.ext, row.bytes, row.parent, row.derived_from, row.origin, row.actor, row.run, row.label, row.created_at],
+    "INSERT INTO document_versions (id, document_id, number, sha256, ext, bytes, parent, derived_from, source_versions, origin, actor, run, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [row.id, row.document_id, row.number, row.sha256, row.ext, row.bytes, row.parent, row.derived_from, row.source_versions ?? null, row.origin, row.actor, row.run, row.label, row.created_at],
   )
   db.run("UPDATE versioned_documents SET current_version = ? WHERE id = ?", [row.id, document.id])
   document.current_version = row.id
@@ -314,9 +341,17 @@ export function captureVersion(
       current = insertVersion(db, matterDir, document, input.prior, prior, { origin: "unknown" }, current?.id ?? null, null, now, stage)
   }
   const derivedFrom = input.version.derivedFrom ? currentOrFoundVersion(db, matterDir, input.version.derivedFrom, now)?.id ?? null : null
+  // Revisions keep the output's actual source basis. A restore uses the basis
+  // of the restored version, and a copy/conversion that of its explicit source.
+  // None of these operations re-reads today's sources and declares old work fresh.
+  const restored = input.version.event?.kind === "restore" ? input.version.event.detail?.restored_from : undefined
+  const inherited = typeof restored === "string" ? versionById(db, restored)
+    : derivedFrom ? versionById(db, derivedFrom) : requestedParent ?? current
+  const provenance: VersionWrite = { ...input.version, sourceVersions: input.version.sourceVersions === undefined
+    ? parseSourceVersionSnapshot(inherited?.source_versions) ?? null : parseSourceVersionSnapshot(input.version.sourceVersions) ?? null }
   const created = current?.sha256 !== sha256
   const version = created
-    ? insertVersion(db, matterDir, document, input.bytes, sha256, input.version, requestedParent?.id ?? current?.id ?? null, derivedFrom, now, stage)
+    ? insertVersion(db, matterDir, document, input.bytes, sha256, provenance, requestedParent?.id ?? current?.id ?? null, derivedFrom, now, stage)
     : current!
   if (!created && !staged(stage, document.id, sha256)) storeVersionBytes(matterDir, document.id, sha256, version.ext, input.bytes)
   // A removed version keeps its row, but not its label: free text that may name what was removed.
@@ -373,6 +408,24 @@ export function purgeVersionBytes(matterDir: string, documentId: string, preserv
     `SELECT v.sha256 || v.ext AS file FROM document_versions v JOIN versioned_documents d ON d.id = v.document_id
      WHERE v.document_id = ? AND v.removed IS NULL AND d.removed_at IS NULL`,
   ).all(documentId) as { file: string }[]).map((row) => row.file), [] as string[]))
+  // A sent blackline/marked export is an exact outbound payload, not another
+  // document version. Its bytes live in this same purge domain. Once either
+  // source/base was redacted (or the document deleted), do not retain it.
+  const outbound = readStore(matterDir, db => db.query(
+    `SELECT e.detail FROM document_version_events e
+     JOIN document_versions v ON v.id=e.version_id
+     JOIN versioned_documents d ON d.id=e.document_id
+     WHERE e.document_id=? AND e.kind='sent' AND v.removed IS NULL AND d.removed_at IS NULL`,
+  ).all(documentId) as { detail: string | null }[], [])
+  for (const row of outbound) {
+    const detail = (() => { try { return JSON.parse(row.detail ?? "null") } catch { return null } })()
+    if (!detail?.payload || !/^[a-f0-9]{64}$/.test(detail.payload.sha256) || !/^\.[a-z0-9]{1,10}$/.test(detail.payload.ext)) continue
+    if (detail.baseVersionId) {
+      const base = readVersion(matterDir, detail.baseVersionId)
+      if (!base || base.version.document_id !== documentId || base.version.removed) continue
+    }
+    kept.add(`${detail.payload.sha256}${detail.payload.ext}`)
+  }
   const entries = readdirSync(directory).filter((entry) => !kept.has(entry))
   if (!kept.size) {
     rmSync(directory, { recursive: true, force: true })
@@ -409,21 +462,77 @@ function readStore<T>(matterDir: string, read: (db: Database) => T, empty: T): T
   }
 }
 
-export type VersionView = Omit<VersionRow, "document_id"> & { current: boolean }
+export type VersionView = Omit<VersionRow, "document_id" | "source_versions"> & { current: boolean; source_dependencies: SourceDependencyStatus }
 export type VersionEventView = { id: number; kind: VersionEventKind; version_id: string | null; actor: string; detail: Record<string, unknown> | null; created_at: number }
+/** A received version physically owned by another artifact, explicitly linked
+ * as a branch. Its number belongs to sourceName; it is never a target version
+ * number or either document's replacement working copy. */
+export type LinkedDocumentBranch = {
+  exchangeId: number; sourceDocumentId: string; sourceName: string; sourceCurrentVersionId: string | null
+  versionId: string; versionNumber: number; sha256: string; ext: string; bytes: number
+  targetDocumentId: string; targetName: string; targetCurrentVersionId: string | null
+  baseVersionId: string; baseVersionNumber: number | null; current: false
+  available: boolean
+  unavailableReason: "source-removed" | "target-removed" | "source-version-removed" | "base-removed" | "bytes-unavailable" | "association-invalid" | null
+}
+
+function linkedDocumentBranches(db: Database, matterDir: string, targetDocumentId?: string, exchangeId?: number): LinkedDocumentBranch[] {
+  const rows = db.query(`SELECT e.id AS exchange_id,e.document_id AS source_document_id,e.version_id,e.detail,
+    s.name AS source_name,s.current_version AS source_current,s.removed_at AS source_removed,
+    v.number,v.sha256,v.ext,v.bytes,v.removed AS version_removed,v.document_id AS version_owner,
+    t.id AS target_id,t.name AS target_name,t.current_version AS target_current,t.removed_at AS target_removed,
+    b.id AS base_id,b.number AS base_number,b.removed AS base_removed,b.document_id AS base_owner,b.sha256 AS base_sha256,b.ext AS base_ext
+    FROM document_version_events e
+    JOIN document_versions v ON v.id=e.version_id JOIN versioned_documents s ON s.id=e.document_id
+    LEFT JOIN versioned_documents t ON t.id=json_extract(e.detail,'$.association.documentId')
+    LEFT JOIN document_versions b ON b.id=json_extract(e.detail,'$.association.baseVersionId')
+    WHERE e.kind='received' AND json_valid(e.detail) AND json_type(e.detail,'$.association')='object'
+    AND (? IS NULL OR t.id=?) AND (? IS NULL OR e.id=?) ORDER BY e.id`)
+    .all(targetDocumentId ?? null, targetDocumentId ?? null, exchangeId ?? null, exchangeId ?? null) as {
+      exchange_id: number; source_document_id: string; version_id: string; detail: string; source_name: string; source_current: string | null; source_removed: number | null
+      number: number; sha256: string; ext: string; bytes: number; version_removed: string | null; version_owner: string
+      target_id: string | null; target_name: string | null; target_current: string | null; target_removed: number | null
+      base_id: string | null; base_number: number | null; base_removed: string | null; base_owner: string | null; base_sha256: string | null; base_ext: string | null
+    }[]
+  return rows.map(row => {
+    const association = (JSON.parse(row.detail) as { association: { documentId: string; baseVersionId: string } }).association
+    const unavailableReason: LinkedDocumentBranch["unavailableReason"] = row.version_owner !== row.source_document_id || !row.target_id || row.base_owner !== row.target_id ? "association-invalid"
+      : row.source_removed !== null ? "source-removed" : row.target_removed !== null ? "target-removed"
+      : row.version_removed ? "source-version-removed" : !row.base_id || row.base_removed ? "base-removed"
+      : !readVersionBytes(matterDir, { document_id: row.source_document_id, sha256: row.sha256, ext: row.ext })
+        || !row.base_owner || !row.base_sha256 || !row.base_ext || !readVersionBytes(matterDir, { document_id: row.base_owner, sha256: row.base_sha256, ext: row.base_ext }) ? "bytes-unavailable" : null
+    return { exchangeId: row.exchange_id, sourceDocumentId: row.source_document_id, sourceName: row.source_name, sourceCurrentVersionId: row.source_current,
+      versionId: row.version_id, versionNumber: row.number, sha256: row.sha256, ext: row.ext, bytes: row.bytes,
+      targetDocumentId: association.documentId, targetName: row.target_name ?? "Unavailable document", targetCurrentVersionId: row.target_current,
+      baseVersionId: association.baseVersionId, baseVersionNumber: row.base_number, current: false, available: unavailableReason === null, unavailableReason }
+  })
+}
+export function readLinkedDocumentBranches(matterDir: string, targetDocumentId: string): LinkedDocumentBranch[] {
+  return readStore(matterDir, db => linkedDocumentBranches(db, matterDir, targetDocumentId), [])
+}
+export function readLinkedDocumentBranch(matterDir: string, exchangeId: number): LinkedDocumentBranch | undefined {
+  return readStore(matterDir, db => linkedDocumentBranches(db, matterDir, undefined, exchangeId)[0], undefined)
+}
 
 /** The live document `name` with its versions, newest first, and its events. */
 export function readDocumentVersions(matterDir: string, name: string) {
   return readStore(matterDir, (db) => {
     const document = liveDocument(db, matterDir, name)
-    if (!document) return { document: null, versions: [] as VersionView[], events: [] as VersionEventView[] }
+    if (!document) return { document: null, versions: [] as VersionView[], events: [] as VersionEventView[], linked_returns: [] as LinkedDocumentBranch[] }
+    const dependencyStatuses = new Map<string, SourceDependencyStatus>()
+    const dependencies = (stored: string | null | undefined) => {
+      const key = stored ?? ""
+      if (!dependencyStatuses.has(key)) dependencyStatuses.set(key, readSourceDependencyStatus(matterDir, parseSourceVersionSnapshot(stored), db))
+      return dependencyStatuses.get(key)!
+    }
     const versions = (db.query("SELECT * FROM document_versions WHERE document_id = ? ORDER BY number DESC").all(document.id) as VersionRow[])
-      .map(({ document_id: _document, ...row }) => ({ ...row, removed: row.removed ?? null, current: row.id === document.current_version }))
+      .map(({ document_id: _document, source_versions, ...row }) => ({ ...row, removed: row.removed ?? null, current: row.id === document.current_version,
+        source_dependencies: dependencies(source_versions) }))
     const events = (db.query("SELECT id, kind, version_id, actor, detail, created_at FROM document_version_events WHERE document_id = ? ORDER BY id").all(document.id) as
       Array<Omit<VersionEventView, "detail"> & { detail: string | null }>)
       .map((row) => ({ ...row, detail: row.detail ? JSON.parse(row.detail) as Record<string, unknown> : null }))
-    return { document: { id: document.id, name: document.name, current_version: document.current_version }, versions, events }
-  }, { document: null, versions: [] as VersionView[], events: [] as VersionEventView[] })
+    return { document: { id: document.id, name: document.name, current_version: document.current_version }, versions, events, linked_returns: linkedDocumentBranches(db, matterDir, document.id).filter(branch => branch.sourceDocumentId !== document.id) }
+  }, { document: null, versions: [] as VersionView[], events: [] as VersionEventView[], linked_returns: [] as LinkedDocumentBranch[] })
 }
 
 /** One version with its document, by version id. */
@@ -453,6 +562,16 @@ export function readVersionBytes(matterDir: string, version: Pick<VersionRow, "d
   if (!existsSync(file)) return
   const bytes = readFileSync(file)
   return sha256Hex(bytes) === version.sha256 ? bytes : undefined
+}
+
+/** Available versions across this matter, for upload inspection. No DB creation,
+ * backfill or version capture occurs during a read. */
+export function readAvailableDocumentVersions(matterDir: string) {
+  return readStore(matterDir, db => db.query(
+    `SELECT v.*, d.name, v.id=d.current_version AS current FROM document_versions v
+     JOIN versioned_documents d ON d.id=v.document_id
+     WHERE d.removed_at IS NULL AND v.removed IS NULL ORDER BY current DESC, v.created_at DESC, v.number DESC`,
+  ).all() as Array<VersionRow & { name: string; current: number }>, [])
 }
 
 /** The kept (not removed) version of the live document `name` holding exactly

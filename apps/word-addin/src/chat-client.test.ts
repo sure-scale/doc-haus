@@ -4,6 +4,25 @@ import { WORD_PROTOCOL_VERSION } from "../../../dochaus/lib/word-addin-contract"
 
 const link = { version: 1 as const, apiOrigin: "https://localhost:4612", origin: "http://localhost:4444", matter: "synthetic", matterName: "Synthetic matter", document: "draft.docx", documentName: "Draft", token: "synthetic-document-capability", baseVersion: "original" }
 
+test("history reads use the document token and protocol without acquiring prepare/edit authority", async () => {
+  const calls: { url: string; init: RequestInit | undefined }[] = []
+  const api = chatClient(link, async (url, init) => { calls.push({ url: String(url), init }); return Response.json({}) }, 60_000, () => { throw new Error("History must not request a write lease") })
+  const request = { anchorVersion: "original", paragraph: { scope: "body", text: "Full clause." } }
+  await api.request("history", request)
+  const recorded = { versionId: "original", hash: "a".repeat(64), kind: "proposal", id: "redline:12:7", recordHash: "b".repeat(64) }
+  await api.request("history-source", recorded)
+  expect(calls.map(call => call.url)).toEqual([`${link.apiOrigin}/word/chat/history`, `${link.apiOrigin}/word/chat/history-source`])
+  for (const call of calls) {
+    const headers = new Headers(call.init?.headers)
+    expect(headers.get("Authorization")).toBe(`Bearer ${link.token}`)
+    expect(headers.get("x-dochaus-word-version")).toBe(WORD_PROTOCOL_VERSION)
+    expect(headers.has("x-dochaus-word-lease")).toBe(false)
+    expect(call.init?.method).toBe("POST"); expect(call.init?.credentials).toBe("omit"); expect(call.init?.referrerPolicy).toBe("no-referrer")
+  }
+  expect(JSON.parse(calls[0]!.init!.body as string)).toEqual(request)
+  expect(JSON.parse(calls[1]!.init!.body as string)).toEqual(recorded)
+})
+
 test("native SSE reader uses document-granted POST and strips all content-bearing frames and metadata", async () => {
   let init: RequestInit | undefined, path = ""
   const frames = [

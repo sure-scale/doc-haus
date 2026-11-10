@@ -37,6 +37,7 @@ import { runDiscrepancyStage } from "./discrepancy"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { checklistFindingLabel, deliveredNotes, finalGate, notesCoverageReport } from "./gate"
 import { issueRegister } from "./register"
+import { mergeSourceVersionSnapshots, readMatterSourceVersions } from "../../lib/source-version-dependencies"
 import { leanPlanIssue, readLeanPlan, reviewStages, leanSteps, stepDocument, stepStage, type DocID, type StepID } from "./plan"
 import { retryPrompt, stagePrompt } from "./prompts"
 import { excerpt, inDocument, openItem, withSourceSnapshot } from "./quotes"
@@ -347,7 +348,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       // that ran with the allowance used up (its key says so) started none: its
       // findings stand as recorded and disclosed.
       const exhausted = (readRepairRound(directory)?.substantive_attempts ?? 0) >= LEAN_MAX_SUBSTANTIVE_REPAIRS
-      return { key, unchanged: current && stageOutputValid(directory, step) && (step !== "package-review" || exhausted || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || exhausted || readChangeReview(directory, document)?.status === "pass") }
+      return { key, sourceVersions: readMatterSourceVersions(directory), unchanged: current && stageOutputValid(directory, step) && (step !== "package-review" || exhausted || readPackageReview(directory)?.status === "pass") && (stage !== "change-review" || !document || exhausted || readChangeReview(directory, document)?.status === "pass") }
     })
     if (!decision) return { state, restart: true }
     settled.push(step)
@@ -374,6 +375,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     const currentPrefetch = prefetched?.inputSha === inputSha
     if (!currentPrefetch) appendLeanEvent(directory, { stage, document, event: "started", check_ms })
     state = updateLeanStage(directory, state, step, {
+      source_versions: currentPrefetch ? state.stages[step]?.source_versions : decision.sourceVersions,
       status: "running", ...unkeyed(step), outputs: [], session_ids: [], session_id: currentPrefetch ? prefetched.sessionID : null, attempts: 0, calls: 0, feedback: [], started_at: currentPrefetch ? state.stages[step]?.started_at ?? now() : now(), finished_at: null,
     })
     const progress: Progress = patch => {
@@ -385,6 +387,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       const queued = drainLeanRequests(directory)
       if (queued.answered || queued.updated || preferencesChanged()) throw new ChecklistRefreshRestart()
       inputSha = stageInputSha(directory, step)
+      state = updateLeanStage(directory, state, step, { source_versions: mergeSourceVersionSnapshots([state.stages[step]?.source_versions, readMatterSourceVersions(directory)]) })
     }
     // Fan out the remaining reviews before accepting any reply. Only this
     // writer saves replies in stage order; every review feeds the one changes
@@ -398,9 +401,9 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
         const prefetchKeyed = performance.now()
         const saved = state.stages[independent]
         const key = stageInputSha(directory, independent)
-        return saved?.status === "done" && saved.input_sha === key && stageOutputValid(directory, independent) ? [] : [{ review, independent, key, prefetchCheck: leanElapsedMs(prefetchKeyed) }]
+        return saved?.status === "done" && saved.input_sha === key && stageOutputValid(directory, independent) ? [] : [{ review, independent, key, sourceVersions: readMatterSourceVersions(directory), prefetchCheck: leanElapsedMs(prefetchKeyed) }]
       }))
-      for (const { review, independent, key, prefetchCheck } of fanout) {
+      for (const { review, independent, key, sourceVersions, prefetchCheck } of fanout) {
         const agent = LEAN_STAGE_AGENTS[review]
         const creation = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, independent), model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
           .then(sessionID => ({ sessionID }), (error: unknown) => ({ error }))
@@ -414,7 +417,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
           return { state: writeLeanState(directory, { ...state, status: "failed", stop_reason: reason }) }
         }
         const sessionID = creation.sessionID
-        state = updateLeanStage(directory, state, independent, { status: "running", session_id: sessionID, input_sha: null, outputs: [], attempts: 0, calls: 1, feedback: [], started_at: now(), finished_at: null })
+        state = updateLeanStage(directory, state, independent, { status: "running", source_versions: sourceVersions, session_id: sessionID, input_sha: null, outputs: [], attempts: 0, calls: 1, feedback: [], started_at: now(), finished_at: null })
         appendLeanEvent(directory, { stage: review, document, event: "started", session_id: sessionID, check_ms: prefetchCheck })
         const reply = deps.sessions.prompt({ directory, sessionID, agent, text: stagePrompt(directory, independent) })
         // Consume native errors when accepting this stage, without an unhandled

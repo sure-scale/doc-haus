@@ -143,6 +143,7 @@ async function check(name: string, [width, height]: readonly [number, number], r
     await run(page, shot)
     console.log(`PASS ${name} (${width}px)`)
   } catch (error) {
+    await shot(`failed-${name.replace(/[^a-z]+/gi, "-").slice(0,45)}`)
     failures.push(`${name} (${width}px)`)
     console.log(`FAIL ${name} (${width}px): ${error instanceof Error ? error.message.split("\n").slice(0, 8).join(" | ") : error}`)
   } finally {
@@ -154,7 +155,11 @@ const where = (page: Page) => page.evaluate(() => (window as unknown as { where:
 const param = async (page: Page, name: string) => new URL(await where(page), "http://x").searchParams.get(name)
 const go = (page: Page, to: string) => page.evaluate((to) => (window as unknown as { go: (to: string) => void }).go(to), to)
 // Nothing scrolls sideways inside a dialog panel.
-const fits = (page: Page) => page.locator(".picker-panel").evaluateAll((panels) => panels.every((panel) => [panel, ...panel.querySelectorAll("*")].every((node) => node.scrollWidth <= node.clientWidth + 1 || getComputedStyle(node).overflowX === "visible")))
+const fits = async (page: Page) => {
+  const overflow = await page.locator(".picker-panel").evaluateAll((panels) => panels.flatMap((panel) => [panel, ...panel.querySelectorAll("*")].filter((node) => !node.classList.contains("sr-only") && node.scrollWidth > node.clientWidth + 1 && getComputedStyle(node).overflowX !== "visible").map((node) => ({ tag: node.tagName, class: node.className, width: node.clientWidth, scroll: node.scrollWidth }))))
+  if (overflow.length) console.log("Overflow:", JSON.stringify(overflow.slice(0, 6)))
+  return overflow.length === 0
+}
 const launcher = (page: Page) => page.getByRole("dialog", { name: "Workflows" })
 const chooser = (page: Page) => page.getByRole("dialog", { name: "Add questions" })
 const table = (page: Page, title: string) => page.getByRole("dialog", { name: `Review table — ${title}` })
@@ -165,6 +170,33 @@ const openLauncher = async (page: Page) => {
 
 try {
   for (const size of [[1440, 900], [400, 860]] as const) {
+    await check("chooser search is read-only, clears stale choices and keeps drafts", size, async (page, shot) => {
+      await open(page, "/matter/solo?view=chat")
+      const composer = page.getByRole("textbox", { name: /message/i }).first()
+      const hasComposer = await composer.count()
+      if (hasComposer) await composer.fill("Keep this unfinished instruction")
+      await openLauncher(page)
+      const dialog = launcher(page)
+      const search = dialog.getByRole("searchbox", { name: "Search workflows" })
+      await search.fill("no such workflow xyz")
+      await expect(dialog.getByRole("button", { name: "Start", exact: true })).toBeDisabled()
+      assert.equal(sessions, 0); assert.equal(puts, 0)
+      await dialog.getByRole("button", { name: "Clear", exact: true }).click()
+      await expect(search).toBeFocused()
+      await search.fill("review")
+      await shot("workflow-search")
+      await dialog.getByRole("button", { name: "Cancel", exact: true }).click()
+      if (hasComposer) await expect(composer).toHaveValue("Keep this unfinished instruction")
+      assert.equal(sessions, 0); assert.equal(puts, 0)
+      await go(page, "/matter/pair?view=review&starter=compare-agreements-v1")
+      const add = chooser(page)
+      await expect(add).toBeVisible()
+      await add.getByRole("searchbox", { name: "Search ways to add questions" }).fill("xyz nothing")
+      await expect(add.getByRole("button", { name: "Continue", exact: true })).toBeDisabled()
+      assert.equal(sessions, 0); assert.equal(puts, 0)
+      await shot("starter-search-empty")
+    })
+
     await check("a chat workflow starts only on Start, from its preview", size, async (page, shot) => {
       await open(page, "/matter/solo?view=chat")
       await openLauncher(page)

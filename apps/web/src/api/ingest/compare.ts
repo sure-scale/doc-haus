@@ -95,7 +95,7 @@ export type ComparisonJson = {
 export function compareUrl(
   matterId: string,
   params: CompareParams,
-  { format = "docx" }: { format?: "json" | "docx" } = {},
+  { format = "docx", exportCopy = false }: { format?: "json" | "docx"; exportCopy?: boolean } = {},
 ): string {
   const flag = (value: boolean | undefined) => (value === false ? "0" : "1")
   const query: [string, string | undefined][] = [
@@ -109,6 +109,7 @@ export function compareUrl(
     ["moves", flag(params.detectMoves)],
     ["headers", flag(params.headersFooters)],
     ["format", format],
+    ["exportCopy", exportCopy ? "1" : undefined],
   ]
   const search = query.flatMap(([key, value]) => (value === undefined ? [] : [`${key}=${encodeURIComponent(value)}`])).join("&")
   return `${INGEST_URL}/matters/${encodeURIComponent(matterId)}/compare?${search}`
@@ -120,8 +121,8 @@ export async function fetchComparison(matterId: string, params: CompareParams): 
   return res.json()
 }
 
-export async function fetchBlacklineBytes(matterId: string, params: CompareParams): Promise<Uint8Array> {
-  const res = await fetch(compareUrl(matterId, params))
+export async function fetchBlacklineBytes(matterId: string, params: CompareParams, { exportCopy = false } = {}): Promise<Uint8Array> {
+  const res = await fetch(compareUrl(matterId, params, { exportCopy }))
   if (!res.ok) throw new Error(await compareError(res))
   return new Uint8Array(await res.arrayBuffer())
 }

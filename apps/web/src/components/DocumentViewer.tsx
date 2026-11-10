@@ -20,6 +20,7 @@ import {
 import { convertPdfToDocx, documentContentUrl, fetchDocumentText, locatePdfPassage, matterDocumentKind, type PdfPassagePage } from "../api/ingest/documents"
 import type { CompareParams } from "../api/ingest/compare"
 import { fetchVersionBytes, type DocumentVersion, type RestoreResult } from "../api/ingest/versions"
+import { fetchDocumentExportBytes } from "../api/ingest/exports"
 import { fetchDocumentMarkup, MarkupRefusedError, type DocumentMarkup, type MarkupDecisionResult, type MarkupRevision } from "../api/ingest/markup"
 import { getPreferences } from "../api/ingest/preferences"
 import { formatDateTime } from "../lib/format"
@@ -40,6 +41,9 @@ import { withSafeStyleValues } from "./docx-style-values"
 import { ordinaryProposal, ProposalPreview, reviewableProposal } from "./TableRowProposal"
 import { useDocumentNavigation } from "./DocumentNavigation"
 import { WordBadge, WordOpenControl, WordWarning, useWordRefresh, useWordEditingLocked } from "./WordDocuments"
+import { DocumentClauseHistory } from "./DocumentClauseHistory"
+import { SendDialog } from "./DocumentExchanges"
+import "./DocumentExchanges.css"
 
 // How a Word file with tracked changes is painted: insertions underlined and
 // deletions struck through in their author's colour (styles.css), moves,
@@ -225,6 +229,7 @@ function WordDocumentViewer({
   const { versions, open: versionsOpen, toggle: toggleVersions, refresh: refreshVersions } = useVersionsList(matterId, name, reload, initialVersions)
   const narrow = useNarrow()
   const [shown, setShown] = useState<DocumentVersion>()
+  const [sending, setSending] = useState(false)
   // The version whose View button takes focus back once the working file shows again.
   const returnFocus = useRef<string>(undefined)
   const [unavailable, setUnavailable] = useState<Record<string, string>>({})
@@ -640,8 +645,8 @@ function WordDocumentViewer({
   async function download(tracked: boolean) {
     setError(undefined)
     try {
-    if (shown) return saveVersionFile(await fetchVersionBytes(matterId, shown.id), name, shown.number)
-    const bytes = tracked ? await fetchRedlinedBytes(matterId, name, setRevisionNotice) : await (async () => {
+    if (shown) return saveVersionFile(await (shown.ext === ".docx" ? fetchDocumentExportBytes(matterId, { versionId: shown.id }) : fetchVersionBytes(matterId, shown.id)), name, shown.number)
+    const bytes = /\.docx$/i.test(name) ? await fetchDocumentExportBytes(matterId, { name, proposals: tracked }, setRevisionNotice) : await (async () => {
       const current = await fetch(documentContentUrl(matterId, name))
       if (!current.ok) throw new Error(`Could not download ${name} (${current.status})`)
       return new Uint8Array(await current.arrayBuffer())
@@ -736,7 +741,8 @@ function WordDocumentViewer({
           <div className="viewer-bar-actions">
             <WordBadge name={name} />
             <WordOpenControl matterId={matterId} name={name} disabled={busy !== undefined || shown !== undefined} />
-            <DownloadActions redlines={redlines} preview={Boolean(html)} onDownload={download} version={shown?.number} />
+            <DownloadActions redlines={redlines} preview={Boolean(html)} onDownload={download} version={shown?.number}
+              onSend={versions.data?.versions.some(version => !version.removed) ? () => setSending(true) : undefined} />
             {markupToggle}
             {versionsToggle}
             <button className="primary" onClick={() => setEditing((value) => !value)} disabled={busy !== undefined || shown !== undefined} aria-expanded={editing} aria-controls="document-edit-request"
@@ -794,6 +800,7 @@ function WordDocumentViewer({
         </div>
         <WordWarning name={name} />
         {navigation.bar}
+        <DocumentClauseHistory matterId={matterId} name={name} root={documentRef} content={html} versions={versions.data ?? undefined} shownVersion={shown?.id} />
         <div className="viewer-with-navigation">
           {navigation.outline}
           <div className="viewer-body">
@@ -829,6 +836,8 @@ function WordDocumentViewer({
             )}
             {documentPreview}
             <ChangeTimeline root={documentRef} html={html} markup={!shown && !markupPending && !markup.failed ? markup.data : undefined} revisions={!revisionNotice && !redlines.some((row) => !row.stale)} tone={tone} />
+            {sending && versions.data && <SendDialog key={`${matterId}:${name}`} matterId={matterId} name={name} versions={versions.data.versions.filter(version => !version.removed)} initialVersion={shown?.id}
+              onClose={() => setSending(false)} onRecorded={refreshVersions} />}
           </div>
           {!narrow && versionsPanel}
           {!narrow && markupPanel}
@@ -1042,12 +1051,13 @@ export function ExtractedText({ kind, text, match, markRef }: {
 
 // The saved Word file is always downloadable. A download with proposals is
 // offered only while some pending proposal can still render as tracked changes.
-export function DownloadActions({ redlines, preview, onDownload, version }: {
+export function DownloadActions({ redlines, preview, onDownload, version, onSend }: {
   redlines: Redline[]
   preview: boolean
   onDownload: (tracked: boolean) => void
-  // An older version open in the viewer downloads exactly as kept.
+  // An older version downloads its saved wording as a prepared sharing copy.
   version?: number
+  onSend?: () => void
 }) {
   // Labels are visually hidden on narrow screens, so the two downloads need
   // distinct glyphs: a plain arrow, and a document with a pen for the proposals.
@@ -1059,9 +1069,9 @@ export function DownloadActions({ redlines, preview, onDownload, version }: {
     </svg>
   )
   const downloadTitle = "Download the saved Word file. Proposals you have not accepted are left out."
-  if (version !== undefined || !redlines.some((row) => !row.stale)) {
+  if (!onSend && (version !== undefined || !redlines.some((row) => !row.stale))) {
     return (
-      <button onClick={() => onDownload(false)} title={version !== undefined ? `Download version ${version} exactly as kept` : downloadTitle}>
+      <button onClick={() => onDownload(false)} title={version !== undefined ? `Download a copy of version ${version}` : downloadTitle}>
         {download}
         <span className="viewer-action-label">{version !== undefined ? `Download version ${version}` : "Download"}</span>
       </button>
@@ -1069,12 +1079,12 @@ export function DownloadActions({ redlines, preview, onDownload, version }: {
   }
   return (
     <SplitButton
-      label={<span className="viewer-action-label">Download</span>}
+      label={<span className="viewer-action-label">{version !== undefined ? `Download version ${version}` : "Download"}</span>}
       icon={download}
       title={downloadTitle}
       onClick={() => onDownload(false)}
       toggleLabel="More download options"
-      items={[{
+      items={[...(version === undefined && redlines.some(row => !row.stale) ? [{
         label: "Download with proposals",
         title: "Download as a Word file that shows doc.haus's proposals you have not accepted yet, as tracked changes",
         disabled: !preview,
@@ -1087,7 +1097,7 @@ export function DownloadActions({ redlines, preview, onDownload, version }: {
             <path d="M19 14.5a1.8 1.8 0 0 1 2.5 2.5L16 22.5l-3.5 1 1-3.5z" />
           </svg>
         ),
-      }]}
+      }] : []), ...(onSend ? [{ label: "Sending to the other side…", title: "Record the exact sent copy and Draft N", onSelect: onSend }] : [])]}
     />
   )
 }

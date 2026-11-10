@@ -150,11 +150,11 @@ export class DerivedChronologyError extends Error {
   }
 }
 
-// The upload's bytes are already kept for the document of that name, as one of
+// The upload's bytes are already kept for a document in this matter, as one of
 // its versions (or, from before versions were kept, as the file itself), so
 // nothing was saved. `existing` is that document's name.
 export class DuplicateUploadError extends Error {
-  constructor(readonly existing: string, readonly version: { id: string; number: number; current: boolean } | null, message: string) {
+  constructor(readonly existing: string, readonly version: { id: string; number: number; current: boolean } | null, message: string, readonly canKeepBoth = false) {
     super(message)
   }
 }
@@ -234,13 +234,13 @@ function documentExists(status: number, text: string) {
 function duplicateUpload(status: number, text: string) {
   if (status !== 409) return
   try {
-    const body = JSON.parse(text) as { code?: unknown; name?: unknown; error?: unknown; version?: { id?: unknown; number?: unknown; current?: unknown } | null }
+    const body = JSON.parse(text) as { code?: unknown; name?: unknown; error?: unknown; can_keep_both?: unknown; version?: { id?: unknown; number?: unknown; current?: unknown } | null }
     if (body.code !== "duplicate" || typeof body.name !== "string") return
     const kept = body.version
     const version = kept && typeof kept.id === "string" && typeof kept.number === "number"
       ? { id: kept.id, number: kept.number, current: kept.current === true }
       : null
-    return new DuplicateUploadError(body.name, version, typeof body.error === "string" ? body.error : `${body.name} is already in this matter.`)
+    return new DuplicateUploadError(body.name, version, typeof body.error === "string" ? body.error : `${body.name} is already in this matter.`, body.can_keep_both === true)
   } catch {
     return
   }

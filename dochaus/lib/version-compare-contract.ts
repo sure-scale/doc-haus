@@ -25,6 +25,24 @@ export type ChangeHunk = {
 
 export type SideRevisions = { count: number; authors: string[] }
 
+/** Complete current-text paragraph inventories shared by comparison/history.
+ * `anchorId` is an address in these bytes; only `nativeId` is a Word-persisted
+ * paragraph identity, and duplicates are ambiguous. */
+export type ComparisonParagraph = {
+  anchorId: string
+  story: string
+  nativeId?: string
+  location: Omit<ChangeLocation, "side">
+  text: string
+  comments: number[]
+  revisions?: string[]
+}
+export type ParagraphComparison = {
+  left: ComparisonParagraph[]
+  right: ComparisonParagraph[]
+  changes: { kind: ChangeHunk["kind"]; left: string[]; right: string[] }[]
+}
+
 /** What became of one of left's pending tracked insertions or deletions in right. */
 export type ProposalOutcome = {
   /** P1, P2… in left's document order. */

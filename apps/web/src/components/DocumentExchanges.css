@@ -1,0 +1,11 @@
+.version-exchanges { padding: 16px 0; border-top: 1px solid var(--border); }
+.version-exchanges h3 { margin: 0 0 8px; }
+.version-exchanges p { margin: 6px 0; overflow-wrap: anywhere; }
+.version-exchanges ol { margin: 12px 0 0; padding-inline-start: 20px; }
+.version-exchanges li { padding: 8px 0; }
+.version-exchanges button, .upload-review-dialog button { white-space: normal; }
+.upload-review-dialog label:has(select), .upload-review-dialog label:has(input:not([type=checkbox])) { display: grid; gap: 6px; margin-block: 12px; }
+.upload-review-dialog select, .upload-review-dialog input:not([type=checkbox]) { width: 100%; min-width: 0; }
+.document-clause-history { flex: 0 0 auto; padding: 8px 16px; border-bottom: 1px solid var(--border); min-width: 0; }
+.document-clause-history-control { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: .85rem; }
+.document-clause-history .web-clause-history { margin-top: 8px; height: 40dvh; }

@@ -6,7 +6,7 @@ import blockedQuestion from "../../../dochaus/workflows/lean/fixtures/status-blo
 import blockedGate from "../../../dochaus/workflows/lean/fixtures/status-blocked-gate.json"
 import completed from "../../../dochaus/workflows/lean/fixtures/status-completed.json"
 import failed from "../../../dochaus/workflows/lean/fixtures/status-failed.json"
-import { documentContentUrl } from "../src/api/ingest/documents"
+import { documentDownloadUrl } from "../src/api/ingest/exports"
 import { isLeanDraftingStatus, type LeanDocument, type LeanDraftingStatus, type LeanOpenItem, type LeanQuestion } from "../src/api/ingest/lean"
 import DocumentUpload from "../src/components/DocumentUpload"
 import DraftedList from "../src/components/drafting/DraftedList"
@@ -374,7 +374,7 @@ test("a combined document's one file leads its group only once both its parts ar
   expect(main).toContain('<div class="drafted-row is-main">')
   expect(main).toContain('<span class="drafted-name" title="Supply note.docx"><span class="drafted-name-text">Supply note.docx</span></span>')
   expect(main).toContain('aria-label="Download Supply note.docx"')
-  expect(main).toContain(`href="${documentContentUrl("m", "Supply note.docx")}" download="Supply note.docx"`)
+  expect(main).toContain(`href="${documentDownloadUrl("m", "Supply note.docx")}" download="Supply note.docx"`)
   for (const name of ["Supply note - clean.docx", "Supply note - redline.docx", "Supply note - cover note.docx"]) {
     expect(beneath).toContain(`title="Open ${name}"`)
     expect(beneath).toContain(`download="${name}"`)
@@ -429,7 +429,7 @@ test("a combined file belongs to the exact body and notes ingest names, never to
   expect(isLeanDraftingStatus({ ...status, combined_output: { name: "Supply note", file: "Supply note.docx" } })).toBe(false)
 })
 
-const resultDownload = (name: string) => `<a href="${documentContentUrl("m1", name)}" download="${name}"`
+const resultDownload = (name: string) => `<a href="${documentDownloadUrl("m1", name)}" download="${name}"`
 const resultCard = (status: LeanDraftingStatus) => renderToStaticMarkup(createElement(ResultCard, { status, matterId: "m1", onViewDocument: () => {} }))
 const resultPage = (html: string) => html.slice(html.indexOf('<div class="result-document">'), html.indexOf('<ul class="result-stack"'))
 const ONE_FILE = 'title="Download the memo and the draft as one .docx"'
@@ -557,7 +557,7 @@ test("a file a combined row names that is not this run's saved combined file is 
   }))
   const download = listed.split('aria-label="Download Supply note.docx"')
   expect(download).toHaveLength(2)
-  expect(download[0]!.slice(download[0]!.lastIndexOf("<a "))).toContain(`href="${documentContentUrl("m", "Supply note.docx")}"`)
+  expect(download[0]!.slice(download[0]!.lastIndexOf("<a "))).toContain(`href="${documentDownloadUrl("m", "Supply note.docx")}"`)
   expect(download[1]!.split(">")[0]).toBe(' title="Download .docx"')
   // Without a summary row naming it, a file of that name is not one.
   expect(roleOf(lean({ ...held, documents: { ...held.documents!, documents: held.documents!.documents.filter((row) => row.kind !== "combined") } }))).toBe("draft")

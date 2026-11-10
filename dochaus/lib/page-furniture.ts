@@ -76,7 +76,31 @@ const MONTHS = ["January", "February", "March", "April", "May", "June", "July", 
 
 /** A draft line as pageFurniture writes it: "Draft: " or a firm's "<firm>
  * draft: ", then a date in one of formatDraftDate's styles, and nothing else. */
-const DRAFT_LINE = new RegExp(String.raw`^(?:\S.* draft|Draft): (?:\d{4}-\d{2}-\d{2}|\d{1,2} (?:${MONTHS.join("|")}) \d{4}|(?:${MONTHS.join("|")}) \d{1,2}, \d{4})$`)
+const DRAFT_LINE = new RegExp(String.raw`^((?:\S.* draft|Draft))(?: \d+)?: (\d{4}-\d{2}-\d{2}|\d{1,2} (?:${MONTHS.join("|")}) \d{4}|(?:${MONTHS.join("|")}) \d{1,2}, \d{4})$`)
+
+/** A sent copy can number an existing generated draft line without saving a
+ * new working version or changing body/legend/footer content. Callers supply
+ * the explicit sent count; internal rendering/downloads never call this. */
+export function withSentDraftNumber(bytes: Uint8Array, draftNumber: number): Uint8Array {
+  if (!Number.isSafeInteger(draftNumber) || draftNumber < 1) throw new Error("A sent draft number must be a positive integer.")
+  const parts = unzipSync(bytes)
+  let changed = false
+  for (const [name, content] of Object.entries(parts)) {
+    if (!/^word\/header\d*\.xml$/.test(name)) continue
+    const header = parseXml(content)
+    let wrote = false
+    for (const paragraph of Array.from(header.getElementsByTagNameNS(W, "p"))) {
+      const text = shownText(paragraph).trim(), match = DRAFT_LINE.exec(text)
+      if (!match) continue
+      const numbered = `${match[1]} ${draftNumber}: ${match[2]}`
+      if (numbered === text) continue
+      withText(paragraph, numbered)
+      wrote = true
+    }
+    if (wrote) { parts[name] = strToU8(new XMLSerializer().serializeToString(header)); changed = true }
+  }
+  return changed ? zipSync(parts, { mtime: new Date(1980, 0, 1) }) : bytes
+}
 
 /** The draft date in the firm's date style, read in the host's local time. */
 export function formatDraftDate(at: string, style: DraftingPreferences["dateFormat"]) {

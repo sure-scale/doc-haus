@@ -1,5 +1,6 @@
 import { INGEST_URL } from "../../config"
 import { ingestError } from "./errors"
+import type { SourceDependencyStatus } from "../../../../../dochaus/lib/source-version-dependencies-contract"
 
 // A matter document's kept versions (#268, services/ingest/src/document-versions.ts).
 // Every version's exact bytes are kept unchanged; restoring one copies it
@@ -28,6 +29,7 @@ export type DocumentVersion = {
   run: string | null
   label: string | null
   created_at: number
+  source_dependencies?: SourceDependencyStatus
   current: boolean
   // Why the version's kept bytes were removed: a redaction purges the earlier
   // versions' bytes and keeps their rows. null (or absent) means kept.
@@ -36,11 +38,18 @@ export type DocumentVersion = {
 
 export type VersionEvent = {
   id: number
-  kind: "accept" | "reject" | "restore"
+  kind: "accept" | "reject" | "restore" | "sent" | "received"
   version_id: string | null
   actor: string
   detail: Record<string, unknown> | null
   created_at: number
+}
+export type LinkedDocumentBranch = {
+  exchangeId: number; sourceDocumentId: string; sourceName: string; sourceCurrentVersionId: string | null
+  versionId: string; versionNumber: number; sha256: string; ext: string; bytes: number
+  targetDocumentId: string; targetName: string; targetCurrentVersionId: string | null
+  baseVersionId: string; baseVersionNumber: number | null; current: false
+  available: boolean; unavailableReason: string | null
 }
 
 export type DocumentVersions = {
@@ -49,6 +58,7 @@ export type DocumentVersions = {
   // Newest first.
   versions: DocumentVersion[]
   events: VersionEvent[]
+  linked_returns?: LinkedDocumentBranch[]
   // The version the working file holds; null when it has changed since
   // doc.haus last wrote it, or no version is kept yet.
   working_version: string | null

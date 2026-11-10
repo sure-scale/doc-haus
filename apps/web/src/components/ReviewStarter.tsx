@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react"
 import type { Document } from "../api/ingest/documents"
+import { getConfig, modelSpec } from "../api/opencode/config"
 import { DESCRIPTION_CHARS, MAX_SUGGESTIONS } from "../api/review-suggest"
-import { normaliseStarterQuestion, recommendStarter, REVIEW_STARTERS, type ReviewStarterDefinition, type StarterQuestion } from "../review-starters"
+import { normaliseStarterQuestion, recommendStarter, reviewInputNotice, REVIEW_STARTERS, workflowSearchMatches, type ReviewStarterDefinition, type StarterQuestion } from "../review-starters"
 import ReviewSetupDialog from "./ReviewSetupDialog"
 import ReviewExample from "./ReviewExample"
 import StarterSummary from "./StarterSummary"
@@ -31,7 +32,7 @@ function suggestFailure(error: unknown) {
 // names and the chosen questions; nothing is written before Add questions, and
 // nothing reads the documents' text until Fill.
 export default function ReviewStarter({ documents, existingQuestions, problem, initialStarter, initialStep = "choose", suggest, description: remembered = "", onDescription, onCancel, onConfirm }: {
-  documents: readonly Pick<Document, "name" | "role">[]
+  documents: readonly Pick<Document, "name" | "role" | "quality">[]
   existingQuestions: string[]
   problem?: string
   // A starter chosen before the table opened (from the chat's Workflows dialog
@@ -47,6 +48,21 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
   onConfirm: (questions: { question: string; compare?: false }[]) => Promise<boolean>
 }) {
   const titleId = useId()
+  const [query, setQuery] = useState("")
+  const searchField = useRef<HTMLInputElement>(null)
+  const [model, setModel] = useState<"checking" | "ready" | "missing" | "unavailable">("checking")
+  const canSuggest = Boolean(suggest)
+  useEffect(() => {
+    if (!canSuggest) return
+    let live = true
+    getConfig().then((config) => { if (live) setModel(modelSpec({ model: config.small_model ?? config.model }) ? "ready" : "missing") }, () => { if (live) setModel("unavailable") })
+    return () => { live = false }
+  }, [canSuggest])
+  const inputNotice = reviewInputNotice(documents)
+  const modelProblem = model === "checking" ? "Checking the selected model…"
+    : model === "missing" ? "Choose a model in Settings before suggesting questions with AI."
+      : model === "unavailable" ? "Model settings could not be checked. Close this chooser and try again."
+        : undefined
   // A starter whose questions are all in the table already would add nothing:
   // it is neither recommended nor preselected, and says so.
   const [inTable] = useState(() => {
@@ -55,8 +71,12 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
   })
   const [recommended] = useState(() => recommendStarter(documents))
   const fresh = !inTable.has(recommended.id)
-  const [chosenId, setChosenId] = useState(initialStep === "describe" && suggest ? AI
+  const [selection, setChosenId] = useState(initialStep === "describe" && suggest ? AI
     : initialStarter ?? (fresh ? recommended.id : suggest ? AI : REVIEW_STARTERS.find((item) => !inTable.has(item.id))?.id ?? recommended.id))
+  const shownStarters = REVIEW_STARTERS.filter((item) => workflowSearchMatches(query, item.name, item.purpose, item.inputs, item.output, ...item.questions.map((question) => question.text)))
+  const showAI = canSuggest && workflowSearchMatches(query, AI_NAME, "Describe what you want to find out from this matter's documents")
+  const choices = [...shownStarters.map((item) => item.id), ...(showAI ? [AI] : [])]
+  const chosenId = choices.includes(selection) ? selection : choices[0]
   // A starter the lawyer already chose is not second-guessed with a Recommended beside it.
   const recommendedId = fresh && (!initialStarter || initialStarter === recommended.id) ? recommended.id : undefined
   const [step, setStep] = useState<Step>(initialStep === "describe" && !suggest ? "choose" : initialStep)
@@ -112,6 +132,7 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
   }, [step])
 
   function toQuestions() {
+    if (!chosenId || (ai && (!documents.length || model !== "ready"))) return
     setError(undefined)
     if (ai) {
       // A list already suggested is kept; otherwise describe what to find out.
@@ -131,7 +152,7 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
 
   async function runSuggest() {
     const text = description.trim()
-    if (!suggest || !text || inFlight.current) return
+    if (!suggest || !text || !documents.length || model !== "ready" || inFlight.current) return
     onDescription?.(text)
     // A list being added to keeps its questions; the AI sees them as chosen.
     const appending = describeFrom === "questions" && draft !== undefined
@@ -187,10 +208,16 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
       <div ref={stepView} className="review-starter-step" tabIndex={-1}>
         {step === "choose" && (
           <>
+            <label className="review-starter-search">
+              <span className="sr-only">Search ways to add questions</span>
+              <input ref={searchField} type="search" placeholder="Search starters and questions" value={query} onChange={(event) => setQuery(event.target.value)} />
+              {query && <button type="button" className="linklike" onClick={() => { setQuery(""); searchField.current?.focus() }}>Clear</button>}
+            </label>
+            {inputNotice && <p className="review-starter-inputs" role="status">{inputNotice}</p>}
             <div className="review-starter-choose">
               <fieldset className="review-starter-choices">
                 <legend className="sr-only">Ways to add questions</legend>
-                {REVIEW_STARTERS.map((item) => (
+                {shownStarters.map((item) => (
                   <label key={item.id} className={`review-starter-choice${item.id === chosenId ? " is-selected" : ""}`}>
                     <input type="radio" name={`${titleId}-starter`} value={item.id} checked={item.id === chosenId} aria-describedby={item.id === chosenId ? `${titleId}-purpose` : undefined} onChange={() => setChosenId(item.id)} />
                     <span>
@@ -200,7 +227,7 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
                     </span>
                   </label>
                 ))}
-                {suggest && (
+                {showAI && (
                   <label className={`review-starter-choice is-ai${ai ? " is-selected" : ""}`}>
                     <input type="radio" name={`${titleId}-starter`} value={AI} checked={ai} aria-describedby={ai ? `${titleId}-purpose` : undefined} onChange={() => setChosenId(AI)} />
                     <span>
@@ -209,13 +236,14 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
                     </span>
                   </label>
                 )}
+                {!choices.length && <p role="status">No matching starters or question suggestions. Clear the search to see all ways to add questions.</p>}
               </fieldset>
               {starter ? (
                 <section className="review-starter-preview" aria-label={`About ${starter.name}`}>
                   <StarterSummary starter={starter} questions purposeId={`${titleId}-purpose`} />
                   {starter.example && <button type="button" className="linklike review-starter-example-link" onClick={() => setStep("example")}>See example</button>}
                 </section>
-              ) : (
+              ) : ai ? (
                 <section className="review-starter-preview" aria-label={`About ${AI_NAME}`}>
                   <div className="starter-summary">
                     <p id={`${titleId}-purpose`}>Describe what you want to find out from this matter's documents, and AI suggests questions to ask of each one.</p>
@@ -224,13 +252,14 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
                       <dt>Output</dt><dd>Up to {MAX_SUGGESTIONS} suggested questions, which you edit or remove before adding them.</dd>
                     </dl>
                     <p className="starter-summary-limits">One AI call when you choose Suggest questions. Answers wait for Fill. Suggestions may miss what matters in your matter; check and tailor them.</p>
+                    {modelProblem && <p role="status">{modelProblem}</p>}
                   </div>
                 </section>
-              )}
+              ) : null}
             </div>
             <div className="compare-actions">
               <button type="button" className="ghost" onClick={close}>Cancel</button>
-              <button type="button" className="primary" onClick={toQuestions}>Continue</button>
+              <button type="button" className="primary" disabled={!chosenId || (ai && (!documents.length || model !== "ready"))} onClick={toQuestions}>Continue</button>
             </div>
           </>
         )}
@@ -257,6 +286,8 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
                 void runSuggest()
               }} />
             <p id={`${titleId}-sees`} className="review-question-hint">The AI reads this, the names of the {documentCount} and the questions already chosen, not the documents' text.</p>
+            {inputNotice && <p className="review-starter-inputs" role="status">{inputNotice}</p>}
+            {modelProblem && <p role="status">{modelProblem}</p>}
             {suggestError && (
               <p id={`${titleId}-suggest-error`} className="review-suggest-error" role="status">
                 {suggestError} <button type="button" className="linklike" onClick={() => void runSuggest()}>Try again</button>
@@ -272,7 +303,7 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
                 <>
                   <button type="button" className="ghost review-starter-back" onClick={() => setStep(describeFrom)}>Back</button>
                   <button type="button" className="ghost" onClick={close}>Cancel</button>
-                  <button type="button" className="primary" disabled={!description.trim() || !names.length} onClick={() => void runSuggest()}>Suggest questions</button>
+                  <button type="button" className="primary" disabled={!description.trim() || !names.length || model !== "ready"} onClick={() => void runSuggest()}>Suggest questions</button>
                 </>
               )}
             </div>

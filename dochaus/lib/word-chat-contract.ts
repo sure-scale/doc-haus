@@ -1,5 +1,5 @@
 /** Word's scoped chat bridge. A linked-document token never proxies engine APIs. */
-export const WORD_CHAT_ROUTES = ["conversations", "conversation", "send", "poll", "cancel", "materials", "upload", "suggest", "prepare", "events", "assess", "assessment", "assessment-cancel"] as const
+export const WORD_CHAT_ROUTES = ["conversations", "conversation", "send", "poll", "cancel", "materials", "upload", "suggest", "prepare", "events", "assess", "assessment", "assessment-cancel", "history", "history-source"] as const
 export const wordChatPath = (pathname: string) => WORD_CHAT_ROUTES.some(route => pathname === `/word/chat/${route}`)
 export type WordChatScope = "document" | "matter"
 export type WordChatKind = "chat" | "amendment" | "formatting" | "suggestions"

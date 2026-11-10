@@ -27,6 +27,9 @@
 /* One view per step; the view takes focus when the step changes. */
 .review-starter-step { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .review-starter-step:focus { outline: none; }
+.review-starter-search { display: flex; align-items: center; gap: var(--space-3); }
+.review-starter-search input { width: 100%; min-width: 0; }
+.review-starter-inputs { color: var(--text-secondary); font-size: .875rem; line-height: 1.5; }
 .review-starter-back { margin-right: auto; margin-left: calc(-1 * var(--space-4)); }
 /* The actions stay in view while a step or the Fill preview scrolls. */
 .review-starter-body .review-starter-step > .compare-actions, .review-starter-body > .compare-actions { position: sticky; bottom: calc(-1 * var(--space-5)); z-index: 2; margin: 0 calc(-1 * var(--space-5)) calc(-1 * var(--space-5)); padding: var(--space-3) var(--space-5); border-top: 1px solid var(--border); background: var(--panel); }

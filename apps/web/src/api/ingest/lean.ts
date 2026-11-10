@@ -117,6 +117,7 @@ export type LeanActingFor = { party: string; basis: "stated" | "matter" | "infer
 const ACTING_FOR_BASES: LeanActingFor["basis"][] = ["stated", "matter", "inferred", "none"]
 
 export type LeanDraftingStatus = {
+  source_dependencies?: import("../../../../../dochaus/lib/source-version-dependencies-contract").SourceDependencyStatus
   schema: "dochaus.lean.state/2"
   profile: "lean"
   revision: number

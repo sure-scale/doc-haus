@@ -1,0 +1,3 @@
+.source-basis-notice { padding:8px 12px; border-inline-start:3px solid var(--warn-border); font-size:.85rem; overflow-wrap:anywhere; }
+.source-basis-notice p { margin:4px 0; }
+.source-basis-notice ul { margin:6px 0; padding-inline-start:18px; }

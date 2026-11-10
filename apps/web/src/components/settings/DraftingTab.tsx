@@ -266,6 +266,18 @@ export default function DraftingTab({ onSaved, onBusy }: { onSaved: (text: strin
           </div>
         </fieldset>
       </section>
+      <section className="settings-section">
+        <h3>Document versions</h3>
+        <fieldset className="settings-drafting-fields" disabled={saving} aria-label="Document version preferences">
+          <SegRow
+            label="Matching ID on Word copies"
+            hint="Include an opaque ID to recognize a returned file and its original version, even if it is renamed. It grants no access. Turn this off when your firm removes all document metadata. You can also leave it out of an individual send."
+            value={prefs.documentMatchingId !== false ? "on" : "off"}
+            onChange={(value) => set({ documentMatchingId: value === "on" })}
+            options={[{ value: "off", label: "Off" }, { value: "on", label: "On" }]}
+          />
+        </fieldset>
+      </section>
       {error && <p className="settings-error" role="alert">{error}</p>}
       <SettingsFooter tab="drafting"><div className="settings-actions">
         <button

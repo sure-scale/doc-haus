@@ -258,11 +258,13 @@ test("DOCX response is the exact registered derived version and keeps account co
   expect(response.status).toBe(200)
   expect(response.headers.get("Content-Type")).toContain("wordprocessingml.document")
   const name = response.headers.get("X-DocHaus-Export-Name")!
+  const versionId = response.headers.get("X-DocHaus-Export-Version")!
   const bytes = Buffer.from(await response.arrayBuffer())
   expect(bytes.equals(readFileSync(path.join(directory, name)))).toBe(true)
   const db = openDb(directory)
   try {
     expect(listDocuments(db)).toContainEqual(expect.objectContaining({ name, role: "deliverable" }))
+    expect(db.query("SELECT sha256 FROM document_versions WHERE id=?").get(versionId)).toEqual({ sha256: createHash("sha256").update(bytes).digest("hex") })
     expect(
       db.query("SELECT sha256,origin FROM document_versions WHERE label='Chronology export snapshot'").get(),
     ).toEqual({ sha256: createHash("sha256").update(bytes).digest("hex"), origin: "generated" })

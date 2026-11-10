@@ -143,6 +143,7 @@ test("cold native matter generation uses the selected model/variant and refuses 
       { name: "oversized prompt", body: { prompt: "x".repeat(1_048_577) }, status: 400 },
       { name: "invalid prompt type", body: { prompt: 7 }, status: 400 },
       { name: "unknown output contract", body: { prompt: "Unsupported schema", outputContract: "arbitrary-schema" }, status: 400 },
+      { name: "unknown model role", body: { prompt: "Unsupported role", modelRole: "other" }, status: 400 },
       { name: "caller model override", body: { prompt: "Do not substitute the configured model", model: { providerID: "generation-fixture", id: "alternate-note" } }, status: 400 },
     ]
     const refusals = [] as { name: string; status: number; expected: number }[]
@@ -221,7 +222,18 @@ test("cold native matter generation uses the selected model/variant and refuses 
     fixture.fail = true
     expect((await request({ prompt: "Exercise a configured provider refusal." })).status).toBe(503)
     expect(requests.every(request => request.model === "configured-note")).toBe(true)
+    fixture.fail = false
+    config.small_model = "generation-fixture/alternate-note"
+    await writeFile(path.join(repository, "dochaus", "opencode.json"), JSON.stringify(config))
+    const fast = await request({ prompt: "Match the focused candidate set.", modelRole: "fast" })
+    expect(fast.status).toBe(200)
+    expect((await fast.json()).data.model).toEqual({ providerID: "generation-fixture", id: "alternate-note" })
+    expect(requests.at(-1)?.model).toBe("alternate-note")
     const count = requests.length
+    delete config.small_model
+    await writeFile(path.join(repository, "dochaus", "opencode.json"), JSON.stringify(config))
+    expect((await request({ prompt: "A missing fast model never falls back to primary.", modelRole: "fast" })).status).toBe(503)
+    expect(requests).toHaveLength(count)
     await stop(engine)
     config.model = "generation-fixture/not-configured"
     await writeFile(path.join(repository, "dochaus", "opencode.json"), JSON.stringify(config))

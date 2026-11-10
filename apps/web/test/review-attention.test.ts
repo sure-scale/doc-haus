@@ -101,17 +101,31 @@ test("a reviewed cell whose question changed is flagged, not filled and not unre
   expect(result.queue.map((item) => item.key)).toEqual([cellKey(supply, law.id)])
 })
 
-test("a source still checking or not checked is shown but is not attention", () => {
-  const cells = { [cellKey(supply, law.id)]: cited(supply, law), [cellKey(lease, law.id)]: cited(lease, law, { status: "reviewed" }) }
-  for (const checkingSources of [true, false]) {
-    const result = model(cells, {}, { source: () => undefined, checkingSources })
-    const entry = result.cells.get(cellKey(supply, law.id))!
-    expect(entry.marker).toBeUndefined()
-    expect(entry.states).toContain("source_unchecked")
-    expect(entry.further.map((note) => note.word)).toEqual([checkingSources ? "Checking source" : "Source not checked"])
-    expect(result.attention).toBe(0)
-    expect(result.queue).toEqual([{ key: cellKey(supply, law.id), docName: supply, columnId: law.id, reason: "Not reviewed yet." }])
+test("loading stays provisional; settled unchecked and failed sources flag even reviewed cells", () => {
+  const key = cellKey(lease, law.id)
+  const cells = { [key]: cited(lease, law, { status: "reviewed" }) }
+  const loading = model(cells, {}, { source: () => undefined, checkingSources: true })
+  expect(loading.cells.get(key)!.marker).toBeUndefined()
+  expect(loading.cells.get(key)!.further.map((note) => note.word)).toEqual(["Checking source"])
+  for (const failed of [false, true]) {
+    const result = model(cells, {}, { source: () => undefined, sourceCheckFailed: failed })
+    const state = failed ? "source_failed" : "source_unchecked"
+    expect(result.cells.get(key)!.marker?.state).toBe(state)
+    expect(result.counts[state]).toBe(1)
+    expect(result.attention).toBe(1)
+    expect(result.progress.reviewed).toBe(1)
+    expect(result.queue.map((entry) => entry.key)).toEqual([key])
+    expect(matches(result.cells.get(key)!, [state], "lease")).toBe(true)
+    expect(primaryAction(result.progress, 0, result.queue.length)).toEqual({ kind: "reviewNext" })
+    expect(cells[key].status).toBe("reviewed")
   }
+})
+
+test("unfilled cells can be counted and filtered without starting a fill or review", () => {
+  const result = model({ [cellKey(supply, law.id)]: cited(supply, law) })
+  expect(result.counts.unfilled).toBe(3)
+  expect(matches(result.cells.get(cellKey(lease, term.id))!, ["unfilled"], "lease")).toBe(true)
+  expect(result.queue.map((entry) => entry.key)).toEqual([cellKey(supply, law.id)])
 })
 
 test("the primary action moves from start to fill to review next to export", () => {

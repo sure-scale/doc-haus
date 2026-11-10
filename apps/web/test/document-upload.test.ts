@@ -75,6 +75,15 @@ test("a save kept with tracked changes keeps its notice in the row and the toast
   expect(uploadedToast({ ...result, notice: undefined }).message).toBe("Agreement.docx is ready as version 3 (4 sections).")
 })
 
+test("a renamed exact duplicate can explicitly keep both when the server permits a separate copy", () => {
+  const renamed = new File(["identical"], "Renamed.pdf")
+  const duplicate = failedUpload(new DuplicateUploadError("Original.pdf", { id: "v1", number: 1, current: true }, "", true), renamed)
+  expect(duplicate).toMatchObject({ status: "duplicate", canKeepBoth: true })
+  expect(row({ key: 9, file: renamed, status: "queued", ...duplicate })).toMatchObject({
+    status: "Identical to the current version (version 1) of Original.pdf. Nothing was saved.", buttons: ["Keep both", "Dismiss"],
+  })
+})
+
 test("a returned draft named like a generated document can only be kept beside it", () => {
   const exists = failedUpload(
     new DocumentExistsError("Agreement.docx", "deliverable", "Cannot replace generated deliverable Agreement.docx with a source document."),

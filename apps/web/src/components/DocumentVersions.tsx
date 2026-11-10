@@ -1,3 +1,7 @@
+import DocumentExchanges from "./DocumentExchanges"
+import SourceBasisNotice from "./SourceBasisNotice"
+import { linkedReturnContentUrl } from "../api/ingest/exchanges"
+import { fetchDocumentExportBytes } from "../api/ingest/exports"
 import { useEffect, useId, useRef, useState } from "react"
 import type { CompareParams } from "../api/ingest/compare"
 import { humanizeError } from "../api/ingest/errors"
@@ -248,7 +252,7 @@ export default function VersionsPanel({
   async function download(version: DocumentVersion) {
     setRowError(undefined)
     try {
-      saveVersionFile(await fetchVersionBytes(matterId, version.id), name, version.number)
+      saveVersionFile(await (version.ext === ".docx" ? fetchDocumentExportBytes(matterId, { versionId: version.id }) : fetchVersionBytes(matterId, version.id)), name, version.number)
     } catch (cause) {
       const reason = unavailableReason(cause)
       if (reason) onUnavailable(version.id, reason)
@@ -304,6 +308,7 @@ export default function VersionsPanel({
                 </time>
                 {label && <div className="version-label">{label}</div>}
                 {branch && <div className="version-branch">{branch}</div>}
+                {!gone && (version.origin === "generated" || Boolean(version.source_dependencies?.sources.length)) && <SourceBasisNotice basis={version.source_dependencies} />}
                 {gone ? (
                   <p className="version-unavailable">{gone}</p>
                 ) : confirming === version.id ? (
@@ -365,6 +370,16 @@ export default function VersionsPanel({
           })}
         </ol>
       )}
+      {data && Boolean(data.linked_returns?.length) && <section className="version-exchanges" aria-label="Linked returned branches">
+        <h3>Linked returns</h3><p>These kept copies belong to another saved file and are linked here as branches. Neither working copy was replaced.</p>
+        <ul>{data.linked_returns!.map(branch => <li key={branch.exchangeId}>
+          <strong>{branch.sourceName} · Version {branch.versionNumber}</strong><p>Based on {name} · Version {branch.baseVersionNumber ?? "unavailable"}</p>
+          {branch.available ? <><a href={linkedReturnContentUrl(matterId, branch.exchangeId)} download>Download exact linked return</a>
+            {onCompare && <button type="button" onClick={() => onCompare({ left: name, right: branch.sourceName, leftVersion: branch.baseVersionId, rightVersion: branch.versionId })}>Compare with linked base</button>}</>
+            : <p>The linked return or its base is no longer available.</p>}
+        </li>)}</ul>
+      </section>}
+      {data && !loading && <DocumentExchanges key={`${matterId}:${name}`} matterId={matterId} name={name} versions={data.versions} refresh={onRefresh} />}
     </aside>
   )
 }

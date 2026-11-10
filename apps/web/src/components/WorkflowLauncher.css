@@ -1,5 +1,8 @@
 /* The list and its preview share one left edge with the title bar (--space-5). */
 .picker-panel.workflow-launcher { width: 100%; max-width: 880px; }
+.workflow-launcher-search { display: flex; align-items: center; gap: var(--space-3); margin: var(--space-4) var(--space-5) 0; }
+.workflow-launcher-search input { width: 100%; min-width: 0; }
+.workflow-launcher-inputs { color: var(--text-secondary); font-size: .875rem; }
 .workflow-launcher-body { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); gap: var(--space-6); align-items: start; min-height: min(360px, 50vh); padding: var(--space-5); overflow-y: auto; scrollbar-width: thin; }
 .workflow-launcher-list { display: flex; flex-direction: column; gap: var(--space-5); min-width: 0; }
 .workflow-launcher-group { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; margin: 0; padding: 0; border: 0; }
@@ -25,6 +28,7 @@
 .workflow-launcher-note { padding-top: var(--space-3); border-top: 1px solid var(--border-soft); color: var(--text-secondary); font-size: .85rem; }
 .workflow-launcher-actions.compare-actions { flex: none; flex-wrap: wrap; margin: 0; padding: var(--space-3) var(--space-5); border-top: 1px solid var(--border); }
 @media (max-width: 640px) {
+  .workflow-launcher-search { margin-inline: var(--space-4); }
   .workflow-launcher-body { grid-template-columns: minmax(0, 1fr); gap: var(--space-5); min-height: 0; padding: var(--space-4); }
   .workflow-launcher-preview { padding: var(--space-5) 0 0; border-left: 0; border-top: 1px solid var(--border); }
   .workflow-launcher-choice-reason strong { display: inline; }

@@ -38,7 +38,12 @@ test("every step key inside one snapshot equals a fresh read and the key its fin
   expect(scoped.value).toEqual(fresh)
   expect(scoped.scans).toBe(1)
   const state = readLeanState(directory)!
-  for (const [index, step] of steps.entries()) if (state.stages[step]?.status === "done") expect(state.stages[step]!.input_sha).toBe(fresh[index]!)
+  for (const [index, step] of steps.entries()) if (state.stages[step]?.status === "done") {
+    expect(state.stages[step]!.input_sha).toBe(fresh[index]!)
+    // Legacy fixture sources have no retained versions: a descriptive capture
+    // is present, but never promoted into evidence of a complete source basis.
+    expect(state.stages[step]!.source_versions).toEqual({ versions: [], complete: false })
+  }
   // A resumed run finds every finished stage current and redoes none of them.
   const resumed = scriptedModel({})
   expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")

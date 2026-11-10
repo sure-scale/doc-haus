@@ -10,12 +10,12 @@ export class EngineGenerationError extends Error {
   constructor(message: string, readonly generation?: { model: unknown; usage: unknown }) { super(message) }
 }
 
-export async function generate(directory:string,prompt:string,signal?:AbortSignal,outputContract?:typeof DOCUMENT_AMENDMENT_LEGAL_OUTPUT) {
+export async function generate(directory:string,prompt:string,signal?:AbortSignal,outputContract?:typeof DOCUMENT_AMENDMENT_LEGAL_OUTPUT,modelRole?:"fast") {
   const password = process.env.OPENCODE_SERVER_PASSWORD
   const base = process.env.OPENCODE_URL ?? `http://127.0.0.1:${process.env.DOC_HAUS_ENGINE_PORT ?? "4097"}`
   const timeout = AbortSignal.timeout(480000)
   const response = await fetch(`${base}/api/dochaus/generate`,{method:"POST",headers:{"content-type":"application/json","x-opencode-directory":directory,
-    ...(password ? {authorization:`Basic ${btoa(`opencode:${password}`)}`} : {})},body:JSON.stringify({prompt,...outputContract ? {outputContract} : {}}),signal:signal ? AbortSignal.any([timeout,signal]) : timeout})
+    ...(password ? {authorization:`Basic ${btoa(`opencode:${password}`)}`} : {})},body:JSON.stringify({prompt,...outputContract ? {outputContract} : {},...modelRole ? {modelRole} : {}}),signal:signal ? AbortSignal.any([timeout,signal]) : timeout})
   const result = object(await response.json().catch(() => undefined));const value=object(result.data)
   if (!response.ok) throw new EngineGenerationError(`The configured legal generation failed (HTTP ${response.status}).`,
     outputContract && ((response.status === 422 && object(value.error).code === "invalid_structured_output") ||
@@ -27,13 +27,13 @@ export async function generate(directory:string,prompt:string,signal?:AbortSigna
 
 // The same call, with the provider-reported usage kept in the matter's usage
 // ledger under `agent`. The ledger is a report: a failed write never fails the job.
-export async function generateFor(agent:string,directory:string,prompt:string,signal?:AbortSignal,outputContract?:typeof DOCUMENT_AMENDMENT_LEGAL_OUTPUT) {
+export async function generateFor(agent:string,directory:string,prompt:string,signal?:AbortSignal,outputContract?:typeof DOCUMENT_AMENDMENT_LEGAL_OUTPUT,modelRole?:"fast") {
   try {
-    const result = await generate(directory,prompt,signal,outputContract)
-    recordGenerationUsage(directory,agent,result,Boolean(outputContract))
+    const result = await generate(directory,prompt,signal,outputContract,modelRole)
+    recordGenerationUsage(directory,agent,result,Boolean(outputContract) || Boolean(modelRole))
     return result
   } catch (error) {
-    if (outputContract) recordGenerationUsage(directory,agent,
+    if (outputContract || modelRole) recordGenerationUsage(directory,agent,
       error instanceof EngineGenerationError && error.generation ? error.generation : { model: undefined, usage: undefined },true)
     throw error
   }

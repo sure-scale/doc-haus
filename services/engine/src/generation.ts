@@ -81,10 +81,11 @@ const generateWithUsage = Effect.fn("dochaus.generateWithUsage")(function* (prom
 
 // Resolve after native plugin activation, in the active matter's sealed graph.
 // An unavailable configured model must fail rather than choose another catalog item.
-export const generateMatterText = Effect.fn("dochaus.generateMatterText")(function* (prompt: string, outputContract?: typeof DOCUMENT_AMENDMENT_LEGAL_OUTPUT) {
+export const generateMatterText = Effect.fn("dochaus.generateMatterText")(function* (prompt: string, outputContract?: typeof DOCUMENT_AMENDMENT_LEGAL_OUTPUT, modelRole?: "fast") {
   yield* Plugin.awaitActivation
-  const selected = readEffectiveSettings().model
-  if (!selected) return yield* Effect.fail(new Error("The legal configuration has no selected generation model."))
+  const settings = readEffectiveSettings()
+  const selected = modelRole === "fast" ? settings.small_model : settings.model
+  if (!selected) return yield* Effect.fail(new Error(`The legal configuration has no selected ${modelRole === "fast" ? "fast " : ""}generation model.`))
   const model = Model.Ref.parse(selected)
   const output = yield* generateWithUsage(prompt, model, outputContract)
   return { ...output, model }

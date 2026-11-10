@@ -203,7 +203,7 @@ function FilterMenu({ model, checking, filters, onFilters }: { model: ReviewAtte
           <p className="review-filter-heading" aria-hidden="true">Show only</p>
           {quiet && <p className="review-filter-quiet">{quiet}</p>}
           {rows.map((note) => {
-            const marker = note.state !== "unreviewed"
+            const marker = note.state !== "unreviewed" && note.state !== "unfilled"
             return (
               <Tooltip key={note.state} label={note.reason} describes={false} around=".review-filter-menu">
                 <label className={`review-filter-option${marker ? "" : " is-unreviewed"}`}>
@@ -363,13 +363,14 @@ export function CompareSummary({ comparison, onOpen }: { comparison: GridColumnC
   )
 }
 
-export function ReviewToolbar({ model, checking, running, comparing, primary, fillCount, fillBlanks, startDisabled, fillDisabled, canExport, searchable, filters, onFilters, query, onQuery, onStarter, onFill, onReviewNext, onExport, notice }: {
+export function ReviewToolbar({ model, checking, running, comparing, primary, reviewNextDisabled = false, fillCount, fillBlanks, startDisabled, fillDisabled, canExport, searchable, filters, onFilters, query, onQuery, onStarter, onFill, onReviewNext, onRefreshSources, onExport, notice }: {
   model: ReviewAttention
   checking: boolean
   running: number
   // Columns whose answers are being compared after a Fill.
   comparing: number
   primary?: PrimaryAction
+  reviewNextDisabled?: boolean
   fillCount: number
   // Whether any target is blank; otherwise every target is an answer to refresh.
   fillBlanks: boolean
@@ -384,6 +385,7 @@ export function ReviewToolbar({ model, checking, running, comparing, primary, fi
   onStarter: () => void
   onFill: () => void
   onReviewNext: () => void
+  onRefreshSources?: () => void
   onExport: (format: "xlsx" | "csv" | "docx") => void
   // A brief word on a step just finished, such as a Review next walk.
   notice?: string
@@ -407,10 +409,10 @@ export function ReviewToolbar({ model, checking, running, comparing, primary, fi
     />
   )
     : primary?.kind === "start" ? <button key="primary" type="button" className="primary review-primary" disabled={startDisabled} onClick={onStarter}>Add questions</button>
-    : reviewNext ? <button key="primary" type="button" className="primary review-primary" onClick={onReviewNext}>Review next</button>
+    : reviewNext ? <button key="primary" type="button" className="primary review-primary" disabled={reviewNextDisabled} onClick={onReviewNext}>Review next</button>
     : primary?.kind === "fill" ? <button key="primary" type="button" className="primary review-primary" disabled={fillDisabled} onClick={onFill}>{running > 0 ? "Filling…" : `${fillBlanks ? "Fill" : "Refresh"} ${plural(fillCount, "cell")}`}</button>
     : null
-  const busy = running > 0 || comparing > 0 || !!notice
+  const busy = checking || running > 0 || comparing > 0 || !!notice
   return (
     <div className={`row review-toolbar${query ? " is-searching" : ""}`}>
       <div className={`review-status${busy ? " is-busy" : ""}`}>
@@ -418,15 +420,16 @@ export function ReviewToolbar({ model, checking, running, comparing, primary, fi
         {running > 0 && <span className="review-running" role="status"><span>Filling {running}</span></span>}
         {comparing > 0 && <span className="review-running" role="status"><span>Comparing {plural(comparing, "question")}</span></span>}
         {/* Always present, so screen readers announce the text when it appears. */}
-        <span className="review-notice" role="status">{notice}</span>
+        <span className="review-notice" role="status">{checking ? "Checking sources…" : notice}</span>
       </div>
       <div className="review-toolbar-actions">
         {searchable && <SearchToggle query={query} onQuery={onQuery} />}
-        {searchable && <FilterMenu model={model} checking={checking} filters={filters} onFilters={onFilters} />}
+        {model.cells.size > 0 && <FilterMenu model={model} checking={checking} filters={filters} onFilters={onFilters} />}
+        {!checking && onRefreshSources && (model.counts.source_unchecked > 0 || model.counts.source_failed > 0) && <button type="button" className="ghost" onClick={onRefreshSources}>Check sources</button>}
         {primary?.kind !== "export" && canExport && <ExportMenu onExport={onExport} />}
         {/* The next steps wrap as one group, so the primary never sits alone. */}
         <div className="review-toolbar-steps">
-          {!reviewNext && model.queue.length > 0 && <button key="next" type="button" className="ghost" onClick={onReviewNext}>Review next</button>}
+          {!reviewNext && model.queue.length > 0 && <button key="next" type="button" className="ghost" disabled={reviewNextDisabled} onClick={onReviewNext}>Review next</button>}
           {main}
         </div>
       </div>

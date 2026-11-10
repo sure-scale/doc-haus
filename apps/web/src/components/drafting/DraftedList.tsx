@@ -1,5 +1,5 @@
 import type { ReactNode } from "react"
-import { documentContentUrl } from "../../api/ingest/documents"
+import { documentDownloadUrl } from "../../api/ingest/exports"
 import { CompareIcon } from "../CompareDialog"
 import { WordBadge, WordOpenControl } from "../WordDocuments"
 import { OUTPUT_ROLE, type DraftedGroup, type DraftedOutput } from "./model"
@@ -81,7 +81,7 @@ function CombinedRow({ matterId, name }: { matterId: string; name: string }) {
       </div>
       <a
         className="icon-btn drafted-download"
-        href={documentContentUrl(matterId, name)}
+        href={documentDownloadUrl(matterId, name)}
         download={name}
         aria-label={`Download ${name}`}
         title="Download the memo and the draft as one .docx"
@@ -151,7 +151,7 @@ function OutputRow({
       )}
       <a
         className="icon-btn drafted-download"
-        href={documentContentUrl(matterId, output.name)}
+        href={documentDownloadUrl(matterId, output.name)}
         download={output.name}
         aria-label={`Download ${output.name}`}
         title="Download .docx"

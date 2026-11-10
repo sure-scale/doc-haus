@@ -6,6 +6,7 @@ import type { WordChatSend, WordChatTurn } from "../../../dochaus/lib/word-chat-
 import type { WordChatProposal, WordChatSnapshot, WordChatTableRowInsertionProposal, WordChatTableRowDeletionProposal, WordChatTableRowProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import type { V2Event } from "@opencode/client"
 import { wordChatApplyEligibility } from "./word-chat-apply"
+import type { ClauseHistoryResult } from "../../../dochaus/lib/clause-history-contract"
 
 const passage: WordChatTarget = { id: "target-one", text: "Payment within 14 days.", paragraphs: [{ id: "paragraph-one", text: "Payment within 14 days." }], startOffset: 0, endOffset: 23, capturedAt: "2026-10-28T12:00:00Z", saved: false }
 const context: WordChatSnapshot = { text: passage.text, paragraphs: passage.paragraphs, saved: false, capturedAt: passage.capturedAt, truncated: false }
@@ -217,6 +218,45 @@ test("scope, history and New share the composer row; attachments retain draft an
     await f.send("Explain this wording")
     const sent = f.calls.find(call => call.action === "send")!.input as WordChatSend
     expect(sent.scope).toBe("document"); expect(sent.context.saved).toBe(false); expect(sent.context.selection).toEqual(passage)
+  } finally { f.restore() }
+})
+
+test("clause History is a temporary read-only surface preserving the draft, context and conversation with close-focus recovery", async () => {
+  const data: ClauseHistoryResult = { document: { id: "doc", name: "Draft.docx", currentVersion: "base" }, anchorVersion: "base", currentVersion: "base", anchor: { status: "unresolved", reason: "Unsaved wording is not in the acknowledged saved version.", paragraphs: [] }, rounds: [], wordingView: "current-text", limitations: [] }
+  let loads = 0, applied = 0
+  const f = fixture({ host: { history: async () => { loads++; return data }, historySource: async () => { throw new Error("unused") }, apply: async () => { applied++ } } })
+  try {
+    await f.chat.ready; await Bun.sleep(0)
+    const message = f.get<HTMLTextAreaElement>("message"); message.value = "Keep this draft"
+    const context = f.get("chips").textContent, calls = f.calls.length
+    f.click("clause-history"); await Bun.sleep(0)
+    expect(loads).toBe(1); expect(f.get("clause-history-panel").hidden).toBe(false)
+    expect(f.get("scroll").hidden).toBe(true)
+    expect(f.get("clause-history").getAttribute("aria-expanded")).toBe("true")
+    expect(f.get("clause-history-panel").textContent).toContain("Unsaved wording is not in the acknowledged saved version.")
+    expect(message.value).toBe("Keep this draft"); expect(f.get("chips").textContent).toBe(context)
+    f.get("clause-history-panel").dispatchEvent(new f.page.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as KeyboardEvent)
+    expect(f.get("clause-history-panel").hidden).toBe(true); expect(f.get("scroll").hidden).toBe(false)
+    expect(f.page.document.activeElement?.getAttribute("data-chat")).toBe("clause-history")
+    expect(f.get("clause-history-panel").textContent).toBe("")
+    expect(f.calls.length).toBe(calls); expect(applied).toBe(0)
+    expect(message.value).toBe("Keep this draft")
+    f.click("clause-history"); await Bun.sleep(0)
+    f.click("conversation")
+    expect(f.get("clause-history-panel").hidden).toBe(true)
+    expect(f.get("clause-history-panel").childNodes.length).toBe(0)
+  } finally { f.restore() }
+})
+
+test("closing clause History discards a pending read and document replacement clears the old surface", async () => {
+  let finish!: (value: ClauseHistoryResult) => void, signal: AbortSignal | undefined
+  const data: ClauseHistoryResult = { document: { id: "doc", name: "Old.docx", currentVersion: "base" }, anchorVersion: "base", currentVersion: "base", anchor: { status: "verified", paragraphs: [] }, rounds: [], wordingView: "current-text", limitations: [] }
+  const f = fixture({ host: { history: requestSignal => { signal = requestSignal; return new Promise(resolve => { finish = resolve }) }, historySource: async () => { throw new Error("unused") } } })
+  try {
+    await f.chat.ready; f.click("clause-history")
+    f.chat.resetDocumentContext(); expect(signal?.aborted).toBe(true)
+    finish(data); await Bun.sleep(0)
+    expect(f.get("clause-history-panel").hidden).toBe(true); expect(f.root.textContent).not.toContain("Old.docx")
   } finally { f.restore() }
 })
 

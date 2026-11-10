@@ -2,7 +2,7 @@
 // Pure library — no engine/plugin dependency. Transfer-safe: only paths, run/stage
 // ids, hashes, byte counts. No legal content.
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { readDurableJson, writeDurableJson } from "./durable-json"
 import { withArtifactMutationLock } from "../capabilities/artifacts/mutation-lock"

@@ -1,5 +1,6 @@
 import { INGEST_URL } from "../../config"
 import { ingestError } from "./errors"
+import { fetchDocumentExportBytes } from "./exports"
 import type { ChronologyExportRequest, ChronologyExportSnapshot } from "../../../../../dochaus/lib/chronology-export"
 export type { ChronologyExportRequest, ChronologyExportSnapshot } from "../../../../../dochaus/lib/chronology-export"
 import type {
@@ -79,7 +80,13 @@ export async function exportChronology(id: string, selection: ChronologyExportRe
     throw new ChronologyConflict(data.chronology, data.error)
   }
   if (!response.ok) throw new Error(await ingestError(response, "Could not export the chronology."))
-  return { blob: await response.blob(), name: response.headers.get("X-DocHaus-Export-Name") || "Chronology.docx" }
+  // The POST still returns the exact canonical artifact. The browser downloads
+  // a separately prepared copy of that pinned version, never the latest name.
+  const versionId = response.headers.get("X-DocHaus-Export-Version")
+  if (!versionId) throw new Error("The saved chronology has no retained version identity. Open it in Documents before downloading.")
+  await response.arrayBuffer()
+  const bytes = await fetchDocumentExportBytes(id, { versionId })
+  return { blob: new Blob([bytes as BlobPart], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }), name: response.headers.get("X-DocHaus-Export-Name") || "Chronology.docx" }
 }
 export const assessChronology = (id: string) => request<Chronology>(id, "/assess", {})
 export const chronologyPreflight = (id: string) => request<ChronologyPreflight>(id, "/preflight")

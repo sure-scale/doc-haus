@@ -1,3 +1,7 @@
+import ReturnedDocument, { ReturnDialog } from "./ReturnedDocument"
+import { inspectReturnedFile, type ReturnInspection } from "../api/ingest/exchanges"
+import type { CompareParams } from "../api/ingest/compare"
+import BlacklineViewer from "./BlacklineViewer"
 import { useEffect, useRef, useState } from "react"
 import {
   deleteDocument,
@@ -40,7 +44,9 @@ type Upload = {
   // not_indexed: added, but no readable text could be extracted, so nothing
   // was indexed (the extraction quality gate). Never shown as ready.
   // duplicate: identical to a version the matter already keeps; nothing saved.
-  status: "queued" | "uploading" | "reading" | "ready" | "not_indexed" | "failed" | "exists" | "duplicate" | "chronology"
+  status: "queued" | "uploading" | "reading" | "ready" | "not_indexed" | "failed" | "exists" | "duplicate" | "chronology" | "return"
+  returnInspection?: ReturnInspection
+  canKeepBoth?: boolean
   error?: string
   // A ready Word file saved with pending tracked changes: the notice stays in
   // its row until dismissed.
@@ -95,6 +101,7 @@ export default function DocumentUpload({
   const [removing, setRemoving] = useState<string>()
   const [confirmId, setConfirmId] = useState<number | null>(null)
   const [reviewKey, setReviewKey] = useState<number | null>(null)
+  const [returnComparison, setReturnComparison] = useState<CompareParams>()
   // A long attachment list the lawyer opened or closed, by parent name.
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const nextKey = useRef(0)
@@ -155,6 +162,17 @@ export default function DocumentUpload({
   async function run(upload: Upload) {
     update(upload.key, { status: "uploading", error: undefined })
     try {
+      if (/\.docx$/i.test(upload.file.name) && !upload.choice && documents.some(item => /\.docx$/i.test(item.name))) {
+        const inspection = await inspectReturnedFile(matterId, upload.file)
+        // Same-name duplicates retain the row's current/earlier-version and
+        // Restore handling. A renamed duplicate needs an explicit separate-copy
+        // decision before the ordinary upload can create another document.
+        const sameName = documents.some(item => item.name.toLowerCase() === upload.file.name.toLowerCase())
+        if (inspection.kind !== "new-document" && (inspection.kind !== "duplicate" || !sameName)) {
+          update(upload.key, { status: "return", returnInspection: inspection })
+          return
+        }
+      }
       const result = await uploadDocument(matterId, upload.file, {
         onSent: () => update(upload.key, { status: "reading" }),
         existing: upload.choice,
@@ -543,6 +561,7 @@ export default function DocumentUpload({
   const reviewable = (upload: Upload) => Boolean(upload.chronology) && ["chronology", "exists", "queued", "uploading", "reading"].includes(upload.status)
   const review = uploads.find((upload) => upload.key === reviewKey && reviewable(upload))
     ?? uploads.find(reviewable)
+  const returned = uploads.find(upload => upload.status === "return")
   useEffect(() => { setReviewKey(review?.key ?? null) }, [review?.key])
 
   return (
@@ -577,6 +596,10 @@ export default function DocumentUpload({
           title={working > 0 ? `Uploading ${working} document${working === 1 ? "" : "s"}…` : "Upload documents"}
         />
         <p>Drop Word, PDF, email, Excel, Markdown or zip files here, or click to browse.</p>
+        <ReturnedDocument key={matterId} documents={documents} matterId={matterId} onNew={(file) => {
+          const upload = { ...newUpload(nextKey.current++, file), choice: "keep-both" as const }
+          setUploads(prev => [...prev, upload]); enqueue(upload)
+        }} onSaved={onUploaded} />
         {onStartFromTemplate && <button type="button" className="linklike docs-drawer-template" onClick={onStartFromTemplate}>Start from a template</button>}
       </footer>
       {review && <UploadReviewDialog
@@ -592,6 +615,11 @@ export default function DocumentUpload({
         onChoose={(choice) => retry(review, { choice })}
         onSkip={() => setUploads((prev) => prev.filter((upload) => upload.key !== review.key))}
       />}
+      {!review && returned && <ReturnDialog key={`${matterId}:${returned.key}`} matterId={matterId} documents={documents} file={returned.file} initialInspection={returned.returnInspection}
+        onClose={() => { setUploads(prev => prev.filter(upload => upload.key !== returned.key)); body.current?.focus() }}
+        onNew={() => retry(returned, { choice: "keep-both", returnInspection: undefined })}
+        onSaved={comparison => { setUploads(prev => prev.filter(upload => upload.key !== returned.key)); onUploaded(); setReturnComparison(comparison) }} />}
+      {returnComparison && <BlacklineViewer matterId={matterId} params={returnComparison} onClose={() => setReturnComparison(undefined)} />}
     </section>
   )
 }
@@ -901,7 +929,8 @@ export function failedUpload(error: unknown, file: File): Partial<Upload> {
   if (error instanceof DocumentExistsError) return { status: "exists", existing: { name: error.existing, role: error.role } }
   if (error instanceof DuplicateUploadError) {
     const earlier = error.version && !error.version.current ? { name: error.existing, version: { id: error.version.id, number: error.version.number } } : undefined
-    return { status: "duplicate", error: duplicateMessage(error.existing, error.version), match: earlier }
+    return { status: "duplicate", error: duplicateMessage(error.existing, error.version), match: earlier,
+      ...(error.canKeepBoth ? { canKeepBoth: true } : {}) }
   }
   const failed = { status: "failed" as const, error: humanizeError(error, `Could not read ${file.name}.`) }
   return error instanceof UploadFailedError && error.status < 500 ? failed : { ...failed, retryable: true }
@@ -917,6 +946,7 @@ const UPLOAD_LABEL: Record<Upload["status"], string> = {
   exists: "Already in this matter. Save this as a new version of it, or keep both?",
   duplicate: "Already in this matter. Nothing was saved.",
   chronology: "Awaiting chronology review…",
+  return: "Awaiting document and base version confirmation…",
 }
 const DELIVERABLE_EXISTS = "A document created by Doc.Haus has this name. Keep both?"
 
@@ -978,6 +1008,7 @@ export function UploadRow({ upload, onRetry, onChoose, onDismiss, onRestore }: {
         )}
         {(upload.status === "duplicate" || upload.notice) && !(match && confirming) && (
           <span className="upload-actions">
+            {upload.status === "duplicate" && upload.canKeepBoth && <button type="button" className="icon-btn" onClick={() => onChoose("keep-both")}>Keep both</button>}
             {/* The file is an earlier version: making it current again is
                 usually what the lawyer meant by uploading it. */}
             {match && (

@@ -127,6 +127,21 @@ test("the style template is a library file name, kept off the model's instructio
   expect(writeDraftingPreferences({ styleTemplate: "" }).styleTemplate).toBe("")
 })
 
+test("document matching IDs default on, round-trip a firm opt-out and stay off model instructions", () => {
+  expect(DEFAULT_DRAFTING.documentMatchingId).toBe(true)
+  expect(normalizePreferences({}).documentMatchingId).toBe(true)
+  const saved = writeDraftingPreferences({ documentMatchingId: false })
+  expect(saved.documentMatchingId).toBe(false)
+  expect(readDraftingPreferences().documentMatchingId).toBe(false)
+  expect(readFirmDraftingPreferences()).not.toContain("documentMatchingId")
+  expect(writeDraftingPreferences({ houseStyle: "Preserve the matching-ID choice." }).documentMatchingId).toBe(false)
+  for (const documentMatchingId of ["false", 0, null, {}]) {
+    expect(() => writeDraftingPreferences({ documentMatchingId })).toThrow()
+    expect(readDraftingPreferences().documentMatchingId).toBe(false)
+  }
+  expect(writeDraftingPreferences({ documentMatchingId: true }).documentMatchingId).toBe(true)
+})
+
 test("malformed saved credentials are never echoed and cannot be overwritten by a partial save", () => {
   const file = path.join(root, ".preferences", "preferences.json")
   const previous = readFileSync(file, "utf8")

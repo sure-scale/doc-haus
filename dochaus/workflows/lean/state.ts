@@ -6,6 +6,7 @@ import type { ProviderStopKind } from "../../lib/provider-stop"
 import { delegatedOption } from "../../lib/question-delegation"
 import type { ChecklistFindingClass } from "./checklist-classify"
 import type { DocID, StepID } from "./plan"
+import { mergeSourceVersionSnapshots, type SourceVersionSnapshot } from "../../lib/source-version-dependencies"
 
 // Lean drafting run state. One JSON file, written whole (tmp + rename) on every
 // change. It records where each stage stands and the content hash of the inputs
@@ -39,6 +40,15 @@ export type LeanStageState = {
   feedback: string[]
   started_at: string | null
   finished_at: string | null
+  /** Source input versions captured before work, descriptive only. */
+  source_versions?: SourceVersionSnapshot
+}
+
+/** All completed source inputs that can flow into this run's published memo,
+ * checklist, issue register and documents. Absent legacy evidence is unknown. */
+export function leanSourceVersions(state: LeanState | null | undefined): SourceVersionSnapshot {
+  return mergeSourceVersionSnapshots(Object.values(state?.stages ?? {}).filter(stage => stage &&
+    (stage.status === "done" || stage.status === "blocked") && stage.outputs.length > 0).map(stage => stage?.source_versions))
 }
 
 export type LeanState = {

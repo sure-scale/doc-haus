@@ -26,6 +26,7 @@ await Promise.all([
   copyFile(join(root, "desk.html"), join(output, "desk.html")),
   copyFile(join(root, "desk.css"), join(output, "desk.css")),
   copyFile(join(root, "chat.css"), join(output, "chat.css")),
+  copyFile(join(root, "../../dochaus/lib/clause-history-view.css"), join(output, "clause-history.css")),
   copyFile(join(root, "../../scripts/icons/doc-haus.png"), join(output, "assets/icon.png")),
   copyFile(join(root, "bootstrap.html"), join(bootstrap, "bootstrap.html")),
   copyFile(join(root, "bootstrap.css"), join(bootstrap, "bootstrap.css")),

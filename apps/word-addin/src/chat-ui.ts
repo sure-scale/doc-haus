@@ -6,11 +6,15 @@ import { mountWordConsequences } from "./chat-consequences"
 import { nativeEventSession, subscribeNativeChatStream } from "../../../dochaus/lib/native-chat-stream"
 import type { WordChatApplyEligibility } from "./word-chat-apply"
 import { nativeWordChatParagraphInsertionEligible, nativeWordChatParagraphDeletionEligible, nativeWordChatParagraphMergeEligible, nativeWordChatParagraphSplitEligible, nativeWordChatListInsertionEligible } from "./word-chat-apply"
+import type { ClauseHistoryResult, ClauseHistorySource, ClauseHistorySourceResult } from "../../../dochaus/lib/clause-history-contract"
+import { mountClauseHistory } from "../../../dochaus/lib/clause-history-view"
 
 export type ChatHost = {
   documentName: string
   capture(includeSelection?: boolean, pinned?: WordChatTarget): Promise<WordChatSnapshot>
   captureSelection(): Promise<WordChatTarget | undefined>
+  history?(signal: AbortSignal): Promise<ClauseHistoryResult>
+  historySource?(source: ClauseHistorySource, signal: AbortSignal): Promise<ClauseHistorySourceResult>
   /** Read paragraph wording without optional table/list geometry. */
   captureReview?(): Promise<WordChatSnapshot>
   watchSelection?(onChange: () => void): () => void
@@ -31,7 +35,8 @@ export type ChatHost = {
 /** Mount once. Hiding a feature tab never remounts or submits the conversation. */
 export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHost) {
   root.dataset.documentName = host.documentName
-  root.innerHTML = `<section data-chat="conversations" id="chat-conversations" class="chat-conversations" aria-label="Conversations" hidden>
+  root.innerHTML = `<section data-chat="clause-history-panel" id="chat-clause-history" class="chat-clause-history" aria-label="Clause history" hidden></section>
+  <section data-chat="conversations" id="chat-conversations" class="chat-conversations" aria-label="Conversations" hidden>
     <div class="chat-panel-heading"><h2>Conversations</h2><button data-chat="conversations-close" class="chat-subtle" type="button">Done</button></div><div data-chat="conversation-list" class="chat-conversation-list"></div>
   </section>
   <section data-chat="materials" class="chat-materials" aria-label="Attach material" hidden>
@@ -68,6 +73,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     <textarea data-chat="message" aria-label="Message doc.haus" placeholder="Ask doc.haus…" rows="2"></textarea>
     <div class="chat-composer-actions">
       <button data-chat="attach" class="chat-subtle" type="button" aria-expanded="false">＋ Attach</button>
+      <button data-chat="clause-history" class="chat-subtle" type="button" title="View saved history of the paragraph at the Word cursor" aria-expanded="false" aria-controls="chat-clause-history">History</button>
       <div data-chat="mode" class="chat-mode"><button data-chat="mode-toggle" class="chat-subtle chat-mode-toggle" type="button" aria-label="Response mode: Auto" aria-haspopup="menu" aria-expanded="false" aria-controls="chat-mode-picker"><span data-chat="mode-label">Auto</span><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"/></svg></button>
         <div data-chat="mode-picker" id="chat-mode-picker" class="chat-mode-picker" role="menu" aria-label="Response mode" hidden>
           <button data-chat="mode-auto" type="button" role="menuitemradio" aria-checked="true" tabindex="0"><span>Auto</span><small>Choose for this request</small></button>
@@ -82,6 +88,8 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   const button = (name: string) => get<HTMLButtonElement>(name)
   const message = get<HTMLTextAreaElement>("message")
   const history = get("history"), scroller = get("scroll"), activity = get("activity")
+  let clauseHistory: ReturnType<typeof mountClauseHistory> | undefined
+  button("clause-history").hidden = !host.history || !host.historySource
   const now = host.now ?? Date.now
   const schedule = host.schedule ?? ((run: () => void, delay: number) => { const id = setTimeout(run, delay); return () => clearTimeout(id) })
   let preferences: WordChatPreferences = { defaultScope: "document", suggestions: true }
@@ -167,6 +175,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     button("send").disabled = conversationLocked() || selectionPending || !conversation || !message.value.trim()
     button("new").disabled = conversationLocked() || !conversation
     button("conversation").disabled = conversationLocked()
+    button("clause-history").disabled = applying
     for (const choice of root.querySelectorAll<HTMLButtonElement>(".chat-conversation-list button")) choice.disabled = conversationLocked()
     button("stop").hidden = foreground?.status !== "running"
     button("stop").disabled = stopping
@@ -201,22 +210,24 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       list.append(choice)
     }
   }
-  function setPanel(name: "materials" | "conversations", open: boolean) {
-    const toggle = (panel: typeof name) => panel === "materials" ? "attach" : "conversation"
+  function setPanel(name: "materials" | "conversations" | "clause-history-panel", open: boolean) {
+    const toggle = (panel: typeof name) => panel === "materials" ? "attach" : panel === "conversations" ? "conversation" : "clause-history"
     if (open) {
-      for (const other of ["materials", "conversations"] as const) if (other !== name) {
+      for (const other of ["materials", "conversations", "clause-history-panel"] as const) if (other !== name) {
         get(other).hidden = true; button(toggle(other)).setAttribute("aria-expanded", "false")
+        if (other === "clause-history-panel") { clauseHistory?.dispose(); clauseHistory = undefined }
       }
     }
     get(name).hidden = !open
+    if (name === "clause-history-panel" && !open) { clauseHistory?.dispose(); clauseHistory = undefined }
     button(toggle(name)).setAttribute("aria-expanded", String(open))
     // Attachments use the conversation's space, with one scrolling body.
     // The composer and its draft remain mounted underneath.
-    scroller.hidden = history.hidden = !get("materials").hidden || !get("conversations").hidden
+    scroller.hidden = history.hidden = !get("materials").hidden || !get("conversations").hidden || !get("clause-history-panel").hidden
     renderSuggestions()
     if (open) {
       if (name === "conversations") (get("conversation-list").querySelector<HTMLElement>("button") ?? button("conversations-close")).focus()
-      else get(`material-${materialTab}-tab`).focus()
+      else if (name === "materials") get(`material-${materialTab}-tab`).focus()
     }
   }
   function setMaterialTab(next: "existing" | "upload", focus = false) {
@@ -965,6 +976,18 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   message.oninput = () => { consequences.interaction(); controls() }
   message.onkeydown = event => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void submit() } }
   button("conversation").onclick = () => { if (!conversationLocked()) { options(); setPanel("conversations", get("conversations").hidden) } }
+  button("clause-history").onclick = () => {
+    if (!host.history || !host.historySource || applying) return
+    const open = get("clause-history-panel").hidden
+    setPanel("clause-history-panel", open)
+    if (!open) return
+    clauseHistory = mountClauseHistory(get("clause-history-panel"), {
+      load: host.history,
+      source: host.historySource,
+      onClose() { setPanel("clause-history-panel", false); button("clause-history").focus() },
+    })
+    clauseHistory.focus()
+  }
   button("conversations-close").onclick = () => { setPanel("conversations", false); button("conversation").focus() }
   button("attach").onclick = () => { void openAttachments() }
   button("mode-toggle").onclick = () => { if (!conversationLocked()) showModePicker(get("mode-picker").hidden) }
@@ -1034,6 +1057,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (!get("mode-picker").hidden) { showModePicker(false, true); event.preventDefault(); event.stopPropagation() }
     else if (!get("materials").hidden) { setPanel("materials", false); button("attach").focus() }
     else if (!get("conversations").hidden) { setPanel("conversations", false); button("conversation").focus() }
+    else if (!get("clause-history-panel").hidden) { setPanel("clause-history-panel", false); button("clause-history").focus() }
   })
   const onFocus = () => {
     if (!root.ownerDocument.hidden) {
@@ -1053,6 +1077,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   return { ready, resetDocumentContext() {
     if (disposed) return
     consequences.reset()
+    setPanel("clause-history-panel", false)
     clearSelection()
     refinement = undefined; rowRefinement = undefined; suggestionsPaused = true
     message.placeholder = "Ask doc.haus…"
@@ -1062,6 +1087,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     root.ownerDocument.removeEventListener("visibilitychange", onFocus)
     root.ownerDocument.defaultView?.removeEventListener("focus", onFocus)
     consequences.dispose()
+    clauseHistory?.dispose()
     disposed = true; streamEpoch++; stream?.abort(); foregroundEpoch++; suggestionEpoch++; selectionCaptureEpoch++; pickerEpoch++; cancelSelection?.(); stopWatchingSelection?.(); cancelReconnectNotice?.(); cancelMonitor?.(); cancelReconcile?.(); root.replaceChildren()
   } }
 }

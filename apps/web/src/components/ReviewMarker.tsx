@@ -13,6 +13,8 @@ export const MARKER_LOOK: Record<MarkerState, { shape: Shape; tone: "danger" | "
   question_changed: { shape: "dot", tone: "warn" },
   no_citation: { shape: "ring", tone: "muted" },
   not_addressed: { shape: "dash", tone: "muted" },
+  source_unchecked: { shape: "ring", tone: "warn" },
+  source_failed: { shape: "triangle", tone: "warn" },
   differs: { shape: "diamond", tone: "info" },
 }
 const SHAPES: Record<Shape, React.ReactNode> = {
