@@ -41,15 +41,17 @@ export function mountWordConsequences(root: HTMLElement, api: WordChatApi, host:
   let conversationId: string | undefined, epoch = 0, disposed = false, busy = false, discovered = false, needsReconcile = false
   let assessment: LatestAssessment | undefined
   let observedRevision = "", observedEnabled = state().enabled, key = "", stableAt = 0, interactionAt = host.now(), requestKey = "", requestId = "", error = ""
+  let failures = 0, firstFailureAt = 0
   const cards = new Map<string, { node: HTMLElement; status: HTMLElement; stamp: string }>()
   let cancelTimer: (() => void) | undefined, pollAbort: AbortController | undefined
   const changed = () => { interactionAt = host.now() }
+  function clearFailures() { failures = 0; firstFailureAt = 0; error = "" }
   function cancel(value = assessment) {
     if (value?.status === "running") void api.request("assessment-cancel", { conversationId: value.conversationId, assessmentId: value.id }).catch(() => {})
   }
   function invalidate() {
     epoch++; pollAbort?.abort(); pollAbort = undefined; cancel(); assessment = undefined
-    requestKey = ""; requestId = ""; error = ""
+    requestKey = ""; requestId = ""; clearFailures()
     for (const record of records.values()) record.active = false
   }
   function findingKey(finding: WordConsequenceFinding) {
@@ -58,7 +60,7 @@ export function mountWordConsequences(root: HTMLElement, api: WordChatApi, host:
   }
   function accept(value: LatestAssessment | undefined, context?: WordChatSnapshot, historical = false) {
     if (!value || value.conversationId !== conversationId) return
-    assessment = value; error = ""
+    assessment = value; clearFailures()
     for (const record of records.values()) record.active = false
     for (const previous of value.history ?? []) for (const finding of previous.findings) {
       const id = findingKey(finding)
@@ -97,10 +99,11 @@ export function mountWordConsequences(root: HTMLElement, api: WordChatApi, host:
   function render() {
     if (disposed) return
     const current = state(), complete = assessment && ["complete", "partial"].includes(assessment.status)
-    const settled = complete && current.enabled && Boolean(current.turnId) && !needsReconcile && !current.busy && host.now() - Math.max(stableAt, interactionAt) >= 3_000
-    root.hidden = !assessment && !records.size && !error
+    const visibleError = current.enabled && current.turnId ? error : ""
+    const settled = complete && current.enabled && Boolean(current.turnId) && !needsReconcile && !failures && !current.busy && host.now() - Math.max(stableAt, interactionAt) >= 3_000
+    root.hidden = !assessment && !records.size && !visibleError
     root.className = root.hidden ? "" : "chat-message"
-    progress.textContent = !current.enabled ? "Consequence review is off. Earlier findings remain here." : error || (assessment?.status === "running" ? "Checking consequences alongside your conversation…" : assessment?.status === "stale" ? "The wording changed. Checking the latest document…" : assessment?.status === "cancelled" ? "Review stopped." : !assessment && records.size && current.turnId ? "Rechecking the latest wording and instructions…" : "")
+    progress.textContent = !current.enabled ? "Consequence review is off. Earlier findings remain here." : visibleError || (assessment?.status === "running" ? "Checking consequences alongside your conversation…" : assessment?.status === "stale" ? "The wording changed. Checking the latest document…" : assessment?.status === "cancelled" ? "Review stopped." : !assessment && records.size && current.turnId ? "Rechecking the latest wording and instructions…" : "")
     meaning.replaceChildren()
     if (assessment?.meaning && ["running", "complete", "partial"].includes(assessment.status) && !needsReconcile && current.enabled && current.turnId) {
       meaning.append(line("h3", "What changes"), line("p", assessment.meaning), line("p", "Inferred from the reviewed before and after wording", "chat-message-meta"))
@@ -153,7 +156,7 @@ export function mountWordConsequences(root: HTMLElement, api: WordChatApi, host:
   async function tick() {
     if (disposed || busy) return
     busy = true
-    let operationEpoch = epoch
+    let operationEpoch = epoch, failed = false
     try {
       const current = state()
       observedRevision = current.revision
@@ -169,6 +172,7 @@ export function mountWordConsequences(root: HTMLElement, api: WordChatApi, host:
       if (!discovered) {
         const result = await api.request<LatestAssessment | { assessment: null }>("assessment", { conversationId: id })
         if (disposed || operationEpoch !== epoch || state().conversationId !== id) return
+        clearFailures()
         discovered = true
         if ("id" in result) { accept(result, undefined, true); needsReconcile = true }
       }
@@ -189,22 +193,36 @@ export function mountWordConsequences(root: HTMLElement, api: WordChatApi, host:
       if (assessment && needsReconcile) {
         const result = await api.request<WordConsequenceAssessment>("assessment", { conversationId: id, assessmentId: assessment.id, context })
         if (disposed || operationEpoch !== epoch || !state().enabled || state().conversationId !== id || state().revision !== current.revision) return
+        clearFailures()
         await publish(result, context, current, operationEpoch)
       } else if (!assessment) {
         if (requestKey !== key) { requestKey = key; requestId = crypto.randomUUID() }
         const result = await api.request<WordConsequenceAssessment>("assess", { conversationId: id, requestId, turnId: current.turnId, context })
         if (disposed || operationEpoch !== epoch || !state().enabled || state().conversationId !== id || state().revision !== current.revision) { cancel(result); return }
+        clearFailures()
         await publish(result, context, current, operationEpoch)
       } else if (assessment.status === "running") {
         pollAbort = new AbortController()
         const result = await api.request<WordConsequenceAssessment>("assessment", { conversationId: id, assessmentId: assessment.id, context }, pollAbort.signal)
         if (disposed || operationEpoch !== epoch || !state().enabled || state().conversationId !== id || state().revision !== current.revision) return
+        clearFailures()
         await publish(result, context, current, operationEpoch)
       } else if (["stale", "cancelled", "disabled"].includes(assessment.status)) { invalidate() }
       render()
     } catch {
-      if (!disposed && operationEpoch === epoch) { error = "Consequence review is unavailable. Your chat and amendments are ready; the review will reconnect."; render() }
-    } finally { busy = false; if (!disposed && (state().turnId || assessment?.status === "running" || error)) cancelTimer = host.schedule(() => { cancelTimer = undefined; void tick() }, error ? 8_000 : 3_000) }
+      if (!disposed && operationEpoch === epoch && state().conversationId === conversationId) {
+        failed = true
+        if (state().enabled && state().turnId) {
+          // Completed reviews also need a fresh server read after a failed Word capture.
+          if (assessment) needsReconcile = true
+          // A single slow restart or lost response should not interrupt the chat.
+          if (!failures) firstFailureAt = host.now()
+          failures++
+          if (failures >= 3 && host.now() - firstFailureAt >= 15_000) error = "Consequence review is unavailable. Your chat and amendments are ready; the review will reconnect."
+        } else clearFailures()
+        render()
+      }
+    } finally { busy = false; if (!disposed && (state().turnId || assessment?.status === "running" || failed)) cancelTimer = host.schedule(() => { cancelTimer = undefined; void tick() }, failed ? 8_000 : 3_000) }
   }
   function refresh() {
     const current = state()
