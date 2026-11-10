@@ -151,8 +151,18 @@ function chartErrors(chart: Record<string, unknown>, at: string) {
 }
 
 // The same chart twice, whatever its title.
+function chartIdentity(chart: Chart) {
+  return ["chart", chart.metric, chart.groupBy, chart.form, chart.period, chart.client ?? "", chart.matter ?? "", chart.limit ?? "", chart.agentGroup ?? ""]
+}
+
 export function chartKey(chart: Chart) {
-  return ["chart", chart.metric, chart.groupBy, chart.form, chart.period, chart.client ?? "", chart.matter ?? "", chart.limit ?? "", chart.agentGroup ?? ""].join("|")
+  return JSON.stringify(chartIdentity(chart))
+}
+
+/** A legacy key is checked only against its own complete validated settings,
+ * never used to select/match another widget. Readers return the current key. */
+export function matchesStoredChartKey(key: unknown, chart: Chart) {
+  return key === chartKey(chart) || key === chartIdentity(chart).join("|")
 }
 
 // Accepts a plan as the model wrote it, or lists every reason it cannot be

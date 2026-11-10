@@ -229,3 +229,33 @@ test("queued answers do not make a completed run need attention", () => {
   row.drafting.queued_answer_ids = []
   expect(templateAvailability("attention", { matters: [row] }, "all", "UTC").usable).toBe(true)
 })
+
+
+test("human titles stay in authoritative conversation charts, availability and inventory", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "dashboard-title-"))
+  const previous = process.env.WORKSPACE_ROOT, originalFetch = globalThis.fetch
+  process.env.WORKSPACE_ROOT = root
+  const matter = createMatter("Title authority")
+  const now = Date.now()
+  const base = { location: { directory: matter.dir }, title: "doc.haus contract questions", cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: now - 1000, updated: now } }
+  const sessions = [{ ...base, id: "human" }, { ...base, id: "owner", metadata: { dochaus_role: "lean-drafting-owner" } }, { ...base, id: "job", title: "ordinary title", metadata: { dochaus_role: "review-grid" } }, { ...base, id: "child", parentID: "human" }]
+  globalThis.fetch = Object.assign(async (input: Parameters<typeof fetch>[0]) => {
+    const url = new URL(String(input))
+    if (url.pathname === "/api/session") return Response.json({ data: sessions, cursor: {} })
+    if (url.pathname.endsWith("/message")) return Response.json({ data: [], cursor: {} })
+    const found = sessions.find(session => url.pathname === "/api/session/" + session.id)
+    return found ? Response.json({ data: found }) : new Response(null, { status: 404 })
+  }, { preconnect: originalFetch.preconnect }) as typeof fetch
+  try {
+    const chart = { type: "chart", title: "Conversations", metric: "conversations", groupBy: "none", form: "stat", period: "all", source: { kind: "local-query", query: "practice-chart", version: 1 } }
+    expect((await dashboardChartSource(JSON.stringify(chart), "all", "UTC")).data.total).toBe(2)
+    const inventory = await dashboardInventory("all", "UTC")
+    expect(inventory.metrics.conversations.total).toBe(2)
+    const check = await validateDashboardSources({ widgets: [{ type: "activity" }], period: "all", timeZone: "UTC" })
+    expect(check.results[0]).toMatchObject({ usable: true, total: 2 })
+  } finally {
+    globalThis.fetch = originalFetch
+    if (previous === undefined) delete process.env.WORKSPACE_ROOT; else process.env.WORKSPACE_ROOT = previous
+    rmSync(root, { recursive: true, force: true })
+  }
+})

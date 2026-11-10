@@ -19,7 +19,7 @@ export function routeAgent(input: {
 }): Promise<Route> {
   const { client, ...request } = input
   return sharedRouteAgent({ ...request, transport: {
-    create: title => createSession(client, title),
+    create: title => createSession(client, title, undefined, undefined, { dochaus_role: "chat-router" }),
     select: async (sessionID, agent, model) => {
       await client.session.switchAgent({ sessionID, agent })
       await client.session.switchModel({ sessionID, model: { providerID: model.providerID, id: model.modelID } })

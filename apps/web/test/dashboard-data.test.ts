@@ -4,7 +4,7 @@ import type { Matter } from "../src/api/ingest/matters"
 import type { LeanDraftingStatus } from "../src/api/ingest/lean"
 import {
   attention, chartStart, costByMatter, costEntries, dailyConversations, dailySpend, drafts, lastDays, periodRange, previousRange, progress, spendCsv, summarize,
-  type CostEntry, type MatterActivity, type Session,
+  isConversation, type CostEntry, type MatterActivity, type Session,
 } from "../src/components/dashboard/data"
 
 const matter = { id: "m1", title: "Alder House · Services agreement", dir: "/fixture/alder", created_at: Date.UTC(2026, 0, 5) } as Matter
@@ -81,7 +81,7 @@ test("only the lawyer's own conversations count; runtime and subagent sessions a
     session("chat", "2026-10-28T09:00:00Z"),
     session("run", "2026-10-28T09:05:00Z", { metadata: { dochaus_role: "lean-drafting-owner" } }),
     session("stage", "2026-10-28T09:06:00Z", { metadata: { dochaus_role: "lean-drafting" } }),
-    session("cell", "2026-10-28T09:07:00Z", { title: "doc.haus grid: payment" }),
+    session("cell", "2026-10-28T09:07:00Z", { title: "doc.haus grid: payment", metadata: { dochaus_role: "review-grid" } }),
     session("sub", "2026-10-28T09:08:00Z", { parentID: "chat" }),
   ]
   const summary = summarize(activity(sessions), "month", now)
@@ -165,4 +165,12 @@ test("the spend export quotes commas and quotes and defuses formula cells", () =
     ",No client,,1,9.00",
     "",
   ])
+})
+
+
+test("conversation titles never classify user content as runtime ownership", () => {
+  for (const title of ["doc.haus contract review", "doc.haus grid: payment", "Ordinary conversation"]) {
+    expect(isConversation(session("human", "2026-10-28T09:00:00Z", { title }))).toBe(true)
+    expect(isConversation(session("system", "2026-10-28T09:00:00Z", { title, metadata: { dochaus_role: "review-grid" } }))).toBe(false)
+  }
 })

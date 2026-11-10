@@ -1,4 +1,4 @@
-import type { SessionMessageInfo } from "@opencode/client"
+import type { SessionInfo, SessionMessageInfo } from "@opencode/client"
 import { projectMessages } from "../session-view"
 import { boundedRequest, clientDirectories, location, type Client } from "./client"
 import { getConfig, modelSpec } from "./config"
@@ -19,8 +19,10 @@ export async function disposeInstance(_client: Client) {
 // not pin the composer, router, credential probe, or cleanup path indefinitely.
 // Optional native permission rules narrow the session's tools (e.g. a grid
 // re-check that may only read the passages in its prompt).
-export async function createSession(client: Client, title = "Conversation", timeoutMs = 10_000, permissions?: Array<{ action: string; resource: string; effect: "allow" | "deny" | "ask" }>) {
-  return boundedRequest(client.session.create({ title, location: location(client), ...(permissions ? { permissions } : {}) }), timeoutMs, "Session creation")
+// Automatic producers also identify their role in native metadata; a human's
+// chosen title never establishes system ownership.
+export async function createSession(client: Client, title = "Conversation", timeoutMs = 10_000, permissions?: Array<{ action: string; resource: string; effect: "allow" | "deny" | "ask" }>, metadata?: SessionInfo["metadata"]) {
+  return boundedRequest(client.session.create({ title, location: location(client), ...(permissions ? { permissions } : {}), ...(metadata ? { metadata } : {}) }), timeoutMs, "Session creation")
 }
 
 // Every session the engine holds for this matter (scoped by the client's

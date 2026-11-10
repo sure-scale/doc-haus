@@ -240,12 +240,12 @@ test("the latest conversation passes over background agents, sub-agents and runt
   insertTurn(db, { sessionId: "cell", ts: now - 500, tokens: 900 })
   db.close()
   fakeEngine(dir, [
-    { id: "chat", agent: "qa", cost: 0, updated: now - 5_000, messages: [] },
+    { id: "chat", agent: "qa", title: "doc.haus contract questions", cost: 0, updated: now - 5_000, messages: [] },
     { id: "child", agent: "lean-advise", parentID: "chat", cost: 0, updated: now - 4_000, messages: [] },
     { id: "job", agent: "dashboard", metadata: { dochaus_role: "dashboard" }, cost: 0, updated: now - 3_000, messages: [] },
     { id: "sub", agent: "explore", parentID: "chat", cost: 0, updated: now - 2_000, messages: [] },
     { id: "compare", agent: "review-compare", metadata: { dochaus_role: "review-compare" }, cost: 0, updated: now - 1_000, messages: [] },
-    { id: "cell", agent: "extract", title: "doc.haus grid: Lease.docx", cost: 0, updated: now - 500, messages: [] },
+    { id: "cell", agent: "extract", metadata: { dochaus_role: "review-grid" }, title: "doc.haus grid: Lease.docx", cost: 0, updated: now - 500, messages: [] },
   ])
 
   expect((await readLeanPayload(dir, { signal: signal() })).current_session).toEqual({

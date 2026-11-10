@@ -1,3 +1,4 @@
+import { isUserConversation } from "../../../../../dochaus/lib/session-visibility"
 import { useEffect, useRef, useState } from "react"
 import { getMatter, listJurisdictions, listMatters, type Jurisdiction, type Matter } from "../../api/ingest/matters"
 import { getDraftingStatus } from "../../api/ingest/drafting-status"
@@ -272,15 +273,8 @@ export function chartStart(matters: MatterActivity[], range: Range, workspace?: 
   return startOfDay(first)
 }
 
-// A conversation the lawyer started, as the sidebar lists them: not a subagent
-// run, not a session the runtime owns (drafting stages, the narrator) unless it
-// is a drafting run's own conversation, and not a system-titled one such as a
-// review grid's cell sessions. Their cost still counts towards spend.
-export function isConversation(session: Session) {
-  if (session.parentID || /^doc\.haus/i.test(session.title ?? "")) return false
-  const role = typeof session.metadata === "object" && session.metadata !== null && "dochaus_role" in session.metadata ? session.metadata.dochaus_role : undefined
-  return role === undefined || role === "lean-drafting-owner"
-}
+// Shared with the sidebar: titles carry no ownership authority.
+export const isConversation = isUserConversation
 
 // OpenCode prices a model it has no price for at 0, so a session that used
 // tokens yet cost nothing ran on an unpriced model; it was not free.

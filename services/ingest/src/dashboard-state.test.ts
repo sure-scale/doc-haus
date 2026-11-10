@@ -131,3 +131,37 @@ test("saved chart source mappings survive reopening and unsupported mappings can
   }
   expect(await (await app.request("/dashboard/tabs")).json()).toEqual({ state: mapped, revision: 1 })
 })
+
+test("legacy chart keys migrate from exact checked settings without rewriting on read", async () => {
+  const directory = workspace(), app = dashboardRoutes(), legacy = state()
+  const entry = legacy.workspace.dashboards[1]!.widgets![0]!
+  entry.widget = { ...entry.widget, client: "|Acme" }
+  entry.key = "chart|conversations|client|bars|all||Acme|||"
+  expect((await app.request("/dashboard/tabs")).status).toBe(200)
+  const file = path.join(directory, ".dashboard", "dashboard.db")
+  const encoded = JSON.stringify(legacy)
+  const db = new Database(file)
+  try { db.run("INSERT INTO dashboard_tabs (id, state, revision) VALUES (1, ?, 1)", [encoded]) }
+  finally { db.close() }
+  const expected = structuredClone(legacy)
+  expected.workspace.dashboards[1]!.widgets![0]!.key = chartKey(entry.widget)
+  const response = await dashboardRoutes().request("/dashboard/tabs")
+  expect(response.status).toBe(200)
+  expect(await response.json()).toEqual({ state: expected, revision: 1 })
+  const readback = new Database(file, { readonly: true })
+  try { expect((readback.query("SELECT state FROM dashboard_tabs WHERE id = 1").get() as { state: string }).state).toBe(encoded) }
+  finally { readback.close() }
+  const { client: _client, ...unfiltered } = entry.widget
+  const matter: Chart = { ...unfiltered, matter: "Acme|" }
+  const next = structuredClone(expected)
+  next.workspace.dashboards[1]!.widgets!.push({ key: chartKey(matter), widget: matter, pinned: false })
+  expect((await put(app, next, 1)).status).toBe(200)
+  expect(await (await dashboardRoutes().request("/dashboard/tabs")).json()).toEqual({ state: next, revision: 2 })
+  expect((await put(app, legacy, 1)).status).toBe(409)
+  for (const key of [entry.key + "extra", entry.key.slice(0, -1), "chart|conversations", entry.key.replace("Acme", "Other")]) {
+    const invalid = structuredClone(next)
+    invalid.workspace.dashboards[1]!.widgets![0]!.key = key
+    expect((await put(app, invalid, 2)).status).toBe(400)
+  }
+  expect(await (await app.request("/dashboard/tabs")).json()).toEqual({ state: next, revision: 2 })
+})

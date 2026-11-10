@@ -1,3 +1,4 @@
+import { isUserConversation as isConversation } from "./session-visibility"
 import type { Chart, Grouping, Metric } from "./dashboard-plan"
 import { USAGE_GROUP_LABEL, usageAgent } from "./usage-agents"
 export type Period = "month" | "last-month" | "quarter" | "all"
@@ -17,7 +18,6 @@ export type MatterActivity = {
 export type OutsideMatters = { costs: MatterActivity["costs"]; unread: boolean; unpriced: number }
 export type DashboardData = { matters: MatterActivity[]; workspace?: OutsideMatters; error?: string }
 const PERIOD_LABELS: Record<Period, string> = { month: "This month", "last-month": "Last month", quarter: "Last 3 months", all: "All time" }
-function isConversation(session: MatterActivity["sessions"][number]) { const role = session.metadata?.dochaus_role; return !session.parentID && !/^doc\.haus/i.test(session.title ?? "") && (role === undefined || role === "lean-drafting-owner") }
 function draftedCount(drafting: MatterActivity["drafting"]) { return drafting?.documents?.status === "completed" ? drafting.documents.documents.filter(row => row.kind === "body" && row.deliverable).length : 0 }
 function calendar(zone: string) {
   const fmt = new Intl.DateTimeFormat("en-GB", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" })

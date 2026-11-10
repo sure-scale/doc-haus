@@ -582,13 +582,13 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
     detailDialog.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true })
   }
 
-  // One extract turn in a scoped, throwaway session titled so it stays out of
-  // the sidebar's conversation list (which filters "doc.haus"-titled sessions).
+  // One extract turn in a scoped session explicitly owned by the review grid,
+  // so conversation/sidebar/dashboard predicates do not count it as user chat.
   // A tool-using turn emits several assistant messages (one per model step): the
   // search-document call lands on an earlier one, the final answer text on the
   // last. Return every assistant message so the citation is not dropped.
   async function extractTurn(title: string, prompt: string, permissions?: Parameters<typeof createSession>[3]) {
-    const session = await createSession(client, title, undefined, permissions)
+    const session = await createSession(client, title, undefined, permissions, { dochaus_role: "review-grid" })
     await sendPrompt(client, session.id, "extract", prompt)
     return (await getMessages(client, session.id)).filter((m) => m.info.role === "assistant")
   }
@@ -938,6 +938,7 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
       return <p className="review-compare-note">No AI comparison: {cited ? "only one cited answer" : "no cited answers"}</p>
     }
     if (input === "too_many") return <p className="review-compare-note">No AI comparison: more than {MAX_COMPARE_DOCUMENTS} documents</p>
+    if (input === "too_large") return <p className="review-compare-note">No AI comparison: the complete answers and sources are too long for one comparison.</p>
     if (comparing.has(col.id)) return <p className="review-compare-note">Comparing with AI…</p>
     const fresh = comparisonOf(col)
     if (fresh) return <CompareSummary comparison={fresh} onOpen={(docName) => openDetail(docName, col.id)} />
