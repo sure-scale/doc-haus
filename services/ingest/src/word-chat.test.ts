@@ -1274,6 +1274,36 @@ test("structured answers are suppressed while review is pending and when review 
   } finally { queueReview = false; approveReview = true; modelStructuredRawOutput = undefined }
 })
 
+test("inline formatting contract separates boolean objects from paragraph formatting arrays", async () => {
+  const id = await newConversation(), text = "Keep the existing payment terms."
+  const native = {...context,text,paragraphs:[{id:"inline-shape",text}],selection:undefined}
+  const request = () => post("send",{conversationId:id,scope:"document",text:"Format the requested passage, keeping all wording unchanged.",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context:native})
+  const output = (before:string, properties:object) => { modelStructuredRawOutput = JSON.stringify({answerParts:[{type:"text",text:"Prepared for review."},{type:"reference",sourceId:"word",quote:text}],proposal:{before,after:before,explanation:"Requested formatting only.",openItems:[],...properties}}) }
+  try {
+    output("payment",{inlineFormatting:[{underline:true}]})
+    const reviewed = [...sessions.values()].filter(session => session.metadata.type === "word-chat-review").length
+    const refused = (await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(refused.proposal).toBeUndefined()
+    expect(refused.answer).toBe(""); expect(refused.error).toContain("inline formatting")
+    expect(refused.error).not.toContain("Select complete paragraphs")
+    expect([...sessions.values()].filter(session => session.metadata.type === "word-chat-review")).toHaveLength(reviewed)
+    const contract = (JSON.parse(sessionContext(refused.id).split("\n").at(-2)!) as {responseContract:string}).responseContract
+    expect(contract).toContain("one nonempty JSON object")
+    expect(contract).toContain("never an array")
+    expect(contract).toContain('optional boolean properties "bold", "italic" and "underline"')
+    const reloaded = (await (await post("poll",{conversationId:id,turnId:refused.id})).json() as {turn:WordChatTurn}).turn
+    expect(reloaded.proposal).toBeUndefined(); expect(reloaded.error).toBe(refused.error)
+    output("payment",{inlineFormatting:{underline:true}})
+    const inline = (await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(inline.status).toBe("complete"); expect(inline.proposal?.inlineFormatting).toEqual({underline:true})
+    expect(inline.proposal?.target.text).toBe("payment"); expect([...sessions.values()].some(session => session.parentID === inline.id && session.metadata.type === "word-chat-review")).toBe(true)
+    output(text,{formatting:[{paragraph:0,style:"Heading2"}]})
+    const paragraph = (await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(paragraph.status).toBe("complete"); expect(paragraph.proposal?.formatting).toEqual([{paragraph:0,style:"Heading2"}])
+    expect(paragraph.proposal?.inlineFormatting).toBeUndefined(); expect([...sessions.values()].some(session => session.parentID === paragraph.id && session.metadata.type === "word-chat-review")).toBe(true)
+  } finally { modelStructuredRawOutput = undefined }
+})
+
 test("inline formatting review binds exact Word text, preserves refinement target and refuses invalid shapes", async () => {
   const id = await newConversation(), text = "Keep the payment terms and delivery terms."
   const native = {...context,text,paragraphs:[{id:"inline-native",text}],selection:undefined}
@@ -1532,12 +1562,98 @@ test("native amendment admission validates the reviewed turn again after the art
   } finally { engineHook = undefined; clearWordEditLease(db, owner.document); db.close() }
 })
 
+test("review context classifies only validated paragraph insertions and leaves native preservation pending", async () => {
+  const id = await newConversation(), text = "Keep this paragraph unchanged.", inserted = "An added paragraph."
+  const native = {...context,text,paragraphs:[{id:"insertion-anchor",text}],selection:undefined}
+  const request = () => post("send",{conversationId:id,scope:"document",text:"Prepare the requested change while preserving unrelated content and formatting.",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context:native})
+  const output = (after:string, extra:object = {}) => {modelStructuredRawOutput=JSON.stringify({answerParts:[{type:"text",text:"Prepared for review."},{type:"reference",sourceId:"word",quote:text}],proposal:{before:text,after,explanation:"Requested change only.",openItems:[],...extra}})}
+  try {
+    for (const formatting of [undefined,[{paragraph:1,style:"Normal"}]]) {
+      output(text+"\r"+inserted,formatting ? {formatting} : {})
+      const turn = (await (await request()).json() as {turn:WordChatTurn}).turn
+      expect(turn.proposal?.after).toBe(text+"\r"+inserted)
+      const reviewer = [...sessions.values()].find(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")!
+      const prompt = sessionContext(reviewer.id), evidence = suppliedContext(prompt)
+      expect(evidence.operation).toEqual({kind:"paragraph_insert",position:"after",text:inserted})
+      expect(evidence.proposal.target).toEqual(turn.proposal!.target)
+      expect(prompt).toContain("not replace the anchor wording")
+      expect(prompt).toContain("Native eligibility and formatting preservation remain unverified")
+      expect(prompt).toContain("Reject unrequested restyling")
+    }
+    for (const [after, extra] of [
+      [text.replace("unchanged","updated"),{operation:{kind:"paragraph_insert"}}],
+      [text+"\r"+inserted+"\rAnother paragraph.",{}],
+      [text.replace("unchanged","updated")+"\r"+inserted,{}],
+      [text+"\r"+inserted,{formatting:[{paragraph:0,style:"Heading1"}]}],
+    ] as const) {
+      output(after,extra)
+      const turn = (await (await request()).json() as {turn:WordChatTurn}).turn
+      expect(turn.proposal).toBeDefined()
+      const reviewer = [...sessions.values()].find(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")!
+      expect(suppliedContext(sessionContext(reviewer.id))).not.toHaveProperty("operation")
+      expect(sessionContext(reviewer.id)).not.toContain("not replace the anchor wording")
+    }
+    for (const conflict of [{inlineFormatting:{bold:true}}, {paragraphAction:"delete"}]) {
+      output(text+"\r"+inserted,conflict)
+      const reviews = [...sessions.values()].filter(session => session.metadata.type === "word-chat-review").length
+      const refused = (await (await request()).json() as {turn:WordChatTurn}).turn
+      expect(refused.proposal).toBeUndefined()
+      expect([...sessions.values()].filter(session => session.metadata.type === "word-chat-review")).toHaveLength(reviews)
+    }
+    output(text+"\r"+inserted)
+    approveReview = false
+    const rejected = (await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(rejected.proposal).toBeUndefined(); expect(rejected.error).toContain("needs revision")
+    approveReview = true
+    modelStructuredRawOutput=JSON.stringify({answerParts:[{type:"text",text:"Prepared."},{type:"reference",sourceId:"word",quote:"A nonexistent source quotation."}],proposal:{before:text,after:text+"\r"+inserted,openItems:[]}})
+    const reviews = [...sessions.values()].filter(session => session.metadata.type === "word-chat-review").length
+    const invalidSource = (await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(invalidSource.proposal).toBeUndefined(); expect(invalidSource.error).toContain("could not be verified")
+    expect([...sessions.values()].filter(session => session.metadata.type === "word-chat-review")).toHaveLength(reviews)
+  } finally { modelStructuredRawOutput=undefined; approveReview=true }
+})
+
+test("wording and row review separate content decisions from later native property verification", async () => {
+  const id = await newConversation(), paragraphs = [{id:"cell-key",text:"Existing label"},{id:"cell-value",text:"Existing value"}]
+  const native = {...context,text:paragraphs.map(p => p.text).join("\r"),paragraphs,selection:undefined,table:{tableIndex:0,rows:[paragraphs]}}
+  const request = () => post("send",{conversationId:id,scope:"document",text:"Prepare the requested content change while preserving all other formatting and geometry.",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context:native})
+  try {
+    for (const proposed of [
+      {proposal:{before:"Existing label",after:"Revised label",explanation:"Change the wording only.",openItems:[]}},
+      {rowProposal:{cells:["New label","New value"],explanation:"Append the requested row.",openItems:[]}},
+    ]) {
+      modelStructuredRawOutput=JSON.stringify({answerParts:[{type:"text",text:"Prepared."},{type:"reference",sourceId:"word",quote:"Existing label"}],...proposed})
+      const turn = (await (await request()).json() as {turn:WordChatTurn}).turn
+      expect(Boolean(turn.proposal || turn.rowProposal)).toBe(true)
+      const reviewer = [...sessions.values()].find(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")!
+      const prompt = sessionContext(reviewer.id)
+      expect(prompt).toContain("This review checks proposed content and scope")
+      expect(prompt).toContain("Native formatting and table geometry are not verified by this text-only review")
+      expect(prompt).toContain("independent required gates")
+      expect(prompt).toContain("Reject unrequested property changes, unsupported content and scope expansion")
+      expect(prompt).toContain("Approval here does not waive")
+      expect(suppliedContext(prompt)).not.toHaveProperty("operation")
+      approveReview=false
+      const rejected = (await (await request()).json() as {turn:WordChatTurn}).turn
+      expect(rejected.proposal).toBeUndefined(); expect(rejected.rowProposal).toBeUndefined(); expect(rejected.error).toContain("needs revision")
+      approveReview=true
+    }
+  } finally {modelStructuredRawOutput=undefined;approveReview=true}
+})
+
 test("paragraph insertion prepare uses stored reviewed proposal and existing lease fence", async () => {
   const id=await newConversation(), text=context.text, inserted="A further obligation."
   modelStructuredRawOutput=JSON.stringify({answerParts:[{type:"text",text:"Prepared."}],proposal:{before:text,after:text+"\r"+inserted,formatting:[{paragraph:1,style:"Normal"}],explanation:"Add paragraph",openItems:[]}})
   let turn:WordChatTurn
-  try { turn=(await (await post("send",{conversationId:id,scope:"document",text:"Add a paragraph",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context})).json() as {turn:WordChatTurn}).turn }
+  try { turn=(await (await post("send",{conversationId:id,scope:"document",text:"Insert one new Normal paragraph after the existing complete paragraph, preserving existing content and formatting.",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context})).json() as {turn:WordChatTurn}).turn }
   finally { modelStructuredRawOutput=undefined }
+  const contract = JSON.parse(sessionContext(turn.id).split("\n").at(-2)!).responseContract as string
+  expect(contract).toContain("To insert one new standalone paragraph after a unique complete captured paragraph")
+  expect(contract).toContain("set proposal.before to the exact unchanged anchor")
+  expect(contract).toContain("proposal.after to that same anchor followed by one paragraph break and the literal text of exactly one new paragraph")
+  expect(contract).toContain("omit paragraphAction and inlineFormatting")
+  expect(contract).toContain('{"paragraph":1,"style":"Normal"}')
+  expect(contract).toContain("do not format the anchor at paragraph 0")
   expect(turn.proposal?.after).toBe(text+"\r"+inserted)
   expect(sessionContext(turn.id)).toContain("inserting or deleting paragraphs alone does not request formatting")
   const reviewer = [...sessions.values()].find(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")!
@@ -1713,6 +1829,43 @@ test("large table omits deletion guidance while retaining append guidance", asyn
     expect(prompt).toContain("append one row");expect(prompt).not.toContain("For deleting one existing row")
     expect(suppliedContext(prompt).table.rows).toBeUndefined()
   } finally {modelRawOutput=undefined}
+})
+
+test("table context distinguishes ordinary cell wording from structural row proposals", async () => {
+  const id = await newConversation()
+  const paragraphs = ["Field", "Reading", "Status", "Current cell wording."].map((text, index) => ({ id: `wording-cell-${index}`, text }))
+  const table = { tableIndex: 0, rows: [paragraphs.slice(0, 2), paragraphs.slice(2)] }
+  const native = { ...context, text: paragraphs.map(paragraph => paragraph.text).join("\r"), paragraphs, table }
+  const request = (text: string) => post("send", { conversationId: id, scope: "document", text, requestId: crypto.randomUUID(), attachments: [], mode: "redline", context: native })
+  const answerParts = [{ type: "text", text: "Prepared for review; no change has been applied." }, { type: "reference", sourceId: "word", quote: paragraphs[3]!.text }]
+  try {
+    modelStructuredRawOutput = JSON.stringify({ answerParts, proposal: { before: paragraphs[3]!.text, after: "Revised cell wording.", explanation: "Change only the requested cell wording.", openItems: [] } })
+    const wording = (await (await request("Revise only the wording in the existing Status cell, preserving the table and other content.")).json() as { turn: WordChatTurn }).turn
+    const prompt = sessionContext(wording.id)
+    expect(prompt).toContain("Ordinary wording within one captured table-cell paragraph")
+    expect(prompt).toContain("standard proposal.before/proposal.after")
+    expect(prompt).toContain("rowProposal is only for structural row insertion or deletion")
+    expect(prompt).toContain("Table context does not establish native eligibility")
+    expect(wording.status).toBe("complete"); expect(wording.error).toBeUndefined()
+    expect(wording.proposal?.before).toBe(paragraphs[3]!.text)
+    expect(wording.proposal?.after).toBe("Revised cell wording.")
+    expect(wording.proposal?.target.paragraphs.map(paragraph => paragraph.id)).toEqual([paragraphs[3]!.id])
+    expect(wording.rowProposal).toBeUndefined(); expect(reviewSessions(wording.id)).toHaveLength(1)
+    expect(suppliedContext(prompt).table.rows).toEqual([["Field", "Reading"], ["Status", "Current cell wording."]])
+
+    modelStructuredRawOutput = JSON.stringify({ answerParts, rowProposal: { cells: ["Added field", "Added reading"], explanation: "Append the requested row.", openItems: [] } })
+    const inserted = (await (await request("Append one new row to the table.")).json() as { turn: WordChatTurn }).turn
+    expect(inserted.proposal).toBeUndefined(); expect(inserted.rowProposal?.kind).toBe("table_row_insert")
+    expect(reviewSessions(inserted.id)).toHaveLength(1)
+    modelStructuredRawOutput = JSON.stringify({ answerParts, rowProposal: { action: "delete", cells: table.rows[1]!.map(cell => cell.text), explanation: "Delete only the requested existing row.", openItems: [] } })
+    const deleted = (await (await request("Delete the existing Status row.")).json() as { turn: WordChatTurn }).turn
+    expect(deleted.proposal).toBeUndefined(); expect(deleted.rowProposal?.kind).toBe("table_row_delete")
+    expect(reviewSessions(deleted.id)).toHaveLength(1)
+
+    modelStructuredRawOutput = JSON.stringify({ answerParts: [{ type: "reference", sourceId: "word", quote: "Unprovided cell quotation." }], proposal: { before: paragraphs[3]!.text, after: "Revised cell wording.", explanation: "Change.", openItems: [] } })
+    const invalid = (await (await request("Revise the existing Status cell.")).json() as { turn: WordChatTurn }).turn
+    expect(invalid.status).toBe("error"); expect(invalid.proposal).toBeUndefined(); expect(invalid.rowProposal).toBeUndefined()
+  } finally { modelStructuredRawOutput = undefined }
 })
 
 test("table prompt canonical citations preserve cell text without JSON row delimiters", async () => {

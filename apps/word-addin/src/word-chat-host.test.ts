@@ -87,6 +87,10 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false, cellWholeExpandsRow: false, refuseEmptyContentXml: false,
     omitContentProperties: false, paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
     windowsText: false,
+    bodyOoxmlAfterWrite: undefined as undefined | (() => string),
+    paragraphReviewedAfterWrite: undefined as undefined | ((id: string, version: string) => string | undefined),
+    paragraphReviewed: undefined as undefined | ((id: string, version: string) => string | undefined),
+    postwriteParagraphExports: [] as string[],
   }
   const text = () => state.paragraphs.map((p) => p.text).join(state.separator)
   const position = (id: string) => {
@@ -237,8 +241,10 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       return result
     }
     getOoxml() {
+      if (this.bodyExport && state.writes.length && state.bodyOoxmlAfterWrite) return { value: state.bodyOoxmlAfterWrite() }
       if (state.refuseEmptyContentXml && this.paragraphContent && this.start === this.end) throw new Error("empty Content XML unavailable")
       const paragraphs = this.paragraphs.items
+      if (this.paragraphContent && state.writes.length) state.postwriteParagraphExports.push(...paragraphs.map(p => p.uniqueLocalId))
       const whole = paragraphs.length && this.end === position(paragraphs.at(-1)!.uniqueLocalId).end + 1
       const markup = (p: { uniqueLocalId: string; text: string }) => {
         const stored = state.paragraphXml.get(p.uniqueLocalId)
@@ -271,6 +277,11 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       if (version === "Original" && state.listInsertions && this.start === 0 && this.end === text().length) return {value:state.listOriginal}
       const paragraphs = state.paragraphs.filter(p => { const at = position(p.id); return this.start <= at.start && at.end <= this.end })
       const complete = paragraphs.length && position(paragraphs[0]!.id).start === this.start && position(paragraphs.at(-1)!.id).end === this.end
+      if (this.paragraphContent && complete && paragraphs.length === 1) {
+        const id = paragraphs[0]!.id, view = version ?? "Current"
+        const override = (state.writes.length ? state.paragraphReviewedAfterWrite?.(id, view) : undefined) ?? state.paragraphReviewed?.(id, view)
+        if (override !== undefined) return { value: override }
+      }
       const deletedMark = (p: NativeParagraph) => {
         const doc = new DOMParser().parseFromString(flatOpc(state.paragraphXml.get(p.id) ?? `<w:p/>`), "application/xml")
         const properties = doc.getElementsByTagNameNS(WORD_XML, "p")[0]!.getElementsByTagNameNS(WORD_XML, "pPr")[0]
@@ -609,6 +620,74 @@ test("native text transport confirms a tracked edit when Word's paragraph text i
   expect(target.paragraphs[0]!.text).toBe("Control target alpha continues.")
   expect((await host.apply({ proposalId: "windows-wording", target, replacement: "remains" })).status).toBe("applied")
   expect(text()).toBe("Control target alpha remains.\rAnother earlier clause.")
+})
+
+test("native reviewed text reconciles the exact tracked-markup ambiguity in body and cell paragraphs", async () => {
+  // Synthetic compatibility inputs, not an Office capture or a host acceptance claim.
+  for (const inTable of [false, true]) {
+    const { state, host, text } = office(["Old clause.", "Unchanged neighbour."], true)
+    state.paragraphs[0]!.inTable = inTable
+    state.paragraphReviewedAfterWrite = (id, view) => id !== "paragraph-0" ? undefined : view === "Original" ? "Old clause." : "OldNew clause."
+    state.selection = [0, 3]
+    const target = (await host.selection())!
+    expect((await host.apply({ proposalId: `reviewed-markup-${inTable}`, target, replacement: "New" })).status).toBe("applied")
+    expect(text()).toBe("New clause.\rUnchanged neighbour.")
+    expect(state.postwriteParagraphExports).toEqual(["paragraph-0", "paragraph-0"])
+    expect(state.writes).toHaveLength(1)
+  }
+})
+
+test("native reviewed text refuses inconsistent Original and arbitrary Current without another dispatch", async () => {
+  for (const wrong of ["Original", "Current"]) {
+    const { state, host } = office(["Old clause.", "Unchanged neighbour."], true)
+    state.paragraphs[0]!.inTable = true
+    state.paragraphReviewedAfterWrite = (id, view) => id !== "paragraph-0" ? undefined : view === wrong ? "Wrong API wording" : view === "Original" ? "Old clause." : "OldNew clause."
+    state.selection = [0, 3]
+    const target = (await host.selection())!, input = { proposalId: `reviewed-mismatch-${wrong}`, target, replacement: "New" }
+    await expect(host.apply(input)).rejects.toThrow()
+    expect(state.writes).toHaveLength(1)
+    await expect(host.apply(input)).rejects.toThrow("may already contain this change")
+    expect(state.writes).toHaveLength(1)
+  }
+})
+
+test("native reviewed text retains an already-correct rich revised neighbour during capture and an ordinary edit", async () => {
+  for (const rich of [
+    '<w:hyperlink w:anchor="reference"><w:r><w:t>Reference</w:t></w:r></w:hyperlink>',
+    '<w:fldSimple w:instr="REF reference"><w:r><w:t>Reference</w:t></w:r></w:fldSimple>',
+    '<w:sdt><w:sdtPr/><w:sdtContent><w:r><w:t>Reference</w:t></w:r></w:sdtContent></w:sdt>',
+  ]) {
+    const { state, host, text } = office(["Old clause.", "Reference added"], true)
+    const neighbour = `<w:p>${rich}<w:ins w:id="1" w:author="Earlier reviewer"><w:r><w:t xml:space="preserve"> added</w:t></w:r></w:ins></w:p>`
+    state.paragraphXml.set("paragraph-1", neighbour)
+    state.revisions = [["Old clause.".length + 1 + "Reference".length, "Old clause.".length + 1 + "Reference added".length]]
+    state.paragraphReviewed = (id, view) => id !== "paragraph-1" ? undefined : view === "Original" ? "Reference" : "Reference added"
+    state.selection = [0, 3]
+    const snapshot = await host.capture(true)
+    expect(snapshot.paragraphs).toEqual([{ id: "paragraph-0", text: "Old clause." }, { id: "paragraph-1", text: "Reference added" }])
+    expect((await host.apply({ proposalId: "rich-revised-neighbour", target: snapshot.selection!, replacement: "New" })).status).toBe("applied")
+    expect(text()).toBe("New clause.\rReference added")
+    expect(state.paragraphXml.get("paragraph-1")).toBe(neighbour)
+    expect(state.writes).toHaveLength(1)
+    const at = text().indexOf("Reference")
+    state.selection = [at, at + "Reference added".length]
+    const protectedTarget = (await host.selection())!
+    await expect(host.apply({ proposalId: "rich-target-protection", target: protectedTarget, replacement: "Reference revised" })).rejects.toThrow("contains existing revisions")
+    expect(state.writes).toHaveLength(1)
+  }
+})
+
+test("native reviewed text still refuses a rich revised neighbour with mismatched API views", async () => {
+  for (const wrong of ["Current", "Original"]) {
+    const { state, host } = office(["Old clause.", "Reference added"], true)
+    state.paragraphXml.set("paragraph-1", '<w:p><w:hyperlink w:anchor="reference"><w:r><w:t>Reference</w:t></w:r></w:hyperlink><w:ins w:id="1"><w:r><w:t xml:space="preserve"> added</w:t></w:r></w:ins></w:p>')
+    state.paragraphReviewed = (id, view) => id !== "paragraph-1" ? undefined : view === wrong ? "Wrong API wording" : view === "Original" ? "Reference" : "Reference added"
+    state.selection = [0, 3]
+    const target = (await host.selection())!
+    await expect(host.capture(true)).rejects.toThrow()
+    await expect(host.apply({ proposalId: `rich-revised-mismatch-${wrong}`, target, replacement: "New" })).rejects.toThrow()
+    expect(state.writes).toHaveLength(0)
+  }
 })
 
 test("native text insertion after an earlier inserted paragraph by the same author is confirmed", async () => {
@@ -1618,9 +1697,71 @@ test("native dispatch error remains the cause of an uncertain failure and cannot
   try { await host.apply(input) } catch (error) { caught = error }
   expect(caught).toBeInstanceOf(WordChatHostError)
   expect((caught as WordChatHostError).mutationState).toBe("uncertain")
-  expect((caught as WordChatHostError).cause).toBe(nativeError)
+  expect(((caught as WordChatHostError).cause as Error).cause).toBe(nativeError)
+  expect((caught as WordChatHostError).notice).toBe("Word could not confirm completion of the native wording write. Check the change in Word. Use Undo if needed; do not apply it again.")
   expect(state.writes).toHaveLength(1)
   await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("may already contain") })
+  expect(state.writes).toHaveLength(1)
+})
+
+test("native wording exception phases retain their cause and never expose data or replay", async () => {
+  for (const phase of ["success", "state", "body", "projection", "checks", "predicate"] as const) {
+    const { state, host, author } = office(["A clear obligation."], true)
+    const target = (await host.selection())!, nativeError = new Error("PRIVATE token=secret <w:body> /path/document.docx")
+    const input = { proposalId: `phase-${phase}`, target, replacement: target.text.replace("clear", "specific") }
+    const prepare = author(input)
+    state.afterSync = () => {
+      if (!state.writes.length) return
+      state.afterSync = undefined
+      if (phase === "state") Object.defineProperty(state, "nativeRevisions", { get() { throw nativeError } })
+      // This getter is read by the first preservation predicate after the
+      // post-write reads/projection, rather than returning a false result.
+      if (phase === "predicate") Object.defineProperty(state, "tracking", { get() { throw nativeError } })
+      if (phase === "body") state.bodyOoxmlAfterWrite = () => { throw nativeError }
+      if (phase === "projection") state.bodyOoxmlAfterWrite = () => flatOpc("<w:p><w:r><w:t>Different Current wording.</w:t></w:r></w:p>")
+    }
+    const request = { ...input, author: async (snapshot: { ooxml: string }) => {
+      const authored = await prepare(snapshot), revisions = authored.revisions
+      if (phase === "checks") Object.defineProperty(authored, "revisions", { get() { if (state.writes.length) throw nativeError; return revisions } })
+      return authored
+    } }
+    if (phase === "success") {
+      expect((await host.apply(request)).status).toBe("applied")
+      expect((await host.apply(request)).status).toBe("already-applied")
+    } else {
+      const error = await host.apply(request).then(() => undefined, error => error as WordChatHostError)
+      const stage = { state: "reading the changed document state", body: "reading the changed document body", projection: "projecting the changed document structure", checks: "evaluating the wording preservation checks", predicate: "evaluating the wording preservation checks" }[phase]
+      expect(error).toBeInstanceOf(WordChatHostError)
+      expect(error?.mutationState).toBe("uncertain")
+      expect(error?.notice).toBe(`Word could not finish ${stage}. Check the change in Word. Use Undo if needed; do not apply it again.`)
+      expect(error?.notice).not.toMatch(/PRIVATE|secret|token=|<w:|\/path|Different Current|A clear obligation/)
+      const original = (error?.cause as Error).cause
+      if (phase === "projection") expect((original as Error).message).toBe("Native paragraph projection mismatch")
+      else expect(original).toBe(nativeError)
+      await expect(host.apply(request)).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("may already contain") })
+    }
+    expect(state.writes).toHaveLength(1)
+    expect(state.modeChanges).toEqual(["TrackAll", "Off"])
+  }
+})
+
+test("a replaced Office runtime rejection keeps an operation notice and its original cause chain", async () => {
+  const { state, word, nativeHost, author } = office(["A clear obligation."], true)
+  const target = (await nativeHost.selection())!, run = word.run.bind(word)
+  const original = new Error("PRIVATE native write response"), runtime = new Error("PRIVATE Office runtime rejection", { cause: original })
+  state.throwAfterWrite = true; state.syncFailure = original
+  word.run = async callback => {
+    try { return await run(callback) }
+    catch (cause) { if (state.writes.length) { runtime.cause = cause; throw runtime }; throw cause }
+  }
+  const input = { proposalId: "runtime-replaced", target, replacement: target.text.replace("clear", "specific") }
+  const error = await nativeHost.apply({ ...input, author: author(input) }).then(() => undefined, error => error as WordChatHostError)
+  expect(error?.mutationState).toBe("uncertain")
+  expect(error?.notice).toBe("Word returned an error while completing the native amendment operation. Check the change in Word. Use Undo if needed; do not apply it again.")
+  expect(error?.notice).not.toContain("PRIVATE")
+  expect(error?.cause).toBe(runtime)
+  expect((runtime.cause as Error).cause).toBe(original)
+  await expect(nativeHost.apply({ ...input, author: author(input) })).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("may already contain") })
   expect(state.writes).toHaveLength(1)
 })
 
@@ -1690,7 +1831,14 @@ test("native wording refuses faithful property drift before writing and fences p
       return result
     } }
     if (phase === "postwrite") state.afterSync = () => { if (state.writes.length) { state.paragraphXml.set("paragraph-0", xml.replace("clear", "specific").replace('w:after="120"', 'w:after="240"')); state.afterSync = undefined } }
-    await expect(nativeHost.apply(input)).rejects.toMatchObject({ mutationState: phase === "author" ? "unchanged" : "uncertain" })
+    const error = await nativeHost.apply(input).then(() => undefined, error => error)
+    expect(error).toMatchObject({ mutationState: phase === "author" ? "unchanged" : "uncertain" })
+    if (phase === "postwrite") {
+      expect(error.notice).toBe("Word could not confirm preservation of the paragraph formatting. Check the change in Word. Use Undo if needed; do not apply it again.")
+      expect(error.cause.cause.message).toBe("text-paragraph-properties")
+      expect(error.notice).not.toContain("A clear obligation")
+      expect(error.notice).not.toContain("w:spacing")
+    } else expect(error.notice).toBeUndefined()
     expect(state.writes).toHaveLength(phase === "author" ? 0 : 1)
     if (phase === "postwrite") { await expect(nativeHost.apply(input)).rejects.toThrow("may already contain"); expect(state.writes).toHaveLength(1) }
   }
@@ -1784,7 +1932,7 @@ async function nativeRowOrchestrationFixture(lostSync = false, reloadInvalidates
   const oldParas = [para("a","Old"),para("b","Old two")], newParas = [para("c",cells[0]!,0),para("d",cells[1]!,1)]
   const collection = <T>(items:T[]) => ({items,load() {}})
   const nativeTable = { get rowCount() { return applied ? 2 : 1 }, isUniform:true, get values() { return applied ? [["Old","Old two"],cells] : [["Old","Old two"]] }, load() {},
-    getCell(row:number,col:number) { const p = row ? newParas[col]! : oldParas[col]!; return {body:{paragraphs:collection([p]), getRange() { return {getReviewedText() { return {value:p.text} }} }, insertText() { return {font:{bold:true,italic:true,underline:"Single",load(){}}} }}} },
+    getCell(row:number,col:number) { const p = row ? newParas[col]! : oldParas[col]!; return {body:{paragraphs:collection([p]), getRange() { return {font:{bold:true,italic:true,underline:"Single",load(){}},getReviewedText() { return {value:p.text} }} }, insertText() { return {font:{bold:true,italic:true,underline:"Single",load(){}}} }}} },
     addRows() { queued = true; rowWrites++ }, }
   const body = { get paragraphs() { return { items:applied ? [...oldParas,...newParas] : oldParas, load(properties:string) { if (reloadInvalidates && applied) nestingInvalidated = !properties.includes("tableNestingLevel") } } }, tables:collection([nativeTable]),
     getRange() { return {getOoxml() {return {value:flatOpc(tableXml(applied ? addedXml : ""))}}, getReviewedText() {return {value:applied ? `Old\rOld two\r${cells.join("\r")}` : "Old\rOld two"}}, getTrackedChanges() {return collection([])}, getComments() {return collection([])} } } }
@@ -2098,6 +2246,81 @@ test("row deletion rejects a tampered oracle before opening Word", async () => {
     table:{tableIndex:0, rows:[[{id:"a",text:"A"}], [{id:"b",text:"B"}]]}, cells:["B"]}
   await expect(host.applyRowDeletion(proposal, async () => new Uint8Array([1]), async () => ({kind:"table_row_delete",proposalId:"wrong"} as never))).rejects.toMatchObject({mutationState:"unchanged"})
   expect(runs).toBe(0)
+})
+
+async function rowDeletionConfirmationFixture(failure = "none") {
+  const {zipSync,strToU8} = await import("fflate")
+  const row = (a:string,b:string) => `<w:tr><w:tc><w:p><w:r><w:t>${a}</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>${b}</w:t></w:r></w:p></w:tc></w:tr>`
+  const mark = (id:number) => `w:id="${id}" w:author="Reviewer" w:date="2026-01-01T00:00:00Z"`
+  const deletedCell = (text:string,id:number) => `<w:tc><w:p><w:pPr><w:rPr><w:del ${mark(id)}/></w:rPr></w:pPr><w:del ${mark(id+1)}><w:r><w:delText>${text}</w:delText></w:r></w:del></w:p></w:tc>`
+  const retained = row("Label","Value"), removed = row("Old","Entry")
+  const deleted = `<w:tr><w:trPr><w:del ${mark(1)}/></w:trPr>${deletedCell("Old",2)}${deletedCell("Entry",4)}</w:tr>`
+  const content = (target:string) => `<w:tbl>${retained}${target}</w:tbl>`
+  const documentXml = (target:string) => `<w:document xmlns:w="${WORD_XML}"><w:body>${content(target)}<w:sectPr/></w:body></w:document>`
+  const pack = (target:string,tracked:boolean) => zipSync({"word/document.xml":strToU8(documentXml(target)),"word/settings.xml":strToU8(`<w:settings xmlns:w="${WORD_XML}">${tracked ? "<w:trackRevisions/>" : ""}</w:settings>`)})
+  const source = pack(removed,false), authored = pack(deleted.replaceAll('w:author="Reviewer"','w:author="doc.haus"'),true)
+  const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",source))).map(x=>x.toString(16).padStart(2,"0")).join("")
+  const cells = ["Label","Value","Old","Entry"], ids = ["a","b","c","d"]
+  const table = {tableIndex:0,rows:[cells.slice(0,2),cells.slice(2)].map((row,ri)=>row.map((text,ci)=>({id:ids[ri*2+ci]!,text})))}
+  const proposal = {kind:"table_row_delete" as const,id:"delete-confirmation",documentId:"doc",explanation:"Delete the requested row",openItems:[],createdAt:"now",table,rowIndex:1,cells:cells.slice(2)}
+  const oracle = {kind:"table_row_delete" as const,proposalId:proposal.id,sourceSha256:hash,table,rowIndex:1,cells:proposal.cells,author:"doc.haus" as const,writerRequest:{source_sha256:hash,target_handle:"bound",author:"doc.haus"},authoredBase64:Buffer.from(authored).toString("base64"),revisions:[{id:"r",family:"row_delete"}]}
+  let applied=false, queued=false, writes=0
+  const cause = new Error("PRIVATE document text /path token=secret")
+  const collection = <T>(items:T[]) => ({items,load() {}})
+  const current = (index:number) => applied && index>=2 ? "" : cells[index]!
+  const paras = cells.map((text,i)=>({uniqueLocalId:ids[i]!,get text() {return current(i)},tableNestingLevel:1,styleBuiltIn:"Normal",spaceBefore:0,spaceAfter:0,lineSpacing:12,load() {},
+    getRange() {return {getReviewedText(view:string) {return {value:view==="Original" ? text : current(i)}},getOoxml() {return {value:flatOpc(applied && i>=2 ? `<w:p><w:del ${mark(20+i)}><w:r><w:delText>${text}</w:delText></w:r></w:del></w:p>` : `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`)}}}}}))
+  const values = () => applied ? [["Label","Value"],["",""]] : [["Label","Value"],["Old","Entry"]]
+  const rows = cells.slice(0,2).map((_,i)=>({rowIndex:i,cellCount:2,isHeader:false,get values() {return [values()[i]!]},delete() {queued=true;writes++}}))
+  const nativeTable = {get rowCount() {return applied && failure==="count" ? 1 : 2},get isUniform() {return !(applied && failure==="uniform")},get values() {return applied && failure==="raw-deleted-values" ? [["Label","Value"],["Old","Entry"]] : values()},rows:collection(rows),load() {},
+    getCell(ri:number,ci:number) {const i=ri*2+ci;return {body:{paragraphs:collection([paras[i]!]),getRange() {return {getReviewedText(view:string) {return {value:applied && (failure==="values" && i===0 && view==="Current" || failure==="cell-current" && i>=2 && view==="Current" || failure==="cell-original" && i>=2 && view==="Original") ? "PRIVATE" : view==="Original" ? cells[i]! : current(i)}}}}}}}}
+  const body = {paragraphs:collection(paras),tables:collection([nativeTable]),getRange() {return {
+    getOoxml() {
+      let xml=content(applied ? failure==="markup" ? removed : failure==="untracked" ? row("","") : deleted : removed)
+      if (applied && failure==="geometry") xml=xml.replace("<w:tbl>",'<w:tbl><w:tblPr><w:tblW w:w="120" w:type="dxa"/></w:tblPr>')
+      if (applied && failure==="wrong-row") xml=`<w:tbl>${deleted.replaceAll("Old","Label").replaceAll("Entry","Value")}${removed}</w:tbl>`
+      return {value:flatOpc(xml)}
+    },
+    getReviewedText(view:string) {return {value:applied && failure==="original" && view==="Original" ? "PRIVATE" : (view==="Original" ? cells : cells.map((_,i)=>current(i))).join("\r")}},
+    getTrackedChanges() {return collection([])},getComments() {return collection(applied && failure==="comments" ? [{author:"PRIVATE",content:"PRIVATE",resolved:false}] : [])},
+  }}}
+  const document = {body,changeTrackingMode:"Off",trackFormatting:false,load() {}}
+  const word = {async run(fn:(context:unknown)=>Promise<unknown>) {return fn({document,async sync() {if (queued) {queued=false;applied=true;if(failure==="tracking") document.changeTrackingMode="TrackAll";if(failure==="track-formatting") document.trackFormatting=true;if(failure==="api") throw cause}}})}} as WordChatWord
+  return {host:new WordChatHost(word,()=>true),proposal,source,oracle,cause,writes:()=>writes}
+}
+
+test("row deletion confirmation notices identify failed checks without exposing native data or replaying", async () => {
+  const cases = [
+    ["tracking","tracking settings"],["track-formatting","formatting tracking"],["uniform","table shape"],["count","row count"],
+    ["values","Current table values"],["original","Original document text"],["cell-current","Current table values"],["cell-original","Original cell text"],
+    ["comments","comments"],["markup","tracked markup and document preservation"],["untracked","tracked markup and document preservation"],
+    ["wrong-row","tracked markup and document preservation"],["geometry","tracked markup and document preservation"],["api","document API"],
+  ] as const
+  for (const [failure,notice] of cases) {
+    const fixture=await rowDeletionConfirmationFixture(failure)
+    let rejected:unknown
+    try {await fixture.host.applyRowDeletion(fixture.proposal,async()=>fixture.source,async()=>fixture.oracle)} catch(error) {rejected=error}
+    expect(rejected).toBeInstanceOf(WordChatHostError)
+    expect({message:(rejected as Error).message,mutationState:(rejected as WordChatHostError).mutationState,notice:(rejected as WordChatHostError).notice}).toMatchObject({mutationState:"uncertain",notice:expect.stringContaining(notice)})
+    expect((rejected as WordChatHostError).notice).toContain("Use Undo if needed")
+    expect((rejected as WordChatHostError).notice).not.toMatch(/PRIVATE|secret|token=|<w:|\/path/)
+    expect((rejected as Error).cause).toBeDefined()
+    if(failure==="api") expect((rejected as Error).cause).toBe(fixture.cause)
+    const repeated=await fixture.host.applyRowDeletion(fixture.proposal,async()=>{throw Error("must not export again")},async()=>fixture.oracle).then(()=>undefined,error=>error as WordChatHostError)
+    expect(repeated?.mutationState).toBe("uncertain")
+    expect(fixture.writes()).toBe(1)
+  }
+  const good=await rowDeletionConfirmationFixture()
+  expect((await good.host.applyRowDeletion(good.proposal,async()=>good.source,async()=>good.oracle)).status).toBe("applied")
+  expect((await good.host.applyRowDeletion(good.proposal,async()=>good.source,async()=>good.oracle)).status).toBe("already-applied")
+  expect(good.writes()).toBe(1)
+})
+
+test("tracked row deletion verifies every cell's Current view when raw table values retain deleted text", async () => {
+  const fixture=await rowDeletionConfirmationFixture("raw-deleted-values")
+  expect((await fixture.host.applyRowDeletion(fixture.proposal,async()=>fixture.source,async()=>fixture.oracle)).status).toBe("applied")
+  expect((await fixture.host.applyRowDeletion(fixture.proposal,async()=>fixture.source,async()=>fixture.oracle)).status).toBe("already-applied")
+  expect(fixture.writes()).toBe(1)
 })
 
 test("paragraph merge rejects a forged prepared command without writing", async () => {

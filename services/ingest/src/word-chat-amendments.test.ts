@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test"
-import { strToU8, zipSync } from "fflate"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
+import { createHash } from "node:crypto"
 import { authorWordChatTableRowDeletion, authorWordChatAmendment } from "./word-chat-amendments"
 import { targetWordChatAmendment, type WordChatProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatAuthoredTableRowDeletion } from "../../../dochaus/lib/word-chat-contract"
 
 function proposal(): WordChatProposal {
   return { id:"reviewed-proposal", documentId:"document", before:"terms", after:"terms", explanation:"Remove emphasis", openItems:[], createdAt:"now",
@@ -81,7 +84,7 @@ test("list plan requires the admitted snapshot and preserves its binding",async(
 })
 
 
-test("row deletion oracle binds all current table rows and exact requested target", async () => {
+test("row deletion preparation supplies a real paired parent import and retains oracle and source binding", async () => {
   const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
   const p = (v:string) => `<w:tc><w:p><w:r><w:t>${v}</w:t></w:r></w:p></w:tc>`
   const source = zipSync({
@@ -96,9 +99,37 @@ test("row deletion oracle binds all current table rows and exact requested targe
   const proposal = {kind:"table_row_delete" as const,id:"proposal",documentId:"document",explanation:"Remove",openItems:[],createdAt:"now",table,rowIndex:1,cells:["Delete","This"]}
   const oracle = await authorWordChatTableRowDeletion(snapshot,proposal,source)
   expect(oracle.kind).toBe("table_row_delete"); expect(oracle.rowIndex).toBe(1); expect(oracle.revisions.map(r=>r.family)).toEqual(["row_delete"])
+  expect(oracle.sourceSha256).toBe(createHash("sha256").update(source).digest("hex"))
+  expect(oracle.writerRequest.source_sha256).toBe(oracle.sourceSha256)
+  if (!oracle.tableImport) throw Error("Expected verified parent-table pair")
+  const {authoredBytes,...details}=oracle
+  const envelope:WordChatAuthoredTableRowDeletion={...details,authoredBase64:Buffer.from(authoredBytes).toString("base64")}
+  expect(Buffer.from(envelope.authoredBase64,"base64")).toEqual(Buffer.from(authoredBytes))
+  const {tableImport:pair,...legacy}=envelope
+  const olderEnvelope:WordChatAuthoredTableRowDeletion=legacy
+  expect("tableImport" in olderEnvelope).toBe(false)
+  const parse=(xml:string)=>new DOMParser().parseFromString(xml,"application/xml")
+  const before=parse(pair!.beforeOoxml), after=parse(pair!.ooxml)
+  for(const doc of [before,after]){
+    expect(doc.getElementsByTagNameNS(W,"tbl")).toHaveLength(1)
+    expect(doc.getElementsByTagNameNS(W,"sectPr")).toHaveLength(0)
+    expect(doc.getElementsByTagNameNS(W,"settings")).toHaveLength(0)
+  }
+  expect(before.getElementsByTagNameNS(W,"del")).toHaveLength(0)
+  expect(Array.from(before.getElementsByTagNameNS(W,"t")).map(t=>t.textContent)).toEqual(["Header","Value","Delete","This"])
+  expect(Array.from(after.getElementsByTagNameNS(W,"delText")).map(t=>t.textContent)).toEqual(["Delete","This"])
+  expect(strFromU8(unzipSync(authoredBytes)["word/document.xml"]!)).toContain("sectPr")
   await expect(authorWordChatTableRowDeletion(snapshot,{...proposal,cells:["Delete","Changed"]},source)).rejects.toThrow("word_row_proposal_changed")
   const stale = {...table, rows:[[{...paragraphs[0]!,text:"Changed"},paragraphs[1]!],table.rows[1]!]}
   await expect(authorWordChatTableRowDeletion({...snapshot,table:stale,paragraphs:[{...paragraphs[0]!,text:"Changed"},...paragraphs.slice(1)]},{...proposal,table:stale},source)).rejects.toThrow("word_row_source_changed")
+  // A bookmark in a retained row leaves the deletion itself eligible, but the
+  // enclosing-parent contract must refuse rather than silently omit the pair.
+  const annotated=unzipSync(source), doc=parse(strFromU8(annotated["word/document.xml"]!)), header=doc.getElementsByTagNameNS(W,"p")[0]!
+  const start=doc.createElementNS(W,"w:bookmarkStart"), end=doc.createElementNS(W,"w:bookmarkEnd")
+  start.setAttributeNS(W,"w:id","55");start.setAttributeNS(W,"w:name","RetainedHeader");end.setAttributeNS(W,"w:id","55")
+  header.insertBefore(start,header.firstChild);header.appendChild(end)
+  annotated["word/document.xml"]=strToU8(new XMLSerializer().serializeToString(doc))
+  await expect(authorWordChatTableRowDeletion(snapshot,proposal,zipSync(annotated))).rejects.toThrow("table_annotation_unsupported")
 })
 
 

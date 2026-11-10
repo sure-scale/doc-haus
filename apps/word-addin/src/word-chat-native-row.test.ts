@@ -7,7 +7,8 @@ function fixture() {
     rowCount: 1, isUniform: true, values: [[`${prefix}1`, `${prefix}2`]], load() {},
     getCell(row: number, column: number) { return { body: {
       paragraphs: { items: [{ uniqueLocalId: `${prefix}${column}`, text: `${prefix}${column + 1}`, tableNestingLevel: 1 }], load() {} },
-      getRange() { return { getReviewedText() { return { value: `${prefix}${column + 1}` } } } },
+      getRange(location: string) { return { getReviewedText() { return { value: `${prefix}${column + 1}` } },
+        font: new Proxy({bold:true,italic:true,underline:"Single",load() {}}, {set(target,key,value) {queued.push(`cell:${row}:${column}:${location}:${String(key)}:${value}`);(target as Record<PropertyKey,unknown>)[key]=value;return true}}) } },
       insertText(text: string, location: string) {
         queued.push(`text:${row}:${column}:${text}:${location}`)
         const font = new Proxy({ bold: true, italic: true, underline: "Single", load() {} }, { set(target, key, value) { queued.push(`font:${String(key)}:${value}`); (target as Record<PropertyKey, unknown>)[key] = value; return true } })
@@ -34,7 +35,10 @@ test("binds the reviewed cells among multiple tables and queues one mutation flu
   expect(f.document.trackFormatting).toBe(false)
   await f.context.sync()
   expect(f.batches[3]).toEqual([
-    'tracking:TrackAll', 'row:End:1:[["",""]]', 'text:1:0:First:End', 'font:bold:false', 'font:italic:false', 'font:underline:None',
+    'tracking:TrackAll', 'row:End:1:[["",""]]',
+    'cell:1:0:Whole:bold:false', 'cell:1:0:Whole:italic:false', 'cell:1:0:Whole:underline:None',
+    'text:1:0:First:End', 'font:bold:false', 'font:italic:false', 'font:underline:None',
+    'cell:1:1:Whole:bold:false', 'cell:1:1:Whole:italic:false', 'cell:1:1:Whole:underline:None',
     'text:1:1:Second:End', 'font:bold:false', 'font:italic:false', 'font:underline:None', 'tracking:Off', 'formatting:false',
   ])
 })
@@ -58,8 +62,10 @@ test("a formatted row inserts each reviewed run with explicit flags in the same 
   await f.context.sync()
   expect(f.batches[3]).toEqual([
     'tracking:TrackAll', 'row:End:1:[["",""]]',
+    'cell:1:0:Whole:bold:false', 'cell:1:0:Whole:italic:false', 'cell:1:0:Whole:underline:None',
     'text:1:0:Fee::End', 'font:bold:true', 'font:italic:false', 'font:underline:None',
     'text:1:0: 100:End', 'font:bold:false', 'font:italic:false', 'font:underline:None',
+    'cell:1:1:Whole:bold:false', 'cell:1:1:Whole:italic:false', 'cell:1:1:Whole:underline:None',
     'text:1:1:Note:End', 'font:bold:false', 'font:italic:true', 'font:underline:Single',
     'tracking:Off', 'formatting:false',
   ])
@@ -67,7 +73,7 @@ test("a formatted row inserts each reviewed run with explicit flags in the same 
   const g = fixture(), ready = await prepareNativeRow(g.context, g.binding)
   queueNativeRow(g.context, ready, ["Fee:", ""], [[run("Fee:", true)], []])
   await g.context.sync()
-  expect(g.batches[3]!.slice(6)).toEqual(['text:1:1::End', 'font:bold:false', 'font:italic:false', 'font:underline:None', 'tracking:Off', 'formatting:false'])
+  expect(g.batches[3]!.slice(9)).toEqual(['cell:1:1:Whole:bold:false', 'cell:1:1:Whole:italic:false', 'cell:1:1:Whole:underline:None', 'text:1:1::End', 'font:bold:false', 'font:italic:false', 'font:underline:None', 'tracking:Off', 'formatting:false'])
 })
 
 test("formatting that does not match its cells refuses before queuing any write", async () => {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { nativeWordChatParagraphCurrentText, reviewedWordChatInlineControl, importedWordChatDifference, reviewedMixedWordChatArtifact, sameWordChatOoxml, sameNativeWordChatParagraphContent, sameWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatReplacementFormatting, sameWordChatTargetSnapshot, sameNativeWordChatBodySnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, wordChatOoxmlDifference } from "./word-chat-host-ooxml"
+import { reconcileNativeWordChatParagraphText, nativeWordChatParagraphCurrentText, reviewedWordChatInlineControl, importedWordChatDifference, reviewedMixedWordChatArtifact, sameWordChatOoxml, sameNativeWordChatParagraphContent, sameWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatReplacementFormatting, sameWordChatTargetSnapshot, sameNativeWordChatBodySnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, wordChatOoxmlDifference } from "./word-chat-host-ooxml"
 import { reviewedWordChatParagraphFormatting } from "../../../dochaus/lib/word-chat-formatting-ooxml"
 import { DOMParser } from "@xmldom/xmldom"
 
@@ -604,4 +604,57 @@ test("a cell paragraph's Current text comes from its own XML, without the tracke
   // Not exactly one paragraph, or not a package: no answer rather than a guess.
   expect(nativeWordChatParagraphCurrentText(flat("<w:p><w:r><w:t>A</w:t></w:r></w:p><w:p><w:r><w:t>B</w:t></w:r></w:p>"))).toBeUndefined()
   expect(nativeWordChatParagraphCurrentText("<not a package")).toBeUndefined()
+})
+
+test("reviewed paragraph reconciliation admits only exact XML views across body, heading and cell shapes", () => {
+  const run = (value: string, deleted = false) => `<w:r><w:rPr><w:b/></w:rPr><w:${deleted ? "delText" : "t"}>${value}</w:${deleted ? "delText" : "t"}></w:r>`
+  const replacement = `<w:ins w:id="1">${run("New title")}</w:ins><w:del w:id="2">${run("Old title", true)}</w:del>`
+  const ordinary = `<w:p>${replacement}</w:p>`
+  const heading = `<w:p><w:pPr><w:pStyle w:val="Heading2"/><w:numPr><w:ilvl w:val="1"/><w:numId w:val="5"/></w:numPr></w:pPr>${replacement}</w:p>`
+  for (const body of [ordinary, heading, `<w:tbl><w:tr><w:tc>${ordinary}</w:tc></w:tr></w:tbl>`]) {
+    const xml = flat(body)
+    expect(reconcileNativeWordChatParagraphText(xml, "New title", "Old title")).toBe("New title")
+    expect(reconcileNativeWordChatParagraphText(xml, "New titleOld title", "Old title")).toBe("New title")
+    expect(() => reconcileNativeWordChatParagraphText(xml, "New title", "Wrong original")).toThrow()
+    expect(() => reconcileNativeWordChatParagraphText(xml, "Wrong current", "Old title")).toThrow()
+    expect(() => reconcileNativeWordChatParagraphText(xml, "Old title", "Old title")).toThrow()
+  }
+})
+
+test("reviewed paragraph reconciliation handles empty views, controls and zero-width anchors exactly", () => {
+  const inserted = flat('<w:p><w:pPr><w:rPr><w:ins w:id="0"/></w:rPr></w:pPr><w:ins w:id="1"><w:r><w:t>Added</w:t></w:r></w:ins></w:p>')
+  expect(reconcileNativeWordChatParagraphText(inserted, "Added", "")).toBe("Added")
+  const deleted = flat('<w:p><w:pPr><w:rPr><w:del w:id="0"/></w:rPr></w:pPr><w:del w:id="1"><w:r><w:delText>Removed</w:delText></w:r></w:del></w:p>')
+  expect(reconcileNativeWordChatParagraphText(deleted, "", "Removed")).toBe("")
+  expect(reconcileNativeWordChatParagraphText(deleted, "Removed", "Removed")).toBe("")
+  const plain = flat('<w:p><w:bookmarkStart w:id="1" w:name="place"/><w:r><w:rPr><w:b/><w:rPrChange w:id="4"><w:rPr/></w:rPrChange></w:rPr><w:t xml:space="preserve">A </w:t><w:tab/><w:t>B</w:t><w:br/><w:t>C</w:t><w:cr/><w:commentReference w:id="2"/></w:r><w:bookmarkEnd w:id="1"/></w:p>')
+  expect(reconcileNativeWordChatParagraphText(plain, "A \tB\u000bC\u000b", "A \tB\u000bC\u000b")).toBe("A \tB\u000bC\u000b")
+})
+
+test("reviewed paragraph reconciliation refuses missing, ambiguous and unmodelled content", () => {
+  for (const xml of ["", "<invalid", flat("<w:p/><w:p/>"), flat('<w:tbl><w:tr><w:tc><w:p/></w:tc><w:tc><w:p/></w:tc></w:tr></w:tbl>')])
+    expect(() => reconcileNativeWordChatParagraphText(xml, "", "")).toThrow()
+  for (const inline of [
+    '<w:fldSimple w:instr="DATE"><w:r><w:t>Value</w:t></w:r></w:fldSimple>',
+    '<w:r><w:fldChar w:fldCharType="begin"/><w:t>Value</w:t></w:r>',
+    '<w:sdt><w:sdtContent><w:r><w:t>Value</w:t></w:r></w:sdtContent></w:sdt>',
+    '<w:hyperlink><w:r><w:t>Value</w:t></w:r></w:hyperlink>',
+    '<w:r><w:drawing/></w:r>', '<w:r><w:object/></w:r>',
+    '<w:ins><w:del><w:r><w:delText>Value</w:delText></w:r></w:del></w:ins>',
+    '<w:del><w:r><w:t>Value</w:t></w:r></w:del>',
+    '<w:r><w:t>Value</w:t><w:instrText>FIELD</w:instrText></w:r>',
+  ]) expect(() => reconcileNativeWordChatParagraphText(flat(`<w:p>${inline}</w:p>`), "ValueValue", "Value")).toThrow()
+})
+
+test("reviewed paragraph reconciliation preserves correct rich views without repairing ambiguous rich content", () => {
+  for (const rich of [
+    '<w:hyperlink w:anchor="reference"><w:r><w:t>Reference</w:t></w:r></w:hyperlink>',
+    '<w:fldSimple w:instr="REF reference"><w:r><w:t>Reference</w:t></w:r></w:fldSimple>',
+    '<w:sdt><w:sdtContent><w:r><w:t>Reference</w:t></w:r></w:sdtContent></w:sdt>',
+  ]) {
+    const xml = flat(`<w:p>${rich}<w:ins><w:r><w:t xml:space="preserve"> new</w:t></w:r></w:ins><w:del><w:r><w:delText xml:space="preserve"> old</w:delText></w:r></w:del></w:p>`)
+    expect(reconcileNativeWordChatParagraphText(xml, "Reference new", "Reference old")).toBe("Reference new")
+    expect(() => reconcileNativeWordChatParagraphText(xml, "Reference new old", "Reference old")).toThrow()
+    expect(() => reconcileNativeWordChatParagraphText(xml, "Reference new", "Wrong original")).toThrow()
+  }
 })
