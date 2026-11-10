@@ -238,3 +238,156 @@ test("failed fresh capture cancels an admitted job before dispose can lose its i
     expect(f.root.textContent).not.toContain(finding.title)
   } finally { f.dispose() }
 })
+
+test("empty conversation discovery failures stay hidden and keep retrying every eight seconds", async () => {
+  const f = fixture(action => { if (action === "assessment") throw Error("Disconnected") })
+  try {
+    f.state.turnId = ""; await f.advance(1_500)
+    expect(f.root.hidden).toBe(true); expect(f.calls).toHaveLength(1)
+    await f.advance(7_999)
+    expect(f.calls).toHaveLength(1); expect(f.root.hidden).toBe(true)
+    await f.advance(1)
+    expect(f.calls).toHaveLength(2); expect(f.root.hidden).toBe(true)
+    await f.advance(8_000); await f.advance(8_000)
+    expect(f.calls).toHaveLength(4); expect(f.root.hidden).toBe(true)
+    expect(f.captures()).toBe(0)
+  } finally { f.dispose() }
+})
+
+test("amendment connection warnings require three consecutive failures lasting at least fifteen seconds", async () => {
+  const f = fixture(action => { if (action === "assess") throw Error("Disconnected") })
+  try {
+    await f.advance(1_500); await f.advance(3_000)
+    expect(f.calls.filter(call => call.action === "assess")).toHaveLength(1)
+    expect(f.root.hidden).toBe(true)
+    await f.advance(7_999)
+    expect(f.calls.filter(call => call.action === "assess")).toHaveLength(1)
+    await f.advance(1)
+    expect(f.calls.filter(call => call.action === "assess")).toHaveLength(2)
+    expect(f.root.hidden).toBe(true)
+    await f.advance(7_000)
+    // Fifteen seconds alone is insufficient while only two requests have failed.
+    expect(f.calls.filter(call => call.action === "assess")).toHaveLength(2)
+    expect(f.root.hidden).toBe(true)
+    await f.advance(1_000)
+    expect(f.calls.filter(call => call.action === "assess")).toHaveLength(3)
+    expect(f.root.hidden).toBe(false)
+    expect(f.root.textContent).toContain("unavailable")
+    expect(f.captures()).toBeGreaterThanOrEqual(4)
+  } finally { f.dispose() }
+})
+
+for (const transientFailures of [1, 2]) test(`${transientFailures} transient amendment connection failure${transientFailures === 1 ? "" : "s"} recover without a warning`, async () => {
+  let failures = 0
+  const f = fixture(action => {
+    if (action === "assess" && failures++ < transientFailures) throw Error("Disconnected")
+    return undefined
+  })
+  try {
+    await f.advance(1_500); await f.advance(3_000)
+    expect(f.root.hidden).toBe(true)
+    for (let index = 1; index < transientFailures; index++) { await f.advance(8_000); expect(f.root.hidden).toBe(true) }
+    await f.advance(8_000)
+    expect(f.root.textContent).toContain(finding.title)
+    expect(f.root.textContent).not.toContain("unavailable")
+    await f.advance(3_000)
+    expect(f.root.textContent).not.toContain("unavailable")
+  } finally { f.dispose() }
+})
+
+test("API recovery clears a visible warning and starts a fresh failure streak", async () => {
+  let failing = true
+  const f = fixture((action, input) => {
+    if (action === "assessment" && input.assessmentId && failing) throw Error("Disconnected")
+    return undefined
+  })
+  try {
+    await f.advance(1_500); await f.advance(3_000)
+    await f.advance(3_000); await f.advance(8_000); await f.advance(8_000)
+    expect(f.root.textContent).toContain("unavailable")
+    failing = false; await f.advance(8_000)
+    expect(f.root.textContent).not.toContain("unavailable")
+    expect(f.root.textContent).toContain(finding.title)
+    failing = true; await f.advance(3_000)
+    expect(f.root.textContent).not.toContain("unavailable")
+    await f.advance(8_000)
+    expect(f.root.textContent).not.toContain("unavailable")
+    await f.advance(8_000)
+    expect(f.root.textContent).toContain("unavailable")
+  } finally { f.dispose() }
+})
+
+test("successful null discovery clears failed discovery retry state in an empty conversation", async () => {
+  let failing = true
+  const f = fixture(action => {
+    if (action === "assessment" && failing) throw Error("Disconnected")
+    return undefined
+  })
+  try {
+    f.state.turnId = ""; await f.advance(1_500); await f.advance(8_000)
+    failing = false; await f.advance(8_000)
+    expect(f.root.hidden).toBe(true)
+    const count = f.calls.length
+    await f.advance(30_000)
+    expect(f.calls).toHaveLength(count)
+    expect(f.captures()).toBe(0)
+  } finally { f.dispose() }
+})
+
+for (const transition of ["conversation", "decline", "disable"] as const) test(`${transition} clears the previous review's connection warning and failure streak`, async () => {
+  const f = fixture(action => { if (action === "assess") throw Error("Disconnected") })
+  try {
+    await f.advance(1_500); await f.advance(3_000); await f.advance(8_000); await f.advance(8_000)
+    expect(f.root.textContent).toContain("unavailable")
+    if (transition === "conversation") { f.state.conversationId = "conversation-two"; f.ui.reset() }
+    else if (transition === "decline") { f.state.turnId = ""; f.state.revision = "declined"; f.ui.refresh() }
+    else { f.state.enabled = false; f.ui.refresh() }
+    expect(f.root.hidden).toBe(true)
+    await f.advance(8_000)
+    expect(f.root.hidden).toBe(true)
+    if (transition === "decline") { f.state.turnId = "amendment-two"; f.state.revision = "new proposal"; f.ui.refresh() }
+    else if (transition === "disable") { f.state.enabled = true; f.ui.refresh() }
+    await f.advance(3_000); await f.advance(3_000)
+    expect(f.root.textContent).not.toContain("unavailable")
+    await f.advance(8_000)
+    expect(f.root.textContent).not.toContain("unavailable")
+  } finally { f.dispose() }
+})
+
+test("disabled discovery retries remain silent and still restore saved findings after recovery", async () => {
+  let failing = true
+  const f = fixture(action => {
+    if (action === "assessment") {
+      if (failing) throw Error("Disconnected")
+      return review({ status: "complete" })
+    }
+    return undefined
+  })
+  try {
+    f.state.enabled = false; await f.advance(1_500); await f.advance(8_000); await f.advance(8_000)
+    expect(f.root.hidden).toBe(true)
+    expect(f.calls.filter(call => call.action === "assessment")).toHaveLength(3)
+    failing = false; await f.advance(8_000)
+    expect(f.root.textContent).toContain(finding.title)
+    expect(f.root.textContent).toContain("Consequence review is off")
+    expect(f.root.textContent).not.toContain("unavailable")
+    expect(f.captures()).toBe(0)
+    expect(f.calls.some(call => call.action === "assess")).toBe(false)
+  } finally { f.dispose() }
+})
+
+test("a completed assessment recovers its summary after a temporary Word read failure", async () => {
+  const f = fixture((action, input) => action === "assess" || action === "assessment" && input.assessmentId ? review({ status: "complete" }) : undefined)
+  try {
+    await f.advance(1_500); await f.advance(3_000)
+    expect(f.root.textContent).toContain("Current assessment")
+    f.failNextCapture(); await f.advance(3_000)
+    expect(f.root.textContent).not.toContain("Current assessment")
+    expect(f.root.textContent).not.toContain("unavailable")
+    await f.advance(8_000)
+    expect(f.calls.some(call => call.action === "assessment" && call.input.assessmentId)).toBe(true)
+    expect(f.root.textContent).toContain("Current assessment")
+    expect(f.root.textContent).not.toContain("unavailable")
+    expect(f.calls.filter(call => call.action === "assess")).toHaveLength(1)
+  } finally { f.dispose() }
+})
