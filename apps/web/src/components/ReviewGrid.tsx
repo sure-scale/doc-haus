@@ -837,11 +837,11 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
     const compared = comparisonOf(column)?.cells[docName]
     return compared?.label === "differs" ? compared.reason : undefined
   }
-  const attention = reviewAttention({ rows: documents.map((doc) => doc.name), columns: grid.columns, cells: grid.cells, source: sourceCheck, checkingSources, differs })
+  const attention = reviewAttention({ rows: documents.map((doc) => doc.name), columns: grid.columns, cells: grid.cells, source: sourceCheck, checkingSources, sourceCheckFailed: sourceChecks?.key === sourcesKey && sourceChecks.failed, differs })
   // The same cells fillTargets() would compute, counted from this render.
   const fillCount = documents.reduce((count, doc) => count + grid.columns.filter((col) => needsFill(grid.cells[cellKey(doc.name, col.id)], hashQuestion(col.question))).length, 0)
   const fillBlanks = documents.some((doc) => grid.columns.some((col) => !grid.cells[cellKey(doc.name, col.id)]))
-  const primary = primaryAction(attention.progress, fillCount)
+  const primary = primaryAction(attention.progress, fillCount, attention.queue.length)
   const narrowed = filters.length > 0 || !!query.trim()
   const viewKey = JSON.stringify([filters, query.trim().toLowerCase()])
   if (shownView.current.key !== viewKey) shownView.current = { key: viewKey, rows: new Set(), columns: new Set() }
@@ -861,10 +861,10 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
     setQuery("")
     dialog.current?.querySelector<HTMLButtonElement>(".review-toolbar .review-filter-trigger")?.focus()
   }
-  // Review next walks the queued cells the view shows, else the whole queue.
+  // Review next stays inside the active search and filters, even with no match.
+  const reviewQueue = attention.queue.filter((entry) => matches(attention.cells.get(entry.key)!, filters, query))
   const reviewNext = () => {
-    const shown = attention.queue.filter((entry) => matches(attention.cells.get(entry.key)!, filters, query))
-    const entries = shown.length ? shown : attention.queue
+    const entries = reviewQueue
     if (!entries.length) return
     setWalkDone(0)
     setWalk({ entries, at: 0 })
@@ -977,12 +977,13 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
           running={running}
           comparing={comparing.size}
           primary={primary}
+          reviewNextDisabled={reviewQueue.length === 0}
           fillCount={fillCount}
           fillBlanks={fillBlanks}
           startDisabled={!canEdit || running > 0}
           fillDisabled={!canEdit || running > 0}
           canExport={attention.progress.answered > 0}
-          searchable={attention.progress.answered > 0}
+              searchable={attention.cells.size > 0}
           filters={filters}
           onFilters={setFilters}
           query={query}
@@ -990,6 +991,7 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
           onStarter={() => { setError(undefined); setStarterOpen({}) }}
           onFill={() => { setError(undefined); setFillPreview(fillTargets()); refreshAutoCompare() }}
           onReviewNext={reviewNext}
+          onRefreshSources={() => setSourceRound((round) => round + 1)}
           onExport={exportAs}
           notice={walkDone ? "End of the review list" : undefined}
         />

@@ -1,4 +1,5 @@
 import { COMPARE_AGREEMENTS_EXAMPLE, type StarterExample } from "./review-starters-example"
+import type { Document } from "./api/ingest/documents"
 
 // Review-table starters are definitions only: the selected matter supplies all
 // documents and the grid remains the sole store for questions and answers. A
@@ -57,6 +58,24 @@ export const REVIEW_STARTERS: readonly ReviewStarterDefinition[] = [
 
 export function normaliseStarterQuestion(question: string) {
   return question.trim().replace(/\s+/g, " ").toLocaleLowerCase()
+}
+
+// Discovery searches the descriptions already shown to the lawyer. It changes
+// the view only, without reading documents or asking a model to rank them.
+export function workflowSearchMatches(query: string, ...description: string[]) {
+  const text = description.join(" ").toLocaleLowerCase()
+  return query.trim().toLocaleLowerCase().split(/\s+/).every((word) => text.includes(word))
+}
+
+// Only report what ingest actually knows; missing quality metadata is unknown.
+export function reviewInputNotice(documents: readonly Pick<Document, "name" | "quality">[]) {
+  if (!documents.length) return "Add documents to this matter before adding questions or filling answers. You can still inspect a starter and its fictional example."
+  const unreadable = documents.filter((doc) => doc.quality?.status === "no_readable_text").map((doc) => doc.name)
+  const degraded = documents.filter((doc) => doc.quality?.status === "degraded").map((doc) => doc.name)
+  return [
+    unreadable.length ? `No readable text was extracted from: ${unreadable.join(", ")}. Add a readable version before relying on answers from these documents.` : "",
+    degraded.length ? `Extracted text may be incomplete in: ${degraded.join(", ")}. Check the original documents when reviewing answers.` : "",
+  ].filter(Boolean).join(" ") || undefined
 }
 
 // Recommended from the lawyer's own documents only: generated deliverables are

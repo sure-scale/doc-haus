@@ -449,6 +449,7 @@ try {
     await viewer.waitFor({ state: "detached" })
     assert.equal(await detail.locator(".review-source-badge").count(), 0, "a source edit must immediately invalidate the previous verdict")
     assert.equal(await detail.locator(".review-source-check").textContent(), "Checking the excerpt against the document…")
+    await page.locator(".review-toolbar").getByText("Checking sources…", { exact: true }).waitFor()
     await askWithoutVerdict()
   }
   async function askWithoutVerdict() {
@@ -625,7 +626,7 @@ try {
   const progress = toolbar.getByRole("img", { name: /^Review progress/ })
   await filter.waitFor()
   await toolbar.getByText("0 of 3 reviewed", { exact: true }).waitFor()
-  assert.equal(await progress.getAttribute("aria-label"), "Review progress, 3 cells in 3 documents and 1 question: 2 answered but not reviewed, 1 needs attention")
+  assert.equal(await progress.getAttribute("aria-label"), "Review progress, 3 cells in 3 documents and 1 question: 1 answered but not reviewed, 2 need attention")
   assert.equal(await primary.count(), 1)
   assert.equal(await primary.textContent(), "Review next")
   assert.equal(await toolbar.getByRole("button", { name: "Review next" }).count(), 1, "the primary action is not repeated")
@@ -670,6 +671,7 @@ try {
   await search.fill("supply")
   await page.getByText("No matching cells.", { exact: true }).waitFor()
   assert.equal(await page.getByText(/^Showing/).count(), 0, "with no match only the No matching cells line shows")
+  assert.equal(await toolbar.getByRole("button", { name: "Review next", exact: true }).isDisabled(), true, "review never leaves the active empty filter")
   await filter.focus()
   assert.equal(await search.inputValue(), "supply", "leaving a search keeps it open")
   await page.getByRole("button", { name: "Clear", exact: true }).click()
@@ -700,10 +702,10 @@ try {
   await page.keyboard.press("Escape")
   await menu.waitFor({ state: "hidden" })
   // A reviewed cell whose source changed still needs a look.
-  await toolbar.getByText("2 of 3 reviewed", { exact: true }).waitFor()
-  assert.equal(await progress.getAttribute("aria-label"), "Review progress, 3 cells in 3 documents and 1 question: 2 reviewed, 1 needs attention")
+  await toolbar.getByText("1 of 3 reviewed", { exact: true }).waitFor()
+  assert.equal(await progress.getAttribute("aria-label"), "Review progress, 3 cells in 3 documents and 1 question: 1 reviewed, 2 need attention")
   assert.equal(await primary.count(), 1)
-  assert.equal(await primary.getByRole("button", { name: "Export Excel", exact: true }).count(), 1)
+  assert.equal(await primary.textContent(), "Review next")
   // The changed source still needs a look, so Review next stays, quietly.
   assert.equal(await toolbar.getByRole("button", { name: "Review next" }).count(), 1)
   holdChecks = heldChecks
@@ -824,7 +826,7 @@ try {
   await detailModal.waitFor({ state: "detached" })
   await toolbar.getByText("End of the review list", { exact: true }).waitFor()
   assert.equal(storedGrid.cells["Supply terms.docx::c1"]!.status, "reviewed")
-  assert.equal(await primary.getByRole("button", { name: "Export Excel", exact: true }).evaluate(element => element === document.activeElement), true, "with every cell reviewed, the end lands on Export")
+  assert.equal(await primary.evaluate(element => element === document.activeElement), true, "reviewed cells with unchecked sources keep Review next available and focused")
 
   // The walk keeps to the cells the search shows; Escape leaves it as before.
   await searchToggle.click()
@@ -1186,6 +1188,18 @@ try {
   await navTable.getByRole("button", { name: "Edit question: What is the governing law?" }).waitFor()
   assert.equal(await navTable.getByRole("button", { name: "Edit question: Obsolete response" }).count(), 0)
   console.log("PASS an in-flight reload cannot affect a later opening of the table")
+
+  // Document and question text remain searchable before the first answer.
+  storedGrid = { ...structuredClone(grid), cells: {} }
+  await page.goto(server.url.href)
+  const emptyToolbar = page.locator(".review-toolbar")
+  await emptyToolbar.getByRole("button", { name: "Search the table", exact: true }).click()
+  await emptyToolbar.getByRole("searchbox", { name: "Search the table" }).fill("side letter")
+  await page.getByRole("row", { name: /^Side letter\.docx/ }).waitFor()
+  assert.equal(await page.getByRole("row", { name: /^Supply terms\.docx/ }).count(), 0)
+  await emptyToolbar.getByRole("searchbox", { name: "Search the table" }).fill("governing law")
+  assert.equal(await page.locator("tbody tr").count(), 3)
+  console.log("PASS an entirely unfilled table can search documents and questions")
 } finally {
   await browser.close()
   server.stop(true)

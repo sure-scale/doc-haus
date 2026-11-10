@@ -1,6 +1,7 @@
-import { useId, useState } from "react"
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react"
 import type { WorkflowMeta } from "../agents"
-import { recommendStarter, REVIEW_STARTERS } from "../review-starters"
+import { getConfig, modelSpec } from "../api/opencode/config"
+import { recommendStarter, REVIEW_STARTERS, workflowSearchMatches } from "../review-starters"
 import ModalHeader from "./ModalHeader"
 import backdropClose from "./backdropClose"
 import { Exit } from "./useExit"
@@ -36,22 +37,45 @@ export default function WorkflowLauncher({ workflows, available, ...props }: Pro
   </>)
 }
 
-function Launcher({ options, documents = [], onLaunch, onStartReview, closing, onClose }: Omit<Props, "workflows" | "available"> & { options: WorkflowMeta[]; closing: boolean; onClose: () => void }) {
+function Launcher({ options, documents: suppliedDocuments, onLaunch, onStartReview, closing, onClose }: Omit<Props, "workflows" | "available"> & { options: WorkflowMeta[]; closing: boolean; onClose: () => void }) {
+  const documents = suppliedDocuments ?? []
   const ids = useId()
+  const panel = useRef<HTMLDivElement>(null)
+  const [query, setQuery] = useState("")
+  const [model, setModel] = useState<"checking" | "ready" | "missing" | "unavailable">("checking")
+  useEffect(() => {
+    let live = true
+    getConfig().then((config) => { if (live) setModel(modelSpec(config) ? "ready" : "missing") }, () => { if (live) setModel("unavailable") })
+    return () => { live = false }
+  }, [])
+  useLayoutEffect(() => { panel.current?.querySelector<HTMLInputElement>("input[type=radio]:checked")?.focus() }, [])
   const [recommended] = useState(() => recommendStarter(documents))
   const review = Boolean(onStartReview)
   // Several of the lawyer's own documents make the review table the likely
   // next step, so it leads, recommended and highlighted; otherwise chat leads.
   const severalSources = documents.filter((doc) => doc.role !== "deliverable").length >= 2
   const reviewFirst = review && (options.length === 0 || severalSources)
-  const [selected, setSelected] = useState(() => reviewFirst ? "review" : `workflow:${options[0].name}`)
-  const workflow = options.find((w) => selected === `workflow:${w.name}`)
-  const reviewing = review && selected === "review"
+  const [selection, setSelected] = useState(() => reviewFirst ? "review" : `workflow:${options[0].name}`)
+  const shownOptions = options.filter((workflow) => workflowSearchMatches(query, workflow.label, workflow.description, ...(workflow.steps?.map((step) => step.instructions) ?? [])))
+  const showReview = review && workflowSearchMatches(query, "Review table", "Suggest questions with AI", ...REVIEW_STARTERS.flatMap((starter) => [starter.name, starter.purpose, starter.inputs, starter.output]))
+  const keys = [...shownOptions.map((workflow) => `workflow:${workflow.name}`), ...(showReview ? ["review"] : [])]
+  if (reviewFirst && showReview) keys.unshift(keys.pop()!)
+  const selected = keys.includes(selection) ? selection : keys[0]
+  const workflow = shownOptions.find((w) => selected === `workflow:${w.name}`)
+  const reviewing = showReview && selected === "review"
+  const problem = !reviewing && workflow
+    ? workflow.scope === "matter" && suppliedDocuments?.length === 0 ? "Add documents to this matter before starting this workflow."
+      : model === "checking" ? "Checking the selected model…"
+        : model === "missing" ? "Choose a model in Settings before starting a workflow with AI."
+          : model === "unavailable" ? "Model settings could not be checked. Close this chooser and try again."
+            : undefined
+    : undefined
   // The review table's entry is named for the starter Start opens with, as the
   // chat's entries are named for their workflows.
   const recommendedName = REVIEW_STARTERS.find((s) => s.id === recommended.id)?.name ?? "Review table"
 
   function start() {
+    if (!selected || problem) return
     onClose()
     if (reviewing) onStartReview?.(recommended.id)
     else if (workflow) onLaunch(workflow.name)
@@ -59,7 +83,7 @@ function Launcher({ options, documents = [], onLaunch, onStartReview, closing, o
 
   const choice = (key: string, name: string, reason?: string) => (
     <label key={key} className={`workflow-launcher-choice${selected === key ? " is-selected" : ""}`}>
-      <input type="radio" name={`${ids}-choice`} value={key} checked={selected === key} autoFocus={selected === key} onChange={() => setSelected(key)} />
+      <input type="radio" name={`${ids}-choice`} value={key} checked={selected === key} onChange={() => setSelected(key)} />
       <span>
         <span className="workflow-launcher-choice-name">{name}</span>
         {reason && <span className="workflow-launcher-choice-reason"><strong>Recommended</strong><span className="workflow-launcher-choice-sep"> · </span>{reason}</span>}
@@ -67,13 +91,13 @@ function Launcher({ options, documents = [], onLaunch, onStartReview, closing, o
     </label>
   )
   const groups = [
-    options.length > 0 && (
+    shownOptions.length > 0 && (
       <fieldset key="chat" className="workflow-launcher-group">
         <legend>In chat</legend>
-        {options.map((w) => choice(`workflow:${w.name}`, w.label))}
+        {shownOptions.map((w) => choice(`workflow:${w.name}`, w.label))}
       </fieldset>
     ),
-    review && (
+    showReview && (
       <fieldset key="review" className="workflow-launcher-group">
         <legend>Review table</legend>
         {/* Recommended only where it leads; beside a preselected chat workflow it would compete. */}
@@ -84,14 +108,20 @@ function Launcher({ options, documents = [], onLaunch, onStartReview, closing, o
 
   return (
     <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(onClose)}>
-      <div className="picker-panel workflow-launcher" onClick={(e) => e.stopPropagation()}>
+      <div ref={panel} className="picker-panel workflow-launcher" onClick={(e) => e.stopPropagation()}>
         <ModalHeader title="Workflows" onClose={onClose} />
+        <label className="workflow-launcher-search">
+          <span className="sr-only">Search workflows</span>
+          <input type="search" placeholder="Search workflows" value={query} onChange={(event) => setQuery(event.target.value)} />
+          {query && <button type="button" className="linklike" onClick={() => { setQuery(""); panel.current?.querySelector<HTMLInputElement>("input[type=search]")?.focus() }}>Clear</button>}
+        </label>
         <div className="workflow-launcher-body">
-          <div className="workflow-launcher-list">{reviewFirst ? groups.reverse() : groups}</div>
-          <section className="workflow-launcher-preview" aria-label={`About ${reviewing ? recommendedName : workflow?.label}`}>
+          <div className="workflow-launcher-list">{keys.length ? reviewFirst ? groups.reverse() : groups : <p role="status">No matching workflows. Clear the search to see the available workflows.</p>}</div>
+          {selected && <section className="workflow-launcher-preview" aria-label={`About ${reviewing ? recommendedName : workflow?.label}`}>
             {reviewing ? (
               <>
                 <p>Ask the same questions of every document in this matter and see the answers side by side, each with its source.</p>
+                {documents.length === 0 && <p className="workflow-launcher-inputs" role="status">Add documents to this matter before adding questions or filling answers. Start lets you inspect the starters and their fictional example.</p>}
                 <section aria-label="Ways to add questions">
                   <h3>Ways to add questions</h3>
                   <ul>
@@ -117,11 +147,12 @@ function Launcher({ options, documents = [], onLaunch, onStartReview, closing, o
                 </p>
               </>
             )}
-          </section>
+            {problem && <p className="workflow-launcher-inputs" role="status">{problem}</p>}
+          </section>}
         </div>
         <div className="workflow-launcher-actions compare-actions">
           <button type="button" className="ghost" onClick={onClose}>Cancel</button>
-          <button type="button" className="primary" onClick={start}>Start</button>
+          <button type="button" className="primary" disabled={!selected || !!problem} onClick={start}>Start</button>
         </div>
       </div>
     </div>

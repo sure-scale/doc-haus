@@ -6,9 +6,9 @@ import { NOT_ADDRESSED } from "./review-recheck"
 // count, progress, the Review next order and the toolbar's primary action.
 
 export type SourceVerdict = SourceCheck | "other_document"
-export type MarkerState = "other_document" | "source_changed" | "source_missing" | "question_changed" | "no_citation" | "not_addressed" | "differs"
-export type CellState = MarkerState | "unfilled" | "unreviewed" | "source_unchecked"
-export type AttentionFilter = MarkerState | "unreviewed"
+export type MarkerState = "other_document" | "source_changed" | "source_missing" | "question_changed" | "no_citation" | "not_addressed" | "differs" | "source_unchecked" | "source_failed"
+export type CellState = MarkerState | "unfilled" | "unreviewed"
+export type AttentionFilter = CellState
 export type StateNote<S extends CellState = CellState> = { state: S; word: string; reason: string }
 export type CellAttention = {
   key: string
@@ -39,13 +39,14 @@ export type AttentionInput = {
   /** The cited cell's verdict; undefined while checking or when it could not be checked. */
   source: (key: string, cell: GridCellData) => SourceVerdict | undefined
   checkingSources?: boolean
+  sourceCheckFailed?: boolean
   /** A fresh comparison's reason when this cell's answer differs (`GridColumn.comparison`). */
   differs?: (docName: string, column: GridColumn) => string | undefined
 }
 
-const RANK: Record<MarkerState, number> = { other_document: 0, source_changed: 1, source_missing: 1, question_changed: 2, no_citation: 3, not_addressed: 3, differs: 4 }
+const RANK: Record<MarkerState, number> = { other_document: 0, source_changed: 1, source_missing: 1, question_changed: 2, no_citation: 3, not_addressed: 3, source_unchecked: 3, source_failed: 3, differs: 4 }
 const UNREVIEWED_RANK = 5
-const FILTERS: AttentionFilter[] = ["other_document", "source_changed", "source_missing", "question_changed", "no_citation", "not_addressed", "differs", "unreviewed"]
+const FILTERS: AttentionFilter[] = ["other_document", "source_changed", "source_missing", "question_changed", "no_citation", "not_addressed", "source_failed", "source_unchecked", "differs", "unfilled", "unreviewed"]
 const isMarker = (state: CellState): state is MarkerState => state in RANK
 const notAddressed = (answer: string) => answer.trim().replace(/\.$/, "").toLowerCase() === NOT_ADDRESSED.toLowerCase()
 
@@ -58,6 +59,7 @@ function notes(cell: GridCellData | undefined, checking: boolean, differs?: stri
     source_changed: ["Source changed", `The document no longer contains the cited excerpt. ${reviewed ? "Unlock to refresh." : "Re-run this cell to answer from the current text."}`],
     source_missing: ["Source missing", `The cited document is no longer in the matter. ${reviewed ? "Unlock to refresh." : "Re-run this cell to answer from this document."}`],
     source_unchecked: checking ? ["Checking source", "Checking the excerpt against the document."] : ["Source not checked", "The excerpt could not be checked against the document."],
+    source_failed: ["Source check failed", "The source check failed. Refresh source checks to try again."],
     question_changed: ["Question changed", reviewed ? "The question was edited after this cell was reviewed. Unlock to refresh." : "Question changed since this answer. Re-run this cell to update it."],
     no_citation: ["No source", "The answer has no cited passage in this document."],
     not_addressed: ["Not found", "The document does not appear to address this question."],
@@ -77,7 +79,7 @@ function cellStates(key: string, cell: GridCellData | undefined, questionHash: s
     if (verdict === "other_document") states.push("other_document")
     else if (verdict === "not_found") states.push("source_changed")
     else if (verdict === "missing") states.push("source_missing")
-    else if (!verdict) states.push("source_unchecked")
+    else if (!verdict) states.push(input.sourceCheckFailed ? "source_failed" : "source_unchecked")
   }
   if (cell.questionHash !== questionHash) states.push("question_changed")
   if (open && !cell.citation) states.push(notAddressed(cell.answer) ? "not_addressed" : "no_citation")
@@ -100,9 +102,9 @@ export function reviewAttention(input: AttentionInput): ReviewAttention {
       const states = cellStates(key, cell, hashes[index], differs, input)
       const text = notes(cell, !!input.checkingSources, differs)
       const note = <S extends CellState>(state: S): StateNote<S> => ({ state, word: text[state][0], reason: text[state][1] })
-      const markerState = states.find(isMarker)
+      const markerState = states.filter(isMarker).filter((state) => !(state === "source_unchecked" && input.checkingSources)).sort((left, right) => RANK[left] - RANK[right])[0]
       const marker = markerState && note(markerState)
-      const further = states.filter((state) => state !== markerState && (isMarker(state) || state === "source_unchecked")).map(note)
+      const further = states.filter((state) => state !== markerState && isMarker(state)).map(note)
       cells.set(key, { key, docName, columnId: column.id, question: column.question, cell, states, marker, further })
       for (const state of states) if (state in counts) counts[state as AttentionFilter]++
       if (cell) progress.answered++
@@ -129,11 +131,11 @@ export function legend(): Array<StateNote<AttentionFilter>> {
  * Without documents nothing can be added, filled, reviewed or exported, so there
  * is no primary action; the table's empty text asks for documents.
  */
-export function primaryAction(progress: ReviewProgress, fillTargets: number): PrimaryAction | undefined {
+export function primaryAction(progress: ReviewProgress, fillTargets: number, queued = 0): PrimaryAction | undefined {
   if (!progress.documents) return undefined
   if (!progress.questions) return { kind: "start" }
   if (fillTargets > 0) return { kind: "fill", count: fillTargets }
-  if (progress.answered > progress.reviewed) return { kind: "reviewNext" }
+  if (queued > 0 || progress.answered > progress.reviewed) return { kind: "reviewNext" }
   return { kind: "export" }
 }
 
