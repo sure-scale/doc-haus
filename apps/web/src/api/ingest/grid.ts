@@ -11,6 +11,8 @@ export type GridColumn = { id: string; question: string; compare?: boolean; comp
 // while `questionHash` and `inputs` (the compared answers' signature) still match.
 // `cells` is keyed by document name; labels are assigned in code, never by the model.
 export type GridColumnComparison = {
+  /** Absent on legacy completed comparisons. Unavailable carries no labels. */
+  status?: "unavailable"
   questionHash: string
   inputs: string
   cells: Record<string, { label: "consistent" | "differs"; reason: string }>

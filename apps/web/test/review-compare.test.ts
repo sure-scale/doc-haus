@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { cellKey, hashQuestion, type Grid, type GridCellData } from "../src/api/ingest/grid"
 import { matterClient } from "../src/api/opencode/client"
-import { compareColumn, comparePrompt, comparisonInputs, readComparison, type ComparisonInput } from "../src/api/review-compare"
+import { compareColumn, comparePrompt, comparisonInputs, MAX_COMPARE_INPUT_BYTES, readComparison, type ComparisonInput } from "../src/api/review-compare"
 
 const term = "What is the initial term?"
 const law = "Which law governs?"
@@ -51,11 +51,14 @@ test("the signature follows this column's answers and citations only", () => {
   const moved = grid()
   moved.cells[cellKey("Zeta.docx", "term")]!.citation!.charStart = 40
   expect(inputFor(moved).signature).not.toBe(before)
+  const qualified = grid()
+  qualified.cells[cellKey("Zeta.docx", "term")]!.citation!.excerpt += " Except where the customer terminates earlier."
+  expect(inputFor(qualified).signature).not.toBe(before)
   // A new version can move its document's row; the answers are unchanged.
   expect((comparisonInputs(grid(), "term", rows.toReversed()) as ComparisonInput).signature).toBe(before)
 })
 
-test("needs two cited documents, caps at twelve and bounds each document's text", () => {
+test("needs two cited documents, caps at twelve and preserves complete evidence", () => {
   expect(comparisonInputs(grid(), "law", rows.slice(0, 1))).toBeUndefined()
   expect(comparisonInputs(grid(), "missing", rows)).toBeUndefined()
   const many = Array.from({ length: 13 }, (_, i) => ({ name: `Doc${i}.docx`, docPath: `/matter/Doc${i}.docx` }))
@@ -63,7 +66,42 @@ test("needs two cited documents, caps at twelve and bounds each document's text"
   expect(comparisonInputs(wide, "term", many)).toBe("too_many")
   const twelve = comparisonInputs(wide, "term", many.slice(0, 12)) as ComparisonInput
   expect(twelve.documents).toHaveLength(12)
-  for (const doc of twelve.documents) expect(doc.answer.length + doc.excerpt.length).toBeLessThanOrEqual(600)
+  for (const doc of twelve.documents) expect(doc.answer).toBe("x ".repeat(500))
+})
+
+test("late qualifications in both answers and sources reach the comparison unchanged", () => {
+  const value = grid()
+  const prefix = "The supplier must deliver the contracted services. ".repeat(16)
+  const exceptions = ["Except during a declared emergency.", "Including during a declared emergency."]
+  for (const [index, name] of ["Alpha.docx", "Beta.docx"].entries()) {
+    const cell = value.cells[cellKey(name, "term")]!
+    cell.answer = `${prefix}\n\n${exceptions[index]}`
+    cell.citation!.excerpt = `${prefix}\n${exceptions[index]}`
+  }
+  const input = inputFor(value)
+  for (const doc of input.documents) {
+    const cell = value.cells[cellKey(doc.name, "term")]!
+    expect(doc.answer).toBe(cell.answer)
+    expect(doc.excerpt).toBe(cell.citation!.excerpt)
+    expect(comparePrompt(input)).toContain(JSON.stringify(doc.answer))
+    expect(comparePrompt(input)).toContain(JSON.stringify(doc.excerpt))
+  }
+})
+
+test("oversized complete evidence is not compared; the byte budget includes question and framing", () => {
+  const value = grid()
+  const bytes = new TextEncoder().encode(comparePrompt(inputFor(value))).byteLength
+  value.cells[cellKey("Alpha.docx", "term")]!.answer += "x".repeat(MAX_COMPARE_INPUT_BYTES - bytes)
+  const atLimit = comparisonInputs(value, "term", rows)
+  expect(typeof atLimit).toBe("object")
+  expect(new TextEncoder().encode(comparePrompt(atLimit as ComparisonInput)).byteLength).toBe(MAX_COMPARE_INPUT_BYTES)
+  value.cells[cellKey("Alpha.docx", "term")]!.citation!.excerpt += "é"
+  expect(comparisonInputs(value, "term", rows)).toBe("too_large")
+
+  const longQuestion = grid()
+  longQuestion.columns[0]!.question = "q".repeat(MAX_COMPARE_INPUT_BYTES)
+  for (const cell of Object.values(longQuestion.cells)) cell.questionHash = hashQuestion(longQuestion.columns[0]!.question)
+  expect(comparisonInputs(longQuestion, "term", rows)).toBe("too_large")
 })
 
 const docs = (...names: string[]) => ({ documents: names.map(name => ({ name, answer: "", section: "", excerpt: "" })) })
@@ -98,7 +136,7 @@ test("rejects any reply that misplaces a document, quotes, or overruns its limit
   ]) expect(readComparison(text, three)).toBeUndefined()
 })
 
-test("a reason that opens with its own documents' names loses them; the UI shows each name beside its reason", () => {
+test("comparison reasons retain their wording even when a filename resembles a legal qualification", () => {
   const five = docs("Alpha.docx", "Beta.docx", "Gamma lease.pdf", "Delta.docx", "Epsilon.docx")
   const cells = readComparison(reply([
     [["Alpha.docx", "Beta.docx"], "Alpha.docx and Beta.docx: three years"],
@@ -107,13 +145,15 @@ test("a reason that opens with its own documents' names loses them; the UI shows
     [["Epsilon.docx"], "Alpha.docx term with Epsilon as agent"],
   ]), five)!.cells
   expect(Object.fromEntries(Object.entries(cells).map(([name, cell]) => [name, cell.reason]))).toEqual({
-    "Alpha.docx": "Three years", "Beta.docx": "Three years", "Gamma lease.pdf": "Two years",
-    "Delta.docx": "Has a one-year term", "Epsilon.docx": "Alpha.docx term with Epsilon as agent",
+    "Alpha.docx": "Alpha.docx and Beta.docx: three years", "Beta.docx": "Alpha.docx and Beta.docx: three years", "Gamma lease.pdf": "Gamma lease — two years",
+    "Delta.docx": "Delta.docx has a one-year term", "Epsilon.docx": "Alpha.docx term with Epsilon as agent",
   })
   const two = docs("Alpha.docx", "Beta.docx")
   expect(readComparison(reply([[["Alpha.docx"], "Alphabetical schedule"], [["Beta.docx"], "Other"]]), two)!.cells["Alpha.docx"]!.reason).toBe("Alphabetical schedule")
-  expect(readComparison(reply([[["Alpha.docx"], "Alpha.docx"], [["Beta.docx"], "Other"]]), two)).toBeUndefined()
-  expect(readComparison(reply([[["Alpha.docx"], `Alpha.docx: ${"x".repeat(138)}`], [["Beta.docx"], "Other"]]), two)).toBeDefined()
+  expect(readComparison(reply([[["Alpha.docx"], `Alpha.docx: ${"x".repeat(138)}`], [["Beta.docx"], "Other"]]), two)).toBeUndefined()
+  const qualified = readComparison(reply([[["No.docx"], "No liability cap applies."], [["Except.docx"], "Except for fraud, liability is capped."]]), docs("No.docx", "Except.docx"))!
+  expect(qualified.cells["No.docx"]!.reason).toBe("No liability cap applies.")
+  expect(qualified.cells["Except.docx"]!.reason).toBe("Except for fraud, liability is capped.")
 })
 
 async function engine(onWait: (request: Request) => Promise<Response>) {
@@ -165,4 +205,12 @@ test("an abort while waiting interrupts and still deletes the session", async ()
     expect(fake.requests.some(r => r.url.endsWith("/interrupt") && r.url.includes(id))).toBe(true)
     expect(fake.requests.some(r => r.method === "DELETE" && r.url.includes(id))).toBe(true)
   } finally { fake.restore() }
+})
+
+
+test("insufficient evidence is an explicit unlabelled result, never a difference", () => {
+  const result = readComparison(JSON.stringify({ status: "unavailable", reason: "The exception referenced in one answer is not supplied." }), docs("A", "B"))
+  expect(result).toEqual({ status: "unavailable", summary: "The exception referenced in one answer is not supplied.", cells: {} })
+  expect(readComparison(JSON.stringify({ status: "unavailable", reason: "Missing evidence.", groups: [{ documents: ["A"], reason: "Unknown" }] }), docs("A", "B"))).toBeUndefined()
+  expect(readComparison(JSON.stringify({ status: "unknown", reason: "Missing evidence." }), docs("A", "B"))).toBeUndefined()
 })

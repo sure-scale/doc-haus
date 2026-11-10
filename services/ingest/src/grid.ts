@@ -25,6 +25,8 @@ export type GridColumn = { id: string; question: string; compare?: boolean; comp
 // by the web app after a Fill. It lives on the column, never in cells, so it
 // cannot touch a reviewed answer. Labels are assigned in code from the groups.
 export type GridColumnComparison = {
+  /** Absent on legacy completed comparisons. Unavailable carries no labels. */
+  status?: "unavailable"
   questionHash: string
   inputs: string
   cells: Record<string, { label: "consistent" | "differs"; reason: string }>
@@ -89,6 +91,7 @@ const record = (value: unknown): value is Record<string, unknown> => !!value && 
 const comparisonShape = (value: unknown) =>
   record(value) && typeof value.questionHash === "string" && typeof value.inputs === "string" && Number.isFinite(value.comparedAt)
   && typeof value.summary === "string" && value.summary.length <= 200 && record(value.cells)
+  && (value.status === undefined || value.status === "unavailable" && Object.keys(value.cells).length === 0)
   && Object.values(value.cells).every((cell) => record(cell) && (cell.label === "consistent" || cell.label === "differs") && typeof cell.reason === "string" && cell.reason.length <= 140)
 
 // Check the structure used by the grid before replacing the work product.

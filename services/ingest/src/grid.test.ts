@@ -265,3 +265,13 @@ describe("grid negative-cell re-check passages", () => {
     expect(recheckRequest({ document: "Supply.docx", question: "Q?", seen: [{ docPath: "/m/Supply.docx", charStart: "0", charEnd: 5 }] })).toBeUndefined()
   })
 })
+
+
+test("unavailable comparisons persist without inventing per-document labels", () => withMatter((dir) => {
+  const comparison = { status: "unavailable" as const, questionHash: "q", inputs: "exact evidence", cells: {}, summary: "An applicable exception is unavailable.", comparedAt: 1 }
+  const input: Grid = { version: 0, columns: [{ id: "q", question: "Question?", comparison }], cells: {} }
+  expect(gridRequest(input)).toEqual(input)
+  expect(writeGrid(dir, input).ok).toBe(true)
+  expect(readGrid(dir).columns[0]!.comparison).toEqual(comparison)
+  expect(gridRequest({ ...input, columns: [{ ...input.columns[0]!, comparison: { ...comparison, cells: { "A.docx": { label: "differs", reason: "Unknown" } } } }] })).toBeUndefined()
+}))
