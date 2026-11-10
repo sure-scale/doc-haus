@@ -32,7 +32,16 @@ export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"
   const entries = unzipSync(bytes)
   const document = new DOMParser().parseFromString(strFromU8(entries["word/document.xml"]!), "application/xml")
   const namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-  const paragraphs = Array.from(document.getElementsByTagNameNS(namespace, "p")).map(paragraph => {
+  const paragraphs = Array.from(document.getElementsByTagNameNS(namespace, "p")).filter(paragraph => {
+    // A carried table's cell headings are source content, not drafting part
+    // labels. They must not influence shifts or gain presentation formatting.
+    let ancestor = paragraph.parentNode
+    while (ancestor) {
+      if (ancestor.nodeType === 1 && (ancestor as Element).namespaceURI === namespace && (ancestor as Element).localName === "tbl") return false
+      ancestor = ancestor.parentNode
+    }
+    return true
+  }).map(paragraph => {
     const styled = paragraph.getElementsByTagNameNS(namespace, "pStyle")[0]
     return {
       paragraph, styled, style: styled?.getAttributeNS(namespace, "val") ?? undefined,

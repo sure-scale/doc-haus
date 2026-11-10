@@ -6,6 +6,24 @@ import { readDocxComments } from "./docx-comments"
 import { renderMarkdownToDocx } from "./render"
 import { assertRedlineRoundTrip, redlineRoundTripMismatch } from "./redline-round-trip"
 
+test("marked-up body classifies paragraph-break carriers by namespace and keeps foreign-name text", async () => {
+  const parts = unzipSync((await renderMarkdownToDocx("Seed.")).bytes)
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const read = async (prefix: string) => {
+    const source = `<w:document xmlns:w="${W}" xmlns:x="urn:unrelated" xmlns:δοκ="${W}"><w:body><w:p><w:pPr><w:rPr><${prefix}:del w:id="1" w:author="Reviewer"/></w:rPr></w:pPr><w:r><w:t>Kept.</w:t></w:r></w:p></w:body></w:document>`
+    const bytes = zipSync({ ...parts, "word/document.xml": strToU8(source) })
+    const rows = await readDocxBodyView(bytes, "marked_up_body")
+    expect(strFromU8(unzipSync(bytes)["word/document.xml"]!)).toBe(source)
+    expect((await readDocxBodyView(bytes, "marked_up_body", { bare: true }))[0]!.paragraph_text).toBe("Kept.")
+    return rows[0]!.paragraph_text
+  }
+  expect(await read("w")).toBe('Kept.⟦delete paragraph break by "Reviewer"⟧')
+  expect(await read("δοκ")).toBe('Kept.⟦delete paragraph break by "Reviewer"⟧')
+  expect(await read("x")).toBe("Kept.")
+  const nested = zipSync({ ...parts, "word/document.xml": strToU8(`<w:document xmlns:w="${W}" xmlns:x="urn:unrelated"><w:body><w:p><w:r><w:t>Before </w:t></w:r><x:p><w:r><w:t>literal text</w:t></w:r></x:p><w:p><w:r><w:t>Separate paragraph</w:t></w:r></w:p></w:p></w:body></w:document>`) })
+  expect((await readDocxBodyView(nested, "marked_up_body")).map(row => row.paragraph_text)).toEqual(["Before literal text", "Separate paragraph"])
+})
+
 test("one redline check accepts a real comparison and identifies either wrong projection without comments", async () => {
   const source = (await renderMarkdownToDocx("Original wording.")).bytes
   const intended = (await renderMarkdownToDocx("Revised wording.")).bytes

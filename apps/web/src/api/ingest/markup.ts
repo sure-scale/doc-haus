@@ -11,7 +11,9 @@ export type MarkupFinding = { field: "text" | "author" | "quote" | "initials"; r
 
 // One affected paragraph: its 1-based place among its part's paragraphs as
 // marked up (in scope `comment`, among that comment's own), null when unknown,
-// and a short preview of it. `label` is the list number Word prints before it
+// and its complete context from the same session's persisted paragraph anchor
+// (empty when that identity is unavailable). `label` is the list number Word
+// prints before it
 // ("5.", "(a)"), not part of `context`; `container` is set for a table's,
 // row's, cell's or section's own formatting, placed at its first paragraph;
 // `comment` is the id of the comment whose text the paragraph is; `side` is

@@ -41,7 +41,8 @@ export async function readDocxBodyView(bytes: Uint8Array, view: RevisionBodyView
     if (name === "t" || name === "delText") return node.textContent ?? ""
     if (name === "tab") return "\t"
     if (name === "br" || name === "cr") return "\n"
-    const content = Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1 && (child as Element).localName !== "p").map(text).join("")
+    const content = Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1
+      && !((child as Element).namespaceURI === W && (child as Element).localName === "p")).map(text).join("")
     const kind = KINDS.get(name)
     return kind && !options.bare ? `⟦${kind} by ${JSON.stringify(node.getAttributeNS(W, "author") || "unknown author")}: ${content}⟧` : content
   }
@@ -49,7 +50,7 @@ export async function readDocxBodyView(bytes: Uint8Array, view: RevisionBodyView
     const children = (node: Element, name: string) => Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1 && (child as Element).namespaceURI === W && (child as Element).localName === name)
     const marks = children(paragraph, "pPr").flatMap(properties =>
       children(properties, "rPr").flatMap(run => Array.from(run.childNodes)
-        .filter((child): child is Element => child.nodeType === 1 && KINDS.has((child as Element).localName))))
+        .filter((child): child is Element => child.nodeType === 1 && (child as Element).namespaceURI === W && KINDS.has((child as Element).localName))))
     let paragraphText = text(paragraph) + (options.bare ? [] : marks).map(mark => `⟦${KINDS.get(mark.localName)} paragraph break by ${JSON.stringify(mark.getAttributeNS(W, "author") || "unknown author")}⟧`).join("")
     // Row/cell revisions are siblings of the paragraph in trPr/tcPr. Without
     // their enclosing marks a deleted row would look like ordinary body text.

@@ -378,6 +378,35 @@ test("annotation properties give exact accepted-body text measures for clean and
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
 
+test("checklist evidence compares structural deletion against its actual accepted body", async () => {
+  const directory = matter()
+  try {
+    const parts = unzipSync((await renderMarkdownToDocx("Record.")).bytes)
+    const p = (text: string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`
+    const row = (text: string, properties = "") => `<w:tr>${properties}<w:tc><w:tcPr><w:tcW w:w="4800" w:type="dxa"/></w:tcPr>${p(text)}</w:tc></w:tr>`
+    const table = `<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="4800"/></w:tblGrid>${row("Retained condition.")}${row("Removed exception.", '<w:trPr><w:del w:id="90" w:author="Earlier reviewer" w:date="2026-10-20T09:00:00Z"/></w:trPr>')}</w:tbl>`
+    parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]!).replace(/<w:body>[\s\S]*<\/w:body>/, `<w:body>${table}${p("After.")}<w:sectPr/></w:body>`))
+    const redline = zipSync(parts)
+    const current = await (await docxodus()).docxDiffAcceptRevisions(redline)
+    writeLeanBytes(directory, "d1/body-applied.docx", current)
+    writeLeanBytes(directory, "d1/redline.docx", redline)
+    acceptApplyForTest(directory)
+    const before = files(directory)
+    const record = buildChecklistDocumentContext(directory, { item_id: "structural", item: item() }).artifacts.find(row => row.value.id === "d1")!.value
+    expect(record.paragraphs.map(row => row.paragraph_text)).toEqual(["Retained condition.", "After."])
+    const annotation = record.annotations!.find(row => row.artifact.endsWith("/redline.docx"))!
+    expect(JSON.parse(annotation.properties).accepted_body_matches_current).toBe(true)
+    expect(annotation.revisions.deleted_text).toEqual(["Removed exception."])
+    expect(files(directory)).toEqual(before)
+    const changed = unzipSync(current)
+    changed["word/document.xml"] = strToU8(strFromU8(changed["word/document.xml"]!).replace("Retained condition.", "Different condition."))
+    writeLeanBytes(directory, "d1/body-applied.docx", zipSync(changed))
+    acceptApplyForTest(directory)
+    const changedRecord = buildChecklistDocumentContext(directory, { item_id: "structural", item: item() }).artifacts.find(row => row.value.id === "d1")!.value
+    expect(JSON.parse(changedRecord.annotations!.find(row => row.artifact.endsWith("/redline.docx"))!.properties).accepted_body_matches_current).toBe(false)
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
 test("a combined file's composition is code-built artifact evidence for its body and notes targets; nothing else changes", async () => {
   const planned = (deliverable?: "combined") => [
     { title: "Record", purpose: "Requested record", file: "record.docx", ...(deliverable ? { deliverable } : {}), parts: [{ heading: "Record", scope: "Record contents" }] },

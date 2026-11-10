@@ -56,7 +56,7 @@ describe("splitBlocks", () => {
   })
 
   test("lines inside a code fence keep their backslashes", () => {
-    expect(splitBlocks("```\nline one\\\n```\nAfter\\")).toBe("```\n\nline one\\\n\n```\n\nAfter")
+    expect(splitBlocks("```\nline one\\\n```\nAfter\\")).toBe("```\nline one\\\n```\n\nAfter")
   })
 
   test("an escaped trailing backslash and inline escapes are kept", () => {

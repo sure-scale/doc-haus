@@ -899,7 +899,7 @@ type PdfLookup = PdfPassagePage | { status: "failed" }
 // excerpt for the lawyer to spot on the page. Only a single page is opened at;
 // otherwise the PDF stays at page 1 and the line says why. The page comes
 // first, then the section and the quote, which the line clamps on a phone.
-function pdfCitationStatus(citation: CitationFocus, located?: PdfLookup) {
+export function pdfCitationStatus(citation: CitationFocus, located?: PdfLookup) {
   const section = `Source section ${citation.section}`
   if (!located) return `Locating the cited passage… ${section}.`
   const where = located.status === "matched" ? `Cited passage on page ${located.page}`
@@ -910,19 +910,12 @@ function pdfCitationStatus(citation: CitationFocus, located?: PdfLookup) {
   return <>{where}. {section}: <q>{shortExcerpt(citation.excerpt)}</q></>
 }
 
-// The excerpt is indexed Markdown: drop its rules, heading marks, table pipes
-// and emphasis marks, collapse whitespace and cut at a word near 100
-// characters, so the line reads as text and stays short on a phone.
+// This is a quotation of the indexed excerpt, including any literal Markdown
+// characters. Only shorten its prefix, with an explicit ellipsis.
 function shortExcerpt(excerpt: string) {
-  const text = excerpt
-    .replace(/^[\s|:-]*-{3,}[\s|:-]*$/gm, " ")
-    .replace(/^\s*#{1,6}\s+/gm, "")
-    .replace(/(?<![\p{L}\p{N}])(\*\*|__|\*|_)(?=[^\s*_])(.+?)(?<=[^\s*_])\1(?![\p{L}\p{N}])/gu, "$2")
-    .replace(/\|/g, " ")
-    .replace(/\s+/g, " ").trim()
-  if (text.length <= 100) return text
-  const space = text.lastIndexOf(" ", 100)
-  return `${text.slice(0, space > 50 ? space : 100)}…`
+  if (excerpt.length <= 100) return excerpt
+  const space = excerpt.lastIndexOf(" ", 100)
+  return `${excerpt.slice(0, space > 50 ? space : 100)}…`
 }
 
 function pageList(pages: number[]) {

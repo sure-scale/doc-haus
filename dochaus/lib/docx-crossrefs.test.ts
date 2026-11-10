@@ -139,6 +139,45 @@ function insertClauseBefore(bytes: Uint8Array, before: string, text: string) {
 }
 
 describe("linkCrossReferences", () => {
+  test("ambiguous referenced bookmark identity is refused before field refresh or evidence", async () => {
+    const clean = await render(AGREEMENT)
+    expect(referenceFields(clean).size).toBeGreaterThan(0)
+    expect(await linkCrossReferences(clean, { refreshOnly: true })).toEqual(clean)
+    for (const duplicate of ["name", "start-id", "end-id"] as const) {
+      const source = withBody(clean, doc => {
+        const start = elements(doc, "bookmarkStart").find(node => node.getAttributeNS(W, "name")!.startsWith("_Ref"))!
+        const end = elements(doc, "bookmarkEnd").find(node => node.getAttributeNS(W, "id") === start.getAttributeNS(W, "id"))!
+        const earlier = elements(doc, "p").find(node => node !== start.parentNode && elements(node, "numPr").length)!
+        if (duplicate === "end-id") { earlier.appendChild(end.cloneNode(true)); return }
+        const copy = start.cloneNode(true) as Element
+        if (duplicate === "name") copy.setAttributeNS(W, "w:id", "98765")
+        else copy.setAttributeNS(W, "w:name", "UnreferencedOtherName")
+        earlier.insertBefore(copy, earlier.firstChild)
+        const tail = end.cloneNode(true) as Element
+        tail.setAttributeNS(W, "w:id", "98765")
+        earlier.appendChild(tail)
+      })
+      const before = new Uint8Array(source)
+      expect(() => referenceFields(source)).toThrow("ambiguous_docx_reference_bookmark")
+      await expect(linkCrossReferences(source, { refreshOnly: true })).rejects.toThrow("ambiguous_docx_reference_bookmark")
+      expect(source).toEqual(before)
+    }
+    // Unreferenced names with distinct native IDs do not authorize a field target or block this pass.
+    const unrelated = withBody(clean, doc => {
+      for (const [index, paragraph] of elements(doc, "p").slice(0, 2).entries()) {
+        const start = doc.createElementNS(W, "w:bookmarkStart")
+        start.setAttributeNS(W, "w:name", "UnreferencedDuplicateName")
+        start.setAttributeNS(W, "w:id", String(98760 + index))
+        const end = doc.createElementNS(W, "w:bookmarkEnd")
+        end.setAttributeNS(W, "w:id", String(98760 + index))
+        paragraph.insertBefore(start, paragraph.firstChild)
+        paragraph.appendChild(end)
+      }
+    })
+    expect(referenceFields(unrelated)).toEqual(referenceFields(clean))
+    expect(await linkCrossReferences(unrelated, { refreshOnly: true })).toEqual(unrelated)
+  }, 60_000)
+
   test("render links each resolved reference to a bookmark on its target, its cached text the number shown", async () => {
     const bytes = await render(AGREEMENT)
     const found = await references(bytes)

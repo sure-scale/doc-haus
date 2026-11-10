@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { strToU8, zipSync } from "fflate"
@@ -22,6 +22,24 @@ const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r
 
 const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-line-breaks-")))
 afterAll(() => rmSync(directory, { recursive: true, force: true }))
+
+test("carriage returns share exact extraction, citation offsets and preview text without indexing", async () => {
+  const name = "Carriage-return.docx"
+  const bytes = docx(`<w:p><w:r><w:t>Example Office</w:t><w:cr/><w:t>1 Sample Road</w:t><w:br/><w:t>Sampletown</w:t></w:r></w:p>`)
+  const docPath = path.join(directory, name)
+  writeFileSync(docPath, bytes)
+  const canonical = await extractDocumentText(name, bytes)
+  expect(canonical).toContain("Example Office\n1 Sample Road\nSampletown")
+  // liveText appends the canonical source-record terminator; interior offsets are identical.
+  expect(await liveText(docPath)).toBe(`${canonical}\n`)
+  const excerpt = "Office\n1 Sample Road"
+  const charStart = canonical.indexOf(excerpt)
+  expect(await verifyCitation({ documentName: name, docPath, section: "1", excerpt, charStart, charEnd: charStart + excerpt.length }))
+    .toMatchObject({ verified: true, charStart, charEnd: charStart + excerpt.length })
+  const blocks = await documentPreviewBlocks(name, bytes, canonical)
+  expect(blocks?.map(block => block.text)).toEqual(["Example Office\n1 Sample Road\nSampletown"])
+  expect(readFileSync(docPath)).toEqual(bytes)
+})
 
 test("lines split by line breaks are indexed on their own lines, and a citation across them verifies", async () => {
   await ingestDocument(directory, "Letterhead.docx", docx(

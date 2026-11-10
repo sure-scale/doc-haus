@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import type { MarkupComment, MarkupRevision } from "../src/api/ingest/markup"
-import { clauseTimeline, contextMatches, movePlace } from "../src/components/change-timeline"
+import { Window } from "happy-dom"
+import { clauseTimeline, contextMatches, movePlace, revisionsLineUp } from "../src/components/change-timeline"
 
 const revision = (id: string, patch: Partial<MarkupRevision> = {}): MarkupRevision => ({
   id, kind: "insert", family: "content_insert", author: "Avery Lindqvist", date: null, text: "forty-five", scope: "body",
@@ -37,12 +38,30 @@ test("the timeline reads oldest first, one node per author and time, with undate
 })
 
 test("revisions are placed only where the painted paragraph reads as the reader's preview", () => {
-  // A cut preview is the paragraph's opening; spacing, punctuation and pilcrows never matter.
-  expect(contextMatches("Supply. The Supplier shall deliver the Goods within forty-five days of each O…", "Supply.  The Supplier shall deliver the Goods within forty-five days of each Order.")).toBe(true)
-  expect(contextMatches("Keep  end.", "Keep end. ¶")).toBe(true)
+  // Whitespace may differ in the rendering, but punctuation and complete context remain evidence.
+  expect(contextMatches("Keep  end.", "Keep end.")).toBe(true)
+  expect(contextMatches("Keep end.", "Keep end. ¶")).toBe(false)
+  expect(contextMatches("Supply. The Supplier shall deliver the Goods within forty-five days of each O…", "Supply.  The Supplier shall deliver the Goods within forty-five days of each Order.")).toBe(false)
+  expect(contextMatches("A literal ending…", "A literal ending…")).toBe(true)
   // An uncut preview is the whole paragraph, so a longer one that only starts the same way is a different paragraph.
   expect(contextMatches("Goods means the products listed.", "Goods means the products listed. Price is fixed.")).toBe(false)
   expect(contextMatches("Price is fixed for the first…", "Goods means the products listed.")).toBe(false)
+})
+
+test("history association rejects punctuation, word-boundary and late-qualification mismatches", () => {
+  const document = new Window().document
+  const paragraph = document.createElement("p")
+  const at = (context: string) => revision("rev-context", { locations: [{ paragraph: 1, context }] })
+  paragraph.textContent = "Pay $1.00."
+  expect(revisionsLineUp([paragraph as unknown as Element], [at("Pay $1.00.")])).toBe(true)
+  paragraph.textContent = "Pay $100."
+  expect(revisionsLineUp([paragraph as unknown as Element], [at("Pay $1.00.")])).toBe(false)
+  expect(contextMatches("A B", "AB")).toBe(false)
+  expect(contextMatches("Payment is due…", "Payment is due unless disputed.")).toBe(false)
+  expect(contextMatches("", "---")).toBe(false)
+  // The renderer's explicit paragraph marker is excluded by its identity, not by erasing literal punctuation.
+  paragraph.innerHTML = 'Keep end.<span class="rev-para-mark-del">¶</span>'
+  expect(revisionsLineUp([paragraph as unknown as Element], [at("Keep end.")])).toBe(true)
 })
 
 test("a move says its other place from each side", () => {

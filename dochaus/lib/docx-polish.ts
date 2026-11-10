@@ -1,19 +1,25 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 
 const PARAGRAPH_RE = /<w:p\b[\s\S]*?<\/w:p>/g
 const INLINE_RE = /<w:hyperlink\b[^>]*>[\s\S]*?<\/w:hyperlink>|<w:r\b[\s\S]*?<\/w:r>/g
 const RUN_RE = /<w:r\b[\s\S]*?<\/w:r>/g
 const TEXT_RE = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g
 const HEADING_SPACING = {
-  Heading1: `<w:spacing w:before="320" w:after="160"/>`,
-  Heading2: `<w:spacing w:before="280" w:after="140"/>`,
-  Heading3: `<w:spacing w:before="220" w:after="120"/>`,
+  Heading1: { before: "320", after: "160" },
+  Heading2: { before: "280", after: "140" },
+  Heading3: { before: "220", after: "120" },
 }
 const TABLE_CELL_PARAGRAPH_PROPERTIES =
   '<w:pPr><w:spacing w:before="0" w:after="80"/></w:pPr>'
+const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+const XMLNS = "http://www.w3.org/2000/xmlns/"
 
-/** `headingSpacing: false` leaves headings the spacing of their own styles:
- * for a document rendered onto a template's styles. */
+/** Generated-main-XML adapter, immediately after SDK save and before source
+ * table carry. The SDK can retain a style seed's Word prefix: adapt that
+ * generated main XML to the bounded converter's canonical w: convention.
+ * This is not a source-table importer. `headingSpacing: false`
+ * leaves headings the spacing of their own template styles. */
 export function polishMarkdownArtifactsInDocx(bytes: Uint8Array, options: { headingSpacing?: boolean } = {}) {
   return rewriteDocumentXml(bytes, xml => polishMarkdownArtifactsInDocumentXml(xml, options))
 }
@@ -34,18 +40,29 @@ function rewriteDocumentXml(
 }
 
 function addMissingInlineCodeStyle(parts: Record<string, Uint8Array>, document: string) {
-  if (!/<w:rStyle\b[^>]*\bw:val\s*=\s*(["'])Code\1/.test(document) || !parts["word/styles.xml"]) return false
+  if (!parts["word/styles.xml"] || !Array.from(new DOMParser().parseFromString(document, "application/xml")
+    .getElementsByTagNameNS(W, "rStyle")).some(style => style.getAttributeNS(W, "val") === "Code")) return false
   const styles = strFromU8(parts["word/styles.xml"])
-  if (/<w:style\b[^>]*\bw:styleId\s*=\s*(["'])Code\1/.test(styles)) return false
+  const parsed = new DOMParser().parseFromString(styles, "application/xml")
+  if (Array.from(parsed.getElementsByTagNameNS(W, "style")).some(style => style.getAttributeNS(W, "styleId") === "Code")) return false
   // Table inline-code runs inherit their current formatting. Declare their
   // character style without introducing a font or changing existing styles.
-  const defined = styles.replace("</w:styles>", '<w:style w:type="character" w:styleId="Code"><w:name w:val="Code"/></w:style></w:styles>')
-  if (defined === styles) return false
-  parts["word/styles.xml"] = strToU8(defined)
+  const root = parsed.documentElement
+  if (root.namespaceURI !== W || root.localName !== "styles") return false
+  const prefix = root.prefix || "w"
+  const style = parsed.createElementNS(W, `${prefix}:style`)
+  style.setAttributeNS(W, `${prefix}:type`, "character")
+  style.setAttributeNS(W, `${prefix}:styleId`, "Code")
+  const name = parsed.createElementNS(W, `${prefix}:name`)
+  name.setAttributeNS(W, `${prefix}:val`, "Code")
+  style.appendChild(name)
+  root.appendChild(style)
+  parts["word/styles.xml"] = strToU8(new XMLSerializer().serializeToString(parsed))
   return true
 }
 
 export function polishMarkdownArtifactsInDocumentXml(xml: string, options: { headingSpacing?: boolean } = {}) {
+  xml = generatedWordSerialization(xml)
   const paragraphs = [...xml.matchAll(PARAGRAPH_RE)]
   let output = ""
   let cursor = 0
@@ -79,6 +96,34 @@ export function polishMarkdownArtifactsInDocumentXml(xml: string, options: { hea
   }
 
   return output + xml.slice(cursor)
+}
+
+/** Namespace-aware adapter for the SDK-generated body, before source carry.
+ * Retain original namespace declarations, including aliases used by QName
+ * attribute values. Refuse a conflicting w: binding instead of reinterpreting
+ * those values when adapting another Word prefix. */
+function generatedWordSerialization(xml: string) {
+  const document = new DOMParser().parseFromString(xml, "application/xml")
+  const words = Array.from(document.getElementsByTagNameNS(W, "*"))
+  if (!words.some(element => element.prefix !== "w" || Array.from(element.attributes)
+    .some(attribute => attribute.namespaceURI === W && attribute.prefix !== "w"))) return xml
+  const elements = Array.from(document.getElementsByTagName("*"))
+  if (elements.some(element => Array.from(element.attributes).some(attribute =>
+    attribute.namespaceURI === XMLNS && attribute.name === "xmlns:w" && attribute.value !== W)))
+    throw new Error("Generated Markdown XML has a conflicting Word namespace prefix.")
+  const copy = (node: Node): Node => {
+    if (node.nodeType !== 1) return node.cloneNode(true)
+    const element = node as Element
+    const cloned = document.createElementNS(element.namespaceURI, element.namespaceURI === W ? `w:${element.localName}` : element.tagName)
+    for (const attribute of Array.from(element.attributes)) cloned.setAttributeNS(attribute.namespaceURI,
+      attribute.namespaceURI === W ? `w:${attribute.localName}` : attribute.name, attribute.value)
+    for (const child of Array.from(element.childNodes)) cloned.appendChild(copy(child))
+    return cloned
+  }
+  const root = copy(document.documentElement) as Element
+  root.setAttributeNS(XMLNS, "xmlns:w", W)
+  document.replaceChild(root, document.documentElement)
+  return new XMLSerializer().serializeToString(document)
 }
 
 type TableInlineRun = {
@@ -122,16 +167,45 @@ function markdownRow(xml: string) {
   return parseMarkdownRow(paragraphInlineRuns(xml))
 }
 
-/** Gives each heading paragraph the spacing of its style, as rendering does;
- * for a document whose heading levels changed after rendering. */
+/** Heading-only mixed-source API. Presentation runs after original tables are
+ * carried: only current body paragraph properties may change, never tables or
+ * historical pPrChange properties. Expanded names own XML identity here. */
 export function polishHeadingSpacing(xml: string) {
-  return xml.replace(PARAGRAPH_RE, paragraph => polishHeadingParagraph(paragraph))
+  const namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const document = new DOMParser().parseFromString(xml, "application/xml")
+  let changed = false
+  const child = (parent: Element, name: string) => Array.from(parent.childNodes).find(node =>
+    node.nodeType === 1 && (node as Element).namespaceURI === namespace && (node as Element).localName === name) as Element | undefined
+  for (const paragraph of Array.from(document.getElementsByTagNameNS(namespace, "p"))) {
+    let ancestor = paragraph.parentNode
+    while (ancestor && !(ancestor.nodeType === 1 && (ancestor as Element).namespaceURI === namespace && (ancestor as Element).localName === "tbl")) ancestor = ancestor.parentNode
+    if (ancestor) continue
+    const properties = child(paragraph, "pPr")
+    const style = properties && child(properties, "pStyle")?.getAttributeNS(namespace, "val")
+    if (!properties || !style || !Object.hasOwn(HEADING_SPACING, style)) continue
+    const spacing = document.createElementNS(namespace, "w:spacing")
+    const values = HEADING_SPACING[style as keyof typeof HEADING_SPACING]
+    spacing.setAttributeNS(namespace, "w:before", values.before)
+    spacing.setAttributeNS(namespace, "w:after", values.after)
+    const current = child(properties, "spacing")
+    if (current) properties.replaceChild(spacing, current)
+    else {
+      const afterSpacing = ["ind", "contextualSpacing", "mirrorIndents", "suppressOverlap", "jc", "textDirection", "textAlignment",
+        "textboxTightWrap", "outlineLvl", "divId", "cnfStyle", "rPr", "sectPr", "pPrChange"]
+      const before = Array.from(properties.childNodes).find(node => node.nodeType === 1
+        && (node as Element).namespaceURI === namespace && afterSpacing.includes((node as Element).localName))
+      properties.insertBefore(spacing, before ?? null)
+    }
+    changed = true
+  }
+  return changed ? new XMLSerializer().serializeToString(document) : xml
 }
 
 function polishHeadingParagraph(xml: string) {
   const style = xml.match(/<w:pStyle\b[^>]*w:val="(Heading[123])"[^>]*\/>/)?.[1] as keyof typeof HEADING_SPACING | undefined
   if (!style) return xml
-  const spacing = HEADING_SPACING[style]
+  const values = HEADING_SPACING[style]
+  const spacing = `<w:spacing w:before="${values.before}" w:after="${values.after}"/>`
   if (/<w:spacing\b[^>]*\/>/.test(xml)) return xml.replace(/<w:spacing\b[^>]*\/>/, spacing)
   if (xml.includes("<w:pPr>")) return xml.replace("</w:pPr>", `${spacing}</w:pPr>`)
   return xml.replace(/(<w:p\b[^>]*>)/, `$1<w:pPr>${spacing}</w:pPr>`)

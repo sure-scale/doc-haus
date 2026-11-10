@@ -1,3 +1,5 @@
+import { parse, postprocess, preprocess } from "micromark"
+
 export type MarkdownFenceBlock = {
   name: string
   info: string
@@ -19,204 +21,81 @@ export type MarkdownFenceContent = {
   line: number
 }
 
+/** Classify original lines by CommonMark token ownership. Container prefixes,
+ * lazy continuations, fence identity and indentation belong to the maintained
+ * document tokenizer, not an independent line-state machine. Source strings and
+ * line numbers stay exact; no quoted/literal evidence is discarded here.
+ */
 export function scanMarkdownStructure(content: string, targetNames: readonly string[]) {
   const lines = content.split(/\r?\n/)
-  const targets = new Set(targetNames.map((name) => name.toLowerCase()))
-  const fences: MarkdownFenceBlock[] = []
-  const fencedContent: MarkdownFenceContent[] = []
-  const indentedCodeLines: MarkdownVisibleLine[] = []
-  const visibleLines: MarkdownVisibleLine[] = []
-  // Every line a fence owns: its delimiters and its literal payload.
-  const fenceLines: Array<{ line: number; delimiter: boolean }> = []
-  let commentOpen = false
-  let htmlBlock:
-    | {
-        close?: RegExp
-        untilBlank?: true
-      }
-    | undefined
-  let fence:
-    | {
-        marker: string
-        name?: string
-        info: string
-        line: number
-        index: number
-        payload: string[]
-      }
-    | undefined
-
-  lines.forEach((line, index) => {
-    if (fence) {
-      if (!isMarkdownFenceClose(line, fence.marker)) {
-        fence.payload.push(line)
-        fenceLines.push({ line: index + 1, delimiter: false })
-        return
-      }
-      fenceLines.push({ line: index + 1, delimiter: true })
-      fencedContent.push({
-        payload: fence.payload.join("\n"),
-        complete: true,
-        line: fence.line,
-      })
-      if (fence.name)
-        fences.push({
-          name: fence.name,
-          info: fence.info,
-          payload: fence.payload.join("\n"),
-          raw: lines.slice(fence.index, index + 1).join("\n"),
-          complete: true,
-          line: fence.line,
-        })
-      fence = undefined
-      return
-    }
-
-    if (!commentOpen && !htmlBlock && /^(?: {4}|\t)/.test(line)) {
-      indentedCodeLines.push({
-        line: index + 1,
-        value: line.replace(/^(?: {4}|\t)/, ""),
-        source: line,
-      })
-      return
-    }
-    const uncommented = maskHtmlComments(line, commentOpen)
-    commentOpen = uncommented.commentOpen
-    if (htmlBlock) {
-      if (htmlBlock.untilBlank && /^[ \t]*$/.test(line)) {
-        htmlBlock = undefined
-        visibleLines.push({ line: index + 1, value: uncommented.value, source: line })
-        return
-      }
-      if (htmlBlock.close?.test(uncommented.value)) htmlBlock = undefined
-      return
-    }
-    const htmlOpening = markdownHtmlBlockOpen(uncommented.value)
-    if (htmlOpening) {
-      if (!htmlOpening.close?.test(uncommented.value)) htmlBlock = htmlOpening
-      return
-    }
-    const opening = markdownFenceOpen(uncommented.value)
-    if (opening) {
-      const name = opening.indent || opening.marker !== "```"
-        ? undefined
-        : targetFenceName(opening.info, targets)
-      fenceLines.push({ line: index + 1, delimiter: true })
-      fence = {
-        marker: opening.marker,
-        name: name && targets.has(name) ? name : undefined,
-        info: line.slice(opening.indent.length + opening.marker.length),
-        line: index + 1,
-        index,
-        payload: [],
-      }
-      return
-    }
-    visibleLines.push({ line: index + 1, value: uncommented.value, source: line })
-  })
-
-  if (fence) {
-    fencedContent.push({
-      payload: fence.payload.join("\n"),
-      complete: false,
-      line: fence.line,
-    })
-    if (fence.name)
-      fences.push({
-        name: fence.name,
-        info: fence.info,
-        payload: fence.payload.join("\n"),
-        raw: lines.slice(fence.index).join("\n"),
-        complete: false,
-        line: fence.line,
-      })
+  const starts = [0, ...[...content.matchAll(/\r?\n/g)].map(match => match.index + match[0].length)]
+  const events = postprocess(parse().document().write(preprocess()(content, undefined, true)))
+  const entered = events.filter(([kind]) => kind === "enter").map(([, token]) => token)
+  type Token = (typeof entered)[number]
+  const fenceDelimiters = new Map<Token, Token[]>()
+  let activeFence: Token | undefined
+  for (const [kind, token] of events) {
+    if (token.type === "codeFenced") {
+      activeFence = kind === "enter" ? token : undefined
+      if (activeFence) fenceDelimiters.set(activeFence, [])
+    } else if (kind === "enter" && token.type === "codeFencedFence" && activeFence) fenceDelimiters.get(activeFence)!.push(token)
   }
-  return { fences, fencedContent, indentedCodeLines, visibleLines, fenceLines }
-}
+  const lastLine = (token: Token) => token.end.line - (token.end.column === 1 ? 1 : 0)
+  const kinds = new Map<number, "fence_delimiter" | "fenced" | "indented_code" | "html_block">()
+  const mark = (token: Token, kind: NonNullable<ReturnType<typeof kinds.get>>) => {
+    for (let line = token.start.line; line <= lastLine(token); line++) kinds.set(line, kind)
+  }
+  const fences: MarkdownFenceBlock[] = [], fencedContent: MarkdownFenceContent[] = []
+  const targets = new Set(targetNames.map(name => name.toLowerCase()))
+  for (const token of entered) {
+    if (token.type === "codeFenced") {
+      mark(token, "fenced")
+      const delimiters = fenceDelimiters.get(token)!
+      for (const delimiter of delimiters) mark(delimiter, "fence_delimiter")
+      const opening = delimiters[0]!, closing = delimiters[1]
+      const complete = Boolean(closing)
+      const raw = content.slice(token.start.offset, token.end.offset).replace(/\r\n/g, "\n")
+      const payload = raw.split("\n").slice(1, complete ? -1 : undefined).join("\n")
+      fencedContent.push({ payload, complete, line: token.start.line })
+      const rawOpening = content.slice(opening.start.offset, opening.end.offset)
+      const marker = /^(`+|~+)/.exec(rawOpening)?.[1]!
+      const info = rawOpening.slice(marker.length)
+      // Explicit legacy envelope: only a column-one, three-backtick opener
+      // admits a named block. Container examples cannot become task metadata.
+      const name = token.start.column === 1 && marker === "```" ? targetFenceName(info, targets) : undefined
+      if (name) fences.push({ name, info, payload, raw, complete, line: token.start.line })
+    } else if (token.type === "codeIndented") mark(token, "indented_code")
+    else if (token.type === "htmlFlow" && !content.slice(token.start.offset, token.end.offset).startsWith("<!--")) mark(token, "html_block")
+  }
 
-function markdownFenceOpen(line: string) {
-  const match = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line)
-  if (!match) return
-  if (match[2]![0] === "`" && match[3]!.includes("`")) return
-  return { indent: match[1]!, marker: match[2]!, info: match[3]! }
+  // Comments affect ordinary visible-line values only when CommonMark actually
+  // parsed HTML. A literal comment inside code cannot hide later prose.
+  const masked = content.split("")
+  for (const token of entered.filter(token => token.type === "htmlText" || token.type === "htmlFlow")) {
+    const raw = content.slice(token.start.offset, token.end.offset)
+    for (const comment of raw.matchAll(/<!--[\s\S]*?(?:-->|$)/g)) {
+      for (let index = token.start.offset + comment.index; index < token.start.offset + comment.index + comment[0].length; index++) {
+        if (masked[index] !== "\r" && masked[index] !== "\n") masked[index] = " "
+      }
+    }
+  }
+  const visible = masked.join("")
+  const indentedCodeLines: MarkdownVisibleLine[] = [], visibleLines: MarkdownVisibleLine[] = []
+  const fenceLines: Array<{ line: number; delimiter: boolean }> = []
+  lines.forEach((source, index) => {
+    const line = index + 1, kind = kinds.get(line)
+    if (kind === "fenced" || kind === "fence_delimiter") fenceLines.push({ line, delimiter: kind === "fence_delimiter" })
+    else if (kind === "indented_code") indentedCodeLines.push({ line, source, value: source.replace(/^(?: {4}|\t)/, "") })
+    else if (kind !== "html_block") visibleLines.push({ line, source, value: visible.slice(starts[index], starts[index]! + source.length) })
+  })
+  return { fences, fencedContent, indentedCodeLines, visibleLines, fenceLines }
 }
 
 function targetFenceName(info: string, targets: Set<string>) {
   const candidate = info.replace(/^\s+/, "").toLowerCase()
-  return [...targets].find((target) => {
+  return [...targets].find(target => {
     if (!candidate.startsWith(target)) return false
     const suffix = candidate[target.length]
     return !suffix || !/[a-z0-9_-]/.test(suffix)
   })
-}
-
-function isMarkdownFenceClose(line: string, opening: string) {
-  const match = /^( {0,3})(`+|~+)[ \t]*$/.exec(line)
-  return Boolean(
-    match &&
-    match[2]![0] === opening[0] &&
-    match[2]!.length >= opening.length,
-  )
-}
-
-function markdownHtmlBlockOpen(line: string) {
-  const closedTag = /^ {0,3}<(script|pre|style|textarea)(?:[ \t]|>|$)/i.exec(line)?.[1]
-  if (closedTag) return { close: new RegExp(`</${closedTag}[ \\t]*>`, "i") }
-  if (/^ {0,3}<\?/.test(line)) return { close: /\?>/ }
-  if (/^ {0,3}<![A-Z]/.test(line)) return { close: />/ }
-  if (/^ {0,3}<!\[CDATA\[/.test(line)) return { close: /\]\]>/ }
-  if (
-    /^ {0,3}<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t]|\/?>|$)/i.test(line)
-  )
-    return { untilBlank: true as const }
-  if (isCompleteMarkdownHtmlTag(line))
-    return { untilBlank: true as const }
-}
-
-function isCompleteMarkdownHtmlTag(line: string) {
-  const value = /^ {0,3}(\S.*)$/.exec(line)?.[1]?.trimEnd()
-  if (!value || !/^<\/?[A-Za-z]/.test(value)) return false
-  let quote: "'" | '"' | undefined
-  for (const [index, character] of value.split("").entries()) {
-    if (quote) {
-      if (character === quote) quote = undefined
-      continue
-    }
-    if (character === "'" || character === '"') {
-      quote = character
-      continue
-    }
-    if (character === ">") return index === value.length - 1
-  }
-  return false
-}
-
-function maskHtmlComments(line: string, initiallyOpen: boolean) {
-  let commentOpen = initiallyOpen
-  let cursor = 0
-  let value = ""
-  while (cursor < line.length) {
-    if (commentOpen) {
-      const end = line.indexOf("-->", cursor)
-      if (end === -1)
-        return {
-          value: value + " ".repeat(line.length - cursor),
-          commentOpen: true,
-        }
-      value += " ".repeat(end + 3 - cursor)
-      cursor = end + 3
-      commentOpen = false
-      continue
-    }
-    const start = line.indexOf("<!--", cursor)
-    if (start === -1)
-      return {
-        value: value + line.slice(cursor),
-        commentOpen: false,
-      }
-    value += line.slice(cursor, start) + " ".repeat(4)
-    cursor = start + 4
-    commentOpen = true
-  }
-  return { value, commentOpen }
 }

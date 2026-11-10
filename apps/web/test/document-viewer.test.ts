@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import DocumentViewer, { acceptedEditsHint, citationStatus, combinedNotUpdatedNotice, DownloadActions, ExtractedText, notesNotUpdatedNotice, preparedNotice, redlineNotUpdatedNotice, requestEditsLine, staleExportNotice } from "../src/components/DocumentViewer"
+import DocumentViewer, { acceptedEditsHint, citationStatus, combinedNotUpdatedNotice, DownloadActions, ExtractedText, notesNotUpdatedNotice, pdfCitationStatus, preparedNotice, redlineNotUpdatedNotice, requestEditsLine, staleExportNotice } from "../src/components/DocumentViewer"
 import { acceptAllRedlines, acceptRedline, type Redline } from "../src/api/ingest/redlines"
 import { fetchDocumentText } from "../src/api/ingest/documents"
 import { citationPassage } from "../src/components/citation-target"
@@ -10,6 +10,19 @@ const proposal = (id: number, stale?: true): Redline => ({
   id, doc_name: "working.docx", scope: "phrase", find_text: "thirty days", old_text: "thirty days", new_text: "forty-five days",
   author: "Synthetic Reviewing Lawyer", review_comment: "", created_at: id,
   ...(stale ? { stale, stale_reason: "This proposal targets an earlier Word revision. Prepare a fresh change list." } : {}),
+})
+
+test("PDF citation status quotes preserve literal source characters and disclose prefix truncation", () => {
+  const excerpt = "# Token `A|B` uses \\*literal\\* and **stars**.\n---\nKeep  spaces."
+  const shown = renderToStaticMarkup(pdfCitationStatus({ section: "Tokens", excerpt }, { status: "matched", page: 2 }))
+  expect(shown).toContain(`<q>${excerpt}</q>`)
+  expect(shown).toContain("Cited passage on page 2")
+  const long = "A|B ".repeat(30)
+  const cut = renderToStaticMarkup(pdfCitationStatus({ section: "Tokens", excerpt: long }, { status: "matched", page: 2 }))
+  const quote = cut.match(/<q>([\s\S]*)<\/q>/)?.[1]
+  expect(quote?.endsWith("…")).toBe(true)
+  expect(long.startsWith(quote!.slice(0, -1))).toBe(true)
+  expect(quote!.length).toBeLessThanOrEqual(101)
 })
 const buttons = (redlines: Redline[], preview = true) =>
   [...renderToStaticMarkup(createElement(DownloadActions, { redlines, preview, onDownload: () => {} }))

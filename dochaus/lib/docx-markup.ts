@@ -42,6 +42,7 @@ export type MarkupField = "text" | "author" | "quote" | "initials"
 export type MarkupFinding = { field: MarkupField; rule: string; detail: string; snippet?: string }
 export type MarkupLocation = {
   paragraph: number | null
+  /** Complete paragraph context from the same session's persisted anchor, empty when unavailable. */
   context: string
   /** The list number Word prints before the paragraph ("5.", "(a)"), when it has one; not part of `context`. */
   label?: string
@@ -190,14 +191,17 @@ async function readMarkupRevisions(bytes: Uint8Array): Promise<{ revisions: Mark
   try {
     const rows = session.listRevisions(), listed = session.listComments(), labels = new Map<string, string>()
     if (!rows.length && !listed.length) return { revisions: [], labels }
-    // The session projection carries Word's resolved list number (its declared
-    // type omits the field). Ordinals count per part, and per comment in the
-    // comments part, where each comment's anchor precedes its paragraphs. So
+    // The session projection carries Word's resolved list number. Ordinals
+    // count per part, and per comment in the comments part, where each
+    // comment's anchor precedes its paragraphs. So
     // does a table's, row's or cell's; a section's follows its paragraphs, so a
     // section starts at the first paragraph after the previous one's anchor.
-    const index = session.project().anchorIndex as Record<string, { kind: string; scope: string; textPreview: string; autoNumberPrefix?: string }>
+    const projection = session.project()
+    // Some SDK declarations omit the resolved numbering label present at runtime.
+    const index: Record<string, (typeof projection.anchorIndex)[string] & { autoNumberPrefix?: string }> = projection.anchorIndex
     const comments = new Map(listed.map(row => [row.anchorId, row.id] as const))
-    const sides = rows.some(row => row.type === "move") ? moveSides(session.save(), rows) : new Map<string, { side: "from" | "to"; context?: string }>()
+    const paragraphAt = savedMarkupParagraphs(session.save())
+    const sides = moveSides(paragraphAt, rows)
     const ordinals = new Map<string, number>(), located = new Map<string, MarkupLocation>()
     const waiting = new Map<string, string[]>(), sections = new Map<string, MarkupLocation>()
     let comment: string | undefined
@@ -217,7 +221,8 @@ async function readMarkupRevisions(bytes: Uint8Array): Promise<{ revisions: Mark
       const paragraph = (ordinals.get(part) ?? 0) + 1
       ordinals.set(part, paragraph)
       const label = normalizeUntrustedText(anchor.autoNumberPrefix ?? "").text.trim(), owner = comments.get(part)
-      const location: MarkupLocation = { paragraph, context: normalizeUntrustedText(anchor.textPreview).text, ...label ? { label } : {}, ...owner === undefined ? {} : { comment: owner } }
+      const node = paragraphAt(anchor.partUri, anchor.unid)
+      const location: MarkupLocation = { paragraph: node ? paragraph : null, context: node ? normalizeUntrustedText(markedParagraphText(node, false)).text : "", ...label ? { label } : {}, ...owner === undefined ? {} : { comment: owner } }
       located.set(id, location)
       if (label && COMMENTED.has(scopeOf(anchor.scope))) labels.set(`${scopeOf(anchor.scope)}:${paragraph}`, label)
       if (!sections.has(part)) sections.set(part, location)
@@ -256,29 +261,37 @@ async function readMarkupRevisions(bytes: Uint8Array): Promise<{ revisions: Mark
   }
 }
 
-// Which side of its move each of a move's paragraphs is, by `${row.id} ${anchor id}`.
-// Neither the listed anchors nor their order say (a move up lists its
-// destination first); the carriers do: constituentKeys name each moveFrom and
-// moveTo by its native w:id, and the saved package marks every paragraph with
-// its anchor's unid. A paragraph holding both sides, or neither, has none.
-function moveSides(saved: Uint8Array, rows: RevisionListEntry[]) {
-  const parts = unzipSync(saved), paragraphs = new Map<string, Map<string, Element>>(), sides = new Map<string, { side: "from" | "to"; context?: string }>()
-  const byUnid = (partUri: string) => {
+// Resolve only the unique paragraph bearing this session's persisted opaque
+// identity in its named part. Missing/duplicate identities have no fallback.
+export function savedMarkupParagraphs(saved: Uint8Array) {
+  const parts = unzipSync(saved), paragraphs = new Map<string, Map<string, Element | null>>()
+  return (partUri: string, unid: string): Element | undefined => {
+    if (!partUri || !unid) return undefined
     const found = paragraphs.get(partUri)
-    if (found) return found
-    const part = parts[partUri.replace(/^\//, "")], own = new Map<string, Element>()
+    if (found) return found.get(unid) ?? undefined
+    const part = parts[partUri.replace(/^\//, "")], own = new Map<string, Element | null>()
     if (part) for (const node of Array.from(new DOMParser().parseFromString(strFromU8(part), "application/xml").getElementsByTagNameNS(W, "p"))) {
-      const unid = node.getAttributeNS(PT, "Unid")
-      if (unid) own.set(unid, node)
+      const id = node.getAttributeNS(PT, "Unid")
+      // A duplicate is ambiguous, including any later occurrence. Never choose the last one.
+      if (id) own.set(id, own.has(id) ? null : node)
     }
-    return paragraphs.set(partUri, own).get(partUri)!
+    paragraphs.set(partUri, own)
+    return own.get(unid) ?? undefined
   }
+}
+
+// Which side of its move each paragraph is, by `${row.id} ${anchor id}`.
+// Neither the listed anchors nor their order say (a move up lists its
+// destination first); constituentKeys name the carriers by native w:id.
+// A paragraph holding both sides, or neither, has none.
+function moveSides(paragraphAt: ReturnType<typeof savedMarkupParagraphs>, rows: RevisionListEntry[]) {
+  const sides = new Map<string, { side: "from" | "to"; context?: string }>()
   for (const row of rows) {
     if (row.type !== "move") continue
     // A content or paragraph-mark carrier, as `${role}:${w:id}`; range markers are not paragraphs' own.
     const carriers = new Set(row.constituentKeys.flatMap(key => /:(moveFrom|moveTo):(\d+)(?::|$)/.exec(key)?.slice(1, 3).join(":") ?? []))
     for (const anchor of row.affectedAnchors) {
-      const node = byUnid(row.partUri).get(anchor.unid)
+      const node = paragraphAt(row.partUri, anchor.unid)
       const held = node ? (["moveFrom", "moveTo"] as const).filter(role => Array.from(node.getElementsByTagNameNS(W, role)).some(carrier => carriers.has(`${role}:${carrier.getAttributeNS(W, "id")}`))) : []
       if (held.length === 1) {
         const side = held[0] === "moveFrom" ? "from" : "to"
@@ -294,12 +307,14 @@ function moveSides(saved: Uint8Array, rows: RevisionListEntry[]) {
   return sides
 }
 
-// Text visible in the marked-up paragraph, including deleted/moved-from runs.
-// Ignore property subtrees and field instructions; preserve tabs and breaks.
-function markedParagraphText(paragraph: Element): string {
+// Text visible in the marked-up paragraph. Ordinary context follows Current
+// text but retains moved-from runs, as the history preview does. The existing
+// moved-from override includes deleted runs too. Ignore property subtrees and
+// field instructions; preserve tabs and breaks.
+function markedParagraphText(paragraph: Element, includeDeleted = true): string {
   const read = (node: Element): string => {
     const name = node.namespaceURI === W ? node.localName : ""
-    if (PROPERTIES.has(name)) return ""
+    if (PROPERTIES.has(name) || (!includeDeleted && name === "del")) return ""
     if (name === "t" || name === "delText") return node.textContent ?? ""
     if (name === "tab") return "\t"
     if (name === "br" || name === "cr") return "\n"
