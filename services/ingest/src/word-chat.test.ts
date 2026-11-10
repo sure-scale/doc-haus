@@ -9,14 +9,14 @@ import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
 import { installWordChat } from "./word-chat"
 import { WordFormattingError } from "./word-chat-amendments"
-import { wordChatMaterials, wordChatSuggestionBatches, validateWordChatContext, type WordChatAuth } from "./word-chat-context"
+import { wordChatExcerpts, wordChatMaterials, wordChatSuggestionBatches, validateWordChatContext, type WordChatAuth } from "./word-chat-context"
 import { beginWordNativeOperation, settleWordNativeOperation, claimWordEditLease, clearWordEditLease } from "../../../dochaus/lib/word-edit-lease"
 import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
 import { openDb } from "./db"
 import { readCurrentVersion } from "./document-versions"
 import { matterDocumentName } from "./ingest"
 import { writeWordChatPreferences } from "./word-chat-preferences"
-import type { WordChatMaterial, WordChatSend, WordChatTurn } from "../../../dochaus/lib/word-chat-contract"
+import type { WordChatMaterial, WordChatSend, WordChatSource, WordChatTurn } from "../../../dochaus/lib/word-chat-contract"
 
 type Session = { id: string; parentID?: string; metadata: Record<string, unknown>; location: { directory: string }; title: string; agent: string; model: { providerID: string; id: string }; time: { created: string; updated: string; idle?: string }; outcome?: string }
 const sessions = new Map<string, Session>(), messages = new Map<string, Record<string, unknown>[]>(), inboxes = new Map<string, Record<string, unknown>[]>()
@@ -2029,4 +2029,145 @@ test("consequence bridge uses native normalized sessions and stays outside foreg
     expect(nativeJobs.every(s => admissions.some(a => a.session === s.id && a.tail === "/synthetic"))).toBe(true)
     expect((await post("assessment", { conversationId: "different-conversation", assessmentId: assessment.id, context })).status).toBe(503)
   } finally { amend = false; engineHook = undefined; modelRawOutput = undefined }
+})
+
+
+test("canonical source quotations reject synthetic excerpt joins in typed and persisted legacy readers", async () => {
+  const id = await newConversation()
+  const text = Array.from({ length: 22 }, (_, i) => `${i === 0 ? "NeedleStart" : i === 21 ? "NeedleEnd" : "Ordinary"} ${String(i).padStart(2,"0")} ${"material ".repeat(120)}\n`).join("")
+  const capture = { ...context, text, paragraphs: [{ id: "long-canonical", text }], selection: undefined }
+  const request = () => post("send", { conversationId:id,scope:"document",mode:"qa",text:"NeedleStart NeedleEnd",requestId:crypto.randomUUID(),attachments:[],context:capture })
+  try {
+    modelStructuredRawOutput = JSON.stringify({ answerParts:[{type:"text",text:"Reading the supplied passages."}] })
+    const baseline = (await (await request()).json() as {turn:WordChatTurn}).turn
+    const source = (sessions.get(baseline.id)!.metadata.sources as { id:string;quote:string }[])[0]!
+    const at = source.quote.indexOf("[…excerpt gap…]")
+    expect(at).toBeGreaterThan(0)
+    const quote = source.quote.slice(at - 12, at + 35)
+    expect(text.includes(quote)).toBe(false)
+    modelStructuredRawOutput = JSON.stringify({answerParts:[{type:"text",text:"Claim."},{type:"reference",sourceId:source.id,quote}]})
+    const rejected = (await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(rejected.status).toBe("error")
+    expect(rejected.sources).toEqual([])
+    const child = sessions.get(baseline.id)!
+    delete child.metadata.answerFormat
+    for (const item of child.metadata.sources as WordChatSource[]) { delete item.passages; delete item.complete }
+    messages.get(child.id)!.find(m => m.type === "assistant")!.content = [{type:"text",text:JSON.stringify({answer:"Legacy [word]",citations:[{sourceId:source.id,quote}]})}]
+    const legacy = (await (await post("poll",{conversationId:id,turnId:child.id})).json() as {turn:WordChatTurn}).turn
+    expect(legacy.status).toBe("error")
+    expect(legacy.sources).toEqual([])
+  } finally { modelStructuredRawOutput = undefined }
+})
+
+test("canonical source producer and typed legacy suggestion consumers preserve literal markers and real adjacent passages", async () => {
+  for (const text of ["Literal […excerpt gap…] wording is present.", "a".repeat(1590) + "Adjacent boundary phrase" + "b".repeat(16000)]) {
+    const id = await newConversation(), quote = text.includes("Adjacent") ? "Adjacent boundary phrase" : "[…excerpt gap…]"
+    const capture = { ...context, text, paragraphs: [{ id: "canonical", text }] }
+    try {
+      modelStructuredRawOutput = JSON.stringify({ answerParts:[{type:"text",text:"Quoted."},{type:"reference",sourceId:"word",quote}] })
+      const turn = (await (await post("send",{conversationId:id,scope:"document",mode:"qa",text:"Explain wording",requestId:crypto.randomUUID(),attachments:[],context:capture})).json() as {turn:WordChatTurn}).turn
+      expect(turn.status).toBe("complete"); expect(turn.sources[0]?.quote).toBe(quote)
+      const child = sessions.get(turn.id)!, prompt = sessionContext(child.id)
+      const supplied = suppliedContext(prompt).sources as WordChatSource[]
+      expect(supplied[0]?.complete).toBe(text.length <= 14000)
+      expect(supplied[0]).not.toHaveProperty("passages")
+      expect(prompt).toContain("never complete document semantics")
+      delete child.metadata.answerFormat
+      for (const item of child.metadata.sources as WordChatSource[]) { delete item.passages; delete item.complete }
+      messages.get(child.id)!.find(m => m.type === "assistant")!.content = [{type:"text",text:JSON.stringify({answer:"Legacy [word]",citations:[{sourceId:"word",quote}]})}]
+      const reopened = (await (await post("poll",{conversationId:id,turnId:child.id})).json() as {turn:WordChatTurn}).turn
+      expect(reopened.status).toBe("complete"); expect(reopened.sources[0]?.quote).toBe(quote)
+      modelStructuredRawOutput = undefined
+      modelRawOutput = JSON.stringify({answer:"",citations:[],suggestions:[{title:"Clarify",explanation:"Consider wording.",passage:quote}]})
+      // Isolate this route's deliberate suggestion cooldown from other flows.
+      const ideas = new Hono(); installWordChat(ideas,()=>auth,{fetch:transport,engineURL:"http://synthetic.invalid"})
+      const response = await ideas.request("/word/chat/suggest",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({conversationId:id,scope:"document",text:"",requestId:crypto.randomUUID(),attachments:[],context:capture})})
+      expect(response.status).toBe(200)
+      const suggestion = (await response.json() as {turn:WordChatTurn}).turn
+      expect(suggestion.suggestions?.[0]?.passage).toBe(quote)
+    } finally { modelStructuredRawOutput = undefined; modelRawOutput = undefined }
+  }
+})
+
+test("canonical saved source snapshots remain quotable while old unprovable snapshots are explicitly unavailable", async () => {
+  const id = await newConversation(), material = wordChatMaterials(auth).find(item => item.name === "Other.docx")!
+  try {
+    modelStructuredRawOutput = JSON.stringify({answerParts:[{type:"text",text:"Evidence."},{type:"reference",sourceId:`source:${material.id}`,quote:"DISTINCTIVE_EVIDENCE"}]})
+    const turn = (await (await send(id,"document","Explain evidence",crypto.randomUUID(),[material])).json() as {turn:WordChatTurn}).turn
+    expect(turn.status).toBe("complete")
+    const child = sessions.get(turn.id)!, saved = (child.metadata.sources as WordChatSource[]).find(item => item.id === `source:${material.id}`)!
+    expect(saved.passages?.some(passage => passage.includes("DISTINCTIVE_EVIDENCE"))).toBe(true)
+    delete saved.passages; delete saved.complete; delete child.metadata.answerFormat
+    messages.get(child.id)!.find(m => m.type === "assistant")!.content = [{type:"text",text:JSON.stringify({answer:`Evidence [source:${material.id}]`,citations:[{sourceId:`source:${material.id}`,quote:"DISTINCTIVE_EVIDENCE"}]})}]
+    const reopened = (await (await post("poll",{conversationId:id,turnId:child.id})).json() as {turn:WordChatTurn}).turn
+    expect(reopened.status).toBe("error"); expect(reopened.error).toContain("older source snapshot may be unavailable"); expect(reopened.sources).toEqual([])
+  } finally { modelStructuredRawOutput = undefined }
+})
+
+test("canonical legacy upload reader uses its admitted extraction and refuses a changed capture", async () => {
+  const id = await newConversation(), text = "Literal […excerpt gap…] upload evidence."
+  const form = new FormData(); form.set("conversationId",id); form.set("mode","request"); form.set("file",new File([text],"notes.txt"))
+  const uploaded = await app.request("/word/chat/upload",{method:"POST",body:form})
+  expect(uploaded.status).toBe(200)
+  const {material} = await uploaded.json() as {material:WordChatMaterial}
+  try {
+    modelStructuredRawOutput = JSON.stringify({answerParts:[{type:"text",text:"Evidence."},{type:"reference",sourceId:`upload:${material.id}`,quote:text}]})
+    const turn = (await (await send(id,"document","Explain upload",crypto.randomUUID(),[material])).json() as {turn:WordChatTurn}).turn
+    expect(turn.status).toBe("complete")
+    const child = sessions.get(turn.id)!
+    delete child.metadata.answerFormat
+    for (const item of child.metadata.sources as WordChatSource[]) { delete item.passages; delete item.complete }
+    messages.get(child.id)!.find(m => m.type === "assistant")!.content = [{type:"text",text:JSON.stringify({answer:`Evidence [upload:${material.id}]`,citations:[{sourceId:`upload:${material.id}`,quote:text}]})}]
+    const read = async () => (await (await post("poll",{conversationId:id,turnId:child.id})).json() as {turn:WordChatTurn}).turn
+    expect((await read()).status).toBe("complete")
+    const extraction = (sessions.get(id)!.metadata.uploads as {text:string}[])[0]!
+    extraction.text = "Different extraction"
+    expect((await read()).status).toBe("error")
+  } finally { modelStructuredRawOutput = undefined }
+})
+
+test("canonical proposal review projection carries coverage without verification passage duplication", async () => {
+  const id = await newConversation()
+  try {
+    modelStructuredRawOutput = JSON.stringify({answerParts:[{type:"text",text:"Prepared."}],proposal:{before:context.text,after:context.text.replace("Tuesday","Wednesday"),explanation:"Change",openItems:[]}})
+    const turn = (await (await post("send",{conversationId:id,scope:"document",text:"Change delivery",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context})).json() as {turn:WordChatTurn}).turn
+    expect(turn.proposal).toBeDefined()
+    const reviewer = [...sessions.values()].find(item => item.parentID === turn.id && item.metadata.type === "word-chat-review")!
+    const prompt = sessionContext(reviewer.id), evidence = suppliedContext(prompt).evidence as WordChatSource[]
+    expect(evidence[0]?.quote).toBe(context.text); expect(evidence[0]?.complete).toBe(true)
+    expect(evidence.every(source => !Object.hasOwn(source,"passages"))).toBe(true)
+    expect(prompt).toContain("absent means completeness is unknown")
+  } finally { modelStructuredRawOutput = undefined }
+})
+
+test("canonical suggestions normalize paragraph breaks only within real passages while citations stay literal", async () => {
+  const paragraphs = [{id:"a",text:"First actual paragraph."},{id:"b",text:"Second actual paragraph."}]
+  const capture = {...context,text:paragraphs.map(p=>p.text).join("\r"),paragraphs}
+  const suggest = async (current:WordChatSend["context"], passage:string, text="") => {
+    const id=await newConversation(), isolated=new Hono();installWordChat(isolated,()=>auth,{fetch:transport,engineURL:"http://synthetic.invalid"})
+    modelRawOutput=JSON.stringify({answer:"",citations:[],suggestions:[{title:"Clarify",explanation:"Consider wording.",passage}]})
+    const response=await isolated.request("/word/chat/suggest",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({conversationId:id,scope:"document",text,requestId:crypto.randomUUID(),attachments:[],context:current})})
+    expect(response.status).toBe(200)
+    return (await response.json() as {turn:WordChatTurn}).turn
+  }
+  try {
+    for (const separator of ["\n","\r\n"]) {
+      const response=await suggest(capture,paragraphs.map(p=>p.text).join(separator))
+      expect(response.suggestions?.map(item=>item.passage)).toEqual([capture.text])
+    }
+    modelRawOutput=undefined
+    modelStructuredRawOutput=JSON.stringify({answerParts:[{type:"reference",sourceId:"word",quote:capture.text.replaceAll("\r","\n")}]})
+    const id=await newConversation()
+    const cited=(await (await post("send",{conversationId:id,scope:"document",mode:"qa",text:"Explain",requestId:crypto.randomUUID(),attachments:[],context:capture})).json() as {turn:WordChatTurn}).turn
+    expect(cited.status).toBe("error");expect(cited.sources).toEqual([])
+    modelStructuredRawOutput=undefined
+    const selected=Array.from({length:22},(_,i)=>({id:`long-${i}`,text:`${i===0?"NeedleStart":i===21?"NeedleEnd":"Ordinary"} ${i} ${"material ".repeat(100)}`}))
+    const text=selected.map(p=>p.text).join("\r"), selection={id:"selected",text,paragraphs:selected,startOffset:0,endOffset:selected.at(-1)!.text.length,saved:false,capturedAt:context.capturedAt}
+    const sampled=wordChatExcerpts(text,"NeedleStart NeedleEnd",8000),at=sampled.quote.indexOf("[…excerpt gap…]")
+    expect(at).toBeGreaterThan(0)
+    const joined=sampled.quote.slice(at-12,at+35)
+    expect(text.includes(joined)).toBe(false)
+    const rejected=await suggest({...context,text,paragraphs:selected,selection},joined,"NeedleStart NeedleEnd")
+    expect(rejected.suggestions).toEqual([])
+  } finally {modelRawOutput=undefined;modelStructuredRawOutput=undefined}
 })

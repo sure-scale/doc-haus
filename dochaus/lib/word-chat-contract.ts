@@ -10,7 +10,16 @@ import type { WordChatSnapshot, WordChatProposal, WordChatTableRowInsertionPropo
 import type { ConversationAmendmentDisposition } from "./conversation-context"
 export type { WordChatProposal } from "./word-chat-amendment-contract"
 export type WordChatContext = WordChatSnapshot
-export type WordChatSource = { id: string; contentHash?: string; name: string; quote: string; location: string; provenance: "word-buffer" | "saved-version" | "instructions" | "request-upload" }
+export type WordChatSource = {
+  id: string; contentHash?: string; name: string; quote: string; location: string
+  provenance: "word-buffer" | "saved-version" | "instructions" | "request-upload"
+  /** Literal selected passages from the admitted capture/extraction. Kept in
+   * native context for quotation checks, not duplicated in model prompts. */
+  passages?: string[]
+  /** All admitted capture/extraction text is supplied, not a claim of complete
+   * document semantics or a complete review. Absent on older snapshots. */
+  complete?: boolean
+}
 export type WordChatConversation = { id: string; title: string; documentName: string; updatedAt: number }
 export type WordChatSuggestion = { title: string; explanation: string; passage: string }
 export type WordChatAnswerPart = { type: "text"; text: string } | { type: "reference"; sourceId: string; quote: string }

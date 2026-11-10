@@ -16,23 +16,74 @@ export type WordChatUpload = WordChatMaterial & { text: string }
 export const wordChatHash = (value: unknown) => createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex")
 const words = (text: string) => [...new Set(text.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])].slice(0, 24)
 
-/** Relevant excerpts remain verbatim. The no-tool session cannot bypass this selection. */
-export function wordChatExcerpts(text: string, query: string, limit = 14_000): string {
-  if (text.length <= limit) return text
+/** Select literal canonical spans, coalescing only actual adjacency. Display
+ * separators are never source text or quotation authority. */
+export function wordChatExcerpts(text: string, query: string, limit = 14_000): { quote: string; passages: string[]; complete: boolean } {
+  if (text.length <= limit) return { quote: text, passages: [text], complete: true }
   const terms = words(query)
-  const blocks = text.split(/(?<=\n)/).flatMap(block => {
-    if (block.length < 1600) return [block]
-    return Array.from({ length: Math.ceil(block.length / 1600) }, (_, index) => block.slice(index * 1600, (index + 1) * 1600))
-  })
-  const ranked = blocks.map((text, index) => ({ text, index, score: terms.reduce((score, word) => score + (text.toLowerCase().includes(word) ? 1 : 0), 0) }))
-  const chosen: typeof ranked = []
-  let size = 0
-  for (const block of ranked.toSorted((a, b) => b.score - a.score || a.index - b.index)) {
-    if (size + block.text.length > limit) continue
-    chosen.push(block); size += block.text.length
-    if (size >= limit - 1600) break
+  const blocks: { text: string; start: number; end: number; score: number }[] = []
+  let offset = 0
+  for (const line of text.split(/(?<=\n)/)) {
+    for (let at = 0; at < line.length; at += 1600) {
+      const block = line.slice(at, at + 1600)
+      blocks.push({ text: block, start: offset + at, end: offset + at + block.length,
+        score: terms.reduce((score, word) => score + (block.toLowerCase().includes(word) ? 1 : 0), 0) })
+    }
+    offset += line.length
   }
-  return chosen.toSorted((a, b) => a.index - b.index).map(block => block.text).join("\n[…excerpt gap…]\n")
+  const chosen: typeof blocks = []
+  const spans = (rows: typeof blocks) => {
+    const merged: { start: number; end: number }[] = []
+    for (const block of rows.toSorted((a, b) => a.start - b.start)) {
+      const previous = merged.at(-1)
+      if (previous?.end === block.start) previous.end = block.end
+      else merged.push({ start: block.start, end: block.end })
+    }
+    return merged.map(span => text.slice(span.start, span.end))
+  }
+  const separator = "\n[…excerpt gap…]\n"
+  let passages: string[] = []
+  for (const block of blocks.toSorted((a, b) => b.score - a.score || a.start - b.start)) {
+    const next = spans([...chosen, block])
+    if (next.join(separator).length > limit) continue
+    chosen.push(block); passages = next
+    if (passages.reduce((size, passage) => size + passage.length, 0) >= limit - 1600) break
+  }
+  return { quote: passages.join(separator), passages, complete: false }
+}
+
+/** Verification passages stay in the existing source snapshot, not in model
+ * context a second time. Complete refers only to that admitted extraction. */
+export const WORD_CHAT_SOURCE_COVERAGE = "Each source's complete flag means all text of its admitted capture or extraction is supplied, never complete document semantics or a complete review. False means selected excerpts; absent means completeness is unknown. Selected or unknown evidence cannot support whole-document absence or completeness claims. Display excerpts can have presentation separators between omitted passages; never stitch them into a source quotation. If a needed source or qualification is absent, disclose the gap."
+export const wordChatPromptSources = (sources: WordChatSource[]) => sources.map(({ passages: _passages, ...source }) => source)
+
+/** A display quote may contain presentation joins. Require one actual literal
+ * passage. Older Word/upload snapshots can use their admitted canonical capture;
+ * older saved/playbook excerpts without a snapshot are explicitly unavailable. */
+export function wordChatQuoteVerified(source: WordChatSource, quote: string, context: WordChatContext, uploads: WordChatUpload[] = []) {
+  if (!source.quote.includes(quote)) return false
+  if (source.passages !== undefined) return typeof source.complete === "boolean" && Array.isArray(source.passages) &&
+    source.passages.every(passage => typeof passage === "string") && source.passages.some(passage => passage.includes(quote))
+  if (source.provenance === "word-buffer") {
+    if (source.id === "word") return context.text.includes(quote)
+    if (source.id === "word-selection") return Boolean(context.selection?.text.includes(quote))
+  }
+  if (source.provenance === "request-upload") return uploads.some(upload => source.id === `upload:${upload.id}` &&
+    upload.hash === source.contentHash && typeof upload.text === "string" && wordChatHash(upload.text) === upload.hash && upload.text.includes(quote))
+  return false
+}
+
+/** Suggestions historically normalize paragraph separators for native targets.
+ * Preserve that spelling compatibility inside each canonical passage only;
+ * exact answer quotations continue to use wordChatQuoteVerified unchanged. */
+export function wordChatSuggestionVerified(source: WordChatSource, passage: string, context: WordChatContext) {
+  if (source.provenance !== "word-buffer") return false
+  const normalized = wordChatParagraphBreaks(passage)
+  if (!wordChatParagraphBreaks(source.quote).includes(normalized)) return false
+  if (source.passages !== undefined) return typeof source.complete === "boolean" && Array.isArray(source.passages) &&
+    source.passages.every(value => typeof value === "string") && source.passages.some(value => wordChatParagraphBreaks(value).includes(normalized))
+  const captured = source.id === "word" ? context.text : source.id === "word-selection" ? context.selection?.text : undefined
+  return captured !== undefined && wordChatParagraphBreaks(captured).includes(normalized)
 }
 
 export function validateWordChatContext(value: unknown): value is WordChatContext {
@@ -66,7 +117,7 @@ export async function wordChatEvidence(auth: WordChatAuth, context: WordChatCont
     if (!material) throw new WordChatContextError("An attached source changed or is unavailable. Remove it or attach its current version.")
     return material
   })
-  const sources: WordChatSource[] = [{ id: "word", name: auth.target.name, quote: wordChatExcerpts(context.text, `${query}\n${context.selection?.text ?? ""}`), location: "Current Word buffer", provenance: "word-buffer" }]
+  const sources: WordChatSource[] = [{ id: "word", name: auth.target.name, ...wordChatExcerpts(context.text, `${query}\n${context.selection?.text ?? ""}`), location: "Current Word buffer", provenance: "word-buffer" }]
   const savedText = new Map<string, string>()
   async function saved(id: string) {
     if (savedText.has(id)) return savedText.get(id)!
@@ -81,7 +132,7 @@ export async function wordChatEvidence(auth: WordChatAuth, context: WordChatCont
   for (const material of selected) {
     const text = material.kind === "playbook" ? listPlaybooks().find(book => book.name === material.id)?.content : material.kind === "upload" ? uploads.find(upload => upload.id === material.id)?.text : await saved(material.id)
     if (typeof text !== "string") throw new WordChatContextError("An attachment is unavailable. Attach it again.")
-    sources.push({ id: `${material.kind}:${material.id}`, contentHash: material.hash, name: material.name, quote: wordChatExcerpts(text, query, 8000), location: material.kind === "playbook" ? "Attached guidance; not a client decision" : "Deliberately attached material", provenance: material.provenance })
+    sources.push({ id: `${material.kind}:${material.id}`, contentHash: material.hash, name: material.name, ...wordChatExcerpts(text, query, 8000), location: material.kind === "playbook" ? "Attached guidance; not a client decision" : "Deliberately attached material", provenance: material.provenance })
   }
   let versions = ""
   if (scope === "matter") {
@@ -96,7 +147,7 @@ export async function wordChatEvidence(auth: WordChatAuth, context: WordChatCont
       if (!source || source.name === auth.target.name || sources.some(prior => prior.id === `source:${source.id}`)) continue
       const text = await saved(source.id)
       if (!text.includes(match.text)) continue // stale index is never evidence
-      sources.push({ id: `source:${source.id}`, contentHash: source.hash, name: source.name, quote: wordChatExcerpts(text, query, 4000), location: match.section || "Saved matter source", provenance: "saved-version" })
+      sources.push({ id: `source:${source.id}`, contentHash: source.hash, name: source.name, ...wordChatExcerpts(text, query, 4000), location: match.section || "Saved matter source", provenance: "saved-version" })
       if (sources.length >= 10) break
     }
     const materials = available.filter(material => material.kind === "source")
@@ -105,7 +156,7 @@ export async function wordChatEvidence(auth: WordChatAuth, context: WordChatCont
     try { defaultPlaybook = (JSON.parse(readFileSync(path.join(auth.matter.dir, "matter.json"), "utf8")) as { playbook?: string }).playbook } catch {}
     const book = defaultPlaybook ? listPlaybooks().find(book => book.name === defaultPlaybook) : undefined
     if (book && !selected.some(material => material.kind === "playbook" && material.id === book.name)) {
-      sources.push({ id: `playbook:${book.name}`, contentHash: wordChatHash(book.content), name: book.name, quote: wordChatExcerpts(book.content, query, 6000), location: "Matter guidance; not a client decision", provenance: "instructions" })
+      sources.push({ id: `playbook:${book.name}`, contentHash: wordChatHash(book.content), name: book.name, ...wordChatExcerpts(book.content, query, 6000), location: "Matter guidance; not a client decision", provenance: "instructions" })
       versions += wordChatHash(book.content)
     }
   }
