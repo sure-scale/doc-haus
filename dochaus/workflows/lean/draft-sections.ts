@@ -435,9 +435,9 @@ export async function runDraftStage(
     const memoOf = (documents: unknown[]): DocID | undefined => value!.memo !== undefined ? `d${documents.length}` : undefined
     // The files the lawyer's words ask for are read from the covered outline.
     // Where its deliverables do not deliver them so, the issues a revision may
-    // settle go back to the outline session as a revision request, unless the
-    // lawyer has already been asked about this very mismatch or has answered a
-    // question on the requested files: a revision never overrides an answer. A
+    // settle go back to the outline session as a revision request, except for
+    // each file whose current focused read binds a specific answer permitting
+    // that same planned delivery. Another file's answer never vetoes it. A
     // revision settles delivery only: the deliverables of the documents its
     // issues concern are taken when it plans the same titles, in order, and the
     // same memo, spelled alike, and otherwise it is spent and the outline kept.
@@ -485,7 +485,7 @@ export async function runDraftStage(
       ({ ...row, ...(revised.deliverable ? { deliverable: revised.deliverable } : {}) })
     let files = requested ? requestedFilesIssues(withDocumentIDs(held()), memoOf(held()), requested).issues : []
     const revising = () =>
-      requested && requestedFilesQuestion(directory, requested, withDocumentIDs(held()), files, memoOf(held())) ? requestedFilesRevision(directory, files) : undefined
+      requested ? requestedFilesRevision(directory, files, { requested, documents: withDocumentIDs(held()), memo: memoOf(held()) }) : undefined
     for (let revision = 1, revise = revising(); requested && revise && revision <= PLAN_FILES_REVISIONS; revision++, revise = revising()) {
       delete best.value
       const revised = await ask<LeanOutline>(`outline files revision ${revision}/${PLAN_FILES_REVISIONS}`, retryPrompt("draft", revise.feedback), checkOutline, 0, revise.feedback)

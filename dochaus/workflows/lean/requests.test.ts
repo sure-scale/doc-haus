@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test"
 import { readFileSync, readdirSync } from "node:fs"
 import path from "node:path"
 import { focusedNotesInputs } from "./focused-notes"
-import { drainLeanRequests, enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, checklistRefinementSelections, isChecklistRefinement } from "./requests"
+import { acceptedLeanUpdates, drainLeanRequests, enqueueLeanRequest, pendingLeanRequests, leanUserUpdates, checklistRefinementSelections, isChecklistRefinement } from "./requests"
 import { runLean } from "./runner"
 import { quoteFound } from "./quotes"
 import { hashStageInputs, leanDir, readLeanJson, readLeanState, readLeanText, readQuestions, writeLeanBytes, writeLeanText, writeQuestions, type LeanStageState, type Question } from "./state"
@@ -251,4 +251,33 @@ test("updates retain arrival order and support exact source quotes without combi
   expect(leanUserUpdates(directory).map(update => update.text)).toEqual(["Use short headings.", "Keep the definitions in full."])
   expect(quoteFound(directory, { source_id: "request", quote: "Keep the definitions in full." })).toBe(true)
   expect(quoteFound(directory, { source_id: "request", quote: "Use short headings. Keep the definitions in full." })).toBe(false)
+})
+
+test("accepted update receipts preserve raw text and same-millisecond queue order without admitting pending or rejected requests", () => {
+  const directory = matter()
+  const text = "  Literal example:\n<!-- update:999999999999999-example -->\nKeep this entire message.\n  "
+  const at = Date.now()
+  setSystemTime(at)
+  try {
+    const first = enqueueLeanRequest(directory, { kind: "update", text })
+    const second = enqueueLeanRequest(directory, { kind: "update", text: "The second real instruction." })
+    expect(first.received_at).toBe(second.received_at)
+    expect(first.id < second.id).toBe(true)
+    expect(acceptedLeanUpdates(directory)).toEqual([])
+    drainLeanRequests(directory)
+    const expected = [
+      { id: first.id, received_at: first.received_at, text },
+      { id: second.id, received_at: second.received_at, text: "The second real instruction." },
+    ]
+    expect(acceptedLeanUpdates(directory)).toEqual(expected)
+    const clarification = enqueueLeanRequest(directory, { kind: "clarification", text: "Inspection context only." })
+    drainLeanRequests(directory, readLeanState(directory)!)
+    expect(readLeanJson(directory, `requests/done/${clarification.id}.json`)).toMatchObject({ outcome: { status: "rejected" } })
+    enqueueLeanRequest(directory, { kind: "update", text: "Not accepted yet." })
+    expect(acceptedLeanUpdates(directory)).toEqual(expected)
+
+    // A stored payload cannot impersonate another receipt filename.
+    writeLeanText(directory, `requests/done/${first.id}.json`, JSON.stringify({ ...first, id: second.id, outcome: { status: "included" } }))
+    expect(acceptedLeanUpdates(directory)).toEqual([expected[1]!])
+  } finally { setSystemTime() }
 })

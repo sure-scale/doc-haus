@@ -262,6 +262,17 @@ export function leanUserUpdates(directory: string) {
     .sort((a, b) => a.id.localeCompare(b.id))
 }
 
+/** Drafting instructions the sole writer actually accepted, in queue order.
+ * Their receipt belongs to the request record, never to markers in its text.
+ * Clarifications are inspection context, not new drafting instructions. */
+export function acceptedLeanUpdates(directory: string) {
+  return processedLeanRequests(directory).flatMap(({ name, value }) =>
+    isUpdate(value) && typeof value.id === "string" && name === `${value.id}.json` &&
+    "received_at" in value && typeof value.received_at === "string" &&
+    record(value.outcome) && value.outcome.status === "included"
+      ? [{ id: value.id, received_at: value.received_at, text: value.text }] : [])
+}
+
 /** Processed requests in name (arrival) order. They are read once per source
  * snapshot: keying each step consults them, and only the drain writes them. */
 function processedLeanRequests(directory: string): { name: string; value: unknown }[] {

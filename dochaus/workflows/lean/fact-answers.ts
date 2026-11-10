@@ -1,11 +1,12 @@
 import { matterSourceBasis, openItem, quoteFound } from "./quotes"
+import { acceptedLeanUpdates } from "./requests"
 import { factDisposition, questionOptions, readLeanText, readQuestions, shortHash, type FactStatus, type Question } from "./state"
 
 export { factDisposition } from "./state"
 
 // A changed refresh contract must reconsider holds cached by the earlier job,
 // while unchanged Continue requests keep the new contract's bounded result.
-const FACT_CONTEXT_VERSION = 2
+const FACT_CONTEXT_VERSION = 3
 
 /** The selected product option keeps a missing fact open. Its separate marker
  * duty can be checked against the body without turning it into a fact answer. */
@@ -20,7 +21,7 @@ export function canonicalProvisionalFactChoice(question: Question) {
 
 /** A waiting decision is reconsidered only when its relevant inputs change. */
 export function factContext(directory: string) {
-  return shortHash(JSON.stringify([FACT_CONTEXT_VERSION, readLeanText(directory, "request.md") ?? "", readLeanText(directory, "updated-notes.md") ?? "", matterSourceBasis(directory)]), 40)
+  return shortHash(JSON.stringify([FACT_CONTEXT_VERSION, readLeanText(directory, "request.md") ?? "", readLeanText(directory, "updated-notes.md") ?? "", acceptedLeanUpdates(directory), matterSourceBasis(directory)]), 40)
 }
 
 /** Only source-derived resolutions need revalidation; the lawyer's original
@@ -49,10 +50,9 @@ export function currentFactDisposition(directory: string, question: Question) {
 export function laterFactInstructions(directory: string, question: Question) {
   const answered = question.answered_at ? Date.parse(question.answered_at) : NaN
   if (!question.answer_request_id && !Number.isFinite(answered)) return ""
-  const text = readLeanText(directory, "updated-notes.md") ?? ""
-  return [...text.matchAll(/<!-- update:((\d{15})-[^>\r\n]*) -->\s*([\s\S]*?)(?=<!-- update:|$)/g)]
-    .filter(match => question.answer_request_id ? match[1]! > question.answer_request_id : Number(match[2]) > answered)
-    .map(match => match[3]!.trim()).join("\n\n")
+  return acceptedLeanUpdates(directory)
+    .filter(update => question.answer_request_id ? update.id > question.answer_request_id : Date.parse(update.received_at) > answered)
+    .map(update => update.text).join("\n\n")
 }
 
 /** Missing facts can be supplied in the lawyer's own words. These choices

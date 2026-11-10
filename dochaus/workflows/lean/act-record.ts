@@ -14,8 +14,9 @@ import { readLeanJson, writeLeanText, type AnswerReader, type LeanStageState, ty
 // The act record: what the lawyer's instructions direct, read in focused jobs
 // that each answer one question. WHAT lists the legal acts the instructions
 // direct; it runs as ACT_RECORD_SAMPLES samples in sessions of their own, and
-// their verified lists are joined (mergeCoverageActs), so an act one sample
-// misses another can still list. VERIFY then reads that union once, every
+// their source-checked lists are joined (mergeCoverageActs), dropping only
+// identical candidate records, so an act one sample misses another can still
+// list. VERIFY then reads that union once, every
 // candidate with its words and source: each is a legal act, the same legal step
 // as another candidate it keeps, or not an act, of one kind with a reason.
 // Applied in code, a candidate that is not an act and a repeat stay in the
@@ -219,8 +220,9 @@ const text = (row: Record<string, unknown>, key: string) => typeof row[key] === 
 /** A listing reply's rows: each a nonempty `field`, "source" and "quote", the
  * source a matter document, "request" or an adopted recommendation and the quote found in it
  * (listedActIssues). Every defect is retry feedback; the rows are returned only
- * when there is none, each once (by its text, source and quote, as the quote
- * checks normalise them). An empty list is valid. */
+ * when there is none. WHAT deduplicates only identical candidate fields;
+ * semantic sameness belongs to VERIFY. Deliverable deduplication retains its
+ * existing quote-normalized rule. An empty list is valid. */
 function parseListing(reply: string, directory: string, list: "acts" | "deliverables", field: "act" | "deliverable", shape: string): Checked<ListedAct[]> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
   const parsed = parseJsonObject(reply)
@@ -238,7 +240,8 @@ function parseListing(reply: string, directory: string, list: "acts" | "delivera
   if (issues.length) return { issues }
   const seen = new Set<string>()
   return { issues, value: rows.filter(row => {
-    const key = JSON.stringify([normalize(row.act).toLowerCase(), row.source, normalize(row.quote)])
+    const key = JSON.stringify(list === "acts" ? [row.act, row.source, row.quote]
+      : [normalize(row.act).toLowerCase(), row.source, normalize(row.quote)])
     if (seen.has(key)) return false
     seen.add(key)
     return true

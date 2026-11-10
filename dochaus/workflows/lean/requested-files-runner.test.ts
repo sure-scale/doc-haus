@@ -6,13 +6,13 @@ import { combinedDelivery, memoNotesFile, requestedMemo } from "./deliverables"
 import { PLAN_FILES_REVISIONS } from "./draft-sections"
 import { readLeanEvents } from "./events"
 import type { GateResult } from "./gate"
-import { parsePlan, readLeanPlan, writeLeanPlan } from "./plan"
+import { parsePlan, readLeanPlan, withDocumentIDs, writeLeanPlan } from "./plan"
 import { PACKAGE_SCOPE_QUESTION } from "./package-scope"
 import { enqueueLeanRequest } from "./requests"
-import { FILES_REVISION_SCOPE, LEAN_REQUESTED_FILES_SCHEMA, readRequestedFiles, requestedFilesItems, requestedFilesWords, writeRequestedFiles, type RequestedFile } from "./requested-files"
+import { FILES_REVISION_SCOPE, LEAN_REQUESTED_FILES_SCHEMA, readRequestedFiles, requestedFilesIssues, requestedFilesQuestion, requestedFilesItems, requestedFilesWords, writeRequestedFiles, type RequestedFile } from "./requested-files"
 import { runLean } from "./runner"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, disclosableItems, outlineBasis } from "./stages"
-import { leanFile, readLeanJson, readLeanText, readQuestions, writeLeanText } from "./state"
+import { leanFile, readLeanJson, readLeanText, readQuestions, writeLeanText, writeQuestions } from "./state"
 import { AGENT, COVER_MEMO, NO_FINDINGS, actRecordOf, cleanupMatters, draftingNotes, labelledPart, matter, noChanges, placementJob, registering, scriptedModel, type Reply } from "./test-support"
 
 // Requested files through the whole run (runLean): the outline's files job,
@@ -299,7 +299,7 @@ describe("requested files through the run", () => {
 
     enqueueLeanRequest(directory, { kind: "answer", question_id: asked[0]!.id, answer: ANSWER })
     // The job may quote the lawyer's words differently on the new outline.
-    const requoted: RequestedFile = { ...PACKED, quote: "all in one file named Kestrel Release Pack.docx" }
+    const requoted: RequestedFile = { ...PACKED, quote: "all in one file named Kestrel Release Pack.docx", answered_question: asked[0]!.id }
     const answered = scriptedModel(replies({ [AGENT.draft]: outliner(BODY), [AGENT.files]: filesOf(requoted) }))
     expect((await runLean(directory, { sessions: answered.port })).status).toBe("completed")
     // The outline is drawn up again with the answer; the mismatch already asked
@@ -459,5 +459,36 @@ describe("requested files through the run", () => {
       `but the run could not use "${refused}" as its name; it delivers "Cover memo" and "Release letter" in one file named "Release letter.docx". ` +
       "The lawyer should confirm how these files are to be delivered.")
     expect(gateOf(directory).disclosed).toContainEqual(expect.objectContaining({ id: items[0]!.id, status: "disclosed" }))
+  }, 120_000)
+})
+
+
+describe("requested files current decision through the coordinator", () => {
+  test("an answered different file does not stop the current file's outline revision", async () => {
+    const directory = prepared()
+    writeQuestions(directory, [{ id: "requested-files-historical", stage: "draft", kind: "file_name", status: "answered", answer: "As planned.", context: "",
+      question: 'Your words "Send the transfer separately" ask for "Transfer" as a file of its own, but the document plan delivers "Transfer" in one file with "Memo". Do you want it delivered as your words ask, or as planned? If neither, say how it should be delivered.' }])
+    const model = scriptedModel(replies({ [AGENT.draft]: outliner(BODY, COMBINED), [AGENT.files]: filesOf({ ...PACKED, answered_question: null }) }))
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(revisions(model)).toHaveLength(1)
+    expect(readLeanPlan(directory)!.documents[0]!.deliverable).toBe("combined")
+    expect(readQuestions(directory)).toHaveLength(1)
+  }, 120_000)
+
+  test("qualified current words containing the old quote can revise; no text overlap transfers its answer", async () => {
+    const directory = prepared()
+    const documents = withDocumentIDs(parsePlan(BODY, REQUEST).value!.documents)
+    const prior = requestedFilesQuestion(directory, { stated: true, files: [PACKED] }, documents, requestedFilesIssues(documents, "d2", { stated: true, files: [PACKED] }).issues, "d2")!
+    writeQuestions(directory, [{ ...prior, status: "answered", answer: ANSWER }])
+    const quote = `For review copies only, ${PACK}; keep execution copies separate`
+    enqueueLeanRequest(directory, { kind: "update", text: quote })
+    const model = scriptedModel(replies({ [AGENT.draft]: outliner(BODY, COMBINED), [AGENT.files]: filesOf({ ...PACKED, quote, answered_question: null }) }))
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(revisions(model)).toHaveLength(1)
+    expect(readLeanPlan(directory)!.documents[0]!.deliverable).toBe("combined")
+    const prompt = model.prompts.find(prompt => prompt.agent === AGENT.files)!.text
+    expect(prompt).toContain(quote)
+    expect(prompt).toContain(ANSWER)
+    expect(readQuestions(directory)).toHaveLength(1)
   }, 120_000)
 })

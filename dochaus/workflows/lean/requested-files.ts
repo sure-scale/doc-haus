@@ -8,7 +8,7 @@ import { OTHER_FORMAT, formatStem, spelledNames } from "./delivery-selection"
 import { nameKey, normalizedHeading, plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { REQUEST_SOURCE, excerpt, instructionFound, lawyerWords, matterSourceIDs, openItem, quoteMissIssue } from "./quotes"
-import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, shortHash, writeLeanText, type OpenItem, type Question } from "./state"
+import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, shortHash, writeLeanText, undecidedQuestion, type OpenItem, type Question } from "./state"
 
 // Requested files: which files the lawyer asks to receive, and which planned
 // documents go in each. A requested memo is a planned document (the plan's
@@ -24,8 +24,9 @@ import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, short
 // revisions leave, once for the lawyer's words as they stand. The memo asked
 // for with a document planned as a redline goes to the lawyer with no
 // revision. Once the lawyer has answered a requested-files question, no
-// revision is asked for (requestedFilesRevision), and only files no answered
-// question listed are asked about. A file name is no planning judgement, so
+// revision is asked for that file (requestedFilesRevision) while the current
+// files read identifies the answer as applicable. Other files may be revised
+// or asked about. A file name is no planning judgement, so
 // withRequestedNames gives grounded names to the plan. Several planned
 // documents the lawyer's words put in one file are held as one document, the
 // others its separate instruments (foldRequestedFiles), before any of this
@@ -49,8 +50,11 @@ export const LEAN_REQUESTED_FILES_SCHEMA = "dochaus.lean.requested-files/3"
  * document first, none when no planned document is what it holds; its name in the lawyer's own spelling, or null; and the
  * lawyer's exact words that ask for it. A name a reply gave for these words but
  * the lawyer's words did not confirm, or that gives a format other than Word's,
- * is kept as `refused_name`, beside a null name, for disclosure only. */
-export type RequestedFile = { holds: string[]; name: string | null; quote: string; refused_name?: string }
+ * is kept as `refused_name`, beside a null name, for disclosure only.
+ * `answered_question` binds an existing answer that the focused files job
+ * finds still permits that question's planned alternative for this complete
+ * file. Null/missing means no such authority, including uncertainty. */
+export type RequestedFile = { holds: string[]; name: string | null; quote: string; refused_name?: string; answered_question?: string | null }
 /** `stated` is false, with no files, when the lawyer's words do not say how the
  * planned documents are delivered as files. */
 export type RequestedFiles = { stated: boolean; files: RequestedFile[] }
@@ -72,7 +76,7 @@ export type FilesIssue = { issue: string; documents: DocID[]; ask: boolean }
 const RECORD_FILE = "requested-files.json"
 const QUESTION_ID = "requested-files-"
 
-const FILES_SHAPE = 'Reply with the JSON object only: {"stated":true,"files":[{"holds":["planned id"],"name":"file name or null","quote":"..."}]}.'
+const FILES_SHAPE = 'Reply with the JSON object only: {"stated":true,"files":[{"holds":["planned id"],"name":"file name or null","quote":"...","answered_question":null}]}.'
 const STATED_WITH_FILES = '"stated" is false, but "files" lists files. Give "stated": true with the files the lawyer\'s words ask for, or "stated": false with "files": [].'
 const STATED_WITHOUT_FILES = '"stated" is true, but "files" is empty. List each file the lawyer\'s words ask for, or reply {"stated":false,"files":[]} when they do not say.'
 
@@ -89,7 +93,7 @@ function wordsBlocks(directory: string) {
   return [
     tagged("request", readLeanText(directory, "request.md") ?? ""),
     updates ? tagged("user_updates", `Later instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n${updates}`) : "",
-    answers ? tagged("answers", `The lawyer's own answers remain controlling; an adopted recommendation is the drafter's judgment, as its label says:\n${answers}`) : "",
+    answers ? tagged("answers", `Read each answer on the point it decides, beside later instructions: a later change supersedes an earlier answer on that point. An adopted recommendation is the drafter's judgment, as its label says:\n${answers}`) : "",
   ]
 }
 
@@ -111,6 +115,7 @@ export function requestedFilesPrompt(directory: string, documents: PlannedDocume
       "- Put each planned document in one file at most. List only the files the lawyer's words ask for, and in each only what those words put in it.",
       "- A file the lawyer's words name as the output of the whole request holds everything the run drafts for it, including each planned document the plan adds to carry the request out; a file they name for one document holds only that document. " +
       "Put a planned document in a file only where the lawyer's words place it.",
+      '- For each file also give "answered_question": the exact ID of an answered requested-files question in <answers> whose actual answer permits the delivery that question described as planned for this file, and still permits it under the current instructions, or null when none applies or applicability is uncertain. An answer asking for delivery as requested does not permit keeping a mismatching plan. Read the answer itself, not just the question or shared words. An unrelated update leaves an applicable answer standing; changed or qualified instructions may supersede it. Never transfer an answer to another file. The question must describe this same complete file (its contents, order and name).',
       `- ${FILES_SHAPE}`,
       "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply.",
     ].join("\n")),
@@ -155,7 +160,10 @@ export function parseRequestedFiles(reply: string, directory: string, documents:
       return void issues.push(`${where} needs "holds" as a list of planned ids ([] when no planned document is what the file holds), "name" as a file name or null, and a nonempty "quote" string. ${shape}`)
     const given = typeof row.name === "string" ? row.name.trim() : ""
     const name = !given ? null : /\.docx$/i.test(given) || OTHER_FORMAT.test(given) ? given : `${given}.docx`
-    const file: RequestedFile = { holds: [...new Set((row.holds as string[]).map(id => id.trim()))], name, quote: row.quote.trim() }
+    const file: RequestedFile = { holds: [...new Set((row.holds as string[]).map(id => id.trim()))], name, quote: row.quote.trim(),
+      ...(row.answered_question === undefined ? {} : { answered_question: row.answered_question as string | null }) }
+    if (row.answered_question !== undefined && row.answered_question !== null && typeof row.answered_question !== "string")
+      issues.push(`${where}.answered_question must be an answered requested-files question ID or null.`)
     rows.push({ index, file })
     if (!instructionFound(directory, file.quote)) return void issues.push(quoteMissIssue(directory, where, { quote: file.quote, source_id: REQUEST_SOURCE }, "json"))
     // A name is held to its quote once the quote is the lawyer's words.
@@ -179,6 +187,9 @@ export function parseRequestedFiles(reply: string, directory: string, documents:
       ? `${where} gives the name "${given}", which is not a plain Word file name. Give the file name as the lawyer writes it, without a folder or Markdown, or null when the lawyer gives none.`
       : `${where} gives the name "${given}", but its quote does not give that name. Quote the lawyer's words that name this file, and give the name exactly as they write it, or null when the lawyer gives none.`)
   })
+  for (const { index, file } of rows) if (typeof file.answered_question === "string" &&
+    !answeredFiles(directory).listing(file, asked(file, id => documents.find(document => document.id === id))))
+    issues.push(`files[${index}].answered_question must be null or the ID of an answered requested-files question describing this same complete file. Read its actual answer beside the current instructions; do not inherit another file's decision.`)
   const ids = documents.map(document => document.id as string)
   const places = new Map<string, number[]>()
   for (const { index, file } of rows) for (const id of file.holds) {
@@ -307,11 +318,16 @@ export const FILES_REVISION_SCOPE = 'These issues concern only how the outline d
 /** The outline revision request for `issues` (requestedFilesIssues): the issues
  * a revision may settle, after FILES_REVISION_SCOPE, and the planned documents
  * they concern, the only ones whose delivery is taken from the revision.
- * Undefined when no issue is a revision's, or once the lawyer has answered any
- * requested-files question: a revision never overrides an answer. */
-export function requestedFilesRevision(directory: string, issues: FilesIssue[]) {
-  const revisable = issues.filter(row => !row.ask)
-  if (!revisable.length || answeredFiles(directory).any) return
+ * Only issues of files still governed by a specific answer are excluded;
+ * an earlier answer about another file never vetoes a revision. */
+export function requestedFilesRevision(directory: string, issues: FilesIssue[], context?: { requested: RequestedFiles; documents: PlannedDocument[]; memo: DocID | undefined }) {
+  const answered = answeredFiles(directory)
+  const decided = context?.requested.files.flatMap(file => {
+    const check = fileCheck(file, context.documents, context.memo)
+    return !check.unsupported && check.issue && answered.listing(file, asked(file, id => context.documents.find(document => document.id === id)))?.planned === check.planned ? [check.issue.issue] : []
+  }) ?? []
+  const revisable = issues.filter(row => !row.ask && !decided.includes(row.issue))
+  if (!revisable.length) return
   return { feedback: [FILES_REVISION_SCOPE, ...revisable.map(row => row.issue)], documents: new Set(revisable.flatMap(row => row.documents)) }
 }
 
@@ -500,41 +516,32 @@ export function foldRequestedFiles<T extends Omit<PlannedDocument, "id">>(docume
   }
 }
 
-/** The id of the requested-files question on the lawyer's words as they stand:
- * the request and the lawyer's updates. An answer or a later job's quoting does
- * not change it; an update does. */
-const questionID = (directory: string) =>
-  `${QUESTION_ID}${shortHash(JSON.stringify([readLeanText(directory, "request.md") ?? "", readLeanText(directory, "updated-notes.md") ?? ""]))}`
+/** The existing input key includes the current request, updates and answers.
+ * An answer cannot suppress a new unresolved point merely by sharing the old
+ * instruction snapshot; a still-applicable decision is bound per file. */
+const questionID = (directory: string) => `${QUESTION_ID}${requestedFilesWords(directory)}`
 
 /** One line of a requested-files question (requestedFilesQuestion): the
  * lawyer's words, what they ask for and how the plan delivers it instead, up to
  * the next line, the redline note or the closing question. */
 const QUESTION_LINE = /Your words "(.*?)" ask for (.*?), but the document plan delivers (.*?)\.(?= Your words "| The memo can be joined | (?:For each, do|Do) you want )/g
 
-/** The answered requested-files questions (requestedFilesQuestion), on the
- * lawyer's words as they stand or as they stood: whether there is any, and,
- * for a recorded `file`, the words an answered question listed that hold or
- * are held in the file's quote, which a later job may quote more or less fully;
- * `same` when the question listed them as the quote gives them, and `planned`,
- * how the plan delivered the file when the question was asked. Words match
- * whatever the question said they ask for, since a later outline may rename a
- * document and a later job may give or drop a name. Only when other files of
- * the record (`files`) are asked for in those words too does what the question
- * said they ask for (asked) have to be `what` the file asks for: words that ask
- * for several files are listed for each file the question asked about, never
- * for another file they ask for. */
-function answeredFiles(directory: string) {
-  const flat = (words: string) => normalize(words.replace(/…$/, "")).toLowerCase()
-  const holds = (words: string, quote: string) => flat(words).includes(flat(quote)) || flat(quote).includes(flat(words))
-  const answered = readQuestions(directory).filter(question => question.id.startsWith(QUESTION_ID) && question.status === "answered")
-  const listed = answered.flatMap(question => [...question.question.matchAll(QUESTION_LINE)]
-    .map(match => ({ words: match[1]!.replace(/…$/, ""), files: match[2]!, planned: match[3]! })))
+/** A prior decision is identified by the focused files job, which reads the
+ * actual answer beside the current instructions. Code checks its identity and
+ * the complete file description generated from the current structured file.
+ * A missing/null binding supplies no decision authority; quote overlap never
+ * establishes applicability. */
+function answeredFiles(directory: string, current = true) {
+  const answered = readQuestions(directory).filter(question => question.id.startsWith(QUESTION_ID) && question.status === "answered" &&
+    typeof question.answer === "string" && question.answer.trim() && question.answer_kind !== "instruction" && !undecidedQuestion(question))
   return {
-    any: answered.length > 0,
-    listing: (file: RequestedFile, files: RequestedFile[], what: string) => {
-      const row = listed.find(row => holds(row.words, file.quote) &&
-        (flat(row.files) === flat(what) || !files.some(other => other !== file && holds(row.words, other.quote))))
-      return row === undefined ? undefined : { words: row.words, same: flat(row.words) === flat(excerpt(file.quote)), planned: row.planned }
+    listing: (file: RequestedFile, what: string) => {
+      if (typeof file.answered_question !== "string" || !current) return
+      const questions = answered.filter(question => question.id === file.answered_question)
+      for (const question of questions) {
+        const row = [...question.question.matchAll(QUESTION_LINE)].find(match => match[2] === what)
+        if (row) return { words: row[1]!.replace(/…$/, ""), same: row[1] === excerpt(file.quote), planned: row[3]! }
+      }
     },
   }
 }
@@ -543,12 +550,9 @@ function answeredFiles(directory: string) {
  * deliver as the record asks (`issues`, from requestedFilesIssues on the same
  * documents and memo document `memo`): the lawyer's words, what they ask for,
  * by title and file name, and how the plan delivers it instead. It is asked once for the
- * lawyer's words as they stand (questionID): undefined when there is no issue
- * or that question is already open or answered, since a later job may quote
- * the same words differently. A file whose words an answered question listed
- * (answeredFiles) is not asked about again, even once an update changes the
- * lawyer's words, a later outline renames its document or a later job gives or
- * drops its name. */
+ * current request, updates and answers (questionID): undefined when there is
+ * no issue or that question is already recorded. An earlier answer suppresses
+ * only the complete file the current files job identifies as still governed by that answer. */
 export function requestedFilesQuestion(directory: string, requested: RequestedFiles, documents: PlannedDocument[], issues: FilesIssue[], memo: DocID | undefined): Question | undefined {
   if (!issues.length) return
   const id = questionID(directory)
@@ -557,7 +561,7 @@ export function requestedFilesQuestion(directory: string, requested: RequestedFi
   const listed = requested.files.flatMap(file => {
     const check = fileCheck(file, documents, memo)
     const what = asked(file, id => documents.find(document => document.id === id))
-    return check.unsupported || !check.planned || answered.listing(file, requested.files, what) ? []
+    return check.unsupported || !check.planned || answered.listing(file, what)?.planned === check.planned ? []
       : [{ ask: Boolean(check.issue?.ask), line: `Your words "${excerpt(file.quote)}" ask for ${what}, but the document plan delivers ${check.planned}.` }]
   })
   if (!listed.length) return
@@ -606,7 +610,8 @@ export function readRequestedFiles(directory: string): LeanRequestedFiles | unde
 
 const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) &&
   row.holds.every(id => typeof id === "string" && /^d[1-9]\d*$/.test(id)) && (row.name === null || typeof row.name === "string") && typeof row.quote === "string" &&
-  (row.refused_name === undefined || typeof row.refused_name === "string")
+  (row.refused_name === undefined || typeof row.refused_name === "string") &&
+  (row.answered_question === undefined || row.answered_question === null || typeof row.answered_question === "string")
 
 /** The open items for recorded files the saved plan does not deliver as the
  * lawyer asked, derived from the record and never stored. Only a record of the
@@ -633,9 +638,9 @@ const savedFile = (row: unknown) => record(row) && Array.isArray(row.holds) &&
  * lawyer's words, says what they ask for and every file the run delivers
  * instead, by all it holds, and belongs to the drafting notes,
  * so a repair goes to the notes writer. Once the lawyer has answered a
- * requested-files question that listed these words for this file
- * (answeredFiles), the item cites that answer in plain words, quoting the
- * words it listed when they are more or fewer than the item's, but only while
+ * requested-files question and the current saved files read binds that answer
+ * as still applicable to this complete file (answeredFiles), the item cites it
+ * in plain words, quoting the words it listed when they are more or fewer than the item's, but only while
  * the plan delivers the file as that question showed; otherwise the lawyer
  * should confirm it. Each item refers to its file by the file's index in the
  * record (`requested_file`) and lists the names it says the run delivers that
@@ -745,7 +750,7 @@ function requestedFilesRaised(directory: string, told?: OpenItem[]): { item: Ope
     return `${what} in ${where}${file.held ? `, since a file already in the matter holds the name "${file.held}"` : ""}`
   }
   const lawyerQuote = (words: string) => `"${words.replace(/\s+/g, " ").trim()}"` + (matterSourceIDs(directory).includes(REQUEST_SOURCE) ? "" : ` [source: ${REQUEST_SOURCE}]`)
-  const answered = answeredFiles(directory)
+  const answered = answeredFiles(directory, saved.words === requestedFilesWords(directory))
   // A file the record lists twice, alike in every field, is one file: the first
   // listing stands for both, so the notes have one item to disclose.
   const entry = (file: RequestedFile) => JSON.stringify([file.holds, file.name, file.quote, file.refused_name ?? null])
@@ -779,7 +784,7 @@ function requestedFilesRaised(directory: string, told?: OpenItem[]): { item: Ope
     // about the run's output, read from that name alone, never from the quote.
     const format = refused !== undefined && (OTHER_FORMAT.test(refused) || formatStem(nameStem(refused)))
     const what = asked(file, held => plan.documents.find(row => row.id === held))
-    const listed = answered.listing(file, saved.files, what)
+    const listed = answered.listing(file, what)
     const closing = unplanned ? " The lawyer should confirm what that file is to hold."
       : listed && !check.unsupported && check.planned === listed.planned
       ? ` The lawyer answered the question about ${listed.same ? "these files" : `the files the words ${lawyerQuote(listed.words)} ask for`}; ` +

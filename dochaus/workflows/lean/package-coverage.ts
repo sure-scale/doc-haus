@@ -1,6 +1,6 @@
-import { normalize, normalizeWithMap, sourceReadings } from "../../lib/quote-verify"
+import { normalize, normalizeWithMap } from "../../lib/quote-verify"
 import { TOOL_SYNTAX_ISSUE, parseJsonObject, printedToolCall, record } from "./checks"
-import { readActRecord, signerFlags, type ActRecord } from "./act-record"
+import { readActRecord, signerFlags, type ActRecord, type ListedAct } from "./act-record"
 import { FIRST_DOCUMENT, nameKey, namedIn, readLeanPlan, type ActingFor, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { approvedResearch, researchHandoff } from "./research"
@@ -153,16 +153,14 @@ export function listedActIssues(directory: string, where: string, act: Instructe
   return issues
 }
 
-/** Verified lists of separate runs joined, in run order: every act of the
- * first list, in its order, then each act of a later list whose quote overlaps
- * no quote of an act already kept from the same source, in any reading of that
- * source (sourceReadings: one run may copy an email's bold marks and another
- * leave them out), so an act any run listed is kept once. */
-export function mergeCoverageActs<T extends { source: string; quote: string }>(...lists: T[][]): T[] {
+/** Source-checked candidates joined in sample order. Only identical candidate
+ * fields are duplicates here: one quote can direct several different acts.
+ * Wording, case and quote variants remain for VERIFY's independent decision
+ * about whether they express the same legal step. */
+export function mergeCoverageActs(...lists: ListedAct[][]): ListedAct[] {
   const [first = [], ...later] = lists
   const merged = [...first]
-  const same = (a: T, b: T) => a.source === b.source &&
-    sourceReadings(a.source).some(reading => overlaps(normalizeWithMap(a.quote, reading).text, normalizeWithMap(b.quote, reading).text))
+  const same = (a: ListedAct, b: ListedAct) => a.act === b.act && a.source === b.source && a.quote === b.quote
   for (const act of later.flat()) if (!merged.some(other => same(other, act))) merged.push(act)
   return merged
 }
