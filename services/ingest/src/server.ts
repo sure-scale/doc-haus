@@ -15,6 +15,9 @@ import { assertMatterWordEditsAllowed, assertWordEditAllowed, EditingLeaseError,
 import { templateDraftRoutes } from "./template-drafts"
 import { templateBatchRoutes, withTemplateBatches } from "./template-batch-routes"
 import { registeredCombinedParts } from "./combined-output"
+import { DocumentExchangeError, readDocumentExchangeRequest } from "./document-exchanges"
+import { documentExchangeRoutes } from "./document-exchange-routes"
+import { clauseHistoryRoutes } from "./clause-history"
 import { documentLabelRoutes } from "./document-labels"
 import { pdfPassageRoutes } from "./pdf-page"
 import { readDocumentTarget, registeredDocumentName } from "./registered-document"
@@ -169,7 +172,7 @@ process.on("unhandledRejection", (reason) => {
 // on localhost; a wildcard would let any site in a user's browser hit this
 // service. Non-browser callers (curl, the opencode server) send no Origin and are
 // unaffected.
-const localCors = cors({ origin: (origin) => (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null), exposeHeaders: ["X-DocHaus-Revision-Notice", "X-DocHaus-Export-Name", "X-DocHaus-Chronology-Revision", "X-DocHaus-Batch-Missing"] })
+const localCors = cors({ origin: (origin) => (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null), exposeHeaders: ["X-DocHaus-Revision-Notice", "X-DocHaus-Export-Name", "X-DocHaus-Chronology-Revision", "X-DocHaus-Batch-Missing", "X-DocHaus-Draft-Number", "X-DocHaus-Exchange-Id"] })
 app.use("*", async (c, next) => {
   if (wordTokenPath(c.req.path)) return wordCors(c, next)
   if (/^Bearer /i.test(c.req.header("Authorization") ?? ""))
@@ -642,6 +645,7 @@ app.post("/matters/:id/continuations/dispatch", async (c) => {
 })
 
 app.route("/matters", documentAmendmentRoutes({ directory: matterDir }))
+app.route("/matters", clauseHistoryRoutes({ directory: matterDir }))
 app.route("/matters", documentMarkupRoutes({
   directory: matterDir,
   locks: (dir, file) => [path.basename(file), ...runRedlineLock(dir, file), ...runNotesLock(dir), ...runCombinedLock(dir, file), ".dochaus/source-corpus"],
@@ -841,17 +845,45 @@ app.post("/matters/:id/documents/revisions", async (c) => {
 // removed is listed with removed "redaction" and cannot be opened, compared or
 // restored. A document whose working file was deleted outside doc.haus keeps
 // its history. Read only.
+app.route("/matters", documentExchangeRoutes({ directory: matterDir, saveReturn: async (directory, input) => {
+  const target = resolveMatterDocumentTarget(directory, input.name)
+  return withArtifactMutationLocksAsync(directory, [target.name, ...runCombinedLock(directory, target.docPath), ".dochaus/source-corpus"], async () => {
+    const requestId = input.event.detail?.requestId
+    if (typeof requestId !== "string") throw new DocumentExchangeError("A receipt request identity is required.", "invalid_request_id", 400)
+    const previous = readDocumentExchangeRequest(directory, requestId)
+    if (previous) {
+      const held = readVersion(directory, previous.versionId)
+      if (previous.kind !== "received" || !held || held.document.name !== target.name || held.version.removed || held.document.removed_at != null || !readVersionBytes(directory, held.version) || held.version.sha256 !== sha256Hex(input.bytes) || previous.baseVersionId !== input.parent || previous.party !== (input.event.detail?.party ?? null) || JSON.stringify(previous.source ?? null) !== JSON.stringify(input.event.detail?.source ?? null))
+        throw new DocumentExchangeError("This request identity already records a different action.", "request_conflict")
+      return { version: { id: held.version.id, number: held.version.number } }
+    }
+    assertWordEditAllowed(directory, target.docPath)
+    if (sha256Hex(readFileSync(target.docPath)) !== input.prior) throw new DocumentExchangeError("The document changed after return confirmation. Inspect it again.", "return_current_changed")
+    const combined = await prepareCombinedFile(directory, target.docPath)
+    const parent = readVersion(directory, input.parent)
+    if (!parent || parent.document.name !== target.name || parent.document.removed_at != null)
+      throw new DocumentExchangeError("The selected return base is no longer available.", "return_base_missing")
+    if (parent.version.removed) throw new DocumentExchangeError("The selected return base was removed by redaction.", "removed_by_redaction", 410)
+    if (!readVersionBytes(directory, parent.version)) throw new DocumentExchangeError("The selected return base is missing or damaged.", "version_damaged")
+    const written = await writeDocumentRevision(directory, target.name, Buffer.from(input.bytes), [], input.prior, false, {
+      version: { origin: "revision", actor: input.actor, parent: input.parent, label: "Received version", event: input.event }, exact: true, keepTracked: true,
+    })
+    await rebuildCombinedFile(combined)
+    return written
+  })
+} }))
+
 app.get("/matters/:id/documents/versions", (c) => {
   const dir = matterDir(c.req.param("id"))
   const name = registeredDocumentName(c.req.query("name") ?? "")
   if (!name) return c.json({ error: "The document filename or extension is not supported." }, 400)
   const target = readDocumentTarget(dir, name)
   const present = target && existsSync(target.docPath)
-  const { document, versions, events } = target ? readDocumentVersions(dir, target.name) : { document: null, versions: [], events: [] }
+  const { document, versions, events, linked_returns } = target ? readDocumentVersions(dir, target.name) : { document: null, versions: [], events: [], linked_returns: [] }
   if (!target || (!present && !document)) return c.json({ error: `${name} is not a document in this matter.` }, 404)
   const working = present ? sha256Hex(readFileSync(target.docPath)) : undefined
   const held = versions.find((version) => version.current && version.sha256 === working)
-  return c.json({ name: target.name, document, versions, events, working_version: held?.id ?? null })
+  return c.json({ name: target.name, document, versions, events, linked_returns, working_version: held?.id ?? null })
 })
 
 // One kept version's exact bytes, checked against its hash, served as the

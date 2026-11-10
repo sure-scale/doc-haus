@@ -1,5 +1,5 @@
 import { DeliverableConflictError, writeDeliverable } from "./deliverable"
-import { readLeanState } from "../../../dochaus/workflows/lean/state"
+import { leanSourceVersions, readLeanState } from "../../../dochaus/workflows/lean/state"
 
 // Lean drafting's deliverable port: finished Word files become matter documents
 // with role "deliverable" through the same registry write as every other
@@ -21,7 +21,7 @@ export function registerLeanDeliverable(
   return writeDeliverable(directory, fileName, Buffer.from(bytes), {
     precondition: priorSha256 ? { kind: "replace", prior_sha256: priorSha256, owned: options.owned } : { kind: "create" },
     system: true,
-    version: { origin: "generated", actor: "doc.haus", run: leanRun(directory) },
+    version: { origin: "generated", actor: "doc.haus", run: leanRun(directory), sourceVersions: leanSourceVersions(readLeanState(directory)) },
   }).then(
     written => written.name,
     (error: unknown) => {

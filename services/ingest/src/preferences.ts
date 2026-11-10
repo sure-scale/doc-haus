@@ -53,6 +53,8 @@ function readSavedPreferences() {
 export function validateResearchPreferences(input: unknown): asserts input is Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new PreferencesValidationError("Preferences must be an object.")
   const patch = input as Record<string, unknown>
+  if (Object.hasOwn(patch, "documentMatchingId") && typeof patch.documentMatchingId !== "boolean")
+    throw new PreferencesValidationError("Choose whether exported Word copies include an opaque matching ID.")
   if (Object.hasOwn(patch, "practiceAreas") && (!Array.isArray(patch.practiceAreas) || patch.practiceAreas.length > 50 || patch.practiceAreas.some(value =>
     typeof value !== "string" || /[\p{Cc}\u2028\u2029]/u.test(value) || !normalizePracticeAreas([value]).length)))
     throw new PreferencesValidationError("Practice areas must be a list of up to 50 names, each no longer than 100 characters.")

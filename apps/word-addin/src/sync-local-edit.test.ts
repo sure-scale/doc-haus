@@ -38,7 +38,7 @@ test("reviewed local editing claims available ownership and leaves canonical his
   expect(sync.snapshot().content).toBe("changed"); expect(sync.snapshot().status).toBe("not-saved"); expect(sync.snapshot().busy).toBe(false)
 })
 
-test("unavailable Word transport refuses before sync admission, authoring or local mutation", async () => {
+test("unsupported structural and mixed transports refuse before sync admission, authoring or local mutation", async () => {
   const paragraphs = [{ id: "first", text: "An opening paragraph." }, { id: "last", text: "A retained paragraph." }]
   const target: WordChatTarget = { id: "target", text: paragraphs.map(p => p.text).join("\r"), paragraphs,
     startOffset: 0, endOffset: paragraphs[1]!.text.length, saved: true, capturedAt: "2026-10-29T12:00:00Z" }
@@ -47,7 +47,6 @@ test("unavailable Word transport refuses before sync admission, authoring or loc
   const f = fixture(); await f.sync.start(); f.events.length = 0
   const before = f.sync.snapshot()
   for (const change of [
-    { ...proposal, after: target.text.replace("opening", "revised") },
     { ...proposal, after: `New paragraph.\r${target.text}` },
     { ...proposal, after: target.text.replace("opening", "revised"), formatting: [{ paragraph: 1, spacingAfter: 6 }] },
     { ...proposal, formatting: [{ paragraph: 0, spacingAfter: 6 }] },
@@ -288,14 +287,16 @@ test("a missing proposal binding cannot begin or dispatch a Word edit", async ()
   expect(writes).toBe(0); expect(f.events).not.toContain("begin")
 })
 
-test("eligible single-paragraph wording enters the lease-bound native operation", async () => {
-  const text = "A clear obligation."
-  const target: WordChatTarget = { id: "wording-target", text, paragraphs: [{ id: "p", text }], startOffset: 0,
-    endOffset: text.length, saved: true, capturedAt: "2026-10-29T12:00:00Z" }
-  const proposal: WordChatProposal = { id: "wording", documentId: "document", before: text, after: "A specific obligation.",
+test("eligible single and same-boundary multi-paragraph wording enters the lease-bound native operation", async () => {
+  for (const paragraphs of [[{ id: "p", text: "A clear obligation." }], [{ id: "p", text: "A clear obligation." }, { id: "q", text: "A retained paragraph." }]]) {
+  const text = paragraphs.map(paragraph => paragraph.text).join("\r")
+  const target: WordChatTarget = { id: "wording-target", text, paragraphs, startOffset: 0,
+    endOffset: paragraphs.at(-1)!.text.length, saved: true, capturedAt: "2026-10-29T12:00:00Z" }
+  const proposal: WordChatProposal = { id: "wording", documentId: "document", before: text, after: text.replace("clear", "specific"),
     explanation: "Reviewed change", openItems: [], target, createdAt: target.capturedAt }
   const f = fixture(); await f.sync.start(); f.events.length = 0
   await applyWordChatIfEligible(proposal, () => f.sync.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => { f.events.push("native-wording") }))
   expect(f.events).toEqual(["inspect", "claim", "begin", "native-wording", "settle"])
   expect(f.sync.snapshot().status).toBe("not-saved")
+  }
 })

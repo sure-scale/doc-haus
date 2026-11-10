@@ -90,6 +90,7 @@ async function emailOf(reader: MsgReader, fields: FieldsData): Promise<ParsedEma
     date: isoDate(str(fields.clientSubmitTime) ?? (unsent ? undefined : str(fields.messageDeliveryTime))),
   }
   return {
+    headers,
     text: emailText(headers, attachments, body.text),
     body: body.text,
     attachments,

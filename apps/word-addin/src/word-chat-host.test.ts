@@ -534,6 +534,33 @@ test("current context reads unsaved body without requiring a selection and empty
   expect(state.selected).toBe(0)
 })
 
+test("history captures full Current paragraph at a cursor or partial selection without changing any Word state", async () => {
+  const { state, host, text } = office(["A full clause with revised wording.", "Another clause."])
+  state.paragraphReviewed = (id, version) => id === "paragraph-0" && version === "Current" ? "A full clause with current wording." : undefined
+  for (const selection of [[5,5], [5,12]]) {
+    state.selection = selection
+    const before = text(), saved = state.saved, tracking = state.tracking
+    expect(await host.historyParagraph()).toEqual({ scope: "body", text: "A full clause with current wording." })
+    expect(state.selection).toEqual(selection); expect(text()).toBe(before)
+    expect(state.saved).toBe(saved); expect(state.tracking).toBe(tracking)
+    expect(state.writes).toHaveLength(0); expect(state.modeChanges).toHaveLength(0)
+    expect(state.selected).toBe(0); expect(state.highlights).toBe(0)
+  }
+})
+
+test("history refuses multiple paragraphs, outside-body positions and empty wording without navigation or mutation", async () => {
+  const { state, host, text } = office(["First paragraph.", "Second paragraph."])
+  const before = text()
+  state.selection = [0,before.length]
+  await expect(host.historyParagraph()).rejects.toThrow("one paragraph")
+  state.selection = [0,0]; state.outside = true
+  await expect(host.historyParagraph()).rejects.toThrow("main document")
+  state.outside = false; state.paragraphReviewed = () => ""
+  await expect(host.historyParagraph()).rejects.toThrow("24,000")
+  expect(state.writes).toHaveLength(0); expect(state.modeChanges).toHaveLength(0)
+  expect(state.selected).toBe(0); expect(state.highlights).toBe(0); expect(text()).toBe(before)
+})
+
 test("consequence navigation selects verified wording without changing the document", async () => {
   const { state, host, text } = office(["A clause with a clear obligation.", "Another clause."])
   const target = (await host.selection())!
@@ -1552,6 +1579,99 @@ test("native wording preflights and queues disjoint authored hunks in one tracki
   expect(state.modeChanges).toEqual(["TrackAll", "Off"])
   expect(state.writes.every(write => write.tracking === "TrackAll")).toBe(true)
   expect(state.syncBatchSizes.filter(size => size > 0)).toEqual([4])
+})
+
+test("multi-paragraph wording uses the shared author and one native batch while preserving partial endpoints and unchanged middle paragraphs", async () => {
+  const paragraphs = ["Earlier unsaved note.", "Lead alpha remains.", "Middle paragraph stays.", "Tail gamma follows.", "Later reviewer note."]
+  const { state, nativeHost, text } = office(paragraphs, true)
+  const start = paragraphs[0]!.length + 1 + 5
+  const last = paragraphs.slice(0, 3).reduce((sum, p) => sum + p.length + 1, 0)
+  state.selection = [start, last + "Tail gamma".length]
+  state.comments = [[0, 5]]
+  state.revisions = [[text().length - 5, text().length]]
+  const target = (await nativeHost.selection())!, proposalId = "ordinary-multi-paragraph"
+  const replacement = target.text.replace("alpha", "delta").replace("gamma", "omega")
+  const input = { proposalId, target, replacement, author: async ({ ooxml }: { ooxml: string }) => ({ ...await authorWordChatTarget(ooxml, target, replacement), proposalId }) }
+  const result = await nativeHost.apply(input)
+  expect(result.status).toBe("applied")
+  expect(state.paragraphs.map(p => p.text)).toEqual([paragraphs[0]!, "Lead delta remains.", paragraphs[2]!, "Tail omega follows.", paragraphs[4]!])
+  expect(state.paragraphs.map(p => p.id)).toEqual(paragraphs.map((_, i) => `paragraph-${i}`))
+  expect(state.writes).toHaveLength(2)
+  expect(state.writes[0]!.start).toBeGreaterThan(state.writes[1]!.start)
+  expect(state.modeChanges).toEqual(["TrackAll", "Off"])
+  expect(state.syncBatchSizes.filter(size => size > 0)).toEqual([4])
+  expect(state.writes.every(write => write.tracking === "TrackAll")).toBe(true)
+  expect(result.target).toMatchObject({ text: replacement, startOffset: 5, endOffset: "Tail omega".length, paragraphs: state.paragraphs.slice(1, 4).map(({ id, text }) => ({ id, text })) })
+  expect((await nativeHost.apply(input)).status).toBe("already-applied")
+  expect(state.writes).toHaveLength(2)
+})
+
+test("multi-paragraph wording refuses a stale or protected later paragraph and table-spanning targets before dispatch", async () => {
+  for (const kind of ["stale", "comment", "table"]) {
+    const { state, nativeHost, text } = office(["First alpha clause.", "Second beta clause.", "Other text."], true)
+    state.selection = [0, text().length - "\rOther text.".length]
+    const target = (await nativeHost.selection())!, proposalId = `multi-refusal-${kind}`
+    if (kind === "comment") state.comments = [[target.paragraphs[0]!.text.length + 1, target.text.length]]
+    if (kind === "table") state.paragraphs[1]!.inTable = true
+    let authored = 0
+    const replacement = target.text.replace("alpha", "delta").replace("beta", "gamma")
+    const input = { proposalId, target, replacement, author: async ({ ooxml }: { ooxml: string }) => {
+      authored++
+      const result = { ...await authorWordChatTarget(ooxml, target, replacement), proposalId }
+      if (kind === "stale") state.paragraphs[1]!.text = "Second newer clause."
+      return result
+    } }
+    await expect(nativeHost.apply(input)).rejects.toMatchObject({ mutationState: "unchanged" })
+    expect(authored).toBe(kind === "stale" ? 1 : 0)
+    expect(state.writes).toHaveLength(0)
+    expect(state.modeChanges).toHaveLength(0)
+  }
+})
+
+test("multi-paragraph wording fences a lost native completion without a second dispatch", async () => {
+  const { state, nativeHost, text } = office(["First alpha clause.", "Second beta clause."], true)
+  state.selection = [0, text().length]
+  const target = (await nativeHost.selection())!, proposalId = "multi-lost-completion"
+  const replacement = target.text.replace("alpha", "delta").replace("beta", "gamma")
+  const input = { proposalId, target, replacement, author: async ({ ooxml }: { ooxml: string }) => ({ ...await authorWordChatTarget(ooxml, target, replacement), proposalId }) }
+  state.throwAfterWrite = true
+  await expect(nativeHost.apply(input)).rejects.toMatchObject({ mutationState: "uncertain" })
+  expect(state.writes).toHaveLength(2)
+  await expect(nativeHost.apply(input)).rejects.toThrow("may already contain")
+  expect(state.writes).toHaveLength(2)
+})
+
+test("multi-paragraph wording verifies each paragraph's own formatting and fences later-paragraph property corruption", async () => {
+  for (const corrupt of [false, true]) {
+    const { state, nativeHost, text } = office(["First alpha clause.", "Second beta clause."], true)
+    const properties = ['<w:spacing w:after="120"/>', '<w:spacing w:before="240"/>']
+    for (const [i, p] of state.paragraphs.entries()) state.paragraphXml.set(p.id, `<w:p><w:pPr>${properties[i]}</w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>${p.text}</w:t></w:r></w:p>`)
+    state.selection = [0, text().length]
+    const target = (await nativeHost.selection())!, proposalId = `multi-properties-${corrupt}`
+    const replacement = target.text.replace("alpha", "delta").replace("beta", "gamma")
+    let afterXml: string[] = []
+    state.afterSync = () => {
+      if (!state.writes.length) return
+      for (const [i, p] of state.paragraphs.entries()) state.paragraphXml.set(p.id, corrupt && i === 1 ? afterXml[i]!.replace('w:before="240"', 'w:before="480"') : afterXml[i]!)
+      state.afterSync = undefined
+    }
+    const input = { proposalId, target, replacement, author: async ({ ooxml }: { ooxml: string }) => {
+      const authored = await authorWordChatTarget(ooxml, target, replacement)
+      const doc = new DOMParser().parseFromString(authored.ooxml, "application/xml")
+      afterXml = Array.from(doc.getElementsByTagNameNS(WORD_XML, "p")).map(p => new XMLSerializer().serializeToString(p))
+      return { ...authored, proposalId }
+    } }
+    if (corrupt) {
+      const error = await nativeHost.apply(input).then(() => undefined, error => error)
+      expect(error).toMatchObject({ mutationState: "uncertain" })
+      expect(error.notice).toBe("Word could not confirm preservation of the paragraph formatting. Check the change in Word. Use Undo if needed; do not apply it again.")
+      await expect(nativeHost.apply(input)).rejects.toThrow("may already contain")
+    } else {
+      expect((await nativeHost.apply(input)).status).toBe("applied")
+      for (const [i, p] of state.paragraphs.entries()) expect(state.paragraphXml.get(p.id)).toContain(properties[i]!)
+    }
+    expect(state.writes).toHaveLength(2)
+  }
 })
 
 test("lost granular native sync is uncertain and cannot replay", async () => {

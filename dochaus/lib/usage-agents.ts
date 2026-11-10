@@ -23,6 +23,7 @@ const WORK: Record<string, string> = {
   [UPKEEP_AGENT]: "Conversation titles and compaction",
   [PREPARE_CHANGES_AGENT]: "Prepare changes",
   [REPLY_DRAFTING_AGENT]: "Comment replies",
+  "returned-file-match": "Match a returned file",
   router: "Choose an assistant",
   "document-reviewer": "Word edit review",
   chronology: "Build a chronology",

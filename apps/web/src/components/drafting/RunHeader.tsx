@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
+import SourceBasisNotice from "../SourceBasisNotice"
 import { postureLabel } from "../../api/ingest/preferences"
 import { formatAgo, formatElapsed } from "../../lib/format"
 import { activeStep, providerStopMessage, providerStopNeed, stepActivityLabel, stoppedByTechnicalProblem } from "../narration/activity"
@@ -97,6 +98,7 @@ export default function RunHeader({
             {asks > 0 && <span className="run-head-asks">{asks === 1 ? "1 question for you" : `${asks} questions for you`}</span>}
             <span>{asks > 0 ? "Answer them in the run's own conversation" : stopped ? "A new request starts a new draft" : "Running in its own conversation"}</span>
           </p>
+          <SourceBasisNotice basis={status.source_dependencies} />
         </div>
         <Link className="run-head-cta button" to={{ search: `?view=chat&session=${encodeURIComponent(status.owner_session_id)}` }}>
           Open run
@@ -203,6 +205,7 @@ export default function RunHeader({
           )}
         </div>
       </div>
+      <SourceBasisNotice basis={status.source_dependencies} />
       {confirmStop && (
         <div
           className="run-head-confirm"

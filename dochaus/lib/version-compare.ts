@@ -3,7 +3,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { normalizeParagraphText } from "./drafting-amendment"
 import { docxodus } from "./docxodus"
 import { assertRedlineRoundTrip, redlineRoundTripMismatch } from "./redline-round-trip"
-import type { CompareOptions, ChangeLocation, ChangeHunk, ProposalOutcome, VersionComparison } from "./version-compare-contract"
+import type { CompareOptions, ChangeLocation, ChangeHunk, ComparisonParagraph, ParagraphComparison, ProposalOutcome, VersionComparison } from "./version-compare-contract"
 export type { CompareOptions, ChangeLocation, ChangeHunk, SideRevisions, ProposalOutcome, VersionComparison } from "./version-compare-contract"
 
 // Compares two versions of one Word document. The blackline is Word Compare's:
@@ -21,10 +21,11 @@ type DiffRevision = NonNullable<Awaited<ReturnType<Dx["docxDiffCompareProducts"]
 type InputRevision = Awaited<ReturnType<Dx["getRevisions"]>>[number]
 type ListedRevision = ReturnType<ReturnType<Dx["openDocxSession"]>["listRevisions"]>[number]
 type Hunk = ChangeHunk & { left: string[]; right: string[] }
-type Block = { location: Omit<ChangeLocation, "side">; text: string }
+type Block = { location: Omit<ChangeLocation, "side">; text: string; history?: Omit<ComparisonParagraph, "location" | "text"> }
 type Carried = ListedRevision & { countered: boolean }
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+const W14 = "http://schemas.microsoft.com/office/word/2010/wordml"
 const STORY = /^word\/(?:document|header\d*|footer\d*|footnotes|endnotes)\.xml$/
 // ProjectionScopes: body, headers, footers, footnotes and endnotes; not comments.
 const STORIES = 31
@@ -35,6 +36,35 @@ const FORMAT_CHANGES = new Set(["rPrChange", "pPrChange", "sectPrChange", "tblPr
 const REVISION = new Map<string, "ins" | "del">([["ins", "ins"], ["moveTo", "ins"], ["del", "del"], ["moveFrom", "del"]])
 
 export const untrackedAuthor = (label: string) => `Not tracked (${label})`
+
+// The same paragraph projection and two-sided diff anchors as #201, including
+// unchanged paragraphs. No model, persistent IDs invented, or document writes.
+async function currentParagraphView(bytes: Uint8Array) {
+  const dx = await docxodus()
+  return (await dx.getRevisions(bytes)).length ? acceptLeft(dx, bytes) : { view: bytes, sent: [] as ListedRevision[] }
+}
+const paragraphInventory = (blocks: Map<string, Block>): ComparisonParagraph[] => [...blocks.values()].flatMap(block => block.history
+  ? [{ ...block.history, location: block.location, text: block.text }] : [])
+
+export async function readComparisonParagraphs(bytes: Uint8Array): Promise<ComparisonParagraph[]> {
+  const { view, sent } = await currentParagraphView(bytes)
+  return paragraphInventory(await side(view, [])).map(paragraph => ({ ...paragraph,
+    revisions: sent.filter(revision => revision.anchorId === paragraph.anchorId || revision.affectedAnchors.some(anchor => anchor.id === paragraph.anchorId)).map(revision => revision.id) }))
+}
+
+export async function compareParagraphs(left: Uint8Array, right: Uint8Array): Promise<ParagraphComparison> {
+  const dx = await docxodus()
+  const leftView = (await currentParagraphView(left)).view, rightView = (await currentParagraphView(right)).view
+  const compared = await dx.docxDiffCompareProducts(leftView, rightView, {
+    preAcceptInputRevisions: true, detectMoves: true, compareHeadersFooters: true,
+    authorForRevisions: "Comparison", dateTimeForRevisions: "2000-01-01T00:00:00Z",
+  }, ["revisions"])
+  const revisions = (compared.revisions ?? []).filter(row => row.revisionType !== "FormatChanged")
+  const anchors = revisions.flatMap(row => [row.leftAnchor ?? [], row.rightAnchor ?? []].flat())
+  const leftSide = await side(leftView, anchors), rightSide = await side(rightView, anchors)
+  return { left: paragraphInventory(leftSide), right: paragraphInventory(rightSide),
+    changes: hunks(revisions, leftSide, rightSide, "C", true).map(({ kind, left, right }) => ({ kind, left, right })) }
+}
 
 export async function compareVersions(
   left: { bytes: Uint8Array; label: string },
@@ -222,7 +252,7 @@ export async function roundTrips(blackline: Uint8Array, left: Uint8Array, right:
 // move, form one hunk, so a split, a merge or a moved paragraph edited in place
 // reads as one change. A hunk whose revisions carry no text (a lone paragraph
 // mark) is left out; the blackline still shows it.
-function hunks(revisions: DiffRevision[], leftSide: Map<string, Block>, rightSide: Map<string, Block>, prefix: "C" | "U"): Hunk[] {
+function hunks(revisions: DiffRevision[], leftSide: Map<string, Block>, rightSide: Map<string, Block>, prefix: "C" | "U", includeParagraphMarks = false): Hunk[] {
   const parent = revisions.map((_, index) => index)
   const root = (index: number): number => parent[index] === index ? index : (parent[index] = root(parent[index]))
   const first = new Map<string, number>()
@@ -236,7 +266,7 @@ function hunks(revisions: DiffRevision[], leftSide: Map<string, Block>, rightSid
   })
   const groups = new Map<number, DiffRevision[]>()
   revisions.forEach((row, index) => groups.set(root(index), [...groups.get(root(index)) ?? [], row]))
-  return [...groups.values()].filter(rows => rows.some(row => row.text.replace(/\n/g, ""))).map((rows, index) => {
+  return [...groups.values()].filter(rows => includeParagraphMarks || rows.some(row => row.text.replace(/\n/g, ""))).map((rows, index) => {
     const left = unique(rows.flatMap(row => row.leftAnchor ?? [])), right = unique(rows.flatMap(row => row.rightAnchor ?? []))
     const kind = rows.some(row => row.revisionType === "Moved") ? "moved" : left.length && right.length ? "modified" : left.length ? "deleted" : "inserted"
     const at = (anchor: string | undefined, side: "left" | "right") => {
@@ -267,9 +297,12 @@ async function side(bytes: Uint8Array, wanted: string[]) {
     const containers = new Set(wanted)
     const blocks = new Map<string, Block>()
     const ordinals = new Map<string, number>()
+    const activeComments = new Map<string, Set<number>>()
     let heading: string | undefined
     let waiting: { id: string; scope: string; heading?: string; text: string }[] = []
     for (const [id, anchor] of anchors) {
+      // Comment paragraphs are annotation text, not clauses in a document story.
+      if (anchor.scope.startsWith("cmt")) continue
       const body = anchor.scope === "body"
       if (!PARAGRAPHS.has(anchor.kind)) {
         if (containers.has(id)) waiting.push({ id, scope: anchor.scope, heading: body ? heading : undefined, text: containerText(session.raw.getXml(id)) })
@@ -277,10 +310,26 @@ async function side(bytes: Uint8Array, wanted: string[]) {
       }
       const paragraph = (ordinals.get(anchor.scope) ?? 0) + 1
       ordinals.set(anchor.scope, paragraph)
-      const text = withTabs(session.raw.getXml(id), texts.get(id) ?? "")
+      const xml = session.raw.getXml(id)
+      const node = new DOMParser().parseFromString(xml, "application/xml").documentElement
+      const text = withRunWhitespace(node, texts.get(id) ?? "")
+      const recordedId = node.getAttributeNS(W14, "paraId") ?? ""
+      const nativeId = /^[0-9a-f]{8}$/i.test(recordedId) && !/^0+$/.test(recordedId) ? recordedId.toUpperCase() : undefined
+      const active = activeComments.get(anchor.scope) ?? new Set<number>()
+      const comments = new Set(active)
+      for (const marker of elements(node, "*")) {
+        if (!["commentRangeStart", "commentRangeEnd", "commentReference"].includes(marker.localName)) continue
+        const value = marker.getAttributeNS(W, "id") ?? ""
+        if (!/^\d+$/.test(value)) continue
+        const comment = Number(value)
+        comments.add(comment)
+        if (marker.localName === "commentRangeStart") active.add(comment)
+        if (marker.localName === "commentRangeEnd") active.delete(comment)
+      }
+      activeComments.set(anchor.scope, active)
       // A heading is a one-line label: its typed number's tab reads as a space, as Word's own number does.
       if (anchor.kind === "h" && body) heading = [anchor.autoNumberPrefix, (text || anchor.textPreview).replace(/\t+/g, " ")].filter(Boolean).join(" ")
-      blocks.set(id, { text, location: { scope: scopeOf(anchor.scope), paragraph,
+      blocks.set(id, { text, history: { anchorId: id, story: anchor.scope, ...(nativeId ? { nativeId } : {}), comments: [...comments] }, location: { scope: scopeOf(anchor.scope), paragraph,
         ...body && heading ? { heading } : {}, ...anchor.autoNumberPrefix ? { number: anchor.autoNumberPrefix } : {} } })
       for (const row of waiting.filter(row => row.scope === anchor.scope))
         blocks.set(row.id, { text: row.text, location: { scope: scopeOf(row.scope), paragraph, ...row.heading ? { heading: row.heading } : {} } })
@@ -304,15 +353,22 @@ function containerText(xml: string) {
 }
 
 const paragraphText = (paragraph: Element) => elements(paragraph, "*")
-  .map(child => child.localName === "t" ? child.textContent ?? "" : child.localName === "tab" && (child.parentNode as Element).localName === "r" ? "\t" : "").join("")
+  .map(child => {
+    if (child.localName === "t") return child.textContent ?? ""
+    if ((child.parentNode as Element).localName !== "r") return ""
+    if (child.localName === "tab") return "\t"
+    if (child.localName === "cr" || child.localName === "br" && [null, "", "textWrapping"].includes(child.getAttributeNS(W, "type"))) return "\n"
+    // A page/column break controls layout, not a soft line within the wording.
+    return ""
+  }).join("")
 
-// Docxodus's paragraph text drops a run's tab, gluing a clause number typed
-// before one to its text ("3.3The"). The paragraph's own runs restore it when,
-// tabs aside, they read exactly as Docxodus's text; otherwise its text stands.
-function withTabs(xml: string, text: string) {
-  if (!/<w:tab[\s/>]/.test(xml)) return text
-  const typed = paragraphText(new DOMParser().parseFromString(xml, "application/xml").documentElement)
-  return typed.replace(/\t/g, "") === text ? typed : text
+// Docxodus drops run tabs and soft breaks from grep's paragraph text. Restore
+// the saved run whitespace only when all other literal characters agree, so a
+// renderer's partial or differently projected text cannot become exact evidence.
+function withRunWhitespace(paragraph: Element, text: string) {
+  const typed = paragraphText(paragraph)
+  const withoutRunWhitespace = (value: string) => value.replace(/[\t\n]/g, "")
+  return withoutRunWhitespace(typed) === withoutRunWhitespace(text) ? typed : text
 }
 
 // Re-labels the plain blackline. A revision whose key matches one in the

@@ -64,6 +64,7 @@ export type EmailAttachment = {
 }
 
 export type ParsedEmail = {
+  headers?: EmailHeaders
   text: string
   // The message body alone, the end of `text` below its headers; "" when the
   // email has none (or its MIME structure hid it). The extraction quality gate
@@ -96,7 +97,8 @@ export async function parseEmail(buffer: Buffer | Uint8Array): Promise<ParsedEma
   const parts = email.attachments.filter((part) => !(part.related && part.contentId && part.mimeType?.toLowerCase().startsWith("image/")))
   const attachments = parts.map((part, index) => emailAttachment(part.filename, part.mimeType, partContent(part), index + 1))
   const body = email.text ?? (email.html ? htmlBodyText(email.html) : "")
-  return { text: emailText(email, attachments, body), body, attachments, embedded: email.attachments.length - parts.length }
+  const headers: EmailHeaders = { subject: email.subject, from: email.from, to: email.to, cc: email.cc, date: email.date }
+  return { headers, text: emailText(email, attachments, body), body, attachments, embedded: email.attachments.length - parts.length }
 }
 
 export async function emlToText(buffer: Buffer | Uint8Array) {

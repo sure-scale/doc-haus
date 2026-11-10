@@ -6,7 +6,7 @@ import { configureConnectionRecovery, createPaneRenderer } from "./pane-render"
 import { setupLatestVersion } from "./latest-version"
 import { ChatRequestError, chatClient } from "./chat-client"
 import { mountWordChat } from "./chat-ui"
-import { captureCurrentWordContext, captureWordReviewContext, captureWordChatSelection, navigateWordChatTarget, wordChatTableTarget, applyReviewedProposal, applyReviewedTableRow, applyWordChatRowDeletion, checkWordChatRowDeletion, WordChatHostError } from "./word-chat-host"
+import { captureCurrentWordContext, captureWordReviewContext, captureWordChatSelection, captureWordHistoryParagraph, navigateWordChatTarget, wordChatTableTarget, applyReviewedProposal, applyReviewedTableRow, applyWordChatRowDeletion, checkWordChatRowDeletion, WordChatHostError } from "./word-chat-host"
 import { watchWordChatSelection } from "./word-chat-selection"
 import { openChatAttachments } from "./chat-attachments"
 import { preferRoomyPane } from "./feature-tabs"
@@ -14,6 +14,7 @@ import type { WordChatPreparedAmendment } from "../../../dochaus/lib/word-chat-a
 import type { WordChatAuthoredTableRow, WordChatAuthoredTableRowDeletion } from "../../../dochaus/lib/word-chat-contract"
 import { createReplaceConfirmation } from "./replace-confirmation"
 import { applyWordChatIfEligible, wordChatApplyEligibility } from "./word-chat-apply"
+import type { ClauseHistoryResult, ClauseHistorySourceResult } from "../../../dochaus/lib/clause-history-contract"
 
 const element = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
 const badge = element("status")
@@ -107,6 +108,15 @@ async function main(): Promise<void> {
       capture: captureCurrentWordContext,
       captureReview: captureWordReviewContext,
       captureSelection: captureWordChatSelection,
+      async history(signal) {
+        const base = () => { const state = sync.snapshot(); return state.acknowledgement?.base ?? state.connection?.version.base?.id ?? link.baseVersion }
+        const anchorVersion = base()
+        const paragraph = await captureWordHistoryParagraph()
+        if (signal.aborted) throw new Error("History was closed.")
+        if (base() !== anchorVersion) throw new Error("The saved version changed while reading this paragraph. Refresh history to check it again.")
+        return chat.request<ClauseHistoryResult>("history", { anchorVersion, paragraph }, signal)
+      },
+      historySource: (source, signal) => chat.request<ClauseHistorySourceResult>("history-source", source, signal),
       navigate: navigateWordChatTarget,
       tableTarget: wordChatTableTarget,
       watchSelection: watchWordChatSelection,

@@ -49,6 +49,9 @@ export type DraftingPreferences = {
   agreementLegend: string
   adviceLegend: string
   notesMarking: boolean
+  // Opaque source-version metadata on exported Word copies. It grants no
+  // access; firms that scrub metadata can disable it. Never sent to the model.
+  documentMatchingId: boolean
   // The library template (WORKSPACE_ROOT/.templates) whose styles, numbering,
   // fonts and page set-up a document drafted without a template of its own is
   // rendered onto (lib/template-seed.ts); "" is doc.haus's house style. A file
@@ -113,6 +116,7 @@ export const DEFAULT_DRAFTING: DraftingPreferences = {
   agreementLegend: "",
   adviceLegend: "",
   notesMarking: true,
+  documentMatchingId: true,
   styleTemplate: "",
   quickDraftOffer: "ask",
   backgroundAgents: { chronologySuggestion: true, reviewCompare: true, narration: true },
@@ -152,6 +156,7 @@ export function normalizePreferences(value: unknown): DraftingPreferences {
     agreementLegend: normalizeLegend(input.agreementLegend),
     adviceLegend: normalizeLegend(input.adviceLegend),
     notesMarking: input.notesMarking !== false,
+    documentMatchingId: input.documentMatchingId !== false,
     styleTemplate: normalizeStyleTemplate(input.styleTemplate),
     quickDraftOffer: input.quickDraftOffer === "auto" || input.quickDraftOffer === "off" ? input.quickDraftOffer : DEFAULT_DRAFTING.quickDraftOffer,
     backgroundAgents: normalizeBackgroundAgents(input.backgroundAgents),

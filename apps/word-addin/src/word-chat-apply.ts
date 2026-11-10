@@ -49,16 +49,19 @@ export function nativeWordChatParagraphInsertionEligible(target: WordChatTarget,
     validWordChatParagraphInsertion(snapshot, canonical, replacement, formatting, inlineFormatting)
 }
 
-/** Native wording transport for ordinary single-paragraph changes. Exact
- * authored hunks, formatting and fresh Word scope are verified by the host. */
+/** Native wording retains every existing paragraph boundary. Exact authored
+ * hunks, formatting and fresh Word scope are verified by the host. */
 export function nativeWordChatTextEligible(target: WordChatTarget, replacement: string): boolean {
-  const paragraph = target.paragraphs[0]?.text
-  const boundary = (offset: number) => paragraph !== undefined && Number.isSafeInteger(offset) && offset >= 0 && offset <= paragraph.length &&
+  const boundary = (paragraph: string | undefined, offset: number) => paragraph !== undefined && Number.isSafeInteger(offset) && offset >= 0 && offset <= paragraph.length &&
     !(offset > 0 && offset < paragraph.length && /[\uD800-\uDBFF]/.test(paragraph[offset - 1]!) && /[\uDC00-\uDFFF]/.test(paragraph[offset]!))
-  return target.text.length > 0 && replacement !== target.text && target.paragraphs.length === 1 &&
-    boundary(target.startOffset) && boundary(target.endOffset) && paragraph!.slice(target.startOffset, target.endOffset) === target.text &&
-    (replacement.length > 0 || target.paragraphs[0]!.text.slice(0, target.startOffset).length + target.paragraphs[0]!.text.slice(target.endOffset).length > 0) &&
-    target.startOffset <= target.endOffset && !/[\r\n\t\v]/.test(target.text) && !/[\r\n\t\v]/.test(replacement)
+  const paragraphs = target.paragraphs, after = replacement.split("\r")
+  if (!target.text.length || replacement === target.text || !paragraphs.length || paragraphs.length > 64 ||
+    new Set(paragraphs.map(p => p.id)).size !== paragraphs.length || after.length !== paragraphs.length ||
+    !boundary(paragraphs[0]?.text, target.startOffset) || !boundary(paragraphs.at(-1)?.text, target.endOffset) ||
+    paragraphs.length === 1 && target.startOffset > target.endOffset || /[\n\t\v]/.test(target.text) || /[\n\t\v]/.test(replacement)) return false
+  const selected = paragraphs.map((p, i) => p.text.slice(i === 0 ? target.startOffset : 0, i === paragraphs.length - 1 ? target.endOffset : p.text.length))
+  return selected.join("\r") === target.text && paragraphs.every((p, i) =>
+    (i === 0 ? p.text.slice(0, target.startOffset) : "") + after[i]! + (i === paragraphs.length - 1 ? p.text.slice(target.endOffset) : "") !== "")
 }
 
 /** Transport availability only. Live Word identity, target uniqueness,

@@ -16,6 +16,7 @@ import { SourceDocumentConflictError } from "./ingest"
 import { wordHttpsConfiguration } from "./word-configuration"
 import { wordHttpsAvailable, wordHttpsFailure } from "./word-https"
 import { installWordSourceDesk, readDeskSource } from "./word-source-desk"
+import { installWordClauseHistory } from "./clause-history"
 import { installWordChat, WordChatError } from "./word-chat"
 import { WordOpenTickets, wordOpenPath, wordOpenResultPath } from "./word-open-tickets"
 import { readWordHandout, writeWordHandout, type WordHandoutIdentity } from "./word-handouts"
@@ -386,6 +387,7 @@ export function wordDocumentRoutes(deps: Dependencies) {
   }
   type Authenticated = NonNullable<ReturnType<typeof authenticate>>
   installWordSourceDesk(app, authenticate)
+  installWordClauseHistory(app, authenticate)
   const chat = installWordChat(app, authenticate, deps.wordChatOptions)
   function identity(auth: Authenticated, session: string): WordLeaseIdentity {
     return { document: auth.grant.document_id, tokenHash: auth.grant.token_hash, session }

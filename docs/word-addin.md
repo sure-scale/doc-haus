@@ -98,7 +98,8 @@ POST/OPTIONS `/word/lease`, `/word/saves`, `/word/heartbeat`, `/word/done` and
 `/word/desk/sources`, `/word/desk/source`, `/word/desk/versions`, `/word/desk/compare`,
 `/word/desk/open`, and the exact `/word/chat/` commands `conversations`,
 `conversation`, `send`, `poll`, `cancel`, `materials`, `upload`, `suggest`,
-`prepare`, `events`, `assess`, `assessment` and `assessment-cancel` to ingest. Do not
+`prepare`, `events`, `assess`, `assessment`, `assessment-cancel`, `history` and
+`history-source` to ingest. Do not
 expose the rest of the ingest API through this Word receiver. In Docker, build
 the pane with `bun run --cwd apps/word-addin build` and include its `dist` assets
 with the server. The normal start scripts build these assets automatically.
@@ -206,6 +207,14 @@ Apply leaves the matter's version history alone: choose **Save** to synchronize
 Word's resulting document and wait for the saved-version acknowledgement.
 Reviewed application requires current Microsoft 365 Word with WordApi 1.6;
 unsupported hosts retain chat and the existing save flow.
+
+Choose **History** in Chat while the cursor or a selection is within one
+paragraph. It captures that whole paragraph without moving the Word selection,
+then shows its wording in available saved versions. Unverified or missing
+correspondence stays visibly unresolved. Saved comments and local markup
+decisions retain their exact source; they do not establish external agreement.
+Unsaved wording that cannot be matched to the acknowledged saved copy is not
+assigned a history. **Done** or Escape returns to Chat without editing or saving.
 
 ## Matter documents and version comparison
 

@@ -33,6 +33,7 @@ export type DraftingPreferences = {
   agreementLegend: string
   adviceLegend: string
   notesMarking: boolean
+  documentMatchingId: boolean
   // The library template whose styles, clause numbering, fonts and page set-up
   // a document drafted without a template of its own takes; "" is the house
   // style. Read when a document renders, never sent to the model.

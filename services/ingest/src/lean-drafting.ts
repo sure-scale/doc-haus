@@ -1,5 +1,6 @@
 import { checklistRefinableParents } from "../../../dochaus/workflows/lean/checklist-flow"
 import { draftingRunStopped, draftingUpdateAdmission } from "../../../dochaus/lib/drafting-update-admission"
+import { readSourceDependencyStatus } from "../../../dochaus/lib/source-version-dependencies"
 import { mkdirSync, renameSync } from "node:fs"
 import path from "node:path"
 import { Hono } from "hono"
@@ -28,6 +29,7 @@ import {
   matterRelative,
   readLeanJson,
   readLeanState,
+  leanSourceVersions,
   readLeanText,
   readQuestions,
   validateAnswerText,
@@ -186,6 +188,7 @@ function readLeanDraftingStatus(directory: string) {
     questions: readQuestions(directory),
     gate,
     documents,
+    source_dependencies: readSourceDependencyStatus(directory, leanSourceVersions(state)),
     changed_after_check: changedAfterCheck(directory, gate, documents),
     plan: plannedDocuments(directory),
     // The name the plan gives the memo the lawyer asked for, which the run's

@@ -13,6 +13,20 @@ test("one-sided wording eligibility binds the selection and keeps a nonempty par
   expect(nativeWordChatTextEligible({ ...target, paragraphs: [{ id: "p", text: "A😀B" }], text: "\ude00", startOffset: 2, endOffset: 3 }, "")).toBe(false)
 })
 
+test("multi-paragraph wording eligibility binds every selected boundary and retains the existing paragraphs", () => {
+  const pair = { id: "pair", text: "alpha.\rBeta", paragraphs: [{ id: "first", text: "Prefix alpha." }, { id: "last", text: "Beta suffix." }], startOffset: 7, endOffset: 4, saved: false, capturedAt: "" }
+  expect(nativeWordChatTextEligible(pair, "delta.\rGamma")).toBe(true)
+  expect(wordChatApplyEligibility(pair, "delta.\rGamma").supported).toBe(true)
+  expect(wordChatApplyEligibility(pair, "delta.\rGamma", undefined, false).supported).toBe(false)
+  for (const replacement of ["delta. Gamma", "delta.\rGamma\rNew paragraph", "delta.\nGamma"])
+    expect(nativeWordChatTextEligible(pair, replacement)).toBe(false)
+  expect(nativeWordChatTextEligible(pair, "\rGamma")).toBe(true) // unselected Prefix keeps the first paragraph nonempty
+  for (const changed of [{ ...pair, startOffset: 6 }, { ...pair, endOffset: 5 }, { ...pair, paragraphs: [pair.paragraphs[0]!, { ...pair.paragraphs[1]!, id: "first" }] }])
+    expect(nativeWordChatTextEligible(changed, "delta.\rGamma")).toBe(false)
+  const whole = { ...pair, text: "Prefix alpha.\rBeta suffix.", startOffset: 0, endOffset: 12 }
+  expect(nativeWordChatTextEligible(whole, "\rGamma")).toBe(false)
+})
+
 test("inline formatting eligibility accepts exact partial and whole-paragraph spans, including turning a property off", () => {
   expect(wordChatApplyEligibility(target, target.text, undefined, true, { bold: false, italic: true })).toEqual({ supported: true })
   const whole = { ...target, text: "Alpha beta", startOffset: 0, endOffset: 10 }

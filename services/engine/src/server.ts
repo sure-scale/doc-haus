@@ -498,7 +498,8 @@ async function generateText(request: Request, locations: Context.Service.Shape<t
   if (!actual || actual === root || !actual.startsWith(root + path.sep))
     return Response.json({ error: "Matter is outside the workspace or unavailable" }, { status: 403 })
   const body:unknown = await request.json().catch(() => undefined)
-  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !["prompt", "outputContract"].includes(key)) ||
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !["prompt", "outputContract", "modelRole"].includes(key)) ||
+    ("modelRole" in body && body.modelRole !== "fast") ||
     ("outputContract" in body && body.outputContract !== DOCUMENT_AMENDMENT_LEGAL_OUTPUT) ||
     !("prompt" in body) || typeof body.prompt !== "string" || !body.prompt.trim() || Buffer.byteLength(body.prompt) > 1_048_576)
     return Response.json({ error: "Provide only a nonempty prompt within the input limit." }, { status: 400 })
@@ -509,7 +510,7 @@ async function generateText(request: Request, locations: Context.Service.Shape<t
   const trace = { source: "engine_generate_endpoint", directory: actual, prompt: body.prompt, prompt_sha256: sha256(body.prompt), started_at: new Date().toISOString() }
   const began = Date.now()
   try {
-    const data = await runEngine(generateMatterText(body.prompt, "outputContract" in body ? DOCUMENT_AMENDMENT_LEGAL_OUTPUT : undefined).pipe(
+    const data = await runEngine(generateMatterText(body.prompt, "outputContract" in body ? DOCUMENT_AMENDMENT_LEGAL_OUTPUT : undefined, "modelRole" in body ? "fast" : undefined).pipe(
       Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(actual) }))),
       // Same engine-wide model admission queue as native sessions; the usage stays with the response.
       Effect.provideService(LLMClient.Service, client),
