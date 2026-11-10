@@ -1432,6 +1432,33 @@ test("nested list Before review uses the captured label without inventing a new 
   } finally { f.restore() }
 })
 
+test("empty chat stays quiet during consequence discovery disconnects and remains usable", async () => {
+  let disconnected = true
+  const f = fixture({ request: async action => {
+    if (action === "assessment") {
+      if (disconnected) throw new ChatRequestError("Server temporarily unavailable", true)
+      return { assessment: null }
+    }
+    return undefined
+  } })
+  try {
+    await f.chat.ready
+    for (const elapsed of [1_500, 8_000, 8_000, 8_000]) {
+      await f.advance(elapsed)
+      expect(f.get("consequences").hidden).toBe(true)
+      expect(f.get("consequences").textContent).not.toContain("unavailable")
+      expect(f.get<HTMLTextAreaElement>("message").disabled).toBe(false)
+    }
+    expect(f.calls.filter(call => call.action === "assessment").length).toBeGreaterThanOrEqual(3)
+    disconnected = false; await f.advance(8_000)
+    expect(f.get("consequences").hidden).toBe(true)
+    await f.send("Explain payment")
+    expect(f.calls.some(call => call.action === "send")).toBe(true)
+    expect(f.root.textContent).toContain("Payment is due in 14 days.")
+    expect(f.calls.some(call => call.action === "assess")).toBe(false)
+  } finally { f.restore() }
+})
+
 test("consequence admission never blocks foreground chat or amendment Apply", async () => {
   let complete!: (value: unknown) => void, admissions = 0
   const f = fixture({ turns: [turn({ kind: "amendment", proposal })], request: async action => {
