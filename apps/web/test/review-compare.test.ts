@@ -156,7 +156,7 @@ test("comparison reasons retain their wording even when a filename resembles a l
   expect(qualified.cells["Except.docx"]!.reason).toBe("Except for fraud, liability is capped.")
 })
 
-async function engine(onWait: (request: Request) => Promise<Response>) {
+async function engine(onWait: (request: Request) => Promise<Response>, response = reply([[["Alpha.docx", "Beta.docx"], "Three years"], [["Zeta.docx"], "Two years"]])) {
   const original = globalThis.fetch
   const requests: Request[] = []
   let created: Record<string, unknown> | undefined
@@ -172,7 +172,7 @@ async function engine(onWait: (request: Request) => Promise<Response>) {
     if (pathname.endsWith("/prompt")) return Response.json({ data: { id: "msg_fixture" } })
     if (pathname.endsWith("/wait")) return onWait(request)
     if (pathname.endsWith("/message")) return Response.json({ data: [
-      { type: "assistant", content: [{ type: "text", text: reply([[["Alpha.docx", "Beta.docx"], "Three years"], [["Zeta.docx"], "Two years"]]) }] },
+      { type: "assistant", content: [{ type: "text", text: response }] },
       { type: "idle", outcome: "succeeded" },
     ], cursor: {} })
     if (pathname.endsWith("/interrupt")) return Response.json({ interrupted: true })
@@ -190,6 +190,61 @@ test("runs one hidden review-compare session on the fast model and deletes it", 
     expect(fake.created()).toMatchObject({ agent: "review-compare", model: { providerID: "provider", id: "fast" }, metadata: { dochaus_role: "review-compare" }, title: `doc.haus review compare: ${term}` })
     expect(fake.requests.some(r => r.method === "DELETE" && r.url.includes(String(fake.created()?.id)))).toBe(true)
     expect(fake.requests.some(r => r.url.endsWith("/interrupt"))).toBe(false)
+  } finally { fake.restore() }
+})
+
+test("current cited inputs carry comparability instructions and an unavailable reply through the real producer", async () => {
+  const value = grid()
+  value.cells[cellKey("Beta.docx", "term")]!.answer = "The supplied excerpt does not establish the initial term."
+  value.cells[cellKey("Alpha.docx", "term")]!.citation!.excerpt = "The initial term is three years."
+  value.cells[cellKey("Beta.docx", "term")]!.citation!.excerpt = "The agreement takes effect on signature."
+  const input = comparisonInputs(value, "term", rows.slice(0, 2)) as ComparisonInput
+  const reason = "The initial term cannot be established for one document from its supplied evidence."
+  const fake = await engine(async () => new Response(null, { status: 204 }), JSON.stringify({ status: "unavailable", reason }))
+  try {
+    const result = await compareColumn(matterClient("/synthetic/matter"), input, new AbortController().signal)
+    const promptRequest = fake.requests.find(r => r.url.endsWith("/prompt"))!
+    const body = await promptRequest.json() as { text: string; delivery: string }
+    expect(body).toEqual({ text: comparePrompt(input), delivery: "queue" })
+    const evidenceStart = body.text.indexOf(JSON.stringify(input.documents))
+    expect(body.text.indexOf("Determine comparability before forming groups.")).toBeLessThan(evidenceStart)
+    expect(body.text).toContain("Silence in the supplied evidence or a statement that the answer is unavailable does not establish that a term or obligation is absent.")
+    expect(body.text).toContain('Unavailable result: {"status":"unavailable","reason":')
+    expect(input.documents.map(d => [d.answer, d.excerpt])).toEqual(rows.slice(0, 2).map(r => {
+      const cell = value.cells[cellKey(r.name, "term")]!
+      return [cell.answer, cell.citation!.excerpt]
+    }))
+    expect(result).toMatchObject({ questionHash: hashQuestion(term), inputs: input.signature, status: "unavailable", summary: reason, cells: {} })
+    expect(fake.requests.some(r => r.method === "DELETE" && r.url.includes(String(fake.created()?.id)))).toBe(true)
+    expect(fake.requests.some(r => r.url.endsWith("/interrupt"))).toBe(false)
+  } finally { fake.restore() }
+})
+
+test("an explicit supported absence remains comparable through the actual producer and admission", async () => {
+  const question = "Is customer consent required for an assignment?"
+  const value: Grid = { columns: [{ id: "consent", question }], cells: {} }
+  const positions = ["Customer consent is required for assignment.", "No customer consent is required for assignment."]
+  for (const [index, row] of rows.slice(0, 2).entries()) {
+    const cell = cited(row.name, positions[index]!, question)
+    cell.citation!.excerpt = positions[index]!
+    value.cells[cellKey(row.name, "consent")] = cell
+  }
+  const input = comparisonInputs(value, "consent", rows.slice(0, 2)) as ComparisonInput
+  const fake = await engine(async () => new Response(null, { status: 204 }), reply([
+    [["Alpha.docx"], positions[0]!], [["Beta.docx"], positions[1]!],
+  ], "The consent requirements differ."))
+  try {
+    const result = await compareColumn(matterClient("/synthetic/matter"), input, new AbortController().signal)
+    const body = await fake.requests.find(r => r.url.endsWith("/prompt"))!.json() as { text: string }
+    expect(body.text).toContain("An explicit supported absence of a requirement is a substantive answer and remains comparable.")
+    expect(body.text).toContain(JSON.stringify(input.documents))
+    expect(result?.status).toBeUndefined()
+    expect(result?.cells).toEqual({
+      "Alpha.docx": { label: "differs", reason: positions[0] },
+      "Beta.docx": { label: "differs", reason: positions[1] },
+    })
+    expect(result).toMatchObject({ questionHash: hashQuestion(question), inputs: input.signature })
+    expect(fake.requests.some(r => r.method === "DELETE")).toBe(true)
   } finally { fake.restore() }
 })
 
