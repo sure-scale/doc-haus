@@ -1,6 +1,7 @@
 import { compareParagraphs, readComparisonParagraphs } from "../../../dochaus/lib/version-compare"
-import type { DocumentReturnTieBreak, ReturnBaseContrast } from "../../../dochaus/lib/document-return-tie-break-contract"
+import type { DocumentReturnTieBreak, ReturnBaseContrast, ReturnIdentityClarification } from "../../../dochaus/lib/document-return-tie-break-contract"
 import { checkBaseContrast, planBaseContrast, supportedBaseIds } from "./document-return-base-contrast"
+import { checkIdentityClarification, clarifyIdentity } from "./document-return-identity-clarification"
 import { inspectDocumentReturn, type DocumentExchangeSource, type DocumentReturnInspection } from "./document-return-matching"
 import { readAvailableDocumentVersions, readDocumentVersions, readVersion, readVersionBytes, sha256Hex } from "./document-versions"
 import { generateFor } from "./engine-generate"
@@ -195,7 +196,7 @@ export async function tieBreakDocumentReturn(directory: string, input: { name: s
     return reading
   })
   const prompts = candidates.map(candidate => [
-    `<request>Assess only whether the incoming file continues this one candidate as the same logical document, describes a different document/transaction, or is uncertain. This is ancestry, not legal equivalence. You receive only checked exact quotations selected by source-part reading jobs, their coverage and limitations, never complete documents. Parts processed is not proof of complete semantic extraction. Consider all quoted transaction-specific wording, exceptions, qualifications and continuation/dependency notes. Shared boilerplate, similar obligations or related parties alone do not establish ancestry. If the checked evidence omits needed context or cannot resolve an exception, choose uncertain. Do not choose a base or infer recency. Never invent an author, event or reason. Return only JSON {"versionId":"${candidate.versionId}","relation":"same-document"|"different-document"|"uncertain","reason":"qualified explanation at most 1200 characters","evidence":[{"versionId":"${candidate.versionId}","incomingQuote":"copy one checked incoming quote exactly","candidateQuote":"copy one checked candidate quote exactly"}]}. At most 4 evidence pairs; do not shorten or expand a checked quote. A same/different judgment needs at least one pair; uncertain may have none.</request>`,
+    `<request>Assess ONLY whether the checked evidence identifies the same specific logical document/instrument, a different document/instrument, or leaves identity uncertain. Transaction-specific evidence may identify an instrument, but distinct instruments within one transaction are different documents. Do not decide historical descent, version ancestry or a comparison base. Versions of one instrument may change substantive legal terms; unchanged wording or legal equivalence is not required for logical identity. Qualifications that identify different parties, subject matter or a different instrument still matter. You receive only model-selected checked quotations, coverage and limitations, never complete documents; parts processed is not complete semantic extraction. Shared boilerplate, similar obligations or related parties alone do not establish identity. If transaction-identifying context is missing or an identity qualification cannot be resolved, choose uncertain and say exactly what remains unknown. Do not turn an unresolved version-term comparison into a different-document finding. Never invent an author, event or reason. Return only JSON {"versionId":"${candidate.versionId}","relation":"same-document"|"different-document"|"uncertain","reason":"qualified explanation at most 1200 characters","evidence":[{"versionId":"${candidate.versionId}","incomingQuote":"copy one checked incoming quote exactly","candidateQuote":"copy one checked candidate quote exactly"}]}. At most 4 evidence pairs; do not shorten or expand a checked quote. A same/different judgment needs at least one pair; uncertain may have none.</request>`,
     `<incoming encoding="json">${data({ source: input.source, reading: readings[0] })}</incoming>`,
     `<candidate encoding="json">${data({ versionId: candidate.versionId, current: candidate.current, sent: candidate.sent, reading: readings[allSources.indexOf(candidate) + 1] })}</candidate>`, NOTICE,
   ].join("\n"))
@@ -212,7 +213,7 @@ export async function tieBreakDocumentReturn(directory: string, input: { name: s
     if (!incomingComparisons.has(versionId)) incomingComparisons.set(versionId, compareParagraphs(sourceBytes.get(versionId)!, input.bytes))
     return incomingComparisons.get(versionId)!
   }
-  const possible = new Set(judgments.filter(row => row.relation === "same-document").map(row => row.versionId))
+  const possible = new Set(judgments.filter(row => row.relation !== "different-document").map(row => row.versionId))
   const plans: ReturnType<typeof planBaseContrast>[] = []
   for (let left = 0; left < allSources.length; left++) for (let right = left + 1; right < allSources.length; right++) {
     const a = allSources[left]!, b = allSources[right]!
@@ -250,7 +251,52 @@ export async function tieBreakDocumentReturn(directory: string, input: { name: s
   for (const result of contrastResults) baseContrasts[result.index]!.parts.push(result.checked)
   for (const contrast of baseContrasts) contrast.coverage.processedPassages = contrast.parts.length
   await checkSources()
-  const supported = supportedBaseIds(candidates, allSources, judgments, baseContrasts)
+  // An identity omission must not suppress the new passages that could resolve
+  // it. Clarify ONLY original uncertainty, one complete changed-passage triple
+  // per job, preserving the original reading context and all required coverage.
+  const clarificationPlans = judgments.filter(judgment => judgment.relation === "uncertain").map(initial => {
+    const candidate = candidates.find(source => source.versionId === initial.versionId)!
+    const relevant = plans.map((plan, index) => ({ plan, index })).filter(({ plan }) => plan.leftVersionId === initial.versionId || plan.rightVersionId === initial.versionId)
+    const unresolved = relevant.flatMap(({ index }) => baseContrasts[index]!.unresolved)
+    const rivals = allSources.filter(source => source.documentId === candidate.documentId && source.versionId !== candidate.versionId)
+    if (!rivals.length || relevant.length !== rivals.length) unresolved.push("The identity clarification lacks complete retained-rival coverage.")
+    if (relevant.some(({ index }) => baseContrasts[index]!.coverage.processedPassages !== baseContrasts[index]!.coverage.changedPassages)) unresolved.push("Some required changed passages were not processed completely.")
+    return { initial, candidate, relevant, unresolved, requiredParts: relevant.reduce((count, { plan }) => count + plan.coverage.changedPassages, 0) }
+  })
+  const clarificationJobs = clarificationPlans.flatMap((context, index) => context.relevant.flatMap(({ plan, index: contrastIndex }) => plan.parts.flatMap(triple => {
+    const side = plan.leftVersionId === context.initial.versionId ? "left" as const : "right" as const
+    const rivalVersionId = side === "left" ? plan.rightVersionId : plan.leftVersionId
+    const incomingReading = readings[0]!, candidateReading = readings[sources.findIndex(source => source.id === context.initial.versionId)]
+    if (!candidateReading || candidateReading.coverage.partsProcessed !== candidateReading.coverage.totalParts || incomingReading.coverage.partsProcessed !== incomingReading.coverage.totalParts) {
+      context.unresolved.push(`Changed passage ${triple.part}: complete initial readings and limitation notes are unavailable.`); return []
+    }
+    const prompt = [
+      `<request>Assess ONLY what this new passage contributes to clarifying the original uncertain logical-document identity for versionId ${data(context.initial.versionId)}, using this NEW complete changed-passage triple together with the actual checked initial readings. Do not decide a version/base or historical descent. Explain which original uncertainty this new evidence resolves and how, or what remains unknown. Versions may differ in substantive terms without being different instruments; identity still needs evidence of the same specific instrument, not boilerplate or related parties alone. Shared transaction context cannot make distinct instruments the same document. The comparison retrieves passages and does not establish their identity. If this passage needs an identity-bearing exception, external source, cross-reference, continuation or correspondence that remains unresolved, return uncertain. Absence from selected quotations is never absence from the source. A neutral passage does not resolve any original material identity uncertainty; that uncertainty must be explicitly resolved by another required passage before the aggregate identity can qualify. This job sees one changed passage; other passages are clarified separately. A neutral result means this complete, adequately read passage is independently non-identifying and adds no identity support or conflict. Neutral NEVER means missing correspondence, a missing necessary qualification/cross-reference, or an unaddressed material identity concern. Those require uncertain. At least one passage must explicitly resolve the original material identity concern using NEW evidence; every other required passage must be consistent or independently neutral. Do not infer approval, facts or missing terms. Return only JSON {"versionId":${data(context.initial.versionId)},"relation":"same-document"|"different-document"|"neutral"|"uncertain","reason":"at most 1200 characters, explaining the original uncertainty and new evidence","limitations":["at most three limitations, each at most 300 characters"],"evidence":[{"versionId":${data(context.initial.versionId)},"incomingQuote":"copy a supplied complete quotation","candidateQuote":"copy a supplied complete quotation from THIS candidate"}]}. At most 4 pairs. A same-document, different-document or neutral result requires empty limitations and at least one pair copying the COMPLETE new incoming paragraph and this candidate's COMPLETE variant, including qualifications. Additional pairs may copy checked initial quotes exactly. An uncertain relation may have no pairs. Never quote the rival as this candidate.</request>`,
+      `<initial-identity encoding="json">${data(context.initial)}</initial-identity>`,
+      `<initial-readings encoding="json">${data({ incoming: incomingReading, candidate: candidateReading, rivalNotes: readingNotes(rivalVersionId) })}</initial-readings>`,
+      `<identity-clarification encoding="json">${data({ versionId: context.initial.versionId, rivalVersionId, candidateSide: side, triple,
+        coverage: { requiredParts: context.requiredParts, retainedContrast: baseContrasts[contrastIndex]!.coverage }, unresolved: context.unresolved })}</identity-clarification>`, NOTICE,
+    ].join("\n")
+    if (Buffer.byteLength(prompt) > 64 * 1024) { context.unresolved.push(`Changed passage ${triple.part}: complete initial identity context exceeds the focused clarification bound.`); return [] }
+    return [{ index, prompt, check: { versionId: context.initial.versionId, rivalVersionId, side, triple,
+      incomingQuotes: incomingReading.parts.flatMap(part => part.quotes.map(quote => quote.text)), candidateQuotes: candidateReading.parts.flatMap(part => part.quotes.map(quote => quote.text)) } }]
+  })))
+  await checkSources()
+  const clarificationResults = await jobs(clarificationJobs.length, async (index, signal) => {
+    const job = clarificationJobs[index]!, answer = await generateFor("returned-file-match", directory, job.prompt, signal, undefined, "fast")
+    try { return { index: job.index, checked: { ...checkIdentityClarification(answer.text, job.check), model: modelOf(answer.model) } } }
+    catch (error) { return fail(error instanceof Error ? error.message : "The identity clarification could not be read.") }
+  })
+  await checkSources()
+  const identityClarifications: ReturnIdentityClarification[] = clarificationPlans.map((plan, index) => {
+    const parts = clarificationResults.filter(result => result.index === index).map(result => result.checked)
+    return clarifyIdentity(plan.initial, { requiredParts: plan.requiredParts, processedParts: parts.length }, plan.unresolved, parts)
+  })
+  const effectiveJudgments = judgments.map(judgment => {
+    const clarification = judgment.relation === "uncertain" ? identityClarifications.find(row => row.versionId === judgment.versionId) : undefined
+    return clarification ? { ...judgment, relation: clarification.relation, reason: clarification.reason, initialRelation: judgment.relation } : judgment
+  })
+  const supported = supportedBaseIds(candidates, allSources, effectiveJudgments, baseContrasts)
   // Two plausible bases (including different physical documents) remain human
   // work. Prohibiting current can never manufacture a winner.
   const allowedBaseIds = supported.length === 1 ? supported : []
@@ -267,13 +313,15 @@ export async function tieBreakDocumentReturn(directory: string, input: { name: s
     incomingQuote: part.evidence.incoming.text, candidateQuote: part.evidence[part.support].text,
   }] : [])
   const allDifferent = judgments.every(judgment => judgment.relation === "different-document")
-  const identitySummaries = judgments.map(({ evidence, ...judgment }) => ({ ...judgment, ...(allDifferent ? { evidence } : {}) }))
+  const identitySummaries = effectiveJudgments.map(({ evidence, ...judgment }) => ({ ...judgment, ...(allDifferent ? { evidence } : {}) }))
+  const clarificationSummaries = identityClarifications.map(({ parts, ...clarification }) => ({ ...clarification, limitations: parts.flatMap(part => part.limitations.map(text => ({ rivalVersionId: part.rivalVersionId, part: part.part, text }))) }))
   // Reconciliation needs every checked pair to resolve competition/uncertainty,
   // but it never receives another full document or invents another quotation.
   const prompt = [
-    '<request>Reconcile checked document-identity judgments and version-base contrasts into one advisory choice, new-document, or uncertain. A candidate must be in allowedBaseIds: that list requires positive distinguishing support against EVERY retained same-document rival, including current, with all changed passages accounted for. same-document alone never supports a base. Empty allowedBaseIds means candidate is forbidden. Never choose or default to a current version; if only current evidence supports ancestry, choose uncertain. If more than one earlier version remains equally plausible or judgments conflict, choose uncertain. New-document requires every identity pair judgment to say different-document. Do not infer facts beyond checked conclusions and quotations. Return only JSON {"choice":"candidate"|"new-document"|"uncertain","versionId":"allowedBaseIds entry only for candidate","reason":"qualified explanation at most 1600 characters","evidence":[{"versionId":"listed id","incomingQuote":"copy a checked incoming quote exactly","candidateQuote":"copy its paired checked candidate quote exactly"}]}. Omit versionId except for candidate. Candidate must quote its positive base contrast evidence, never identity-only quotations; new-document needs a checked contrast for every candidate. At most 24 evidence pairs. The lawyer confirms the actual document/base; even inherited variant wording does not prove historical descent.</request>',
+    '<request>Reconcile checked document-identity judgments and version-base contrasts into one advisory choice, new-document, or uncertain. A candidate must be in allowedBaseIds: that list requires positive distinguishing support against EVERY retained same-document rival, including current, with all changed passages accounted for. same-document alone never supports a base. Empty allowedBaseIds means candidate is forbidden. Never choose or default to a current version; if only current evidence supports ancestry, choose uncertain. If more than one earlier version remains equally plausible or judgments conflict, choose uncertain. New-document requires newDocumentAllowed to be true: every ORIGINAL identity pair must say different-document. Clarification never overrides an original different-document finding. Do not infer facts beyond checked conclusions and quotations. Return only JSON {"choice":"candidate"|"new-document"|"uncertain","versionId":"allowedBaseIds entry only for candidate","reason":"qualified explanation at most 1600 characters","evidence":[{"versionId":"listed id","incomingQuote":"copy a checked incoming quote exactly","candidateQuote":"copy its paired checked candidate quote exactly"}]}. Omit versionId except for candidate. Candidate must quote its positive base contrast evidence, never identity-only quotations; new-document needs a checked contrast for every candidate. At most 24 evidence pairs. The lawyer confirms the actual document/base; even inherited variant wording does not prove historical descent.</request>',
     `<candidates encoding="json">${data(candidates.map(({ versionId, current, sent, associationCorrected }) => ({ versionId, current, sent, associationCorrected })))}</candidates>`,
     `<checked-pair-judgments encoding="json">${data(identitySummaries)}</checked-pair-judgments>`, NOTICE,
+    `<identity-clarification-summaries encoding="json">${data({ newDocumentAllowed: allDifferent, clarifications: clarificationSummaries })}</identity-clarification-summaries>`,
     `<checked-base-contrasts encoding="json">${data({ allowedBaseIds, contrasts: compactContrasts, representative })}</checked-base-contrasts>`,
   ].join("\n")
   if (Buffer.byteLength(prompt) > 64 * 1024) throw new DocumentReturnTieBreakError("The complete checked summaries exceed the focused reconciliation limit. Choose the document and base explicitly.", "match_evidence_too_large", 413)
@@ -286,7 +334,7 @@ export async function tieBreakDocumentReturn(directory: string, input: { name: s
     return fail("The reconciliation did not follow its checked candidate evidence. Choose the document and base explicitly.")
   const model = modelOf(answer.model)
   return { inspection, advisory: { ...checked, incomingHash: sha256Hex(input.bytes), candidates: candidates.map(({ versionId, sha256 }) => ({ versionId, sha256 })),
-    model, judgments, baseContrasts, baseSources: allSources.map(({ paragraphs: _paragraphs, ...source }) => source),
-    limitations: ["This is a model suggestion about ancestry, not verified identity. Confirm the document and base before saving.", "Quotations are exact source text; they do not prove the model's interpretation.", `${partJobs.length} bounded source parts and ${contrastResults.length} changed-passage contrasts were processed. Model-selected evidence does not establish complete semantic extraction.`, "Every retained version of each candidate document was considered as a base rival. Missing, ambiguous or oversized contrast coverage prevents a base suggestion.", "Current versions are rivals and cannot be selected. Shared identity or exclusion of current cannot establish an earlier base.",
+    model, judgments, identityClarifications, baseContrasts, baseSources: allSources.map(({ paragraphs: _paragraphs, ...source }) => source),
+    limitations: ["This is a model suggestion about ancestry, not verified identity. Confirm the document and base before saving.", "Quotations are exact source text; they do not prove the model's interpretation.", `${partJobs.length} bounded source parts, ${contrastResults.length} changed-passage contrasts and ${clarificationResults.length} logical-identity passage clarifications were processed. Model-selected evidence does not establish complete semantic extraction.`, "Every retained version of each candidate document was considered as a base rival. Missing, ambiguous or oversized contrast coverage prevents a base suggestion.", "Current versions are rivals and cannot be selected. Shared identity or exclusion of current cannot establish an earlier base.",
       ...allSources.filter(source => source.associationCorrected).map(source => `The return stored as ${source.documentName}, version ${source.versionNumber}, was linked to another document. It cannot identify this later file's base for ${source.documentName}.`)] } }
 }

@@ -15,6 +15,22 @@ export type ReturnBaseContrast = {
     model: { providerID: string; id: string; variant?: string }
   }[]
 }
+export type ReturnIdentityClarification = {
+  versionId: string
+  relation: "same-document" | "different-document" | "uncertain"
+  reason: string
+  coverage: { requiredParts: number; processedParts: number }
+  unresolved: string[]
+  parts: {
+    rivalVersionId: string
+    part: number
+    relation: "same-document" | "different-document" | "neutral" | "uncertain"
+    reason: string
+    limitations: string[]
+    evidence: { versionId: string; incomingQuote: string; candidateQuote: string }[]
+    model: { providerID: string; id: string; variant?: string }
+  }[]
+}
 export type DocumentReturnTieBreak = {
   choice: "candidate" | "new-document" | "uncertain"
   versionId?: string
@@ -22,6 +38,7 @@ export type DocumentReturnTieBreak = {
   evidence: { versionId: string; incomingQuote: string; candidateQuote: string }[]
   model: { providerID: string; id: string; variant?: string }
   judgments: { versionId: string; relation: "same-document" | "different-document" | "uncertain"; reason: string; evidence: { versionId: string; incomingQuote: string; candidateQuote: string }[]; model: { providerID: string; id: string; variant?: string } }[]
+  identityClarifications: ReturnIdentityClarification[]
   incomingHash: string
   candidates: { versionId: string; sha256: string }[]
   baseContrasts: ReturnBaseContrast[]
