@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { docxodus } from "../../lib/docxodus"
 import { sha256File } from "../../lib/lineage"
@@ -1117,6 +1117,36 @@ describe("requested file decision applicability", () => {
     expect(prompt).toContain("As planned.")
     expect(prompt).toContain("Address the documents to the Orchard Committee.")
     expect(prompt).toContain("or null when none applies or applicability is uncertain")
+    // Both instruction layers describe the same record: the requested file
+    // remains the comparison subject; permission is not a replacement shape.
+    expect(prompt).toContain("this is not a list of the files the plan will deliver after permissions are applied")
+    expect(prompt).toContain("Do not split, combine, rename or discard the requested file merely to reproduce the accepted plan")
+    expect(prompt).toContain("A contextual permission to accept the plan is not a replacement for those source words")
+    const agent = readFileSync(new URL("../../agent/lean-files.md", import.meta.url), "utf8")
+    expect(agent).toContain("it does not replace the requested file with the accepted plan's files")
+    expect(agent).toContain("including instructions given in an answer")
+  })
+
+  test("a substantive answer changes the requested file and cannot inherit the former file's permission", () => {
+    const directory = prepared()
+    const prior = answered(directory)
+    const quote = "Send the board minute with a cover memo in one file named Kestrel Review.docx"
+    writeQuestions(directory, [{ ...prior, status: "answered", answer: `${quote}. This replaces the previous file name.` }])
+    const prompt = requestedFilesPrompt(directory, DOCUMENTS, MEMO_ID)
+    expect(prompt).toContain(quote)
+    expect(prompt).toContain("whether it appears in the request, an update or an answer")
+    expect(prompt).toContain("Do not preserve an obsolete request")
+    const current = stated({ ...ASKED.files[0]!, name: "Kestrel Review.docx", quote, answered_question: null })
+    const parsed = parseRequestedFiles(reply(true, ...current.files), directory, DOCUMENTS)
+    expect(parsed.value).toEqual(current)
+    const issues = requestedFilesIssues(DOCUMENTS, MEMO_ID, parsed.value!).issues
+    expect(requestedFilesRevision(directory, issues, { requested: parsed.value!, documents: DOCUMENTS, memo: MEMO_ID })?.documents).toEqual(new Set(["d2"]))
+    const question = requestedFilesQuestion(directory, parsed.value!, DOCUMENTS, issues, MEMO_ID)!
+    expect(question.id).not.toBe(prior.id)
+    expect(question.question).toContain('one file named "Kestrel Review.docx"')
+    const inherited = parseRequestedFiles(reply(true, { ...current.files[0]!, answered_question: prior.id }), directory, DOCUMENTS)
+    expect(inherited.value).toBeUndefined()
+    expect(inherited.issues).toContainEqual(expect.stringContaining("same complete file"))
   })
 
   test("a declined answer is not a file decision", () => {

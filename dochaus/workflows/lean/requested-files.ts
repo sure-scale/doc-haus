@@ -10,9 +10,11 @@ import { tagged } from "./prompts"
 import { REQUEST_SOURCE, excerpt, instructionFound, lawyerWords, matterSourceIDs, openItem, quoteMissIssue } from "./quotes"
 import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, shortHash, writeLeanText, undecidedQuestion, type OpenItem, type Question } from "./state"
 
-// Requested files: which files the lawyer asks to receive, and which planned
-// documents go in each. A requested memo is a planned document (the plan's
-// memo_document) and is held by its id like any other. One focused job reads
+// Requested files record the lawyer's requested delivery, with any permission
+// to accept a different plan kept separately in answered_question. Accepting
+// a planned alternative does not replace the requested file description;
+// substantive changes to the request do. A requested memo is a planned document
+// (the plan's memo_document) and is held by its id like any other. One focused job reads
 // the lawyer's words (request, updates and answers) beside the planned
 // documents' ids and titles; parseRequestedFiles grounds each file in the
 // lawyer's exact words, its name in the lawyer's own text where those words
@@ -45,7 +47,8 @@ import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, short
 
 export const LEAN_REQUESTED_FILES_SCHEMA = "dochaus.lean.requested-files/3"
 
-/** One file the lawyer asks to receive: the planned ids it holds, in the
+/** One requested file, retained even when the lawyer permits a different
+ * planned delivery through answered_question: the planned ids it holds, in the
  * lawyer's order or, where the lawyer's words set none, with the memo
  * document first, none when no planned document is what it holds; its name in the lawyer's own spelling, or null; and the
  * lawyer's exact words that ask for it. A name a reply gave for these words but
@@ -97,21 +100,28 @@ function wordsBlocks(directory: string) {
   ]
 }
 
-/** The job's one question, over the lawyer's words and the planned documents.
+/** Records requested delivery and its separate permission to differ, rather
+ * than replacing the request with the plan the lawyer allowed. Substantive
+ * instructions in requests, updates or answers still change the requested file.
  * `memo`, the memo document's id, only sets the default order in a file. */
 export function requestedFilesPrompt(directory: string, documents: PlannedDocument[], memo: DocID | undefined) {
   return [
-    "This is a lean drafting run. Read the lawyer's words for one question: which files the lawyer asks to receive, and which of the planned documents go in each.",
+    "This is a lean drafting run. Record the lawyer's requested files, preserving the distinction between a request and permission to accept a different planned delivery.",
+    tagged("record_meaning", [
+      "Each files entry describes a requested file: its contents, order, name and source words. The run compares that request with its plan; this is not a list of the files the plan will deliver after permissions are applied.",
+      "An answer that permits the alternative described in a requested-files question leaves that question's requested file description intact. Record the permission only in answered_question, if it still applies. Do not split, combine, rename or discard the requested file merely to reproduce the accepted plan.",
+      "A substantive instruction changing the requested contents, order or name does change the file description, whether it appears in the request, an update or an answer. Read qualifications and later changes in context: a later change supersedes an earlier instruction or permission on that point. Do not preserve an obsolete request or infer permission from shared words.",
+    ].join("\n")),
     ...wordsBlocks(directory),
     tagged("planned_documents", "The documents the run drafts, by id. Their titles are the plan's own choices, not the lawyer's words.\n" +
       JSON.stringify(documents.map(document => ({ id: document.id, title: document.title })), null, 2)),
     tagged("output_contract", [
       "- Answer from the request, the lawyer's updates and answers only.",
-      `- When those words say which files the lawyer wants to receive, what goes in each file or what a file is named, reply "stated": true and list each file they ask for. When they do not, reply {"stated":false,"files":[]}.`,
+      `- When those words describe requested files, reply "stated": true and list those files under <record_meaning>, including a requested file whose different planned delivery was permitted. When no requested file is described, reply {"stated":false,"files":[]}.`,
       `- For each file give "holds": the ids of the planned documents that the lawyer's words put in that file` +
       `${memo ? `, in the order the words place them in the file, with "${memo}" first when the words set no order` : ""}, or [] when no planned document is what the file holds; ` +
       "\"name\": the file name exactly as the lawyer writes it, or null when the lawyer gives no name; " +
-      "\"quote\": the lawyer's exact words that ask for this file, copied verbatim, including the words that give its name.",
+      "\"quote\": the lawyer's exact words describing this requested file, copied verbatim, including the words that give its name. A contextual permission to accept the plan is not a replacement for those source words.",
       "- Put each planned document in one file at most. List only the files the lawyer's words ask for, and in each only what those words put in it.",
       "- A file the lawyer's words name as the output of the whole request holds everything the run drafts for it, including each planned document the plan adds to carry the request out; a file they name for one document holds only that document. " +
       "Put a planned document in a file only where the lawyer's words place it.",
