@@ -1,5 +1,5 @@
 {
-  "version": 25,
-  "name": "2.4.1",
-  "notes": "- More faithful Word numbering and document imports, preserving escaped punctuation and tracked-change context.\n- More reliable amendment proposals, with clearer explanations when a requested Word change is unsupported and the same strict source checks.\n- Better tables, comparisons and drafting notes in chat, preserving literal text, code and qualifications when conversations are streamed or reopened.\n- Word review cards stop sending edits after their pane closes.\n\nKnown limitation: removing inherited bold, italic or underline remains unsupported outside Word."
+  "version": 26,
+  "name": "2.5.0",
+  "notes": "- Review amendment consequences in Word, with source-linked findings and a combined assessment.\n- Keep a record of sent and returned documents and compare earlier versions, with clause history in Word and on the web.\n- See when saved drafts and chronology exports rely on changed or unavailable sources.\n- UX and reliability improvements across Word, chat, workflows, dashboards and review tables.\n\nKnown limitations: removing inherited bold, italic or underline remains unsupported outside Word. Reopening a local Word file may require “Take over editing here” and a confirmation Save."
 }
