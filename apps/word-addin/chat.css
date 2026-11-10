@@ -1,5 +1,8 @@
 .word-chat { display: flex; flex: 1 1 0; flex-direction: column; width: 100%; max-width: 100%; min-width: 0; min-height: 0; height: auto; padding: 8px 12px; overflow: hidden; }
 .word-chat > *, .chat-history > *, .chat-message > * { min-width: 0; max-width: 100%; }
+.chat-document-actions { display: flex; flex: 0 0 auto; align-items: center; flex-wrap: wrap; gap: 2px 8px; padding-bottom: 6px; }
+.chat-document-actions > button { flex: 0 0 auto; }
+.chat-document-hint { flex: 1 1 150px; color: #68736b; font-size: 11px; line-height: 1.4; }
 .chat-composer-context { display: flex; align-items: center; gap: 3px; margin-bottom: 6px; min-width: 0; }
 .chat-composer-context > button { flex: 0 0 auto; white-space: nowrap; }
 .word-chat .chat-history-toggle { margin-left: auto; display: inline-flex; align-items: center; justify-content: center; width: 32px; min-height: 36px; padding: 6px; }
