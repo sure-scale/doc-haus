@@ -9,7 +9,9 @@ import {
   batchFolderName,
   identifyingKey,
   normaliseHeader,
+  readSuggestion,
   rowFill,
+  suggestionColumns,
   templateBatchFields,
   type BatchField,
 } from "./template-batch"
@@ -96,6 +98,45 @@ describe("auto-match", () => {
       "[insert notice date]": "notice date",
       "[optional: Non-solicit]": "include non solicit",
     })
+  })
+})
+
+describe("suggested matching", () => {
+  test("only unmatched fill fields are asked about, and matched columns are not offered", () => {
+    const mapping = autoMatch(fields, ["Client Name", "Recipient", "Agreement", "Include: Non-solicit"])
+    expect(suggestionColumns(fields, ["Client Name", "Recipient", "Agreement", "Include: Non-solicit"], mapping)).toEqual({
+      keys: ["[Client Address]", "[insert notice date]"],
+      free: ["Recipient", "Agreement"],
+    })
+  })
+
+  test("a supplied free column is accepted exactly once per field", () => {
+    expect(readSuggestion('{"matches":{"[Client Address]":"Recipient","[insert notice date]":"Recipient"}}',
+      ["[Client Address]", "[insert notice date]"], ["Recipient", "Agreement"])).toEqual({
+      "[Client Address]": "Recipient",
+      "[insert notice date]": null,
+    })
+  })
+
+  test("unknown columns, a column already used by a rule and leave-for-me stay unmatched", () => {
+    expect(readSuggestion('{"matches":{"[Client Address]":"Added by me","[insert notice date]":"leave for me"}}',
+      ["[Client Address]", "[insert notice date]"], ["Recipient"])).toEqual({
+      "[Client Address]": null,
+      "[insert notice date]": null,
+    })
+  })
+
+  test("omitted fields, a malformed reply and a fenced reply keep what can be read", () => {
+    expect(readSuggestion('{"matches":{"[Client Address]":"Agreement"}}',
+      ["[Client Address]", "[insert notice date]"], ["Agreement"])).toEqual({
+      "[Client Address]": "Agreement",
+      "[insert notice date]": null,
+    })
+    expect(readSuggestion("not json", ["[Client Address]"], ["Agreement"])).toEqual({ "[Client Address]": null })
+    expect(readSuggestion('```json\n{"matches":{"[Client Address]":"Agreement"}}\n```',
+      ["[Client Address]"], ["Agreement"])).toEqual({ "[Client Address]": "Agreement" })
+    expect(readSuggestion('{"matches":{"[Client Address]":true}}', ["[Client Address]"], ["Agreement"]))
+      .toEqual({ "[Client Address]": null })
   })
 })
 

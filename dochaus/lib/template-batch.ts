@@ -83,6 +83,41 @@ export function autoMatch(fields: BatchField[], columns: string[], remembered: R
   return mapping
 }
 
+/** A model's proposed column for each field left unmatched by `autoMatch`.
+ * `null` means leave it for the lawyer. Only columns already free are ever
+ * proposed: a column that fills a rule-matched field is not offered again. */
+export function suggestionColumns(fields: BatchField[], columns: string[], mapping: Record<string, string | null>) {
+  const used = new Set(Object.values(mapping).filter((column): column is string => Boolean(column)))
+  return {
+    keys: fields.filter((field) => field.kind === "fill" && !mapping[field.key]).map((field) => field.key),
+    free: columns.filter((column) => !used.has(column)),
+  }
+}
+
+/** The matching job's reply, checked here so the model can never invent a
+ * column: a field is matched only to a free column named exactly as given, at
+ * most one field per column. Anything else, and any field the reply omits,
+ * stays for the lawyer. */
+export function readSuggestion(text: string, keys: string[], free: string[]): Record<string, string | null> {
+  const mapping: Record<string, string | null> = Object.fromEntries(keys.map((key) => [key, null]))
+  let reply: unknown
+  try {
+    reply = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""))
+  } catch {
+    return mapping
+  }
+  const matches = reply && typeof reply === "object" && !Array.isArray(reply) && "matches" in reply ? reply.matches : undefined
+  if (!matches || typeof matches !== "object" || Array.isArray(matches)) return mapping
+  const used = new Set<string>()
+  for (const key of keys) {
+    const column = (matches as Record<string, unknown>)[key]
+    if (typeof column !== "string" || used.has(column) || !free.includes(column)) continue
+    mapping[key] = column
+    used.add(column)
+  }
+  return mapping
+}
+
 /** `missingKeys[i]` is the placeholder text of `missing[i]`. */
 export type RowFill = { fills: Record<string, string>; include: Record<string, boolean>; missing: string[]; missingKeys: string[] }
 

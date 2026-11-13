@@ -74,5 +74,6 @@ agent/*.md
 !agent/skill-builder.md
 !agent/summarizer.md
 !agent/template-builder.md
+!agent/template-match.md
 !agent/word-chat.md
 !agent/workflow-builder.md

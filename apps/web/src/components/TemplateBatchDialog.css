@@ -22,6 +22,9 @@
 
 .template-batch-field { display: grid; gap: var(--space-2); }
 .template-batch-field label, .template-batch-match label { font: var(--md-sys-typescale-label-large); color: var(--text); }
+/* The field's name, then a quiet note that the model proposed its column. */
+.template-batch-match label { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); }
+.template-batch-suggested { padding: 1px var(--space-2); border-radius: var(--radius-sm); background: var(--accent-soft); color: var(--text-secondary); font: var(--md-sys-typescale-label-small); }
 .template-batch-field select, .template-batch-match select { width: 100%; min-width: 0; }
 .template-batch-drop { display: grid; gap: var(--space-3); }
 .template-batch-drop .dropzone { padding: var(--space-7) var(--space-5); }

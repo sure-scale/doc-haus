@@ -20,6 +20,7 @@ import {
 import Dropzone from "./Dropzone"
 import ModalHeader from "./ModalHeader"
 import TemplateViewer from "./TemplateViewer"
+import { suggestMatches } from "../api/template-batch-match"
 import { lastOpenedFirst } from "../lib/last-matter"
 import { Tooltip } from "./Tooltip"
 import { Closing } from "./useExit"
@@ -66,6 +67,9 @@ export default function TemplateBatchDialog({ template, matter, onClose, onCreat
   // Fill fields no column matched when the spreadsheet was read: the only ones
   // the Match step asks about, then and on "Change matching".
   const [manualKeys, setManualKeys] = useState<string[]>([])
+  // Fields the model proposed a column for, marked until the lawyer changes it.
+  const [suggestedKeys, setSuggestedKeys] = useState<Set<string>>(() => new Set())
+  const [suggesting, setSuggesting] = useState(false)
   const [index, setIndex] = useState(0)
   const [skipped, setSkipped] = useState<Set<number>>(() => new Set())
   // Values typed in the preview, by spreadsheet row, for that row's document only.
@@ -80,11 +84,19 @@ export default function TemplateBatchDialog({ template, matter, onClose, onCreat
   const [createError, setCreateError] = useState<string>()
   const [result, setResult] = useState<BatchResult>()
   const alive = useRef(true)
+  // A suggestion can arrive after the lawyer has already changed a field; a
+  // touched field is never overwritten. Only one job runs at a time.
+  const touched = useRef(new Set<string>())
+  const suggestRun = useRef(0)
+  const suggestAbort = useRef<AbortController | undefined>(undefined)
   // Set on every mount: React's development double mount runs this cleanup
   // once before the dialog is really in use.
   useEffect(() => {
     alive.current = true
-    return () => { alive.current = false }
+    return () => {
+      alive.current = false
+      suggestAbort.current?.abort()
+    }
   }, [])
 
   useEffect(() => {
@@ -122,10 +134,42 @@ export default function TemplateBatchDialog({ template, matter, onClose, onCreat
       setEntered({})
       setSettled({})
       setStep(unmatched.length ? "match" : "preview")
+      if (unmatched.length) void suggest(next, full)
     } catch (cause) {
       if (alive.current) setError(humanizeError(cause, `Could not read ${file.name}.`))
     } finally {
       if (alive.current) setReading(false)
+    }
+  }
+
+  // Ask the configured model for the columns the rules left open. The Match
+  // step is already showing, so a slow or failed job changes nothing; every
+  // proposal still needs the lawyer's confirmation.
+  async function suggest(next: BatchSheet, full: BatchMapping) {
+    const run = ++suggestRun.current
+    suggestAbort.current?.abort()
+    const controller = new AbortController()
+    suggestAbort.current = controller
+    setSuggestedKeys(new Set())
+    setSuggesting(true)
+    try {
+      const found = await suggestMatches(matterId, {
+        fields: next.fields,
+        columns: next.columns,
+        rows: next.rows.map((row) => row.values),
+        mapping: full,
+      }, controller.signal)
+      if (run !== suggestRun.current || !alive.current || !found) return
+      const applied = Object.entries(found)
+        .filter(([key, column]) => column && !touched.current.has(key))
+        .map(([key, column]) => [key, column] as const)
+      if (!applied.length) return
+      setMapping((previous) => ({ ...previous, ...Object.fromEntries(applied) }))
+      setSuggestedKeys(new Set(applied.map(([key]) => key)))
+    } catch {
+      // No suggestion: the Match step stays as it works without a model.
+    } finally {
+      if (run === suggestRun.current && alive.current) setSuggesting(false)
     }
   }
 
@@ -276,8 +320,28 @@ export default function TemplateBatchDialog({ template, matter, onClose, onCreat
       sheet={sheet}
       mapping={mapping}
       manualKeys={manualKeys}
-      onMap={(key, column) => setMapping((previous) => ({ ...previous, [key]: column }))}
-      onRestart={() => { setSheet(undefined); setError(undefined); setStep("choose") }}
+      suggestedKeys={suggestedKeys}
+      suggesting={suggesting}
+      onMap={(key, column) => {
+        touched.current.add(key)
+        setSuggestedKeys((previous) => {
+          if (!previous.has(key)) return previous
+          const next = new Set(previous)
+          next.delete(key)
+          return next
+        })
+        setMapping((previous) => ({ ...previous, [key]: column }))
+      }}
+      onRestart={() => {
+        suggestRun.current++
+        suggestAbort.current?.abort()
+        touched.current.clear()
+        setSuggestedKeys(new Set())
+        setSuggesting(false)
+        setSheet(undefined)
+        setError(undefined)
+        setStep("choose")
+      }}
     />}
     {step === "done" && result && <DoneStep result={result} />}
   </BatchPanel>
@@ -340,25 +404,32 @@ function ChooseStep({ template, matters, fixed, matterId, onMatter, reading, err
   </>
 }
 
-function MatchStep({ sheet, mapping, manualKeys, onMap, onRestart }: {
+function MatchStep({ sheet, mapping, manualKeys, suggestedKeys, suggesting, onMap, onRestart }: {
   sheet: BatchSheet
   mapping: BatchMapping
   manualKeys: string[]
+  suggestedKeys: Set<string>
+  suggesting: boolean
   onMap: (key: string, column: string | null) => void
   onRestart: () => void
 }) {
   const id = useId()
   const asked = sheet.fields.filter((field) => manualKeys.includes(field.key))
   const matched = sheet.fields.filter((field) => !manualKeys.includes(field.key) && mapping[field.key])
+  const suggested = sheet.fields.filter((field) => suggestedKeys.has(field.key) && mapping[field.key]).length
   const dropped = sheet.dropped.blank + sheet.dropped.header
   return <>
     <div className="template-batch-intro">
       <h2 tabIndex={-1}>Match {plural(asked.length, "field")}</h2>
       <p>Choose the spreadsheet column for each field. A field left for you stays highlighted in every document.</p>
+      {suggesting && <p className="template-batch-status" role="status">Checking the headings for likely matches…</p>}
     </div>
     <ul className="template-batch-match">
       {asked.map((field, at) => <li key={field.key}>
-        <label htmlFor={`${id}-${at}`}>{field.label}</label>
+        <label htmlFor={`${id}-${at}`}>
+          {field.label}
+          {suggestedKeys.has(field.key) && <span className="template-batch-suggested">Suggested</span>}
+        </label>
         <select id={`${id}-${at}`} value={mapping[field.key] ?? ""} onChange={(event) => onMap(field.key, event.target.value || null)}>
           <option value="">Leave for me to fill</option>
           {sheet.columns.map((column) => <option key={column} value={column}>{column}</option>)}
@@ -370,9 +441,11 @@ function MatchStep({ sheet, mapping, manualKeys, onMap, onRestart }: {
     <p className="template-batch-meta">
       {matched.length > 0 && <>
         <Tooltip label={<span className="template-batch-pairs">{matched.map((field) => <span key={field.key}>{field.label} ← {mapping[field.key]}</span>)}</span>}>
-          <span className="template-batch-quiet" tabIndex={0}>{plural(matched.length, "field")} matched</span>
-        </Tooltip>.{" "}
+          <span className="template-batch-quiet" tabIndex={0}>{plural(matched.length, "field")} matched by name</span>
+        </Tooltip>
+        {suggested > 0 && <>{suggested === 1 ? " and 1 field suggested" : ` and ${suggested} fields suggested`}</>}.{" "}
       </>}
+      {matched.length === 0 && suggested > 0 && <>{suggested === 1 ? "1 field suggested" : `${suggested} fields suggested`}.{" "}</>}
       {dropped > 0 ? <Tooltip label={`${plural(dropped, "row")} ignored: blank rows and repeated headings.`}>
         <span className="template-batch-quiet" tabIndex={0}>{plural(sheet.rows.length, "row")} in {sheet.source}</span>
       </Tooltip> : <span>{plural(sheet.rows.length, "row")} in {sheet.source}</span>}.
