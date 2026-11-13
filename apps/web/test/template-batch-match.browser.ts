@@ -20,7 +20,16 @@ import { createRoot } from ${JSON.stringify(fileURLToPath(import.meta.resolve("r
 import { MemoryRouter } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-router-dom")))}
 import TemplateBatchDialog from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/TemplateBatchDialog.tsx"))}
 import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles.css"))}
+import ${JSON.stringify(path.resolve(import.meta.dir, "../src/narration.css"))}
+import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/primitives.css"))}
+import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/upload.css"))}
+import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/shell.css"))}
+import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/motion.css"))}
 import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/design-system.css"))}
+import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/design-shell.css"))}
+import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/design-documents.css"))}
+import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/modal-frost.css"))}
+import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/contrast.css"))}
 const template = {
   name: "Synthetic services letter",
   description: "Fixture template",
@@ -155,8 +164,8 @@ try {
   assert.equal(otherEngineCalls.length, 0, "the match job makes no other engine call")
 
   replies.push(JSON.stringify({ matches: { "[Client Name]": "Recipient", "[Contract Title]": "Agreement", "[Notice Date]": "Notice" } }))
-  holdWait = false
   await expect.poll(() => heldWaits.length).toBe(1)
+  holdWait = false
   await heldWaits.shift()!.fulfill({ status: 204 })
   await expect(select("Client Name")).toHaveValue("Recipient")
   await expect(select("Contract Title")).toHaveValue("Agreement")
@@ -221,8 +230,8 @@ try {
   await expect.poll(() => sessions.length).toBe(3)
   await select("Client Name").selectOption("")
   replies.push(JSON.stringify({ matches: { "[Client Name]": "Recipient", "[Contract Title]": "Agreement", "[Notice Date]": "Notice" } }))
-  holdWait = false
   await expect.poll(() => heldWaits.length).toBe(1)
+  holdWait = false
   await heldWaits.shift()!.fulfill({ status: 204 })
   await expect(select("Contract Title")).toHaveValue("Agreement")
   await expect(select("Client Name")).toHaveValue("")

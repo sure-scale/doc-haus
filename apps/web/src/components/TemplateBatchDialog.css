@@ -23,8 +23,22 @@
 .template-batch-field { display: grid; gap: var(--space-2); }
 .template-batch-field label, .template-batch-match label { font: var(--md-sys-typescale-label-large); color: var(--text); }
 /* The field's name, then a quiet note that the model proposed its column. */
-.template-batch-match label { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); }
-.template-batch-suggested { padding: 1px var(--space-2); border-radius: var(--radius-sm); background: var(--accent-soft); color: var(--text-secondary); font: var(--md-sys-typescale-label-small); }
+.template-batch-match label { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.template-batch-suggested {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--space-2);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-pill);
+  background: var(--panel);
+  color: var(--accent-muted);
+  font: var(--md-sys-typescale-label-small);
+  animation: template-batch-suggest-in var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-emphasized);
+}
+@keyframes template-batch-suggest-in {
+  from { opacity: 0; transform: translateY(-2px) scale(.94); }
+}
+@media (prefers-reduced-motion: reduce) { .template-batch-suggested { animation: none; } }
 .template-batch-field select, .template-batch-match select { width: 100%; min-width: 0; }
 .template-batch-drop { display: grid; gap: var(--space-3); }
 .template-batch-drop .dropzone { padding: var(--space-7) var(--space-5); }
@@ -35,8 +49,25 @@
 
 .template-batch-intro { display: grid; gap: var(--space-2); }
 .template-batch-intro p { color: var(--text-secondary); font-size: .9rem; }
-.template-batch-match { display: grid; gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
-.template-batch-match li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); align-items: center; gap: var(--space-4); overflow-wrap: anywhere; }
+/* Match rows are tonal rows: the field and its column read as one pair, and a
+   model proposal tints the row until the lawyer changes it. */
+.template-batch-match { display: grid; gap: var(--space-2); margin: var(--space-2) 0 0; padding: 0; list-style: none; }
+.template-batch-match li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--md-sys-color-surface-container-low);
+  transition: background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.template-batch-match li:hover, .template-batch-match li:focus-within { background: var(--md-sys-color-surface-container); }
+.template-batch-match li.is-suggested { background: var(--accent-soft); }
+.template-batch-match li.is-suggested:hover { background: var(--accent-soft-hover); }
+.template-batch-match li.is-suggested:focus-within { background: var(--md-sys-color-surface-container); }
+.template-batch-match-name { min-width: 0; overflow-wrap: anywhere; font: var(--md-sys-typescale-title-small); }
+.template-batch-checking { display: flex; align-items: center; gap: var(--space-2); }
 .template-batch-meta { color: var(--text-secondary); font-size: .85rem; line-height: 1.6; }
 .template-batch-restart { align-self: flex-start; min-height: 0; margin-top: calc(-1 * var(--space-3)); font-size: .85rem; }
 .template-batch-quiet { border-bottom: 1px dotted currentColor; cursor: help; }

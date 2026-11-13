@@ -422,12 +422,12 @@ function MatchStep({ sheet, mapping, manualKeys, suggestedKeys, suggesting, onMa
     <div className="template-batch-intro">
       <h2 tabIndex={-1}>Match {plural(asked.length, "field")}</h2>
       <p>Choose the spreadsheet column for each field. A field left for you stays highlighted in every document.</p>
-      {suggesting && <p className="template-batch-status" role="status">Checking the headings for likely matches…</p>}
+      {suggesting && <p className="template-batch-status template-batch-checking" role="status"><span className="upload-spinner" aria-hidden="true" />Checking the headings for likely matches…</p>}
     </div>
     <ul className="template-batch-match">
-      {asked.map((field, at) => <li key={field.key}>
+      {asked.map((field, at) => <li key={field.key} className={suggestedKeys.has(field.key) ? "is-suggested" : undefined}>
         <label htmlFor={`${id}-${at}`}>
-          {field.label}
+          <span className="template-batch-match-name">{field.label}</span>
           {suggestedKeys.has(field.key) && <span className="template-batch-suggested">Suggested</span>}
         </label>
         <select id={`${id}-${at}`} value={mapping[field.key] ?? ""} onChange={(event) => onMap(field.key, event.target.value || null)}>
