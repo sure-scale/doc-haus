@@ -46,6 +46,13 @@ shown for you to pair or leave unfilled, and the matching is remembered for the
 template. A column for an optional clause takes yes or no; a blank cell keeps
 the template's default.
 
+Unmatched fields may also arrive with a pre-selected column marked **Suggested**.
+To propose those, the first few rows of the spreadsheet are sent to the model
+configured for the installation, the same one that reads matter documents; no
+suggestion is used unless you confirm it, and changing the field removes the
+mark. Without a configured model, or when the model cannot answer, the fields
+simply stay for you to pair as before.
+
 Step through the preview row by row and skip any row you do not want. In the
 preview, each value filled in from the spreadsheet is highlighted; the saved
 documents carry no highlight. A value the row leaves out can be typed in
@@ -54,6 +61,6 @@ changed, and a typed value never replaces one the row already has. **Create**
 saves one Word document per row into the matter, grouped in the Documents panel
 under the template name and date. A row with a blank or unclear value is still
 created, with its placeholder or clause marker left in the text and marked
-**Needs input**; the mark clears once the document is edited to fill it. No
-model is used: values are copied from the spreadsheet as written, so check them
-before sending.
+**Needs input**; the mark clears once the document is edited to fill it. Values
+are copied from the spreadsheet as written, never guessed by the model, so check
+them before sending.
