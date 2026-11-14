@@ -610,16 +610,18 @@ describe("provider errors", () => {
 
   test("Auto asks the router once more when its reply misses the deadline", async () => {
     const scope = { documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few", revises: "no" } as const
-    const { client, prompts, removed } = routerClient({ text: JSON.stringify({ route: "draft", ...scope }) }, 1)
-    expect(await route(client, 50)).toEqual({ name: "draft", scope })
+    const { client, prompts, removed } = routerClient({ text: JSON.stringify({ route: "draft", ...scope }) }, 1, 1_000)
+    expect(await route(client, 200)).toEqual({ name: "draft", scope })
     // The late first turn is dropped and its session removed; the retry stays on the small model.
     expect(prompts).toEqual(["opencode-go/small", "opencode-go/small"])
     expect(removed).toEqual(["ses_router_0", "ses_router_1"])
   })
 
   test("Auto reports that it could not choose when every attempt misses the deadline", async () => {
-    const { client, prompts } = routerClient({ text: JSON.stringify({ route: "qa" }) }, 4)
-    await expect(route(client, 50)).rejects.toThrow("Auto could not choose an assistant.")
+    // Keep a wide separation between the deadline and the late reply: CI
+    // scheduling has overrun the old 50 ms / 200 ms margin.
+    const { client, prompts } = routerClient({ text: JSON.stringify({ route: "qa" }) }, 4, 1_000)
+    await expect(route(client, 200)).rejects.toThrow("Auto could not choose an assistant.")
     // One retry per model, then the existing escalation; never more.
     expect(prompts).toEqual(["opencode-go/small", "opencode-go/small", "opencode-go/primary", "opencode-go/primary"])
   })
