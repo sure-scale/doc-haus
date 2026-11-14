@@ -7,6 +7,7 @@ import { basename, stepLabel } from "./step-labels"
 import { isDraftingRecoveryMessage } from "./drafting-recovery"
 import { templateResult, type TemplateResult } from "./template-result"
 import { EXPLICIT_ONLY } from "../../agents"
+import { answerGrounding, type Grounding } from "./grounding"
 
 // One row in the assistant's reasoning timeline: a thinking block or a tool call.
 export type Step =
@@ -36,6 +37,10 @@ export type Turn = {
   role: "user" | "assistant"
   text: string
   citations: Citation[]
+  // Code's structural reading of the answer's claims against the verified
+  // citation set (chat/grounded/limited/abstain). Computed for assistant turns
+  // only; absent on user turns.
+  grounding?: Grounding
   redlines: RedlineProposal[]
   // Documents the turn created (draft-document tool), as matter-relative names —
   // each renders as a card linking into the document viewer.
@@ -105,7 +110,8 @@ function contentOf(parts: Part[]) {
     .filter((p) => !p.synthetic)
     .map((p) => p.text)
     .join("\n\n")
-  return { text, citations: citationsOf(parts), redlines: redlinesOf(parts), drafts: draftsOf(parts), compares: comparesOf(parts), todos: todosOf(parts) }
+  const citations = citationsOf(parts)
+  return { text, citations, grounding: answerGrounding({ text, citations, parts }), redlines: redlinesOf(parts), drafts: draftsOf(parts), compares: comparesOf(parts), todos: todosOf(parts) }
 }
 
 // The upstream todowrite tool emits the WHOLE checklist on every call (it is a
@@ -327,6 +333,7 @@ export function readTurn(parts: Map<string, Part>, roles: Map<string, string>, m
   return {
     text,
     citations,
+    grounding: answerGrounding({ text, citations, parts: own }),
     redlines: redlinesOf(work),
     drafts: draftsOf(work),
     compares: comparesOf(work),

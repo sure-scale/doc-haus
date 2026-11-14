@@ -280,6 +280,12 @@ export const LegalPlugin: LegalPolicy = async (input) => {
       }
 
       output.metadata.citations = verified
+      // Keep refused quotations on the result so the answer's grounding badge
+      // can report that a quotation was offered and rejected. Only quote
+      // anchoring counts: a stale retrieval hit the model never quoted is not a
+      // claim and must not make an answer read as unsupported.
+      if (input.tool === "cite" && rejected.length)
+        output.metadata.rejectedCitations = rejected.map(({ documentName, section }) => ({ documentName, section }))
 
       const reanchored = verified.filter((c) => c.reanchored)
       if (!rejected.length && !reanchored.length) return

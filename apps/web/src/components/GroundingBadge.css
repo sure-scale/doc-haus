@@ -1,0 +1,107 @@
+/* Grounding state of an assistant answer: one quiet chip the lawyer can open to
+   see what code checked against the documents. Colour carries the state, so a
+   reachable answer never reads as verified. */
+.grounding {
+  margin-top: 10px;
+}
+
+.grounding > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  list-style: none;
+  padding: var(--space-1) 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--panel);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.grounding > summary::-webkit-details-marker {
+  display: none;
+}
+
+.grounding > summary:hover {
+  color: var(--text);
+}
+
+.grounding-grounded > summary {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.grounding-limited > summary {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.grounding-abstain > summary {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.grounding-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+}
+
+.grounding-chip svg {
+  flex: none;
+}
+
+.grounding-count {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+.grounding-grounded .grounding-count,
+.grounding-limited .grounding-count,
+.grounding-abstain .grounding-count {
+  color: inherit;
+  opacity: 0.78;
+}
+
+.grounding-body {
+  margin-top: var(--space-2);
+  padding: 10px var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.grounding-body p {
+  margin: 0 0 var(--space-2);
+}
+
+.grounding-body p:last-child {
+  margin-bottom: 0;
+}
+
+.grounding-body ul {
+  margin: 0 0 var(--space-2);
+  padding-left: 18px;
+}
+
+.grounding-body li {
+  margin: var(--space-1) 0;
+}
+
+.grounding-body .grounding-limit {
+  margin-top: var(--space-2);
+  color: var(--muted);
+  font-size: 12.5px;
+}
