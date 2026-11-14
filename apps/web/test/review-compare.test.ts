@@ -129,6 +129,13 @@ test("the summary is built from group points, so its counts cannot be wrong", ()
     .toBe("1 of 3 answers states a one-year term; 1 states a two-year term; 1 states a three-year term.")
 })
 
+test("a reason up to 240 characters is kept; a longer one is rejected", () => {
+  const three = docs("A", "B", "C")
+  const reason = "x".repeat(240)
+  expect(readComparison(reply([[["A", "B", "C"], reason]]), three)!.cells.A!.reason).toBe(reason)
+  expect(readComparison(reply([[["A", "B", "C"], `${reason}x`]]), three)).toBeUndefined()
+})
+
 test("rejects any reply that misplaces a document, quotes, or overruns its limits", () => {
   const three = docs("A", "B", "C")
   expect(readComparison("```json\n" + reply([[["A", "B", "C"], "Same"]]) + "\n```", three)).toBeDefined()
@@ -138,7 +145,7 @@ test("rejects any reply that misplaces a document, quotes, or overruns its limit
     reply([[["A", "B", "C"], "Same"], [["D"], "Other"]]),
     reply([[["A", "B"], 'Says "three years"'], [["C"], "Other"]]),
     reply([[["A", "B"], "Says “three years”"], [["C"], "Other"]]),
-    reply([[["A", "B"], "x".repeat(141)], [["C"], "Other"]]),
+    reply([[["A", "B"], "x".repeat(241)], [["C"], "Other"]]),
     reply([[["A", "B"], ""], [["C"], "Other"]]),
     reply([[["A", "B"], "Same"], [["C"], "Other"]], ["x".repeat(100), "y".repeat(100)]),
     reply([[["A", "B", "C"], "Same"]], ['All say "three years"']),
@@ -163,7 +170,7 @@ test("comparison reasons retain their wording even when a filename resembles a l
   })
   const two = docs("Alpha.docx", "Beta.docx")
   expect(readComparison(reply([[["Alpha.docx"], "Alphabetical schedule"], [["Beta.docx"], "Other"]]), two)!.cells["Alpha.docx"]!.reason).toBe("Alphabetical schedule")
-  expect(readComparison(reply([[["Alpha.docx"], `Alpha.docx: ${"x".repeat(138)}`], [["Beta.docx"], "Other"]]), two)).toBeUndefined()
+  expect(readComparison(reply([[["Alpha.docx"], `Alpha.docx: ${"x".repeat(229)}`], [["Beta.docx"], "Other"]]), two)).toBeUndefined()
   const qualified = readComparison(reply([[["No.docx"], "No liability cap applies."], [["Except.docx"], "Except for fraud, liability is capped."]]), docs("No.docx", "Except.docx"))!
   expect(qualified.cells["No.docx"]!.reason).toBe("No liability cap applies.")
   expect(qualified.cells["Except.docx"]!.reason).toBe("Except for fraud, liability is capped.")

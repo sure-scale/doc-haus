@@ -76,7 +76,7 @@ function comparisonSummary(total: number, groups: Array<{ documents: string[]; p
   return `${parts.join("; ")}.`
 }
 
-// Strict: every compared document exactly once, a short summary and reasons with no quotation
+// Strict: every compared document exactly once, one-sentence reasons and a summary built from them, with no quotation
 // (excerpts shown come from stored citations). Preserve the reason's wording;
 // a filename can also be a substantive word such as "No". Anything else is no result. The
 // one unique largest group of 2 or more is consistent and the rest differ; a
@@ -107,7 +107,7 @@ export function readComparison(text: string, input: Pick<ComparisonInput, "docum
       seen.add(name)
     }
     const reason = group.reason.trim()
-    if (!reason || reason.length > 140 || QUOTES.test(reason)) return undefined
+    if (!reason || reason.length > 240 || QUOTES.test(reason)) return undefined
     const point = group.point.trim()
     if (!point || point.length > 100 || QUOTES.test(point)) return undefined
     groups.push({ documents: group.documents as string[], reason, point })
