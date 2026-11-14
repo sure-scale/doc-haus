@@ -62,7 +62,21 @@ export function comparePrompt(input: ComparisonInput) {
 
 const QUOTES = /["“”„«»]/
 
-// Strict: every compared document exactly once, a short summary and reasons with no quotation
+// The summary is built from the groups, so its document counts cannot be wrong
+// and it cannot restate agreement as "and do not differ". Each group supplies
+// only a compressed noun phrase; the model never writes the sentence.
+function comparisonSummary(total: number, groups: Array<{ documents: string[]; point: string }>) {
+  const ordered = [...groups].sort((a, b) => b.documents.length - a.documents.length)
+  const parts = ordered.map((group, index) => {
+    const count = group.documents.length
+    const point = group.point.trim().replace(/[.]+$/, "")
+    if (index > 0) return `${count} ${count === 1 ? "states" : "state"} ${point}`
+    return count === total ? `All ${total} answers state ${point}` : `${count} of ${total} answers ${count === 1 ? "states" : "state"} ${point}`
+  })
+  return `${parts.join("; ")}.`
+}
+
+// Strict: every compared document exactly once, one-sentence reasons and a summary built from them, with no quotation
 // (excerpts shown come from stored citations). Preserve the reason's wording;
 // a filename can also be a substantive word such as "No". Anything else is no result. The
 // one unique largest group of 2 or more is consistent and the rest differ; a
@@ -81,24 +95,26 @@ export function readComparison(text: string, input: Pick<ComparisonInput, "docum
     if (!summary || summary.length > 200 || QUOTES.test(summary)) return undefined
     return { status: "unavailable", summary, cells: {} }
   }
-  if (!reply || typeof reply !== "object" || !("groups" in reply) || !Array.isArray(reply.groups) || !("summary" in reply) || typeof reply.summary !== "string") return undefined
-  const summary = reply.summary.trim()
-  if (summary.length > 200 || QUOTES.test(summary)) return undefined
+  if (!reply || typeof reply !== "object" || !("groups" in reply) || !Array.isArray(reply.groups)) return undefined
   const names = new Set(input.documents.map(d => d.name))
   const seen = new Set<string>()
-  const groups: Array<{ documents: string[]; reason: string }> = []
+  const groups: Array<{ documents: string[]; reason: string; point: string }> = []
   for (const group of reply.groups as unknown[]) {
     if (!group || typeof group !== "object" || !("documents" in group) || !Array.isArray(group.documents) || !group.documents.length
-      || !("reason" in group) || typeof group.reason !== "string") return undefined
+      || !("reason" in group) || typeof group.reason !== "string" || !("point" in group) || typeof group.point !== "string") return undefined
     for (const name of group.documents as unknown[]) {
       if (typeof name !== "string" || !names.has(name) || seen.has(name)) return undefined
       seen.add(name)
     }
     const reason = group.reason.trim()
-    if (!reason || reason.length > 140 || QUOTES.test(reason)) return undefined
-    groups.push({ documents: group.documents as string[], reason })
+    if (!reason || reason.length > 240 || QUOTES.test(reason)) return undefined
+    const point = group.point.trim()
+    if (!point || point.length > 100 || QUOTES.test(point)) return undefined
+    groups.push({ documents: group.documents as string[], reason, point })
   }
   if (seen.size !== names.size) return undefined
+  const summary = comparisonSummary(names.size, groups)
+  if (summary.length > 200 || QUOTES.test(summary)) return undefined
   const sizes = groups.map(g => g.documents.length)
   const largest = Math.max(...sizes)
   const majority = largest >= 2 && sizes.filter(size => size === largest).length === 1 ? sizes.indexOf(largest) : -1

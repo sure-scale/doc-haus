@@ -105,17 +105,35 @@ test("oversized complete evidence is not compared; the byte budget includes ques
 })
 
 const docs = (...names: string[]) => ({ documents: names.map(name => ({ name, answer: "", section: "", excerpt: "" })) })
-const reply = (groups: Array<[string[], string]>, summary = "Most agree.") => JSON.stringify({ groups: groups.map(([documents, reason]) => ({ documents, reason })), summary })
+const reply = (groups: Array<[string[], string]>, points: string[] = []) =>
+  JSON.stringify({ groups: groups.map(([documents, reason], index) => ({ documents, reason, point: points[index] ?? "the same term" })) })
 
 test("labels: a unique largest group is consistent, one group is all consistent, a tie all differ", () => {
   const four = docs("A", "B", "C", "D")
-  expect(readComparison(reply([[["A", "B", "C"], "Three years"], [["D"], "Two years"]]), four)).toEqual({
-    summary: "Most agree.",
+  expect(readComparison(reply([[["A", "B", "C"], "Three years"], [["D"], "Two years"]], ["a three-year term", "a two-year term"]), four)).toEqual({
+    summary: "3 of 4 answers state a three-year term; 1 states a two-year term.",
     cells: { A: { label: "consistent", reason: "Three years" }, B: { label: "consistent", reason: "Three years" }, C: { label: "consistent", reason: "Three years" }, D: { label: "differs", reason: "Two years" } },
   })
   expect(Object.values(readComparison(reply([[["A", "B", "C", "D"], "Three years"]]), four)!.cells).map(c => c.label)).toEqual(["consistent", "consistent", "consistent", "consistent"])
   expect(Object.values(readComparison(reply([[["A", "B"], "Three years"], [["C", "D"], "Two years"]]), four)!.cells).map(c => c.label)).toEqual(["differs", "differs", "differs", "differs"])
   expect(Object.values(readComparison(reply([[["A"], "One"], [["B"], "Two"], [["C"], "Three"], [["D"], "Four"]]), four)!.cells).every(c => c.label === "differs")).toBe(true)
+})
+
+test("the summary is built from group points, so its counts cannot be wrong", () => {
+  const four = docs("A", "B", "C", "D")
+  expect(readComparison(reply([[["A", "B", "C", "D"], "Three years"]], ["a three-year term"]), four)!.summary)
+    .toBe("All 4 answers state a three-year term.")
+  expect(readComparison(reply([[["A", "B"], "Three years"], [["C"], "Two years"], [["D"], "One year"]], ["a three-year term", "a two-year term", "a one-year term"]), four)!.summary)
+    .toBe("2 of 4 answers state a three-year term; 1 states a two-year term; 1 states a one-year term.")
+  expect(readComparison(reply([[["A"], "One"], [["B"], "Two"], [["C"], "Three"]], ["a one-year term", "a two-year term", "a three-year term"]), docs("A", "B", "C"))!.summary)
+    .toBe("1 of 3 answers states a one-year term; 1 states a two-year term; 1 states a three-year term.")
+})
+
+test("a reason up to 240 characters is kept; a longer one is rejected", () => {
+  const three = docs("A", "B", "C")
+  const reason = "x".repeat(240)
+  expect(readComparison(reply([[["A", "B", "C"], reason]]), three)!.cells.A!.reason).toBe(reason)
+  expect(readComparison(reply([[["A", "B", "C"], `${reason}x`]]), three)).toBeUndefined()
 })
 
 test("rejects any reply that misplaces a document, quotes, or overruns its limits", () => {
@@ -127,11 +145,13 @@ test("rejects any reply that misplaces a document, quotes, or overruns its limit
     reply([[["A", "B", "C"], "Same"], [["D"], "Other"]]),
     reply([[["A", "B"], 'Says "three years"'], [["C"], "Other"]]),
     reply([[["A", "B"], "Says “three years”"], [["C"], "Other"]]),
-    reply([[["A", "B"], "x".repeat(141)], [["C"], "Other"]]),
+    reply([[["A", "B"], "x".repeat(241)], [["C"], "Other"]]),
     reply([[["A", "B"], ""], [["C"], "Other"]]),
-    reply([[["A", "B", "C"], "Same"]], "x".repeat(201)),
-    reply([[["A", "B", "C"], "Same"]], 'All say "three years"'),
-    reply([[["A", "B", "C"], "Same"]], "All say «three years»"),
+    reply([[["A", "B"], "Same"], [["C"], "Other"]], ["x".repeat(100), "y".repeat(100)]),
+    reply([[["A", "B", "C"], "Same"]], ['All say "three years"']),
+    reply([[["A", "B", "C"], "Same"]], ["All say «three years»"]),
+    reply([[["A", "B", "C"], "Same"]], ["x".repeat(101)]),
+    JSON.stringify({ groups: [{ documents: ["A", "B", "C"], reason: "Same" }] }),
     "The documents mostly agree.",
   ]) expect(readComparison(text, three)).toBeUndefined()
 })
@@ -150,7 +170,7 @@ test("comparison reasons retain their wording even when a filename resembles a l
   })
   const two = docs("Alpha.docx", "Beta.docx")
   expect(readComparison(reply([[["Alpha.docx"], "Alphabetical schedule"], [["Beta.docx"], "Other"]]), two)!.cells["Alpha.docx"]!.reason).toBe("Alphabetical schedule")
-  expect(readComparison(reply([[["Alpha.docx"], `Alpha.docx: ${"x".repeat(138)}`], [["Beta.docx"], "Other"]]), two)).toBeUndefined()
+  expect(readComparison(reply([[["Alpha.docx"], `Alpha.docx: ${"x".repeat(229)}`], [["Beta.docx"], "Other"]]), two)).toBeUndefined()
   const qualified = readComparison(reply([[["No.docx"], "No liability cap applies."], [["Except.docx"], "Except for fraud, liability is capped."]]), docs("No.docx", "Except.docx"))!
   expect(qualified.cells["No.docx"]!.reason).toBe("No liability cap applies.")
   expect(qualified.cells["Except.docx"]!.reason).toBe("Except for fraud, liability is capped.")
@@ -232,7 +252,7 @@ test("an explicit supported absence remains comparable through the actual produc
   const input = comparisonInputs(value, "consent", rows.slice(0, 2)) as ComparisonInput
   const fake = await engine(async () => new Response(null, { status: 204 }), reply([
     [["Alpha.docx"], positions[0]!], [["Beta.docx"], positions[1]!],
-  ], "The consent requirements differ."))
+  ], ["a requirement for customer consent", "no requirement for customer consent"]))
   try {
     const result = await compareColumn(matterClient("/synthetic/matter"), input, new AbortController().signal)
     const body = await fake.requests.find(r => r.url.endsWith("/prompt"))!.json() as { text: string }
