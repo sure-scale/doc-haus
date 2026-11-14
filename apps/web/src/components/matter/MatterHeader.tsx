@@ -35,6 +35,7 @@ export default function MatterHeader({
   patch,
   onEditConflicts,
   onOpenChronology,
+  onOpenKeyDates,
   compact = false,
   chronologyActions,
 }: {
@@ -58,6 +59,7 @@ export default function MatterHeader({
   patch: (fields: MatterFields) => Promise<void>
   onEditConflicts: () => void
   onOpenChronology?: () => void
+  onOpenKeyDates?: () => void
   compact?: boolean
   chronologyActions?: MatterMenuAction[]
 }) {
@@ -263,11 +265,18 @@ export default function MatterHeader({
               : "Conflicts not recorded"}
         </span>
       )}
-      {(onOpenChronology || chronologyActions) && (
+      {(onOpenChronology || onOpenKeyDates || chronologyActions) && (
         <MatterActionsMenu
           actions={
             chronologyActions ??
-            (onOpenChronology ? [{ id: "open-chronology", label: "Open chronology", onSelect: onOpenChronology }] : [])
+            [
+              ...(onOpenKeyDates
+                ? [{ id: "open-key-dates", label: "Open key dates", onSelect: onOpenKeyDates }]
+                : []),
+              ...(onOpenChronology
+                ? [{ id: "open-chronology", label: "Open chronology", onSelect: onOpenChronology }]
+                : []),
+            ]
           }
         >
           {compact && (

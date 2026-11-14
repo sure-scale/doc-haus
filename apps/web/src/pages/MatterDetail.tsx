@@ -40,6 +40,7 @@ import { WordDocumentsProvider } from "../components/WordDocuments"
 import useExit, { Exit } from "../components/useExit"
 import NotFound from "./NotFound"
 import ChronologyWorkbench from "../components/chronology/ChronologyWorkbench"
+import KeyDatesRegister from "../components/key-dates/KeyDatesRegister"
 import { assessChronology, getChronology, type Chronology } from "../api/ingest/chronology"
 import { setChronologyNavigation } from "../components/chronology/navigation"
 import type { ChronologyChatReference } from "../components/chronology/model"
@@ -55,7 +56,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   const navigate = useNavigate()
   // Documents is a drawer beside the rail, not a surface; the old
   // `view=documents` links open it over the chat.
-  const view = params.get("view") === "chronology" ? "chronology" : params.get("view") === "review" ? "review" : "chat"
+  const view = params.get("view") === "chronology" ? "chronology" : params.get("view") === "key-dates" ? "key-dates" : params.get("view") === "review" ? "review" : "chat"
   const drawer = useDocumentsDrawer()
   const [drawerShown, drawerClosing] = useExit(drawer.open)
   // A drawer already open as the matter loads is restored, not opened: it
@@ -251,7 +252,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
     assessChronology(id).then(receiveChronology, () => getChronology(id).then(receiveChronology, () => {}))
   }, [id, receiveChronology, suggestChronology])
   useEffect(() => {
-    if (view === "chronology") setDocumentsDrawer(false)
+    if (view === "chronology" || view === "key-dates") setDocumentsDrawer(false)
   }, [view])
 
   useEffect(() => {
@@ -401,7 +402,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   return (
     <WordDocumentsProvider matterId={matter.id} onChanged={refresh}>
       <MatterHeader
-        compact={view === "chronology"}
+        compact={view === "chronology" || view === "key-dates"}
         chronologyActions={view === "chronology" ? chronologyActions : undefined}
         matter={matter}
         jurisdictions={jurisdictions}
@@ -426,6 +427,18 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
           next.set("view", "chronology")
           setParams(next)
         }}
+        onOpenKeyDates={
+          view === "key-dates"
+            ? undefined
+            : () => {
+                const next = new URLSearchParams(params)
+                next.delete("event")
+                next.delete("proposal")
+                next.delete("starter")
+                next.set("view", "key-dates")
+                setParams(next)
+              }
+        }
         onEditConflicts={() => {
           // The attorney name pre-fills "by"; the dialog opens without it if preferences cannot load.
           getPreferences()
@@ -438,7 +451,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
       />
 
       <div className="matter-body">
-        <div className="workspace" style={view === "chronology" ? { display: "none" } : undefined}>
+        <div className="workspace" style={view === "chronology" || view === "key-dates" ? { display: "none" } : undefined}>
           <ChatPanel
             key={session ?? "new"}
             directory={matter.dir}
@@ -530,6 +543,35 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
               next.delete("view")
               next.delete("event")
               next.delete("proposal")
+              setParams(next)
+            }}
+          />
+        )}
+        {view === "key-dates" && (
+          <KeyDatesRegister
+            key={matter.id}
+            matterId={matter.id}
+            documents={matter.documents.map((document) => document.name)}
+            onClose={() => {
+              const next = new URLSearchParams(params)
+              next.delete("view")
+              next.delete("event")
+              next.delete("proposal")
+              next.delete("starter")
+              setParams(next)
+            }}
+            onOpenDocument={(name) => {
+              setFocusRedline(undefined)
+              setViewerVersions(false)
+              setViewing(name)
+            }}
+            onAsk={() => {
+              const next = new URLSearchParams(params)
+              next.delete("view")
+              next.delete("event")
+              next.delete("proposal")
+              next.delete("starter")
+              next.set("prompt", "What deadlines or required actions should I know about?")
               setParams(next)
             }}
           />

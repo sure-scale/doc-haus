@@ -1,0 +1,270 @@
+/* The key-date register is a reading surface: scan the date, then check the
+   source quote. A relative formula stays visibly unresolved rather than
+   borrowing the look of a fixed date. */
+.key-dates-register {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: clamp(20px, 3vw, 40px) max(clamp(24px, 3.2vw, 56px), calc((100% - 900px) / 2)) var(--space-8);
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--text);
+}
+.key-dates-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-5);
+  margin-bottom: var(--space-6);
+}
+.key-dates-heading {
+  max-width: 64ch;
+}
+.key-dates-eyebrow {
+  margin: 0 0 var(--space-1);
+  color: var(--muted);
+  font: var(--md-sys-typescale-label-medium);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.key-dates-register h1 {
+  margin: 0 0 var(--space-2);
+  font: var(--md-sys-typescale-headline-medium);
+  letter-spacing: -0.02em;
+}
+.key-dates-lead {
+  margin: 0;
+  color: var(--text-secondary);
+  font: var(--md-sys-typescale-body-medium);
+}
+.key-dates-head > button {
+  flex: none;
+}
+.key-dates-summary {
+  margin: 0 0 var(--space-3);
+  color: var(--text-secondary);
+  font: var(--md-sys-typescale-label-medium);
+  font-variant-numeric: tabular-nums;
+}
+.key-dates-list {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.key-dates-entry {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: var(--space-5);
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+}
+/* Shape and words carry the unresolved state; the edge is only the second cue. */
+.key-dates-entry.is-unresolved {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+.key-dates-when {
+  display: grid;
+  align-content: start;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-right: var(--space-5);
+  border-right: 1px solid var(--border-soft);
+}
+.key-dates-when > time {
+  font: var(--md-sys-typescale-title-large);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.key-dates-no-date {
+  color: var(--warn);
+  font: var(--md-sys-typescale-title-small);
+}
+.key-dates-kind {
+  justify-self: start;
+  padding: 2px var(--space-2);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--text-secondary);
+  font: var(--md-sys-typescale-label-small);
+}
+.key-dates-entry.is-unresolved .key-dates-kind {
+  background: var(--md-sys-color-warning-container);
+  color: var(--md-sys-color-on-surface-variant);
+}
+.key-dates-body {
+  min-width: 0;
+}
+.key-dates-reason {
+  margin: 0 0 var(--space-2);
+  font: var(--md-sys-typescale-title-small);
+}
+.key-dates-formula {
+  margin: 0 0 var(--space-3);
+  color: var(--text-secondary);
+  font: var(--md-sys-typescale-body-small);
+}
+.key-dates-formula > span {
+  margin-right: var(--space-1);
+  color: var(--muted);
+  font-weight: 600;
+}
+.key-dates-entry.is-unresolved .key-dates-formula {
+  color: var(--text);
+}
+.key-dates-quote {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) 0 var(--space-2) var(--space-4);
+  border-left: 2px solid var(--border-strong, var(--border));
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+.key-dates-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  margin: 0;
+  color: var(--text-secondary);
+  font: var(--md-sys-typescale-body-small);
+}
+.key-dates-facts > div {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.key-dates-facts dt {
+  color: var(--muted);
+}
+.key-dates-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.key-dates-facts button.linklike {
+  margin: 0;
+  padding: 0;
+  min-height: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  text-underline-offset: 2px;
+}
+.key-dates-facts button.linklike:hover:not(:disabled) {
+  border: 0;
+  background: none;
+  text-decoration-color: currentcolor;
+}
+.key-dates-missing {
+  color: var(--muted);
+}
+.key-dates-state {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-3);
+  max-width: 64ch;
+  margin-bottom: var(--space-6);
+  padding: var(--space-5);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font: var(--md-sys-typescale-body-medium);
+}
+.key-dates-state h2 {
+  margin: 0;
+  color: var(--text);
+  font: var(--md-sys-typescale-title-medium);
+}
+.key-dates-state p {
+  margin: 0;
+}
+.key-dates-error {
+  border-style: solid;
+  border-color: var(--md-sys-color-error);
+  background: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+}
+.key-dates-empty {
+  padding: var(--space-6);
+}
+.key-dates-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--accent-soft, var(--border));
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: key-dates-spin 0.7s linear infinite;
+}
+@keyframes key-dates-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+.key-dates-footnote {
+  max-width: 74ch;
+  margin: var(--space-5) 0 0;
+  color: var(--muted);
+  font: var(--md-sys-typescale-body-small);
+}
+@media (max-width: 720px) {
+  .key-dates-head {
+    flex-direction: column-reverse;
+    gap: var(--space-4);
+  }
+  .key-dates-entry {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-3);
+  }
+  .key-dates-when {
+    grid-template-columns: auto auto;
+    justify-content: start;
+    align-items: center;
+    gap: var(--space-3);
+    padding: 0 0 var(--space-3);
+    border-right: 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .key-dates-when > time {
+    font: var(--md-sys-typescale-title-medium);
+  }
+  .key-dates-facts {
+    display: grid;
+    gap: var(--space-2);
+  }
+  .key-dates-facts > div {
+    display: grid;
+    gap: 2px;
+  }
+  .key-dates-facts dt {
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .key-dates-spinner {
+    animation: none;
+  }
+}
+/* A long register scrolls inside the bounded desktop/tablet surface, keeping
+   the matter header, rail and status bar in their own viewport. */
+@media (min-width: 701px) and (min-height: 600px) {
+  .matter-container > .matter-body:has(> .key-dates-register) {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .matter-body > .key-dates-register {
+    flex: 1;
+    align-self: stretch;
+  }
+}

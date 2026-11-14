@@ -267,7 +267,7 @@ export default function Sidebar({
             type="button"
             className={`nav-item${drawer.open ? " active" : ""}`}
             onClick={() => {
-              if (view !== "chronology") { toggleDocumentsDrawer(); return }
+              if (view !== "chronology" && view !== "key-dates") { toggleDocumentsDrawer(); return }
               const next = new URLSearchParams(params)
               next.delete("view"); next.delete("event"); next.delete("proposal")
               navigate(`/matter/${matterId}?${next}`)
@@ -282,6 +282,16 @@ export default function Sidebar({
             <span>Documents</span>{" "}
             {drawer.count !== undefined && <span className="sidebar-nav-count">{drawer.count}</span>}
           </button>
+          <Link
+            to={`/matter/${matterId}?${new URLSearchParams({ ...Object.fromEntries(params), view: "key-dates" })}`}
+            className={`nav-item${view === "key-dates" ? " active" : ""}`}
+            title="Key dates"
+            aria-label="Key dates"
+            aria-current={view === "key-dates" ? "page" : undefined}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M7 3v3M17 3v3M4 9h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z" /><path d="M8 13h3v3H8z" fill="currentColor" stroke="none" /></svg>
+            <span>Key dates</span>
+          </Link>
           {(chronology.matterId === matterId && chronology.visible || view === "chronology") && <Link
             to={`/matter/${matterId}?${new URLSearchParams({ ...Object.fromEntries(params), view: "chronology" })}`}
             className={`nav-item${view === "chronology" ? " active" : ""}`}
