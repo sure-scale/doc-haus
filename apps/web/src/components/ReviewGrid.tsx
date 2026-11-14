@@ -1,4 +1,4 @@
-import { useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { UNSAFE_DataRouterContext, useBlocker } from "react-router-dom"
 import { computeCell, describeRecheck, needsFill, recheckOutcome } from "../api/review-recheck"
@@ -6,9 +6,9 @@ import { citationLabel, citesRow, type ReviewRow } from "../api/review-answer"
 import { compareColumn, comparisonInputs, MAX_COMPARE_DOCUMENTS } from "../api/review-compare"
 import { suggestQuestions } from "../api/review-suggest"
 import { matches, primaryAction, reviewAttention, type AttentionFilter, type MarkerState, type QueueEntry } from "../api/review-attention"
-import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, recheckPassages, saveGrid, type Grid, type GridCellData, type GridColumn, type SourceCheck } from "../api/ingest/grid"
+import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, recheckPassages, saveGrid, type Grid, type GridCellComment, type GridCellData, type GridColumn, type SourceCheck } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
-import { getBackgroundAgents, getPreferences } from "../api/ingest/preferences"
+import { getBackgroundAgents, getPreferences, savePreferences } from "../api/ingest/preferences"
 import { getMatter } from "../api/ingest/matters"
 import type { Document } from "../api/ingest/documents"
 import { createSession, getMessages, sendPrompt } from "../api/opencode/sessions"
@@ -66,7 +66,7 @@ const DEGRADED: SourceVerdict[] = ["not_found", "missing", "other_document"]
 const SOURCE_BADGE: Record<SourceVerdict, string> = { verified: "Verified", reanchored: "Re-anchored", not_found: "Source changed", missing: "Source missing", other_document: "Cites another document" }
 const SOURCE_DETAIL: Record<SourceVerdict, string> = {
   verified: "The excerpt matches the document at the recorded position.",
-  reanchored: "The excerpt is still in the document, but at a different position from the one recorded. The document may have changed since this answer.",
+  reanchored: "The passage is still in the document, but its wording differs from the recorded excerpt, so the document may have changed since this answer.",
   not_found: "The document has changed since this answer and no longer contains this excerpt.",
   missing: "This document is no longer in the matter, so the excerpt cannot be checked.",
   other_document: "The cited passage is from another document, so it does not support this answer for this document.",
@@ -247,6 +247,14 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
   const [detail, setDetail] = useState<{ docName: string; columnId: string; question: string }>()
   const [draft, setDraft] = useState("") // comment being composed in the overlay
   const [commentSaving, setCommentSaving] = useState(false)
+  // The name the first comment is signed with, offered once and then kept in
+  // the drafting settings; nothing writes "Unattributed" on a comment.
+  const [authorName, setAuthorName] = useState("")
+  // The comment just deleted from this cell, with its place, until Undo or the
+  // notice's time is up. Deleting stays one click.
+  const [deleted, setDeleted] = useState<{ key: string; index: number; comment: GridCellComment }>()
+  const undoTimer = useRef<number | undefined>(undefined)
+  const undoNotice = useRef<HTMLButtonElement>(null)
   // The cell re-running from its detail, then how it came back: `failed` when
   // the cell is unchanged, else whether its answer text changed. The outcome
   // shows until the detail moves to another cell.
@@ -347,6 +355,8 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
     return () => window.clearTimeout(timer)
   }, [walkDone])
 
+  // A deleted comment's offer never outlives the table.
+  useEffect(() => () => window.clearTimeout(undoTimer.current), [])
   // Escape closes only the open cell detail. Consumed here, on document (before
   // ModalHeader's window listeners) and wherever focus is, so neither those
   // listeners nor the dialog's native cancel also close the table on that press.
@@ -539,8 +549,10 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
     if (!column) return
     setDraft("")
     setViewing(undefined)
-    // A re-run's outcome belongs to the cell it ran on.
+    // A re-run's outcome, and a deleted comment's offer, belong to the cell
+    // they were made on.
     setRerun((current) => current?.state === "running" ? current : undefined)
+    setDeleted(undefined)
     setDetail({ docName, columnId, question: column.question })
   }
 
@@ -559,26 +571,65 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
     setCommentSaving(true)
     try {
       // Read at creation, rather than labeling stored comments with a name
-      // that may have changed since they were written. No name (or unavailable
-      // settings) leaves an honest, unattributed comment.
-      const author = await getPreferences().then((prefs) => prefs.attorney?.trim() || undefined, () => undefined)
+      // that may have changed since they were written. A name typed on the
+      // first comment is kept in the drafting settings, so the comment, its
+      // tooltip and every export carry it from then on.
+      const typed = authorName.trim()
+      const author = typed || await getPreferences().then((prefs) => prefs.attorney?.trim() || undefined, () => undefined)
       const cell = gridRef.current.cells[key]
       if (!cell || saveState.current.blocked || saveState.current.epoch !== epoch) return
       commitCell(key, {
         ...cell,
         comments: [...(cell.comments ?? []), { id: crypto.randomUUID().slice(0, 6), text, at, ...(author ? { author } : {}) }],
       })
+      if (typed) {
+        setAttorney(typed)
+        setAuthorName("")
+        void savePreferences({ attorney: typed }).catch(() => {})
+      } else if (!author) {
+        // Without a name to sign with, the field is offered from the next comment.
+        setAttorney("")
+      }
       setDraft((current) => current === submitted ? "" : current)
     } finally {
       setCommentSaving(false)
     }
   }
 
+  // Deleting a comment is one click; it comes back from the same place while
+  // the notice is up, and after that the deletion stands.
   function deleteComment(id: string) {
     if (!detail) return
     const key = cellKey(detail.docName, detail.columnId)
     const cell = gridRef.current.cells[key]
-    commitCell(key, { ...cell, comments: (cell.comments ?? []).filter((c) => c.id !== id) })
+    const comments = cell.comments ?? []
+    const index = comments.findIndex((comment) => comment.id === id)
+    if (index < 0) return
+    commitCell(key, { ...cell, comments: comments.filter((comment) => comment.id !== id) })
+    window.clearTimeout(undoTimer.current)
+    setDeleted({ key, index, comment: comments[index]! })
+    undoTimer.current = window.setTimeout(() => {
+      // The notice and its button go; focus keeps its place in the dialog.
+      if (undoNotice.current && document.activeElement === undoNotice.current) detailDialog.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true })
+      setDeleted(undefined)
+    }, 8000)
+    detailDialog.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true })
+  }
+
+  function undoDelete() {
+    const entry = deleted
+    window.clearTimeout(undoTimer.current)
+    setDeleted(undefined)
+    if (entry) {
+      const cell = gridRef.current.cells[entry.key]
+      const comments = cell?.comments ?? []
+      if (cell && !comments.some((comment) => comment.id === entry.comment.id)) {
+        // Back in its own place, unless later comments took it.
+        const next = [...comments]
+        next.splice(Math.min(entry.index, next.length), 0, entry.comment)
+        commitCell(entry.key, { ...cell, comments: next })
+      }
+    }
     detailDialog.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true })
   }
 
@@ -1103,7 +1154,7 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
                                 <button
                                   className="icon-btn review-note"
                                   aria-label={`${cell.comments.length} ${cell.comments.length === 1 ? "comment" : "comments"} on ${doc.name}: ${col.question}`}
-                                  title={cell.comments.map((c) => `${c.author || "Unattributed"}: ${c.text}`).join("\n")}
+                                  title={cell.comments.map((c) => c.author ? `${c.author}: ${c.text}` : c.text).join("\n")}
                                   onClick={() => openDetail(doc.name, col.id)}
                                 >
                                   <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
@@ -1194,7 +1245,7 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
                     {/* After a re-run, whether the answer text changed; gone once the detail moves on. */}
                     <span className="review-rerun-outcome" role="status">{rerunOutcome}</span>
                   </div>
-                  <p className="review-detail-answer">{detailCell.answer}</p>
+                  <p className={`review-detail-answer${rerun && rerun.key === detailKey && rerun.state === "updated" ? " is-updated" : ""}`}>{detailCell.answer}</p>
                   {detailDiffers && <p className="review-compare-detail"><MarkerGlyph state="differs" /><span>AI comparison: Differs — {detailDiffers}</span></p>}
                   {detailCell.recheck && <p className="review-recheck-detail">{describeRecheck(detailCell.recheck)}</p>}
                 </section>
@@ -1243,21 +1294,37 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
                 )}
                 <section className="review-comments" aria-labelledby={`${detailIds}-comments`}>
                   <h3 className="review-detail-label" id={`${detailIds}-comments`}>Comments</h3>
-                  {(detailCell.comments ?? []).map((c) => (
-                    <div key={c.id} className="review-comment">
-                      <div className="review-comment-meta">
-                        <span><strong>{c.author || "Unattributed"}</strong><span className="muted"> · {formatDateTime(c.at)}</span></span>
-                        <button type="button" className="ghost btn-sm review-comment-delete" disabled={!canEdit} aria-label="Delete comment" onClick={() => deleteComment(c.id)}>
-                          Delete
-                        </button>
-                      </div>
-                      <div className="review-comment-text">{c.text}</div>
-                    </div>
-                  ))}
+                  {(() => {
+                    const comments = detailCell.comments ?? []
+                    const undoAt = deleted && deleted.key === detailKey ? deleted.index : undefined
+                    // The offer sits where the comment was: it comes back there.
+                    const offer = undoAt === undefined ? null : (
+                      <p key="undo" className="review-comment-undo" role="status">
+                        Comment deleted.{" "}
+                        <button ref={undoNotice} type="button" className="linklike" onClick={undoDelete}>Undo</button>
+                      </p>
+                    )
+                    const cards = comments.map((c, index) => (
+                      <Fragment key={c.id}>
+                        {undoAt === index && offer}
+                        <div className="review-comment">
+                          <div className="review-comment-meta">
+                            <span>{c.author
+                              ? <><strong>{c.author}</strong><span className="muted"> · {formatDateTime(c.at)}</span></>
+                              : <span className="muted">{formatDateTime(c.at)}</span>}</span>
+                            <button type="button" className="ghost btn-sm review-comment-delete" disabled={!canEdit} aria-label="Delete comment" onClick={() => deleteComment(c.id)}>
+                              Delete
+                            </button>
+                          </div>
+                          <div className="review-comment-text">{c.text}</div>
+                        </div>
+                      </Fragment>
+                    ))
+                    return <>{cards}{undoAt !== undefined && undoAt >= comments.length && offer}</>
+                  })()}
                   <div className="review-comment-compose">
                     <textarea
                       rows={2}
-                      aria-describedby={attorney === "" ? `${detailIds}-signed` : undefined}
                       value={draft}
                       readOnly={commentSaving || !canEdit}
                       aria-label="Add a comment"
@@ -1271,7 +1338,20 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
                       }}
                     />
                     <div className="review-comment-actions">
-                      {attorney === "" && <small className="muted" id={`${detailIds}-signed`}>Comments use the attorney name in Settings → Drafting.</small>}
+                      {/* Offered once, on the first comment: later comments,
+                          tooltips and exports are signed without asking. */}
+                      {attorney === "" && (
+                        <label className="review-comment-sign">
+                          Your name
+                          <input
+                            value={authorName}
+                            readOnly={commentSaving || !canEdit}
+                            placeholder="Optional"
+                            aria-label="Your name, shown on your comments"
+                            onChange={(e) => setAuthorName(e.target.value)}
+                          />
+                        </label>
+                      )}
                       <button className={composing ? "primary" : undefined} onClick={addComment} disabled={!canEdit || !draft.trim() || commentSaving}>
                         {commentSaving ? "Adding comment…" : "Add comment"}
                       </button>

@@ -27,13 +27,23 @@ test("a cited cell reads verified, re-anchored, not found or missing as its docu
   const check = async () => (await checkCellSources(request, registered))["Supply terms.docx::c1"]
 
   expect(await check()).toBe("verified")
-  // A clause inserted above moves the cited sentence; the text is still there.
+  // A clause inserted above moves the cited sentence; the same words in a new
+  // place are still the passage the answer cited, so it reads verified.
   writeFileSync(docPath, docx(["1. Supply. The Supplier shall supply the Goods.", "2. Price. The Buyer shall pay on delivery.", excerpt]))
-  expect(await check()).toBe("reanchored")
+  expect(await check()).toBe("verified")
   // The cited sentence itself was amended.
   writeFileSync(docPath, docx(["1. Supply. The Supplier shall supply the Goods.", "This agreement is governed by the law of Scotland."]))
   expect(await check()).toBe("not_found")
   expect((await checkCellSources(request, () => undefined))["Supply terms.docx::c1"]).toBe("missing")
+}, 60_000)
+
+test("a match whose words differ from the cited excerpt reads re-anchored, not verified", async () => {
+  const docPath = path.join(directory, "Supply terms.docx")
+  // The document uses a typographic apostrophe; the answer recorded a straight one.
+  writeFileSync(docPath, docx(["The Buyer\u2019s payment is due on delivery."]))
+  const request = sourceCheckRequest({ cells: [{ key: "k", documentName: "Supply terms.docx", excerpt: "The Buyer's payment is due on delivery.", charStart: 0, charEnd: 5 }] })!
+  const checks = await checkCellSources(request, (name) => (name === "Supply terms.docx" ? { name, docPath } : undefined))
+  expect(checks.k).toBe("reanchored")
 }, 60_000)
 
 test("one malformed cell, such as an older grid's offsets, does not stop the others being checked", () => {

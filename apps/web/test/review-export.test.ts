@@ -21,7 +21,7 @@ const grid: Grid = {
   },
 }
 const model = reviewExport("Aldgate Mills", grid, ["Unit 4 lease.docx", "Supplier letter.docx"])
-const comment = `Comment by Unattributed (${formatDate(at)}): Confirmed against the signed copy`
+const comment = `Comment (${formatDate(at)}): Confirmed against the signed copy`
 const stale = "Stale: question changed since this answer"
 
 test("an answer is stale when its question changed after it was computed, unless it is reviewed", () => {
@@ -81,7 +81,7 @@ const one = (document: string, question: string, answer: string, comments: GridC
 
 test("CSV quotes fields holding commas, quotes or line breaks (RFC 4180)", () => {
   const csv = reviewCsv(one('Smith, Jones "draft".docx', "Who signs?", "Line one\nLine two", [{ id: "1", at, text: "a" }, { id: "2", at, text: "b" }]))
-  expect(csv.slice(1).split("\r\n")[1]).toBe(`"Smith, Jones ""draft"".docx",Who signs?,"Line one\nLine two",,No,No,,"Comment by Unattributed (${formatDate(at)}): a\nComment by Unattributed (${formatDate(at)}): b"`)
+  expect(csv.slice(1).split("\r\n")[1]).toBe(`"Smith, Jones ""draft"".docx",Who signs?,"Line one\nLine two",,No,No,,"Comment (${formatDate(at)}): a\nComment (${formatDate(at)}): b"`)
 })
 
 test("CSV neutralises cells a spreadsheet would read as a formula", () => {
@@ -144,7 +144,7 @@ test("Word export drops characters XML cannot carry, so a stray form feed cannot
   const xml = unzip(await reviewDocx(dirty))("word/document.xml")!
   expect(xml).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/)
   expect(paragraphs(xml)[0]).toBe("Tabular review — Mills")
-  expect(rows(xml)).toEqual([[["Document"], ["Term?"]], [["Lease.docx"], ["Fiveyears from\ttoday", `Comment by Unattributed (${formatDate(at)}): see p. 4`]]])
+  expect(rows(xml)).toEqual([[["Document"], ["Term?"]], [["Lease.docx"], ["Fiveyears from\ttoday", `Comment (${formatDate(at)}): see p. 4`]]])
 })
 
 // --- Excel -------------------------------------------------------------------
@@ -164,7 +164,7 @@ test("Excel export keeps the grid layout: answers in cells, reviewed or stale st
   expect(unzip(bytes)("xl/drawings/vmlDrawing1.vml")).toContain("visibility:hidden")
 })
 
-test("each comment keeps its recorded author in Excel, CSV and Word, with legacy comments unattributed and sources readable", async () => {
+test("each comment keeps its recorded author in Excel, CSV and Word, a comment without one carries no author line, and sources stay readable", async () => {
   const attributed = structuredClone(grid)
   attributed.cells["Unit 4 lease.docx::q1"].comments!.push(
     { id: "c2", text: "Please confirm with the client.", at: at + 1000, author: "Amina Shah" },
@@ -175,7 +175,7 @@ test("each comment keeps its recorded author in Excel, CSV and Word, with legacy
   expect(book.SheetNames).toEqual(["Tabular review", "Comments"])
   expect(utils.sheet_to_json<string[]>(book.Sheets.Comments, { header: 1 })).toEqual([
     ["Document", "Question", "Source", "Author", "Date", "Comment"],
-    ["Unit 4 lease.docx", q1, "Unit 4 lease.docx § 9.2", "Unattributed", formatDateTime(at), "Confirmed against the signed copy"],
+    ["Unit 4 lease.docx", q1, "Unit 4 lease.docx § 9.2", "", formatDateTime(at), "Confirmed against the signed copy"],
     ["Unit 4 lease.docx", q1, "Unit 4 lease.docx § 9.2", "Amina Shah", formatDateTime(at + 1000), "Please confirm with the client."],
     ["Unit 4 lease.docx", q1, "Unit 4 lease.docx § 9.2", "Jordan Chen", formatDateTime(at + 2000), "Confirmed.\nUse the signed version."],
   ])

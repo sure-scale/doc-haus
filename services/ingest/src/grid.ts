@@ -170,6 +170,11 @@ export function sourceCheckRequest(value: unknown): SourceCheckRequest | undefin
   }
 }
 
+// A move is only worth its own word when the text itself differs: an excerpt
+// found at different offsets with the same words (an earlier line break, say)
+// is still the passage the answer cited. Whitespace runs never count.
+const squash = (text: string) => text.replace(/\s+/g, " ").trim()
+
 // `resolve` maps a document name to the matter's registered source file; the
 // request's own paths are never read. A cell whose document cannot be read is
 // left out and reads as unchecked.
@@ -183,7 +188,7 @@ export async function checkCellSources(request: SourceCheckRequest, resolve: (na
     }
     const verified = await verifyCitation({ ...cell, documentName: target.name, docPath: target.docPath, section: "" }).catch(() => null)
     if (verified === null) continue
-    checks[cell.key] = !verified ? "not_found" : verified.reanchored ? "reanchored" : "verified"
+    checks[cell.key] = !verified ? "not_found" : verified.reanchored && squash(verified.excerpt) !== squash(cell.excerpt) ? "reanchored" : "verified"
   }
   return checks
 }

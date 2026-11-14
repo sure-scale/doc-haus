@@ -114,9 +114,10 @@ function ProgressBar({ model }: { model: ReviewAttention }) {
       ))}
     </span>
   )
-  // The key keeps clear of the whole toolbar when it cannot sit beside the line it explains.
+  // The key keeps clear of the whole toolbar when it cannot sit beside the line
+  // it explains, and of the column headers when it opens under them.
   return (
-    <Tooltip label={key} describes={false} around=".review-toolbar">
+    <Tooltip label={key} describes={false} around=".review-toolbar" avoid=".review-table thead">
       <span className="review-progress">
         <span className="review-progress-bar" role="img" aria-label={name} tabIndex={0}>
           {parts.map((part) => <span key={part.part} className={`review-progress-part is-${part.part}`} style={{ flexGrow: part.count }} />)}
