@@ -1,4 +1,5 @@
 import { chronologyRoutes } from "./chronology-routes"
+import { keyDateRoutes } from "./key-dates"
 import { DerivedChronologyExportError } from "./chronology-export-origin"
 import { dashboardRoutes } from "./dashboard"
 import { playbookLibraryRoutes } from "./playbook-library"
@@ -223,6 +224,7 @@ app.route("/", updateRoutes(new RepoUpdater(updateRoot, updateRuntime), async ()
 
 app.route("/", documentLabelRoutes(matterDir))
 app.route("/", chronologyRoutes(matterDir))
+app.route("/", keyDateRoutes(matterDir))
 app.route("/matters", documentExportRoutes({ directory: matterDir, proposals: (directory, source) => redlinedDocumentView(directory, source, source.bytes) }))
 // The page a PDF citation's excerpt starts on, for the web viewer's #page=N.
 app.route("/", pdfPassageRoutes(matterDir))
