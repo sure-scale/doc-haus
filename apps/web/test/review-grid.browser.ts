@@ -875,10 +875,10 @@ try {
     for (const cell of Object.values(next.cells)) cell.questionHash = hashQuestion(grid.columns[0]!.question)
     return next
   }
-  const replyFor = (groups: Array<[string[], string]>, summary: string) =>
-    JSON.stringify({ groups: groups.map(([documents, reason]) => ({ documents, reason })), summary })
+  const replyFor = (groups: Array<[string[], string]>, points: string[]) =>
+    JSON.stringify({ groups: groups.map(([documents, reason], index) => ({ documents, reason, point: points[index]! })) })
   const threeWay = replyFor([[["Supply terms.docx", "Old note.docx"], "English law governs."], [["Side letter.docx"], "Scots law governs, not English law."]],
-    "Two documents choose English law; the side letter chooses Scots law.")
+    ["English law", "Scots law"])
   const heldCompare = async () => {
     for (let attempt = 0; !compareWaits.length && attempt < 250; attempt++) await new Promise(resolve => setTimeout(resolve, 20))
     assert.ok(compareWaits.length, "a compare session should be waiting")
@@ -966,7 +966,7 @@ try {
   // The header summary opens the AI summary and the differing cells.
   await summary.click()
   const comparison = head.getByRole("group", { name: "AI comparison" })
-  await comparison.getByText("Two documents choose English law; the side letter chooses Scots law.").waitFor()
+  await comparison.getByText("2 of 3 answers state English law; 1 states Scots law.").waitFor()
   // Scrolling the table keeps the popover open; it follows its summary.
   await summary.evaluate((element) => { const view = element.closest(".review-scroll")!; view.scrollTop += 8; view.dispatchEvent(new Event("scroll")) })
   await page.waitForTimeout(50)
@@ -1005,7 +1005,7 @@ try {
   await head.getByText("Could not compare.", { exact: false }).waitFor()
   assert.equal(await page.getByRole("alert").count(), 0, "a failed compare raises no alert")
   assert.equal(storedGrid.columns[0]!.comparison?.comparedAt, stored?.comparedAt, "a failed compare stores nothing")
-  compareReply = replyFor([[["Supply terms.docx"], "English law governs."], [["Side letter.docx"], "Scots law governs."]], "The two cited answers choose different laws.")
+  compareReply = replyFor([[["Supply terms.docx"], "English law governs."], [["Side letter.docx"], "Scots law governs."]], ["English law", "Scots law"])
   await head.getByRole("button", { name: "Try again", exact: true }).click()
   await head.getByRole("button", { name: /^AI comparison: 2 of \d+ differ\b/ }).waitFor()
   await differsMarker.waitFor()
