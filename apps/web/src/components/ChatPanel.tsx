@@ -25,11 +25,13 @@ import { QUICK_BANNER, quickDraftAnswer } from "./chat/quick-draft"
 import { getPreferences } from "../api/ingest/preferences"
 import { useToast } from "./Toast"
 import CitationView from "./CitationView"
+import GroundingBadge from "./GroundingBadge"
 import IssuesView from "./IssuesView"
 import { issueReport } from "./chat/issue-report"
 import TodoView from "./TodoView"
 import Markdown from "./markdown/Markdown"
 import { isEmptyAnswer, readTurn, type VersionCompare } from "./chat/turn-model"
+import { GROUNDING_ANSWERS } from "./chat/grounding"
 import { agentLabel, basename } from "./chat/step-labels"
 import { IconPencil, IconRetry } from "./chat/icons"
 import ChatSkeleton from "./chat/ChatSkeleton"
@@ -876,6 +878,7 @@ export default function ChatPanel({
                   {t.agent === QUICK_DRAFT && !t.error && !isEmptyAnswer(t.text) && quickBanner(i)}
                   <StepsPanel steps={t.steps} busy={false} answered={!isEmptyAnswer(t.text)} />
                   {t.text && !isEmptyAnswer(t.text) && agentAnswer(t.agent, t.text, true, t.compares)}
+                  {!t.error && !t.stopped && GROUNDING_ANSWERS.has(t.agent ?? "") && <GroundingBadge grounding={t.grounding} />}
                   {t.error && <div className="msg-error">{t.error}</div>}
                   {t.stopped && !t.superseded && (
                     <p className="msg-stopped" role="note">

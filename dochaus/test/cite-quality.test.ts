@@ -35,8 +35,15 @@ async function citeIn(name: string, sheet: WorkSheet, quote = QUOTE) {
     { docPath: name, documentName: name, quote, reason: "Shows the deposit term.", confidence: 5 },
     { directory, sessionID: crypto.randomUUID() } as never,
   )
-  return typeof result === "string" ? { output: result, citations: undefined } : { output: result.output, citations: result.metadata?.citations }
+  return typeof result === "string" ? { output: result, citations: undefined, rejected: undefined } : { output: result.output, citations: result.metadata?.citations, rejected: result.metadata?.rejectedCitations }
 }
+
+test("cite records a refused quotation for the answer's grounding state", async () => {
+  const { output, citations, rejected } = await citeIn("Terms.xlsx", utils.aoa_to_sheet([[QUOTE]]), "Synthetic words absent from the workbook")
+  expect(output).toContain("does not appear in Terms.xlsx")
+  expect(citations).toBeUndefined()
+  expect(rejected).toEqual([{ documentName: "Terms.xlsx", section: "" }])
+})
 
 test("cite refuses a document with no readable text", async () => {
   const { output, citations } = await citeIn("Unreadable.xlsx", formulas(), "=SUM(C1:C9)")

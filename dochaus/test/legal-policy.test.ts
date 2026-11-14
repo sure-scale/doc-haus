@@ -67,6 +67,25 @@ test("citation position repair verifies quotes without claiming the source was a
   expect(await Bun.file(docPath).text()).toBe(bytes)
 })
 
+test("a rejected quotation is recorded on the cite result for answer grounding", async () => {
+  const directory = mkdtempSync(path.join(workspace, "citation-rejected-"))
+  const docPath = path.join(directory, "instructions.eml")
+  writeFileSync(docPath, "Subject: Approved instructions\r\nFrom: client@example.invalid\r\nTo: counsel@example.invalid\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nPayment is due after receipt of the invoice.\r\n")
+  const excerpt = "Payment is due after receipt of the invoice."
+  const citation: DocumentCitation = { documentName: "instructions.eml", docPath, section: "Instructions", excerpt, charStart: 0, charEnd: excerpt.length }
+  const hooks = await pluginFor(directory)
+
+  const rejected = { title: "quotation", output: "unverified", metadata: { citations: [{ ...citation, excerpt: "Payment is due before delivery." }] } }
+  await hooks["tool.execute.after"]!({ tool: "cite", sessionID: "citation-rejected", callID: "rejected", args: {} }, rejected)
+  expect(rejected.metadata.citations).toEqual([])
+  expect(rejected.metadata.rejectedCitations).toEqual([{ documentName: "instructions.eml", section: "Instructions" }])
+
+  // A stale retrieval hit is not a rejected claim, so it is not recorded.
+  const retrieval = { title: "passage", output: "unverified", metadata: { citations: [{ ...citation, excerpt: "Payment is due before delivery." }] } }
+  await hooks["tool.execute.after"]!({ tool: "search-document", sessionID: "citation-rejected", callID: "retrieval", args: {} }, retrieval)
+  expect(retrieval.metadata).not.toHaveProperty("rejectedCitations")
+})
+
 test("rebuilt search output keeps the notes search-document recorded after its passages", async () => {
   const directory = mkdtempSync(path.join(workspace, "citation-notes-"))
   const docPath = path.join(directory, "instructions.eml")

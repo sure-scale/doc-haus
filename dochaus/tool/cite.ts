@@ -48,7 +48,11 @@ export default tool({
     // than failing the citation and forcing a browse-and-retry loop.
     const docPath = path.isAbsolute(args.docPath) ? args.docPath : path.resolve(ctx.directory, args.docPath)
     if (!existsSync(docPath)) {
-      return `${args.documentName} is not in this matter (no file at ${docPath}). Do not use this quotation. Confirm the document with search-document or read-document before quoting it.`
+      return {
+        title: `Quotation not verified in ${args.documentName}`,
+        output: `${args.documentName} is not in this matter (no file at ${docPath}). Do not use this quotation. Confirm the document with search-document or read-document before quoting it.`,
+        metadata: { rejectedCitations: [{ documentName: args.documentName, section: "" }] },
+      }
     }
 
     // Ingest's extraction quality gate: a document with no readable text was
@@ -56,7 +60,11 @@ export default tool({
     // verified with its warning.
     const quality = storedQuality(ctx.directory, docPath)
     if (quality?.status === "no_readable_text") {
-      return `${args.documentName} has no readable text: ingest could not extract any, so it is not indexed and no quotation from it can be verified. Do not use this quotation; tell the user the document could not be read.`
+      return {
+        title: `Quotation not verified in ${args.documentName}`,
+        output: `${args.documentName} has no readable text: ingest could not extract any, so it is not indexed and no quotation from it can be verified. Do not use this quotation; tell the user the document could not be read.`,
+        metadata: { rejectedCitations: [{ documentName: args.documentName, section: "" }] },
+      }
     }
 
     // The file's own name says how its text was written (Markdown, an email,
@@ -64,7 +72,11 @@ export default tool({
     // verify-quote uses for that document, and no others.
     const match = findQuote(await liveText(docPath), args.quote, docPath)
     if (!match) {
-      return `The quoted text does not appear in ${args.documentName}. Do not use this quotation — re-read the document with read-document or search-document and quote only text it returns verbatim.`
+      return {
+        title: `Quotation not verified in ${args.documentName}`,
+        output: `The quoted text does not appear in ${args.documentName}. Do not use this quotation — re-read the document with read-document or search-document and quote only text it returns verbatim.`,
+        metadata: { rejectedCitations: [{ documentName: args.documentName, section: "" }] },
+      }
     }
 
     const citation: DocumentCitation = {
