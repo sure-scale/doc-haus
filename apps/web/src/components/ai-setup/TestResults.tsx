@@ -1,7 +1,7 @@
 import "./ai-setup.css"
 
 export type ModelTestResult = {
-  role: "primary" | "fast"
+  role: "primary" | "fast" | "connection"
   model: string
   status: "checking" | "ready" | "auth" | "model" | "unavailable"
   message?: string
@@ -27,7 +27,7 @@ export default function TestResults({ results, connectionStatus }: TestResultsPr
     {results.length > 0 && <ul className="ai-setup-result-list" aria-label="Model test results">
       {results.map(result => <li key={result.role} className={`ai-setup-result ai-setup-result--${result.status}`}>
         <div className="ai-setup-result-heading">
-          <strong>{result.role === "primary" ? "Primary model" : "Fast model"}</strong>
+          <strong>{result.role === "primary" ? "Primary model" : result.role === "fast" ? "Fast model" : "Connection"}</strong>
           <span className="ai-setup-result-status">{outcomes[result.status].label}</span>
         </div>
         <code className="ai-setup-result-model">{result.model}</code>

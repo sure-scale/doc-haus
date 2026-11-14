@@ -11,11 +11,12 @@ export function generationAdmissionError(paths = settingsPaths()): string | unde
     const fast = typeof settings.small_model === "string" ? settings.small_model.split("/")[0] : undefined
     if (isRemovedProvider(primary) || isRemovedProvider(fast))
       return "The selected provider is no longer available. Select primary and fast models from another provider in Settings before generating."
-    if (!primary || !fast || primary !== fast)
-      return "Select primary and fast models from the same provider in Settings before generating."
-    if (Array.isArray(settings.disabled_providers) && settings.disabled_providers.includes(primary) ||
-        Array.isArray(settings.enabled_providers) && !settings.enabled_providers.includes(primary))
-      return "The selected provider is disabled. Enable it in Settings before generating."
+    if (!primary || !fast)
+      return "Select primary and fast models in Settings before generating."
+    for (const provider of [primary, fast])
+      if (Array.isArray(settings.disabled_providers) && settings.disabled_providers.includes(provider) ||
+          Array.isArray(settings.enabled_providers) && !settings.enabled_providers.includes(provider))
+        return "A selected provider is disabled. Enable it in Settings before generating."
     const setup = path.join(path.dirname(paths.overrides), "setup.json")
     if (!existsSync(setup)) return undefined
     const saved: unknown = JSON.parse(readFileSync(setup, "utf8"))

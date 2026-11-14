@@ -47,8 +47,7 @@ export async function patchConfig(patch: Config) {
 
 // Save and read back the pair as one update, so routing never sees mixed providers.
 export async function setModelPair(model: string, small_model: string) {
-  const provider = model.slice(0, model.indexOf("/"))
-  if (!provider || small_model.slice(0, small_model.indexOf("/")) !== provider) throw new Error("Choose both models from the same provider.")
+  if (!model.includes("/") || !small_model.includes("/")) throw new Error("Choose both a primary and a fast model.")
   await patchConfig({ model, small_model })
   const saved = await getConfig()
   if (saved.model !== model || saved.small_model !== small_model) throw new Error("Model choices were not saved. Refresh and retry.")

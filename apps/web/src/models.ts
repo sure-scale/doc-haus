@@ -1,5 +1,5 @@
 // Model choices follow the user's saved or explicit provider selection.
-export type ModelOption = { value: string; label: string; providerId: string; modelId: string }
+export type ModelOption = { value: string; label: string; providerId: string; modelId: string; tools?: boolean }
 export const providerOf = (value: string) => value.includes("/") ? value.slice(0, value.indexOf("/")) : ""
 export function defaultProvider(models: ModelOption[]) {
   const ids = [...new Set(models.map(model => model.providerId))]

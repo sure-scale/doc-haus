@@ -2,6 +2,7 @@ import type { ModelInfo } from "@opencode/client"
 import { location, type Client } from "./client"
 import { connectedProviderIDs, isRemovedProvider } from "./provider-readiness"
 import { OPENCODE_URL } from "../../config"
+import type { ModelOption } from "../../models"
 
 export type ProviderMetadata = {
   id: string; name: string; integrationID?: string; activation: "auto" | "enabled" | "disabled"
@@ -42,7 +43,23 @@ export async function listProviders(client: Client) {
       .map((model: ModelInfo) => [model.id, { id: model.id, name: model.name }])),
   }))
   // Explicit provider config enables its catalog even when it has no credential.
-  return { all, connected: connectedProviderIDs(providers.data, integrations.data) }
+  // The flat list keeps every enabled text model available to model roles that
+  // may use different providers; `all[].models` stays a compact per-provider map.
+  const enabled = models.data.filter((model: ModelInfo) => model.enabled && !isRemovedProvider(model.providerID))
+  const modelOptions: ModelOption[] = enabled.flatMap((model: ModelInfo) => {
+    const tools = model.capabilities?.tools ?? true
+    return [
+      { value: `${model.providerID}/${model.id}`, label: model.name, providerId: model.providerID, modelId: model.id, tools },
+      ...(model.variants ?? []).map(variant => ({
+        value: `${model.providerID}/${model.id}#${variant.id}`,
+        label: `${model.name} · ${variant.id}`,
+        providerId: model.providerID,
+        modelId: `${model.id}#${variant.id}`,
+        tools,
+      })),
+    ]
+  })
+  return { all, connected: connectedProviderIDs(providers.data, integrations.data), modelOptions }
 }
 
 // Per-provider auth methods (api key vs oauth). Empty array => credentials come

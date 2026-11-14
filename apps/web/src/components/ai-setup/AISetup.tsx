@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import type { IntegrationInfo } from "@opencode/client"
-import { getConfig, type Config } from "../../api/opencode/config"
+import { getConfig, setDisabledProviders, setModelPair, type Config } from "../../api/opencode/config"
 import { listIntegrations, listProviders } from "../../api/opencode/providers"
 import { settingsClient } from "../../api/opencode/client"
 import { isRemovedModel, isRemovedProvider } from "../../api/opencode/provider-readiness"
-import { providerHealth } from "../../api/opencode/provider-health"
+import { providerHealth, testModelConnection } from "../../api/opencode/provider-health"
 import { listReusableSignIns } from "../../api/ingest/credential-reuse"
-import { candidateAuth, candidateModels, createCandidate, discardCandidate, saveCandidate, SaveUnconfirmedError, testCandidate, type CandidateAuthResult, type CandidateConnection, type CandidateExternalStatus, type CandidateInput } from "../../api/opencode/provider-candidate"
+import { candidateAuth, candidateModels, createCandidate, discardCandidate, saveCandidate, saveCandidateConnection, SaveUnconfirmedError, testCandidate, type CandidateAuthResult, type CandidateConnection, type CandidateExternalStatus, type CandidateInput, type CandidateTest } from "../../api/opencode/provider-candidate"
 import { OPENCODE_URL } from "../../config"
 import { providerOf, type ModelOption } from "../../models"
 import type { Provider } from "../settings/types"
@@ -26,6 +26,7 @@ const emptyDraft = (): ConnectionDraft => ({ choice: "", key: "", answer: {}, op
 const message = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback
 const localID = (name: string) => name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
 const modelID = (reference: string) => reference.slice(reference.indexOf("/") + 1)
+const baseModel = (reference: string) => reference.split("#", 1)[0] ?? ""
 
 type PendingSignIn = { sessionID: string; providerID: string; methodID: string; options: Record<string, string>; attempt: CandidateAuthResult & { type: "oauth" | "command" } }
 const pendingKey = `dochaus.setup-sign-in:${OPENCODE_URL}`
@@ -67,6 +68,8 @@ export function setupProgress({ configured, ...rest }: Omit<AISetupProgress, "co
   return { ...rest, connection: configured || Boolean(rest.saved) }
 }
 
+type ProviderRow = { id: string; name: string; models: number; detail: string }
+
 export default function AISetup({ mode = "settings", reconnectProvider, phase = "provider", onPhaseChange, onProgress, onSaved, extraDirty = false, extraBusy = false, capacityTested = false, onSaveExtra }: {
   mode?: "settings" | "onboarding"
   reconnectProvider?: string
@@ -84,6 +87,8 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   const [integrations, setIntegrations] = useState<IntegrationInfo[]>([])
   const [reusable, setReusable] = useState<MatchingSignInCandidate[]>([])
   const [config, setConfig] = useState<Config>({})
+  const [connected, setConnected] = useState<string[]>([])
+  const [catalogModels, setCatalogModels] = useState<ModelOption[]>([])
   const [provider, setProvider] = useState("")
   const [draft, setDraft] = useState<ConnectionDraft>(emptyDraft)
   const [models, setModels] = useState<ModelOption[]>([])
@@ -111,6 +116,7 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   const [external, setExternal] = useState<CandidateExternalStatus>()
   const [checking, setChecking] = useState(false)
   const connectionHeading = useRef<HTMLHeadingElement>(null)
+  const providerSelect = useRef<HTMLSelectElement>(null)
   const [focusConnection, setFocusConnection] = useState(false)
   const revision = useRef(0)
   const session = useRef("")
@@ -126,22 +132,72 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   const choice = connectionChoices(selected, integration, matching, endpoint).find(item => item.value === draft.choice)
   const method = choice?.method
   const chosenFast = fast || primary
-  const choiceValid = Boolean(primary && chosenFast && providerOf(primary) === actualProvider && providerOf(chosenFast) === actualProvider && (customModels || primaryChoices.some(item => item.value === primary) && models.some(item => item.value === chosenFast)))
+
+  const disabled = useMemo(() => new Set(config.disabled_providers ?? []), [config.disabled_providers])
+  const connectedIDs = useMemo(() => new Set([...connected, ...Object.keys(config.provider ?? {})]), [connected, config.provider])
+  const connectedChoices = useMemo(() => catalogModels.filter(item => connectedIDs.has(item.providerId) && !disabled.has(item.providerId)), [catalogModels, connectedIDs, disabled])
+  const allModels = useMemo(() => {
+    const seen = new Set<string>()
+    return [...models, ...connectedChoices].filter(item => seen.has(item.value) ? false : (seen.add(item.value), true))
+  }, [models, connectedChoices])
+  const allPrimary = useMemo(() => {
+    const seen = new Set<string>()
+    return [...primaryChoices, ...connectedChoices.filter(item => item.tools !== false)]
+      .filter(item => seen.has(item.value) ? false : (seen.add(item.value), true))
+  }, [primaryChoices, connectedChoices])
+  const providerNames = useMemo(() => {
+    const names: Record<string, string> = {}
+    for (const item of providers) names[item.id] = item.name
+    for (const [id, entry] of Object.entries(config.provider ?? {})) names[id] ??= entry.name ?? id
+    return names
+  }, [providers, config.provider])
+  const rows = useMemo<ProviderRow[]>(() => {
+    const byID = new Map(providers.map(item => [item.id, item]))
+    return [...connectedIDs]
+      .filter(id => !disabled.has(id) && !isRemovedProvider(id))
+      .map(id => {
+        const item = byID.get(id)
+        const entry = config.provider?.[id]
+        const count = item ? Object.keys(item.models).length : Object.keys(entry?.models ?? {}).length
+        const detail = entry?.npm === "@ai-sdk/openai-compatible" ? "Local endpoint"
+          : item?.host ? "Server credentials"
+            : item?.credentialSources.length ? item.credentialSources.join(", ")
+              : "Connected"
+        return { id, name: item?.name ?? entry?.name ?? id, models: count, detail }
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }))
+  }, [connectedIDs, disabled, providers, config.provider])
+  const savedFast = config.small_model || config.model || ""
+  const modelsUnchanged = Boolean(config.model) && primary === config.model && chosenFast === savedFast
+  const needsTest = !modelsUnchanged
+  const needsConnectionTest = Boolean(sessionID && modelReady && modelsUnchanged)
+  const knownModels = new Set(allModels.map(item => item.value))
+  const knownPrimary = new Set(allPrimary.map(item => item.value))
+  const customModel = (value: string) => customModels && Boolean(value) && providerOf(value) === actualProvider
+  const allowedProvider = (value: string) => providerOf(value) === actualProvider || connectedIDs.has(providerOf(value))
+  const choiceValid = Boolean(primary && chosenFast && allowedProvider(primary) && allowedProvider(chosenFast) &&
+    (knownPrimary.has(primary) || customModel(primary)) && (knownModels.has(chosenFast) || customModel(chosenFast)) &&
+    !disabled.has(providerOf(primary)) && !disabled.has(providerOf(chosenFast)))
   const fingerprint = JSON.stringify([sessionID, primary, chosenFast])
   const passed = Boolean(sessionID && choiceValid && verified === fingerprint)
   const configured = Boolean(sessionID && modelReady)
   const cloudProviderCount = providers.filter(item => item.activation !== "disabled" && !config.disabled_providers?.includes(item.id) && !["ollama", "lmstudio", "qvac"].includes(item.id) && !item.id.startsWith("local-")).length
-  const progress = setupProgress({ cloudProviderCount, saved, provider: Boolean(provider), configured, models: choiceValid, test: passed, loading, busy, saving })
-  useEffect(() => { callbacks.current.onProgress?.(progress) }, [provider, configured, choiceValid, passed, loading, busy, saving, saved, cloudProviderCount])
+  const progress = setupProgress({ cloudProviderCount, saved, provider: Boolean(provider), configured, models: choiceValid && (configured || Boolean(saved) || (modelsUnchanged && !aiDirty)), test: choiceValid && (saved || (modelsUnchanged && !aiDirty) || passed), loading, busy, saving })
+  const showModels = configured || allModels.length > 0 || connectedIDs.size > 0
+  const bothFromCandidate = providerOf(primary) === actualProvider && providerOf(chosenFast) === actualProvider &&
+    (customModels || [primary, chosenFast].every(value => models.some(item => item.value === value || item.value === baseModel(value))))
+  const usedByModels = (id: string) => providerOf(primary) === id || providerOf(chosenFast) === id
+  useEffect(() => { callbacks.current.onProgress?.(progress) }, [provider, configured, choiceValid, passed, loading, busy, saving, saved, cloudProviderCount, allModels.length, modelsUnchanged, aiDirty, needsConnectionTest])
 
   function clearTest() { revision.current++; setResults([]); setVerified(""); setSaved(false); setError(""); setContinuePending(false) }
   function resetCandidate() {
     clearTest()
+    autoPrepare.current = false
     const old = session.current
     session.current = ""; setSessionID(""); setModelReady(false); setModels([]); setPrimaryChoices([]); setAttempt(undefined); setAuthCode(""); setCustomModels(false); setExternal(undefined)
     if (old) { forgetSignIn(old); void discardCandidate(old) }
   }
-  async function load(expected?: { providerID: string; models: string[] }) {
+  async function load(expected?: { providerID?: string; models?: string[] }) {
     setLoading(true); setError("")
     try {
       const [initialCatalog, initialAuth, cfg, reuse] = await Promise.all([
@@ -149,11 +205,21 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
         listReusableSignIns().then(sources => ({ sources, error: "" }), () => ({ sources: [], error: "Saved sign-in discovery is unavailable. You can still use a connection from this installation or sign in directly." })),
       ])
       let catalog = initialCatalog, auth = initialAuth
+      const discovered = (current: typeof initialCatalog) => {
+        const hasProvider = (id: string) => current.all.some(item => item.id === id && item.activation !== "disabled")
+        if (expected?.providerID && !hasProvider(expected.providerID)) return false
+        return (expected?.models ?? []).every(ref => {
+          const slash = ref.indexOf("/")
+          const providerID = ref.slice(0, slash)
+          const modelID = ref.slice(slash + 1).split("#")[0]
+          return hasProvider(providerID) && (current.modelOptions.some(item => item.providerId === providerID && item.value === `${providerID}/${modelID}`) ||
+            Boolean(current.all.find(item => item.id === providerID)?.models[modelID]))
+        })
+      }
       // The settings rename is synchronous; native provider discovery follows a
-      // debounced watcher. Read metadata until the saved model pair appears.
-      if (expected) for (let retry = 0; ; retry++) {
-        const found = catalog.all.find(item => item.id === expected.providerID && item.activation !== "disabled")
-        if (found && expected.models.every(id => Boolean(found.models[id.split("#")[0]!]))) break
+      // debounced watcher. Read metadata until the saved provider and its model
+      // roles appear.
+      if (expected) for (let retry = 0; !discovered(catalog); retry++) {
         if (retry === 15) throw new Error("AI setup was saved. Provider discovery is still updating. Retry provider discovery to load it.")
         await new Promise(resolve => setTimeout(resolve, 200))
         const [nextCatalog, nextAuth] = await Promise.all([listProviders(client), listIntegrations(client)])
@@ -165,6 +231,8 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
       const target = expected?.providerID ?? (reconnectProvider ? all.find(item => item.id === reconnectProvider)?.id ?? all.find(item => item.integrationID === reconnectProvider)?.id ?? "" : pending?.providerID ?? providerOf(cfg.model ?? ""))
       const picked = all.find(item => item.id === target && item.activation !== "disabled")
       setProviders(all); setIntegrations(auth); setConfig(cfg)
+      setConnected(catalog.connected.filter(id => !isRemovedProvider(id)))
+      setCatalogModels(catalog.modelOptions.filter(item => !isRemovedProvider(item.providerId)))
       setReusable(reuse.sources.filter(source => source.status === "ready").flatMap(source => source.connections.map(connection => ({ sourceId: source.id, connectionId: connection.id, integrationID: connection.integrationID, label: connection.label, authType: connection.authType, sourceLabel: source.label }))))
       setDiscoveryNotice(reuse.error)
       setProvider(picked?.id ?? "")
@@ -176,8 +244,10 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
         session.current = pending.sessionID; setSessionID(pending.sessionID); setAttempt({ ...pending.attempt, status: "pending" }); setModelReady(false)
       }
       setDraft(next)
-      setPrimary(!isRemovedModel(cfg.model) && picked?.id === providerOf(cfg.model ?? "") ? cfg.model ?? "" : "")
-      setFast(!isRemovedModel(cfg.small_model) && picked?.id === providerOf(cfg.small_model ?? "") && cfg.small_model !== cfg.model ? cfg.small_model ?? "" : "")
+      // Model roles may belong to different providers; keep the saved pair
+      // whichever provider is currently open for connection changes.
+      setPrimary(!isRemovedModel(cfg.model) ? cfg.model ?? "" : "")
+      setFast(!isRemovedModel(cfg.small_model) && cfg.small_model !== cfg.model ? cfg.small_model ?? "" : "")
       autoPrepare.current = Boolean(!pendingMethod && picked && (next.choice.startsWith("credential:") || next.choice.startsWith("env:") || next.choice === "host"))
       setLoaded(true); setLoadVersion(value => value + 1)
     } catch (failure) { setError(message(failure, "Could not load AI setup. Retry when the engine is ready.")) }
@@ -199,10 +269,29 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
     setFocusConnection(false)
   }, [focusConnection, provider])
 
-  function changeProvider(id: string) {
+  function focusProvider() {
+    if (mode === "onboarding") callbacks.current.onPhaseChange?.("provider")
+    window.setTimeout(() => {
+      providerSelect.current?.scrollIntoView({ block: "center" })
+      providerSelect.current?.focus()
+    }, 30)
+  }
+  async function changeProvider(id: string) {
     setAIDirty(true)
     if (id === provider) return
-    resetCandidate(); setProvider(id); setPrimary(""); setFast("")
+    // A removed provider stays in the catalog with its saved connection. The
+    // selection itself enables it again, so adding it back needs no new key.
+    if ((config.disabled_providers ?? []).includes(id)) {
+      resetCandidate()
+      setBusy(true); setError("")
+      try {
+        setConfig(await setDisabledProviders((config.disabled_providers ?? []).filter(item => item !== id)))
+        await load({ providerID: id })
+      } catch { setError("Could not enable this provider. Retry.") }
+      finally { setBusy(false) }
+      return
+    }
+    resetCandidate(); setProvider(id)
     const item = providers.find(item => item.id === id)
     const next = id === "__local_endpoint__" ? { ...emptyDraft(), options: { baseURL: "http://localhost:1234/v1" } } : prefill(item, integrations.find(integration => integration.id === (item?.integrationID ?? id)), config)
     if (next.choice.startsWith("method:") && reusable.some(connection => connection.integrationID === (item?.integrationID ?? id))) next.choice = ""
@@ -211,6 +300,17 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   function changeDraft(next: ConnectionDraft) { setAIDirty(true); resetCandidate(); setDraft(next) }
   function changePrimary(value: string) { setAIDirty(true); clearTest(); setPrimary(value) }
   function changeFast(value: string) { setAIDirty(true); clearTest(); setFast(value) }
+
+  async function removeProvider(id: string) {
+    if (busy || usedByModels(id)) return
+    setBusy(true); setError("")
+    try {
+      setConfig(await setDisabledProviders([...new Set([...(config.disabled_providers ?? []), id])]))
+      resetCandidate()
+      await load()
+    } catch { setError("Could not remove this provider. Retry.") }
+    finally { setBusy(false) }
+  }
 
   function input(): CandidateInput {
     if (!actualProvider || isRemovedProvider(actualProvider)) throw new Error("Choose a provider first.")
@@ -248,7 +348,11 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
     const catalog = await candidateModels(id)
     if (revision.current !== current) return
     const text = catalog.data.filter(item => !item.capabilities || item.capabilities.input.includes("text") && item.capabilities.output.includes("text"))
-    const option = (item: typeof text[number]): ModelOption[] => [{ value: `${item.providerID}/${item.id}`, label: item.name, providerId: item.providerID, modelId: item.id }, ...(item.variants ?? []).map(variant => ({ value: `${item.providerID}/${item.id}#${variant.id}`, label: `${item.name} · ${variant.name ?? variant.id}`, providerId: item.providerID, modelId: `${item.id}#${variant.id}` }))]
+    const option = (item: typeof text[number]): ModelOption[] => [{
+      value: `${item.providerID}/${item.id}`, label: item.name, providerId: item.providerID, modelId: item.id, tools: item.capabilities ? item.capabilities.tools : true,
+    }, ...(item.variants ?? []).map(variant => ({
+      value: `${item.providerID}/${item.id}#${variant.id}`, label: `${item.name} · ${variant.name ?? variant.id}`, providerId: item.providerID, modelId: `${item.id}#${variant.id}`, tools: item.capabilities ? item.capabilities.tools : true,
+    }))]
     const next = text.flatMap(option).sort((a, b) => a.label.localeCompare(b.label))
     const primaries = text.filter(item => !item.capabilities || item.capabilities.tools).flatMap(option).sort((a, b) => a.label.localeCompare(b.label))
     setModels(next); setPrimaryChoices(primaries); setCustomModels(catalog.customModels); setModelReady(true)
@@ -300,17 +404,46 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
     } catch (failure) { if (action === "cancel") resetCandidate(); else setError(message(failure, "Could not check sign-in. Check its status before starting another attempt.")) }
     finally { setBusy(false) }
   }
+  async function testModel(selected: string): Promise<CandidateTest> {
+    const providerID = providerOf(selected)
+    const model = modelID(selected)
+    if (sessionID && providerID === actualProvider) return testCandidate(sessionID, model)
+    const result = await testModelConnection(providerID, model.split("#")[0]!, false)
+    if (result.ok) return { ok: true }
+    return {
+      ok: false, kind: result.kind,
+      error: result.kind === "auth" ? "The connection rejected the sign-in. Check the connection and try again."
+        : result.kind === "model" ? "The model is unavailable. Check the model and your account access."
+          : "The connection test could not complete. Check the connection, then try again.",
+    }
+  }
   async function runTests(continueOnSuccess = false) {
-    if (!configured || !choiceValid || busy) return
+    if (!choiceValid || busy) return
     setBusy(true); setError(""); setVerified(""); setSaved(false)
     const current = revision.current
-    const pair = [{ role: "primary" as const, model: primary }, { role: "fast" as const, model: chosenFast }]
-    setResults(pair.map(item => ({ ...item, status: "checking", ...(primary === chosenFast && item.role === "fast" ? { shared: true } : {}) })))
+    const connectionModel = [primary, chosenFast].find(model => providerOf(model) === actualProvider) ??
+      models.find(item => !item.value.includes("#"))?.value ?? models[0]?.value
+    const connectionCheck = needsConnectionTest && !needsTest
+    const pairHasCandidate = [primary, chosenFast].some(model => providerOf(model) === actualProvider)
+    const needsConnectionResult = Boolean(sessionID && (connectionCheck || !pairHasCandidate))
+    if ((connectionCheck || needsConnectionResult) && !connectionModel) {
+      setBusy(false)
+      setError("Choose a model from this provider before adding it.")
+      return
+    }
+    const pair = connectionCheck
+      ? [{ role: "connection" as const, model: connectionModel! }]
+      : [{ role: "primary" as const, model: primary }, { role: "fast" as const, model: chosenFast },
+        ...(needsConnectionResult ? [{ role: "connection" as const, model: connectionModel! }] : [])]
+    setResults(pair.map(item => ({ ...item, status: "checking", ...(!connectionCheck && primary === chosenFast && item.role === "fast" ? { shared: true } : {}) })))
     try {
-      if (customModels) await candidateModels(sessionID, [...new Set(pair.map(item => modelID(item.model)))])
+      if (customModels && sessionID) {
+        const ids = [...new Set(pair.filter(item => providerOf(item.model) === actualProvider).map(item => modelID(item.model)))]
+        if (ids.length) await candidateModels(sessionID, ids)
+      }
       let allPassed = true
       for (const selected of [...new Set(pair.map(item => item.model))]) {
-        const outcome = await testCandidate(sessionID, modelID(selected))
+        const outcome = await testModel(selected)
         if (revision.current !== current) return
         allPassed &&= outcome.ok
         setResults(results => results.map(item => item.model !== selected ? item : { ...item, status: outcome.ok ? "ready" : outcome.kind, ...(!outcome.ok ? { message: outcome.error } : {}) }))
@@ -339,19 +472,31 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
     finally { setSaving(false); setBusy(false) }
   }
   async function save(testedJustNow = false) {
-    if ((!passed && !testedJustNow) || (busy && !testedJustNow) || saveUnconfirmed) return
+    if (!choiceValid || saveUnconfirmed) return
+    if ((busy && !testedJustNow) || ((needsTest || needsConnectionTest) && !passed && !testedJustNow)) return
     setSaving(true); setBusy(true); setError("")
+    const combined = Boolean(sessionID && !modelsUnchanged && bothFromCandidate)
     try {
-      await saveCandidate(sessionID, modelID(primary), modelID(chosenFast))
+      if (combined) await saveCandidate(sessionID, modelID(primary), modelID(chosenFast))
+      else if (sessionID) await saveCandidateConnection(sessionID)
     } catch (failure) {
       if (failure instanceof SaveUnconfirmedError) setSaveUnconfirmed(true)
       setError(message(failure, "Could not save AI setup. Retry.")); setBusy(false); setSaving(false); return
     }
     // Save is committed. Refresh/progress failures must never invite another
     // credential activation against the now-closed candidate.
-    setSaved(true); setAIDirty(false); session.current = ""; setSessionID(""); setModelReady(false)
-    providerHealth.confirmed([{ providerID: actualProvider, modelID: modelID(primary) }, { providerID: actualProvider, modelID: modelID(chosenFast) }])
-    await load({ providerID: actualProvider, models: [modelID(primary), modelID(chosenFast)] })
+    if (sessionID) { session.current = ""; setSessionID(""); setModelReady(false) }
+    if (!modelsUnchanged && !combined) {
+      try { await setModelPair(primary, chosenFast) }
+      catch (failure) {
+        setError(message(failure, "The provider connection was saved, but your model choices were not. Retry saving the models."))
+        await load({ providerID: actualProvider })
+        setBusy(false); setSaving(false); return
+      }
+    }
+    setSaved(true); setAIDirty(false)
+    providerHealth.confirmed([{ providerID: providerOf(primary), modelID: modelID(primary) }, { providerID: providerOf(chosenFast), modelID: modelID(chosenFast) }])
+    await load({ providerID: actualProvider, models: [primary, chosenFast] })
     if (extraDirty && onSaveExtra) {
       try { await onSaveExtra() }
       catch { setError("AI setup was saved, but the request limit could not be saved. Try again."); setBusy(false); setSaving(false); return }
@@ -362,6 +507,31 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
 
   const show = (section: SetupPhase) => mode === "settings" || phase === section
   const saveOnly = !aiDirty && (extraDirty || capacityTested)
+  const alreadySaved = choiceValid && modelsUnchanged && !aiDirty
+  const connectionReady = !sessionID || modelReady
+  const canSave = saveOnly || (choiceValid && connectionReady && (needsTest ? true : needsConnectionTest ? modelReady : extraDirty || capacityTested))
+  const onboardingCanSave = saved || alreadySaved || needsTest || needsConnectionTest
+  const providerList = <div className="ai-setup-providers" role="group" aria-label="Connected providers">
+    <div className="ai-setup-providers-heading">
+      <h3>{rows.length ? "Connected providers" : "Add your first provider"}</h3>
+      <button type="button" className="ai-setup-add-provider" disabled={busy || loading} onClick={focusProvider}>Add provider</button>
+    </div>
+    {rows.length > 0 ? <ul className="ai-setup-provider-list">
+      {rows.map(row => {
+        const used = usedByModels(row.id)
+        const reason = used ? `Cannot remove ${row.name}: change the primary or fast model first.` : `Remove ${row.name}`
+        return <li key={row.id} className="ai-setup-provider-row">
+          <div className="ai-setup-provider-copy">
+            <strong>{row.name}</strong>
+            <span>{row.detail} · {row.models} model{row.models === 1 ? "" : "s"}</span>
+          </div>
+          <button type="button" className="ai-setup-remove-provider" aria-label={reason} title={reason} disabled={busy || used} onClick={() => void removeProvider(row.id)}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5"/></svg>
+          </button>
+        </li>
+      })}
+    </ul> : <p className="settings-hint muted">Connecting a provider makes its models available for the primary and fast roles.</p>}
+  </div>
   const sourceOptions = Object.fromEntries((CLOUD_SETUPS.find(item => item.ids.includes(provider))?.fields ?? []).map(field => [field.key,
     typeof config.provider?.[provider]?.options?.[field.key] === "string" ? "Prefilled from this installation" : selected?.host?.options[field.key] ? "Prefilled from server detection" : "Default",
   ]))
@@ -372,14 +542,18 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   return <div className="ai-setup" aria-busy={loading || busy}>
     {error && <p role="alert" className="settings-warning">{error}</p>}
     {saveUnconfirmed && <button type="button" onClick={() => { setSaveUnconfirmed(false); resetCandidate(); void load() }}>Reload saved AI setup</button>}
-    {saved && error && mode === "settings" && <button type="button" disabled={busy || loading} onClick={() => void load()}>Retry provider discovery</button>}
+    {saved && error && mode === "settings" && <button type="button" disabled={busy || loading} onClick={() => void load({ providerID: actualProvider })}>Retry provider discovery</button>}
     {continuePending && mode === "settings" && <button type="button" onClick={() => void continueAfterSave()}>Continue</button>}
     {discoveryNotice && <p className="settings-hint muted">{discoveryNotice}</p>}
     {(isRemovedModel(config.model) || isRemovedModel(config.small_model)) && <p role="alert" className="settings-warning">The previously selected provider has been removed. Choose another provider and test both model choices.</p>}
+    {mode === "settings" && <section className="settings-section">
+      {providerList}
+    </section>}
     {show("provider") && <section className="settings-section">
       {mode === "settings" && <h3 className="ai-setup-section-title"><span>1</span> Provider</h3>}
       {mode === "settings" && <p className="settings-hint muted">{providerDescription(cloudProviderCount)}</p>}
-      <ProviderPicker providers={providers.filter(item => item.activation !== "disabled" && !config.disabled_providers?.includes(item.id))} provider={provider} onChange={changeProvider} onDetectedSelect={id => { changeProvider(id); if (mode === "onboarding") onPhaseChange?.("connection"); else setFocusConnection(true) }} reusableProviderIDs={reusable.map(item => item.integrationID)} disabled={busy || loading} />
+      {mode === "onboarding" && providerList}
+      <ProviderPicker providers={providers.filter(item => item.activation !== "disabled")} provider={provider} onChange={changeProvider} onDetectedSelect={id => void changeProvider(id).then(() => { if (mode === "onboarding") onPhaseChange?.("connection"); else setFocusConnection(true) })} reusableProviderIDs={reusable.map(item => item.integrationID)} disabledProviderIDs={config.disabled_providers ?? []} selectRef={providerSelect} disabled={busy || loading} />
       {mode === "onboarding" && <div className="ai-setup-actions"><button type="button" className="primary" disabled={!provider || busy} onClick={() => onPhaseChange?.("connection")}>Continue to connection</button></div>}
     </section>}
     {show("connection") && <section className="settings-section">
@@ -403,14 +577,15 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
         const current = revision.current
         void refreshModels(sessionID, current).catch(failure => { if (revision.current === current) setError(message(failure, "Could not refresh models. Retry.")) }).finally(() => { if (revision.current === current) setBusy(false) })
       }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.5-4.7L3 9m0-6v6h6M4 13a8 8 0 0 0 14.5 4.7L21 15m0 6v-6h-6"/></svg></button>}</div>}
-      {configured ? <>
-        {customModels ? <>
-          <FieldRow id="ai-setup-primary-id" label="Primary model ID" hint="Enter the model identifier served by this endpoint."><input id="ai-setup-primary-id" aria-describedby="ai-setup-primary-id-hint" disabled={busy} value={primary ? modelID(primary) : ""} onChange={event => changePrimary(event.target.value.trim() ? `${actualProvider}/${event.target.value.trim()}` : "")} /></FieldRow>
-          <FieldRow id="ai-setup-fast-id" label="Fast model ID" hint="Leave blank to use the primary model for background tasks."><input id="ai-setup-fast-id" aria-describedby="ai-setup-fast-id-hint" disabled={busy} placeholder="Same as primary" value={fast ? modelID(fast) : ""} onChange={event => changeFast(event.target.value.trim() ? `${actualProvider}/${event.target.value.trim()}` : "")} /></FieldRow>
-        </> : <ModelFields showEffort={mode === "settings"} models={models} primaryModels={primaryChoices} primary={primary} fast={fast} onPrimaryChange={changePrimary} onFastChange={changeFast} disabled={busy} />}
-        {!models.length && !customModels && <p className="settings-hint muted">No models are listed for this connection. Check the provider connection or refresh discovery.</p>}
-      </> : <p className="settings-hint muted">Configure the connection to load its model choices.</p>}
-      {mode === "onboarding" && <div className="ai-setup-actions"><button type="button" className="onboarding-back" disabled={busy} onClick={() => onPhaseChange?.("connection")}>Back to connection</button><button type="button" className="primary" disabled={!choiceValid || !configured || busy} onClick={() => onPhaseChange?.("test")}>Continue to test</button></div>}
+      {showModels ? <>
+        <p className="settings-hint muted">Choose a primary and fast model from any connected provider.</p>
+        {customModels && configured ? <>
+          <FieldRow id="ai-setup-primary-id" label="Primary model ID" hint="Enter the model identifier served by this endpoint."><input id="ai-setup-primary-id" aria-describedby="ai-setup-primary-id-hint" disabled={busy} value={providerOf(primary) === actualProvider ? modelID(primary) : ""} onChange={event => changePrimary(event.target.value.trim() ? `${actualProvider}/${event.target.value.trim()}` : "")} /></FieldRow>
+          <FieldRow id="ai-setup-fast-id" label="Fast model ID" hint="Leave blank to use the primary model for background tasks."><input id="ai-setup-fast-id" aria-describedby="ai-setup-fast-id-hint" disabled={busy} placeholder="Same as primary" value={providerOf(chosenFast) === actualProvider && fast ? modelID(fast) : ""} onChange={event => changeFast(event.target.value.trim() ? `${actualProvider}/${event.target.value.trim()}` : "")} /></FieldRow>
+        </> : <ModelFields showEffort={mode === "settings"} models={allModels} primaryModels={allPrimary} primary={primary} fast={fast} onPrimaryChange={changePrimary} onFastChange={changeFast} providerNames={providerNames} disabled={busy} />}
+        {!customModels && !allModels.length && <p className="settings-hint muted">No models are listed for your connected providers. Check a connection or refresh discovery.</p>}
+      </> : <p className="settings-hint muted">Connect a provider to load its model choices.</p>}
+      {mode === "onboarding" && <div className="ai-setup-actions"><button type="button" className="onboarding-back" disabled={busy} onClick={() => onPhaseChange?.("connection")}>Back to connection</button><button type="button" className="primary" disabled={!choiceValid || busy} onClick={() => onPhaseChange?.("test")}>Continue to test</button></div>}
     </section>}
     {show("test") && <section className="settings-section">
       {mode === "settings" && <h3 className="ai-setup-section-title"><span>4</span> Test</h3>}
@@ -419,7 +594,7 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
       {saved && <p role="status">AI setup saved.</p>}
       <SettingsFooter tab="ai"><div className="ai-setup-actions">
         {mode === "onboarding" && <button type="button" className="onboarding-back" disabled={busy} onClick={() => onPhaseChange?.("models")}>Back to models</button>}
-        {mode === "onboarding" ? <button type="button" className="primary" disabled={busy || (!saved && (!choiceValid || !configured || saveUnconfirmed))} onClick={() => void (saved ? continueAfterSave() : runTests(true))}>{saving ? "Saving…" : busy ? "Testing connection…" : saved ? "Continue" : "Test and continue"}</button> : <button type="button" className="primary" disabled={busy || extraBusy || (saveOnly ? false : !choiceValid || !configured || saved || saveUnconfirmed)} onClick={() => void (saveOnly ? saveExtra() : runTests(true))}>{saving ? "Saving…" : busy ? "Testing connection…" : saveOnly ? "Save" : "Test and save"}</button>}
+        {mode === "onboarding" ? <button type="button" className="primary" disabled={busy || !onboardingCanSave || (!saved && !alreadySaved && (!choiceValid || saveUnconfirmed))} onClick={() => void (saved || alreadySaved ? continueAfterSave() : needsTest || needsConnectionTest ? runTests(true) : save())}>{saving ? "Saving…" : busy ? "Testing connection…" : saved || alreadySaved ? "Continue" : needsTest || needsConnectionTest ? "Test and continue" : "Save and continue"}</button> : <button type="button" className="primary" disabled={busy || extraBusy || !canSave} onClick={() => void (saveOnly ? saveExtra() : needsTest || needsConnectionTest ? runTests(true) : save())}>{saving ? "Saving…" : busy ? "Testing connection…" : saveOnly ? "Save" : "Test and save"}</button>}
       </div></SettingsFooter>
     </section>}
   </div>

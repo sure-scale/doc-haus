@@ -54,7 +54,6 @@ test("invalid settings or mismatched selected models never activate credentials"
   for (const invalid of [
     { ...patch, provider: { synthetic: { options: { apiKey: "synthetic-secret" } } } },
     { ...patch, model: "synthetic/untested" },
-    { ...patch, small_model: "other/fast" },
     { ...patch, permission: { skill: { unrelated: "deny" } } },
   ]) {
     const f = fixture({ patch: invalid })
@@ -64,6 +63,32 @@ test("invalid settings or mismatched selected models never activate credentials"
     expect(f.order).toEqual(["prepare"])
     expect(f.written).toEqual([])
   }
+})
+
+test("a model pair may use a different provider while the connection patch stays provider-only", async () => {
+  const crossProvider = { ...patch, small_model: "other/fast" }
+  const f = fixture({ patch: crossProvider })
+  const response = await f.save()
+  expect(response.status).toBe(200)
+  expect(f.written).toEqual([crossProvider])
+})
+
+test("connection-only Save validates provider settings and never writes model roles", async () => {
+  const providerOnly = { provider: { synthetic: { options: {} } } }
+  const f = fixture({ patch: providerOnly })
+  const input = { sessionID: selection.sessionID }
+  const response = await f.save(input)
+  expect(response.status).toBe(200)
+  expect(f.order).toEqual(["prepare", "save", "write", "session"])
+  expect(f.written).toEqual([providerOnly])
+  expect(f.calls.slice(0, 2).map(call => call.input)).toEqual([input, input])
+})
+
+test("connection-only Save rejects a model change and incomplete model roles", async () => {
+  const f = fixture()
+  expect((await f.save({ sessionID: selection.sessionID })).status).toBe(400)
+  expect(f.order).toEqual(["prepare"])
+  expect((await f.save({ sessionID: selection.sessionID, primary: "primary" })).status).toBe(400)
 })
 
 test("failed credential Save restores any partial activation without a settings write", async () => {

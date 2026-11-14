@@ -10,19 +10,20 @@ function fixture(config: { model?: string; small_model?: string } = {}) {
   return { directory, app: setupRoutes({ directory, config: () => config, models: async () => models }), dispose: () => rmSync(directory, { recursive: true, force: true }) }
 }
 function patch(app: ReturnType<typeof setupRoutes>, body: unknown) { return app.request("/setup", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }) }
-test("model readiness requires an enabled saved same-provider pair", () => {
+test("model readiness accepts an enabled saved pair from either provider", () => {
   expect(validModelPair(pair, models)).toBe(true)
-  expect(validModelPair({ ...pair, small_model: "other/model" }, models)).toBe(false)
+  expect(validModelPair({ ...pair, small_model: "other/model" }, models)).toBe(true)
   expect(validModelPair({ ...pair, small_model: "cloud/missing" }, models)).toBe(false)
   expect(validModelPair(pair, models.map(model => ({ ...model, enabled: false })))).toBe(false)
   expect(validModelPair({ model: pair.model }, models)).toBe(false)
+  expect(validModelPair({ ...pair, small_model: "other/missing" }, models)).toBe(false)
 })
 test("model readiness preserves valid native variants and rejects unknown or malformed variants", () => {
   const catalog = models.map(model => ({ ...model, variants: [{ id: "reasoning" }] }))
   const configured = { model: "cloud/primary#reasoning", small_model: "cloud/fast#reasoning" }
   expect(validModelPair(configured, catalog)).toBe(true)
   expect(configured).toEqual({ model: "cloud/primary#reasoning", small_model: "cloud/fast#reasoning" })
-  for (const small_model of ["cloud/fast#unknown", "cloud/fast#", "cloud/fast#reasoning#extra", "other/model#reasoning"])
+  for (const small_model of ["cloud/fast#unknown", "cloud/fast#", "cloud/fast#reasoning#extra", "other/model#unknown"])
     expect(validModelPair({ ...configured, small_model }, catalog)).toBe(false)
   expect(validModelPair(configured, models)).toBe(false)
 })

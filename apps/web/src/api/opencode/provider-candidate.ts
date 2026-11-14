@@ -63,11 +63,11 @@ export async function discardCandidate(sessionID: string) {
 
 export class SaveUnconfirmedError extends Error {}
 
-export async function saveCandidate(sessionID: string, primary: string, fast: string) {
+async function saveSetup(body: Record<string, string>) {
   let response: Response
   try {
     response = await fetch(`${INGEST_URL}/engine/provider-setup`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionID, primary, fast }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       signal: AbortSignal.timeout(50_000),
     })
   } catch {
@@ -81,4 +81,15 @@ export async function saveCandidate(sessionID: string, primary: string, fast: st
   }
   if (result?.ok !== true) throw new SaveUnconfirmedError("Could not confirm whether AI setup saved. Reload the saved setup before continuing.")
   return result as { ok: true; sessionClosePending?: boolean }
+}
+
+export async function saveCandidate(sessionID: string, primary: string, fast: string) {
+  return saveSetup({ sessionID, primary, fast })
+}
+
+// Add or update a provider connection without changing the saved model roles.
+// Model roles are saved separately, so a second provider can be added without
+// re-testing models that already work.
+export async function saveCandidateConnection(sessionID: string) {
+  return saveSetup({ sessionID })
 }
