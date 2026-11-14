@@ -54,6 +54,20 @@ architectural requirement for product model jobs and development agents alike.
   one giant model call. Carry related clauses, documents and exceptions through
   targeted references.
 
+### Delegating to a fresh agent
+
+A fresh agent receives only the brief you write, not the conversation that
+produced it. Before delegating, state the controlling instruction, later
+corrections, settled answers with their questions, rejected approaches, source
+qualifications and proposal status, and what remains unknown. Give substantial
+weight to what the brief could lose: a narrow assignment or a tidy summary does
+not establish that the worker has enough context.
+
+Use a brief when the work is mechanical or its decisions are already fixed.
+Select the decisive original exchanges, or continue the existing conversation,
+when the worker must judge intent, trade-offs or an unresolved exchange. Keep
+the brief with the change record so what the worker received stays reviewable.
+
 ## Legal content
 
 Ground content in the matter's sources and verify every quotation and citation
