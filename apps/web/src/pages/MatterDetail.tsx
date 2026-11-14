@@ -204,8 +204,8 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   }, [documentCount])
   useEffect(() => () => setDocumentsCount(undefined), [])
 
-  // Reassess only after matter context or a completed upload batch changes.
-  // The server keys its bounded assessment by the actual instructions/sources.
+  // The matter's saved chronology is read whenever its context changes; the
+  // assessment itself is not started from opening the matter (see below).
   const chronologyContextKey = matter
     ? JSON.stringify([
         matter.id,
@@ -223,18 +223,11 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
       },
       () => {},
     )
-    if (suggestChronology)
-      assessChronology(id).then(
-        (next) => {
-          if (live) receiveChronology(next)
-        },
-        () => {},
-      )
     return () => {
       live = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, chronologyContextKey, sourceRefresh, suggestChronology])
+  }, [id, chronologyContextKey, sourceRefresh])
   useEffect(() => {
     setChronology(undefined)
     setChronologyReference(undefined)
@@ -251,6 +244,12 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
     if (!id || !closed || !suggestChronology) return
     assessChronology(id).then(receiveChronology, () => getChronology(id).then(receiveChronology, () => {}))
   }, [id, chatOpen, receiveChronology, suggestChronology])
+  // Opening a matter is not a reason to start a model call: the bounded
+  // assessment runs once, after an upload batch has added its documents (#195).
+  const assessAfterUpload = useCallback(() => {
+    if (!id || !suggestChronology) return
+    assessChronology(id).then(receiveChronology, () => getChronology(id).then(receiveChronology, () => {}))
+  }, [id, receiveChronology, suggestChronology])
   useEffect(() => {
     if (view === "chronology") setDocumentsDrawer(false)
   }, [view])
@@ -584,6 +583,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
           incoming={incoming}
           onIncoming={() => setIncoming(undefined)}
           onUploaded={refresh}
+          onUploadBatch={assessAfterUpload}
           onView={(name) => {
             setFocusRedline(undefined)
             setViewerVersions(false)

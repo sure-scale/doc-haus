@@ -20,6 +20,7 @@ export default function DocumentsDrawer({
   onView,
   onCompare,
   onStartFromTemplate,
+  onUploadBatch,
   closing = false,
   restored = false,
 }: {
@@ -34,6 +35,8 @@ export default function DocumentsDrawer({
   onView: (name: string) => void
   onCompare?: (name: string) => void
   onStartFromTemplate?: () => void
+  // Once a batch of uploads has settled and added at least one document.
+  onUploadBatch?: () => void
   // Set while the drawer plays its exit (see useExit).
   closing?: boolean
   // Open since the matter loaded: shown in place, without the slide-in.
@@ -109,6 +112,7 @@ export default function DocumentsDrawer({
           onIncoming={onIncoming}
           onCompare={onCompare}
           onStartFromTemplate={onStartFromTemplate}
+          onUploadBatch={onUploadBatch}
         />
       </aside>
     </>,

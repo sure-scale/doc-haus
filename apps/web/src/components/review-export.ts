@@ -47,7 +47,11 @@ function notes(cell: ExportCell) {
 }
 
 function commentNote(comment: GridCellComment) {
-  return `Comment by ${comment.author || "Unattributed"} (${formatDate(comment.at)}): ${comment.text}`
+  // No author line at all rather than "Unattributed": a comment can be honest
+  // without a name, and the note keeps its date and text.
+  return comment.author
+    ? `Comment by ${comment.author} (${formatDate(comment.at)}): ${comment.text}`
+    : `Comment (${formatDate(comment.at)}): ${comment.text}`
 }
 
 /** Excel: the grid's shape with answer notes, plus visible, individually
@@ -64,7 +68,7 @@ export function reviewXlsx(model: ReviewExport): ArrayBuffer {
   const book = utils.book_new()
   utils.book_append_sheet(book, sheet, "Tabular review")
   const comments = model.rows.flatMap((row) => row.cells.flatMap((cell, c) => cell.comments.map((comment) =>
-    [row.document, model.questions[c], cell.source ?? "", comment.author || "Unattributed", formatDateTime(comment.at), comment.text],
+    [row.document, model.questions[c], cell.source ?? "", comment.author ?? "", formatDateTime(comment.at), comment.text],
   )))
   if (comments.length) {
     const discussion = utils.aoa_to_sheet([["Document", "Question", "Source", "Author", "Date", "Comment"], ...comments])

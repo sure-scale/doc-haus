@@ -24,8 +24,10 @@ const acts = (control: Element | null | undefined) => !!control?.matches(ACTS) &
 // the child already carries the same words in its own aria-describedby.
 // `around`: the list or toolbar the control sits in; help that cannot sit
 // beside the control goes above or below that whole area, never over it.
+// `avoid`: content the help must not cover when it opens below that area (a
+// table's column headers keep their place while the help explains its cells).
 // An open disclosure's own help stays hidden, so it never covers its menu.
-export function Tooltip({ label, children, describes = true, around }: { label: ReactNode; children: ReactNode; describes?: boolean; around?: string }) {
+export function Tooltip({ label, children, describes = true, around, avoid }: { label: ReactNode; children: ReactNode; describes?: boolean; around?: string; avoid?: string }) {
   const host = useRef<HTMLSpanElement>(null)
   const bubble = useRef<HTMLSpanElement>(null)
   const id = useId()
@@ -61,16 +63,30 @@ export function Tooltip({ label, children, describes = true, around }: { label: 
     if (!anchor || !bubble.current) return
     const rect = bubble.current.getBoundingClientRect()
     const scale = Number(getComputedStyle(document.body).zoom) || 1
+    // Help that opens inside a dialog stays inside it: the bubble is portaled
+    // into that dialog, so its own edges are the room the help has, and help
+    // that ran past them used to cover the dialog's content.
+    const box = host.current?.closest("dialog[open]")?.getBoundingClientRect()
+    const pad = 12
+    const minX = box ? box.left + pad : pad
+    const maxX = box ? box.right - pad : innerWidth - pad
+    const minY = box ? box.top + pad : pad
+    const maxY = box ? box.bottom - pad : innerHeight - pad
     const right = anchor.right + 8
     const left = anchor.left - rect.width - 8
-    const beside = right + rect.width < innerWidth - 12 ? right : left >= 12 ? left : undefined
+    const beside = right + rect.width < maxX ? right : left >= minX ? left : undefined
     // Too wide a control to sit beside (a full-width button on a phone): above
     // it, or below when there is no room above, so it never covers the control.
     const area = (around && host.current?.closest(around)?.getBoundingClientRect()) || anchor
     const above = area.top - rect.height - 8
     const x = beside ?? anchor.left + anchor.width / 2 - rect.width / 2
-    const y = beside !== undefined ? anchor.top + anchor.height / 2 - rect.height / 2 : above >= 12 ? above : area.bottom + 8
-    setPosition({ x: Math.max(12, Math.min(x, innerWidth - rect.width - 12)) / scale, y: Math.max(12, Math.min(y, innerHeight - rect.height - 12)) / scale })
+    let y = beside !== undefined ? anchor.top + anchor.height / 2 - rect.height / 2 : above >= minY ? above : area.bottom + 8
+    // Help that would land on the content it describes keeps clear of it: moved
+    // below, then back inside the dialog if that takes it past the foot.
+    const covered = avoid ? (host.current?.closest("dialog[open]") ?? document)?.querySelector<HTMLElement>(avoid)?.getBoundingClientRect() : undefined
+    if (covered && x < covered.right && x + rect.width > covered.left && y < covered.bottom && y + rect.height > covered.top)
+      y = covered.bottom + 8
+    setPosition({ x: Math.max(minX, Math.min(x, maxX - rect.width)) / scale, y: Math.max(minY, Math.min(y, maxY - rect.height)) / scale })
     const onEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return
       // Help left under a newer dialog is out of sight: hide it and leave this
@@ -87,7 +103,7 @@ export function Tooltip({ label, children, describes = true, around }: { label: 
     window.addEventListener("scroll", hide, true)
     document.addEventListener("keydown", onEscape, true)
     return () => { window.removeEventListener("resize", hide); window.removeEventListener("scroll", hide, true); document.removeEventListener("keydown", onEscape, true) }
-  }, [anchor, around])
+  }, [anchor, around, avoid])
   const child = isValidElement(children) ? children as ReactElement<{ "aria-describedby"?: string }> : null
   // Over rather than enter: a control rendered under a pointer that has not
   // moved (Save again after saving) gets a mouseover from the control it

@@ -132,6 +132,8 @@ try {
   let backgroundAgents: { reviewCompare?: boolean } | undefined
   let heldPreferences: import("@playwright/test").Route | undefined
   let holdPreferences = false
+  // Preferences written when a lawyer names themselves on a comment.
+  const preferencesSaves: { attorney?: string }[] = []
   let holdPut = false
   let heldPut: import("@playwright/test").Route | undefined
   let holdGridGet = false
@@ -173,6 +175,10 @@ try {
       return save(route)
     }
     if (url.pathname === "/preferences") {
+      if (request.method() === "PUT") {
+        preferencesSaves.push(request.postDataJSON() as { attorney?: string })
+        return json({ attorney, firm: "Synthetic Review LLP" })
+      }
       if (holdPreferences) { heldPreferences = route; return }
       return preferencesFailed ? route.fulfill({ status: 503 }) : json({ attorney, firm: "Synthetic Review LLP", ...(backgroundAgents ? { backgroundAgents } : {}) })
     }
@@ -333,16 +339,26 @@ try {
   await comments.getByText("Jordan Chen", { exact: true }).waitFor()
   assert.equal(await comments.getByText("Amina Shah", { exact: true }).count(), 1)
   assert.equal(await comments.locator("img").count(), 0, "comment text must render as text")
+  // A comment without a name carries no author line at all, and the first one
+  // offers the name inline; typing it there keeps it for later comments.
   attorney = ""
   await compose.fill("No name is configured.")
   await detail.getByRole("button", { name: "Add comment", exact: true }).click()
-  await comments.filter({ hasText: "No name is configured." }).getByText("Unattributed", { exact: true }).waitFor()
+  const unnamed = comments.filter({ hasText: "No name is configured." })
+  await unnamed.waitFor()
+  assert.equal(await unnamed.locator("strong").count(), 0, "a comment without a name shows no author line")
+  assert.equal(await page.getByText("Unattributed", { exact: true }).count(), 0, "nothing is labelled Unattributed")
+  const signField = detail.getByRole("textbox", { name: "Your name, shown on your comments" })
+  await signField.waitFor()
   preferencesFailed = true
   await compose.fill("Settings are unavailable.")
+  await signField.fill("  Rowan Ellis  ")
   await detail.getByRole("button", { name: "Add comment", exact: true }).click()
-  await comments.filter({ hasText: "Settings are unavailable." }).getByText("Unattributed", { exact: true }).waitFor()
+  await comments.filter({ hasText: "Settings are unavailable." }).getByText("Rowan Ellis", { exact: true }).waitFor()
   await page.waitForTimeout(100)
-  assert.deepEqual(storedGrid.cells["Supply terms.docx::c1"]!.comments!.map(comment => comment.author), ["Amina Shah", "Jordan Chen", undefined, undefined])
+  assert.deepEqual(storedGrid.cells["Supply terms.docx::c1"]!.comments!.map(comment => comment.author), ["Amina Shah", "Jordan Chen", undefined, "Rowan Ellis"])
+  assert.deepEqual(preferencesSaves, [{ attorney: "Rowan Ellis" }], "the name typed on a comment is remembered in settings")
+  assert.equal(await signField.count(), 0, "the offer goes once a name is known")
   assert.equal(storedGrid.cells["Side letter.docx::c1"]!.comments![0]!.author, undefined)
   preferencesFailed = false
   attorney = "Different Current Name"
@@ -350,7 +366,9 @@ try {
   await answer.click()
   await comments.getByText("Amina Shah", { exact: true }).waitFor()
   assert.equal(await comments.getByText("Jordan Chen", { exact: true }).count(), 1)
-  assert.equal(await comments.getByText("Unattributed", { exact: true }).count(), 2)
+  assert.equal(await comments.getByText("Rowan Ellis", { exact: true }).count(), 1)
+  assert.equal(await page.getByText("Unattributed", { exact: true }).count(), 0)
+  assert.equal(await comments.filter({ hasText: "No name is configured." }).locator("strong").count(), 0)
   assert.equal(await comments.getByText(attorney, { exact: true }).count(), 0)
   await page.keyboard.press("Escape")
   await detail.waitFor({ state: "detached" })
@@ -371,11 +389,11 @@ try {
   assert.ok(downloaded)
   const exported = read(await Bun.file(downloaded).arrayBuffer(), { type: "array" })
   const records = utils.sheet_to_json<string[]>(exported.Sheets.Comments, { header: 1 })
-  assert.deepEqual(records.slice(1).map(record => record[3]), ["Amina Shah", "Jordan Chen", "Unattributed", "Unattributed", "Unattributed"])
+  assert.deepEqual(records.slice(1).map(record => record[3]), ["Amina Shah", "Jordan Chen", "", "Rowan Ellis", ""])
   assert.equal(records[1]![2], "Supply terms.docx § 12")
   assert.equal(records[2]![5], "<img src=x onerror=window.commentInjected=true>")
   assert.match(exported.Sheets["Tabular review"].B2.c[0].t, /Source: Supply terms\.docx § 12\nComment by Amina Shah/)
-  console.log("PASS comments snapshot saved Attorney names, remain unattributed without settings, reload and export with separate sources")
+  console.log("PASS comments snapshot saved Attorney names, offer a name once, carry no author line without one, reload and export with separate sources")
 
   // The amended side letter reads degraded in the grid itself, and its detail says why.
   const sideLetterRow = page.getByRole("row", { name: /^Side letter\.docx/ })
@@ -390,7 +408,8 @@ try {
   assert.deepEqual(checked.at(-1)?.sort(), ["Old note.docx::c1", "Side letter.docx::c1", "Supply terms.docx::c1"])
   await page.getByRole("button", { name: /^The law of Scotland\./ }).click()
   const sideDetail = page.locator(".picker-panel").filter({ hasText: "The law of Scotland." })
-  await sideDetail.locator(".review-comment").getByText("Unattributed", { exact: true }).waitFor()
+  await sideDetail.locator(".review-comment").waitFor()
+  assert.equal(await sideDetail.locator(".review-comment strong").count(), 0, "an unnamed comment shows its date only")
   await sideDetail.getByText("Source changed", { exact: true }).waitFor()
   assert.match((await sideDetail.locator(".review-source-check").textContent())!, /has changed since this answer and no longer contains this excerpt\. Re-run this cell to answer from the current text\.$/, "an unreviewed cell names its own next step")
   await page.keyboard.press("Escape")
@@ -1200,6 +1219,46 @@ try {
   await emptyToolbar.getByRole("searchbox", { name: "Search the table" }).fill("governing law")
   assert.equal(await page.locator("tbody tr").count(), 3)
   console.log("PASS an entirely unfilled table can search documents and questions")
+  // #365 2.2: deleting a comment stays one click and offers Undo where it was;
+  // Undo puts the same comment back.
+  storedGrid = structuredClone(grid)
+  await page.goto(server.url.href)
+  await page.getByRole("button", { name: /^The law of Scotland\./ }).click()
+  const scotDetail = page.locator(".picker-panel").filter({ hasText: "The law of Scotland." })
+  const scotComments = scotDetail.locator(".review-comment")
+  await scotComments.first().waitFor()
+  const commentsBefore = await scotComments.count()
+  const commentText = await scotComments.first().locator(".review-comment-text").innerText()
+  await scotDetail.getByRole("button", { name: "Delete comment", exact: true }).first().click()
+  await scotDetail.getByText("Comment deleted.", { exact: false }).waitFor()
+  await scotComments.filter({ hasText: commentText }).waitFor({ state: "detached" })
+  assert.equal(await scotDetail.getByRole("button", { name: "Delete comment", exact: true }).count(), commentsBefore - 1)
+  await scotDetail.getByRole("button", { name: "Undo", exact: true }).click()
+  await scotComments.filter({ hasText: commentText }).waitFor()
+  assert.equal(await scotComments.count(), commentsBefore, "Undo restores the comment in its place")
+  assert.equal(await storedGrid.cells["Side letter.docx::c1"]!.comments!.length, commentsBefore)
+  await page.keyboard.press("Escape")
+  await detailModal.waitFor({ state: "detached" })
+  console.log("PASS deleting a comment is one click, offers Undo in its place and restores it")
+
+  // #365 2.5: a re-run that changes the answer says so and marks the answer once.
+  storedGrid = structuredClone(grid)
+  extractionWaits.length = 0
+  onExtraction = route => void route.fulfill({ status: 204 })
+  await page.goto(server.url.href)
+  await answer.click()
+  await detail.locator(".review-detail-answer").waitFor()
+  await detail.getByRole("button", { name: "Re-run this cell", exact: true }).click()
+  // The panel keeps its cell; only the answer text changes, so read it from the modal.
+  await detailModal.getByText("Answer updated", { exact: true }).waitFor()
+  assert.equal(await detailModal.locator(".review-detail-answer").innerText(), "New extracted answer")
+  assert.equal(await detailModal.locator(".review-detail-answer.is-updated").count(), 1, "the changed answer is marked")
+  await page.keyboard.press("Escape")
+  await detailModal.waitFor({ state: "detached" })
+  console.log("PASS a re-run that changed the answer says Answer updated and marks the answer once")
+
+  await page.setViewportSize({ width: 1280, height: 720 })
+
 } finally {
   await browser.close()
   server.stop(true)

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { DerivedChronologyError, DocumentExistsError, DuplicateUploadError, MATTER_DOCUMENT_EXTENSIONS, matterDocumentKind, type AttachmentStatus, type Document, type EmailAttachment, type IngestResult } from "../src/api/ingest/documents"
-import DocumentUpload, { AttachmentEntryRow, attachmentsSummary, documentTree, failedUpload, newUpload, uploadedToast, UploadRow } from "../src/components/DocumentUpload"
+import DocumentUpload, { AttachmentEntryRow, attachmentsSummary, documentTree, failedUpload, newUpload, sameNamedSource, uploadedToast, UploadRow } from "../src/components/DocumentUpload"
 
 const file = new File(["theirs"], "Agreement.docx")
 const row = (upload: Parameters<typeof UploadRow>[0]["upload"]) => {
@@ -45,6 +45,16 @@ test("a same-name upload offers to save it as a new version of the existing docu
   expect(rendered.html).toContain("Earlier versions stay in its history.")
   expect(rendered.html).not.toContain("Replace")
   expect(rendered.html).not.toContain("danger")
+})
+
+test("a same-name source is found in the matter's own list before the file is uploaded, whatever its case", () => {
+  const documents: Document[] = [
+    { id: 1, name: "Agreement.docx", doc_path: "/m/Agreement.docx", created_at: 1, role: "source" },
+    { id: 2, name: "Draft.docx", doc_path: "/m/Draft.docx", created_at: 2, role: "deliverable" },
+  ]
+  expect(sameNamedSource(documents, new File(["x"], "agreement.DOCX"))).toMatchObject({ name: "Agreement.docx", role: "source" })
+  expect(sameNamedSource(documents, new File(["x"], "Draft.docx"))).toMatchObject({ name: "Draft.docx", role: "deliverable" })
+  expect(sameNamedSource(documents, new File(["x"], "New terms.docx"))).toBeUndefined()
 })
 
 test("an identical upload says which version it matches and that nothing was saved, and is never retried", () => {

@@ -238,6 +238,10 @@
 .review-detail-section { display: flex; flex-direction: column; gap: var(--space-2); }
 .review-detail-label { margin: 0; color: var(--text-secondary); font: var(--md-sys-typescale-label-medium); }
 .review-detail-answer { margin: 0; font-size: 1rem; line-height: 1.7; }
+/* A re-run that changed the answer marks it once: the answer's own ground
+   colour fades out, so the change is noticed without anything moving. */
+.review-detail-answer.is-updated { margin-inline: calc(-1 * var(--space-2)); padding-inline: var(--space-2); border-radius: var(--radius-sm); animation: review-answer-updated 2s var(--ease-out); }
+@keyframes review-answer-updated { from { background: var(--accent-tint); } to { background: transparent; } }
 .review-detail-label-row { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); }
 .review-rerun-outcome { color: var(--muted); font-size: .8rem; }
 .review-detail-body .citation { margin: 0; }
@@ -261,8 +265,12 @@
 .review-comment-compose { display: flex; flex-direction: column; gap: var(--space-2); }
 .review-comment-compose textarea { width: 100%; min-height: 64px; resize: vertical; }
 .review-comment-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-4); }
-.review-comment-actions small { flex: 1 1 200px; }
 .review-comment-actions button { margin-left: auto; }
+/* The name offered on the first comment; a quiet field, not a form step. */
+.review-comment-sign { display: flex; align-items: center; gap: var(--space-2); flex: 1 1 200px; min-width: 0; color: var(--text-secondary); font-size: .8rem; }
+.review-comment-sign input { flex: 1 1 auto; min-width: 0; max-width: 200px; min-height: 32px; font-size: .85rem; }
+/* One line where the deleted comment was, until Undo or its time is up. */
+.review-comment-undo { margin: 0; padding: var(--space-2) var(--space-4); border: 1px dashed var(--border); border-radius: var(--radius-md); color: var(--text-secondary); font-size: .85rem; }
 
 /* Review next: the reason and place in the walk above the answer, and one
    row of steps under the panel, as outside the walk. Tone repeats the cell's

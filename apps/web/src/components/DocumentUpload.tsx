@@ -82,6 +82,7 @@ export default function DocumentUpload({
   onIncoming,
   onCompare,
   onStartFromTemplate,
+  onUploadBatch,
 }: {
   matterId: string
   documents: Document[]
@@ -96,6 +97,9 @@ export default function DocumentUpload({
   onCompare?: (name: string) => void
   // Draft from a library template into this matter.
   onStartFromTemplate?: () => void
+  // Once every upload of a batch has settled and at least one was added, so
+  // work that reads the matter can start then, not on the next page load.
+  onUploadBatch?: () => void
 }) {
   const [uploads, setUploads] = useState<Upload[]>([])
   const [removing, setRemoving] = useState<string>()
@@ -108,6 +112,10 @@ export default function DocumentUpload({
   const watched = useRef(false)
   // Uploads run one at a time so a batch does not swamp the reader.
   const queue = useRef(Promise.resolve())
+  // Uploads still queued or running, and how many of them added a document:
+  // the batch is over when the first count reaches zero.
+  const pendingUploads = useRef(0)
+  const addedUploads = useRef(0)
   const body = useRef<HTMLDivElement>(null)
   const toast = useToast()
   // StrictMode re-runs effects on mount; the ref keeps one batch from uploading twice.
@@ -149,6 +157,7 @@ export default function DocumentUpload({
   }
 
   function enqueue(upload: Upload) {
+    pendingUploads.current++
     queue.current = queue.current.then(() => run(upload))
   }
 
@@ -167,11 +176,20 @@ export default function DocumentUpload({
         // Same-name duplicates retain the row's current/earlier-version and
         // Restore handling. A renamed duplicate needs an explicit separate-copy
         // decision before the ordinary upload can create another document.
-        const sameName = documents.some(item => item.name.toLowerCase() === upload.file.name.toLowerCase())
+        const sameName = !!sameNamedSource(documents, upload.file)
         if (inspection.kind !== "new-document" && (inspection.kind !== "duplicate" || !sameName)) {
           update(upload.key, { status: "return", returnInspection: inspection })
           return
         }
+      }
+      // A same-name source would be refused by ingest after the file had gone;
+      // the matter's own list answers the question first, so the usual case
+      // never fails a request. If the list is stale (another window added it),
+      // the server's 409 still decides.
+      const sameName = upload.choice ? undefined : sameNamedSource(documents, upload.file)
+      if (sameName) {
+        update(upload.key, { status: "exists", existing: { name: sameName.name, role: sameName.role ?? "source" } })
+        return
       }
       const result = await uploadDocument(matterId, upload.file, {
         onSent: () => update(upload.key, { status: "reading" }),
@@ -179,12 +197,19 @@ export default function DocumentUpload({
         chronologyOrigin: upload.chronologyOrigin,
       })
       update(upload.key, { status: result.quality?.status === "no_readable_text" ? "not_indexed" : "ready", notice: result.notice, sourceProvenance: result.source_provenance })
+      addedUploads.current++
       if (!result.notice) setTimeout(() => setUploads((prev) => prev.filter((u) => u.key !== upload.key)), READY_LINGER_MS)
       onUploaded()
       const { kind, message } = uploadedToast(result)
       toast(kind, message)
     } catch (e) {
       update(upload.key, failedUpload(e, upload.file))
+    } finally {
+      pendingUploads.current--
+      if (!pendingUploads.current && addedUploads.current) {
+        addedUploads.current = 0
+        onUploadBatch?.()
+      }
     }
   }
 
@@ -912,6 +937,13 @@ export function EmailRemoveConfirm({ name, removal, onRemove, onCancel }: {
       </span>
     </div>
   )
+}
+
+// The matter's own document with this file's name, whatever its case. Ingest
+// refuses an upload over an existing name, so the list answers the question
+// before the bytes leave the browser; the server's 409 remains the race guard.
+export function sameNamedSource(documents: Document[], file: File) {
+  return documents.find((item) => item.name.toLowerCase() === file.name.toLowerCase())
 }
 
 // Every file the picker or a drop hands over (the composer's too) gets a row. A
