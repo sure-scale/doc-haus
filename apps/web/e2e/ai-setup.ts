@@ -34,6 +34,7 @@ async function fixture(name: string, width: number, onboarding = false, cloud = 
     config: (cloud
       ? { model: "google-vertex/primary", small_model: "google-vertex/primary", provider: { "google-vertex": { options: { project: "saved-fixture-project", location: "europe-west2" } } } }
       : onboarding ? {} : { model: "fixture-models/primary", small_model: "fixture-models/primary" }) as Config,
+    connected: new Set<string>(cloud ? ["fixture-models", "google-vertex"] : ["fixture-models"]),
     completed: onboarding ? [] as string[] : ["models", "research", "details"],
     ready: !onboarding,
     failFast: false,
@@ -91,19 +92,25 @@ async function fixture(name: string, width: number, onboarding = false, cloud = 
       if (state.saveFailures > 0) { state.saveFailures--; return reply({ error: "Synthetic save was rejected before activation.", code: "fixture_save_rejected" }, 400) }
       const candidate = candidates.get(String(body.sessionID))
       expect(candidate).toBeDefined()
-      state.config = { ...state.config, model: `${candidate!.providerID}/${body.primary}`, small_model: `${candidate!.providerID}/${body.fast}` }
-      const existing = state.config.provider?.[candidate!.providerID]
-      if (candidate!.local || existing?.npm === "@ai-sdk/openai-compatible") state.config.provider = {
-        ...state.config.provider,
-        [candidate!.providerID]: {
-          ...existing,
-          npm: "@ai-sdk/openai-compatible",
-          name: candidate!.local?.name ?? existing?.name,
-          options: { ...existing?.options, ...candidate!.options },
-          models: { ...existing?.models, ...Object.fromEntries([...new Set([String(body.primary), String(body.fast)])].map(id => [id, { name: id }])) },
-        },
+      state.connected.add(candidate!.providerID)
+      if (body.primary !== undefined && body.fast !== undefined) {
+        state.config = { ...state.config, model: `${candidate!.providerID}/${body.primary}`, small_model: `${candidate!.providerID}/${body.fast}` }
       }
-      state.ready = true
+      const existing = state.config.provider?.[candidate!.providerID]
+      if (candidate!.local || existing?.npm === "@ai-sdk/openai-compatible") {
+        const modelIDs = [...new Set([...(body.primary !== undefined ? [String(body.primary)] : []), ...(body.fast !== undefined ? [String(body.fast)] : []), ...Object.keys(existing?.models ?? {})])]
+        state.config.provider = {
+          ...state.config.provider,
+          [candidate!.providerID]: {
+            ...existing,
+            npm: "@ai-sdk/openai-compatible",
+            name: candidate!.local?.name ?? existing?.name,
+            options: { ...existing?.options, ...candidate!.options },
+            ...(modelIDs.length ? { models: { ...existing?.models, ...Object.fromEntries(modelIDs.map(id => [id, { name: id }])) } } : {}),
+          },
+        }
+      }
+      if (state.config.model && state.config.small_model) state.ready = true
       return reply({ ok: true })
     }
     if (pathname === "/setup") {
@@ -123,6 +130,11 @@ async function fixture(name: string, width: number, onboarding = false, cloud = 
     }
     if (pathname === "/api/dochaus/concurrency-test" && method === "POST") return reply({ model: state.config.model, requested: body.count, succeeded: body.count, failed: 0, peak: body.count, elapsed_ms: 1000, errors: [] })
     if (pathname === "/dashboard/tabs" && method === "PUT") return reply({ state: body.state, revision: Number(body.revision) + 1 })
+    if (pathname === "/dashboard/discovery" && method === "POST") {
+      const input = body as { action?: string; widgets?: Array<{ type: string }> }
+      if (input.action === "inventory") return reply({ updatedAt: 0, metrics: {}, templates: {}, library: {}, filters: { clients: [], matters: [] } })
+      return reply({ updatedAt: 0, results: (input.widgets ?? []).map((_, index) => ({ index, status: "empty", usable: false, dataBacked: false })) })
+    }
     if (method !== "GET" && !(pathname === "/api/dochaus/provider-test" && method === "POST")) {
       unexpected.push(`${name}: ${method} ${pathname}`)
       return route.abort()
@@ -139,14 +151,14 @@ async function fixture(name: string, width: number, onboarding = false, cloud = 
       if (state.catalogLag > 0) state.catalogLag--
       return reply({ data: [other, provider, ...(cloud ? [vertex] : []), ...local] })
     }
-    if (pathname === "/api/provider") return reply({ data: [provider, ...(cloud ? [vertex] : []), ...savedLocalProviders()] })
+    if (pathname === "/api/provider") return reply({ data: [provider, ...(state.connected.has("other-fixture") ? [other] : []), ...(cloud ? [vertex] : []), ...savedLocalProviders()] })
     if (pathname === "/api/model") return reply({ data: [
-      ...[provider, ...(cloud ? [vertex] : [])].flatMap(item => ["primary", "fast"].map(id => ({ providerID: item.id, id, name: id, enabled: true }))),
+      ...[provider, ...(state.connected.has("other-fixture") ? [other] : []), ...(cloud ? [vertex] : [])].flatMap(item => ["primary", "fast"].map(id => ({ providerID: item.id, id, name: id, enabled: true }))),
       ...savedLocalProviders().flatMap(item => Object.entries(state.config.provider?.[item.id]?.models ?? {}).map(([id, model]) => ({ providerID: item.id, id, name: model.name, enabled: true }))),
     ] })
     if (pathname === "/api/integration") return reply({ data: [
       { id: "fixture-login", name: "Fixture Sign-in", methods: [{ type: "key", label: "New API key" }, { type: "oauth", id: "browser-login", label: "Browser sign-in" }, { type: "command", id: "host-login", label: "Host sign-in", command: ["fixture-auth", "login"] }], connections: [{ type: "credential", id: "saved-fixture", label: "Fixture account", method: "key" }] },
-      { id: "other-login", name: "Other sign-in", methods: [{ type: "key", label: "New API key" }], connections: [] },
+      { id: "other-login", name: "Other sign-in", methods: [{ type: "key", label: "New API key" }], connections: state.connected.has("other-fixture") ? [{ type: "credential", id: "saved-other", label: "Other account", method: "key" }] : [] },
       ...(cloud ? [{ id: "google-vertex", name: "Google Vertex AI", methods: [], connections: [] }] : []),
     ] })
     if (pathname === "/matters" || pathname === "/clients") return reply([])
@@ -238,7 +250,7 @@ try {
       await slider.focus(); await f.page.keyboard.press("End")
       await expect(slider).toHaveAttribute("aria-valuetext", "100 requests")
       await dialog.getByRole("button", { name: "Test and save", exact: true }).click()
-      await expect(dialog.getByText("AI setup saved.", { exact: true })).toBeVisible()
+      await expect(dialog.getByText("AI setup saved.", { exact: true }).first()).toBeVisible()
       expect(f.state.config.small_model).toBe("fixture-models/fast")
       expect(f.state.config.model_concurrency).toBe(100)
     } finally { await f.context.close() }
@@ -298,7 +310,7 @@ try {
       await expect(dialog.getByRole("alert")).toContainText("Synthetic save was rejected before activation.")
       expect(f.state.config).toEqual({ model: "fixture-models/primary", small_model: "fixture-models/primary" })
       await action.click()
-      await expect(dialog.getByText("AI setup saved.", { exact: true })).toBeVisible()
+      await expect(dialog.getByText("AI setup saved.", { exact: true }).first()).toBeVisible()
       expect(f.state.config).toEqual({ model: "fixture-models/primary", small_model: "fixture-models/fast" })
       expect(f.requests.filter(item => item.path === "/engine/provider-setup").at(-1)!.body).toEqual({ sessionID: "synthetic-candidate-2", primary: "primary", fast: "fast" })
       await f.page.screenshot({ path: path.join(evidence, `settings-saved-${width}.png`) })
@@ -319,8 +331,40 @@ try {
       expect(f.requests.filter(item => item.path === "/engine/provider-setup")).toHaveLength(0)
       f.state.failFast = false
       await action.click()
-      await expect(dialog.getByText("AI setup saved.", { exact: true })).toBeVisible()
+      await expect(dialog.getByText("AI setup saved.", { exact: true }).first()).toBeVisible()
       expect(f.state.config.small_model).toBe("fixture-models/fast")
+    } finally { await f.context.close() }
+  })
+  await scenario("Settings adds a provider and saves primary and fast models from different providers", async () => {
+    const f = await fixture("cross-provider-models", 1440)
+    try {
+      await f.page.getByRole("button", { name: "Settings", exact: true }).click()
+      const dialog = f.page.getByRole("dialog", { name: "Settings", exact: true })
+      await dialog.getByRole("button", { name: "Add provider", exact: true }).click()
+      await dialog.getByLabel("Provider", { exact: true }).selectOption("other-fixture")
+      await dialog.getByLabel("Connection method", { exact: true }).selectOption("method:0")
+      await dialog.getByLabel("API key", { exact: true }).fill("synthetic-second-key")
+      await dialog.getByRole("button", { name: "Load models", exact: true }).click()
+      await expect(dialog.getByLabel("Primary model", { exact: true })).toBeVisible()
+      await dialog.getByLabel("Primary model", { exact: true }).selectOption("other-fixture/primary")
+      await dialog.getByLabel("Fast model", { exact: true }).selectOption("fixture-models/fast")
+      await f.page.screenshot({ path: path.join(evidence, "cross-provider-models.png"), fullPage: true })
+      await dialog.getByRole("button", { name: "Test and save", exact: true }).click()
+      await expect(dialog.getByText("AI setup saved.", { exact: true }).first()).toBeVisible()
+      expect(f.state.config).toMatchObject({ model: "other-fixture/primary", small_model: "fixture-models/fast" })
+      // The new provider connection is saved separately from the model roles,
+      // so the already-connected provider keeps the fast role.
+      const saveBody = f.requests.filter(item => item.path === "/engine/provider-setup").at(-1)!.body
+      expect(Object.keys(saveBody)).toEqual(["sessionID"])
+      expect(String(saveBody.sessionID)).toMatch(/^synthetic-candidate-\d+$/)
+      expect(f.requests.filter(item => item.path === "/engine/config" && item.method === "PATCH").at(-1)!.body).toEqual({ model: "other-fixture/primary", small_model: "fixture-models/fast" })
+      expect(f.tests().map(item => item.body.modelID)).toEqual(["primary"])
+      await expect(dialog.getByRole("listitem").filter({ hasText: "Other Fixture Models" })).toBeVisible()
+      await dialog.getByRole("group", { name: "Connected providers" }).scrollIntoViewIfNeeded()
+      await f.page.screenshot({ path: path.join(evidence, "cross-provider-providers.png"), fullPage: true })
+      await f.page.screenshot({ path: path.join(evidence, "cross-provider-saved.png"), fullPage: true })
+      await dialog.locator(".ai-setup-selected-models").scrollIntoViewIfNeeded()
+      await f.page.screenshot({ path: path.join(evidence, "cross-provider-roles.png"), fullPage: true })
     } finally { await f.context.close() }
   })
   await scenario("Reasoning effort is separate, preserved, tested and saved for each model", async () => {
@@ -337,7 +381,7 @@ try {
       await dialog.getByRole("button", { name: "Test and save", exact: true }).click()
       await expect.poll(() => f.tests().length).toBe(2)
       expect(f.tests().slice(-2).map(item => item.body.modelID)).toEqual(["primary#high", "fast#low"])
-      await expect(dialog.getByText("AI setup saved.", { exact: true })).toBeVisible()
+      await expect(dialog.getByText("AI setup saved.", { exact: true }).first()).toBeVisible()
       expect(f.state.config.model).toBe("fixture-models/primary#high")
       expect(f.state.config.small_model).toBe("fixture-models/fast#low")
     } finally { await f.context.close() }
@@ -498,7 +542,7 @@ try {
     } finally { await f.context.close() }
   })
 
-  await scenario("Pending browser sign-in cannot load models or enable testing before completion", async () => {
+  await scenario("Pending browser sign-in cannot enable testing before completion", async () => {
     const f = await fixture("pending-oauth", 390)
     try {
       await f.page.getByRole("button", { name: "Settings", exact: true }).click()
@@ -507,7 +551,9 @@ try {
       await dialog.getByLabel("Connection method", { exact: true }).selectOption("method:1")
       await dialog.getByRole("button", { name: "Sign in", exact: true }).click()
       await expect(dialog.getByText("Sign-in pending.", { exact: true })).toBeVisible()
-      await expect(dialog.getByLabel("Primary model", { exact: true })).toHaveCount(0)
+      // The already-connected provider keeps its model choices visible, but the
+      // pending sign-in cannot load its own models or enable testing.
+      await expect(dialog.getByLabel("Primary model", { exact: true })).toBeVisible()
       await expect(dialog.getByRole("button", { name: "Test and save", exact: true })).toBeDisabled()
       await dialog.getByRole("button", { name: "Check sign-in status", exact: true }).click()
       await expect(dialog.getByText("Sign-in pending.", { exact: true })).toBeVisible()
@@ -526,7 +572,7 @@ try {
       f.state.modelLoadFailures = 1
       await dialog.getByRole("button", { name: "Check sign-in status", exact: true }).click()
       await expect(dialog.getByRole("alert")).toContainText("Synthetic model catalog is temporarily unavailable.")
-      await expect(dialog.getByLabel("Primary model", { exact: true })).toHaveCount(0)
+      await expect(dialog.getByLabel("Primary model", { exact: true })).toBeVisible()
       const authCalls = f.requests.filter(item => item.path === "/api/dochaus/provider-candidate/auth").length
       await dialog.getByRole("button", { name: "Retry loading models", exact: true }).click()
       await expect(dialog.getByLabel("Primary model", { exact: true })).toBeVisible()
@@ -556,10 +602,10 @@ try {
       const save = dialog.getByRole("button", { name: "Test and save", exact: true })
       f.state.catalogLag = 3
       await save.click()
-      await expect(dialog.getByText("AI setup saved.", { exact: true })).toBeVisible()
+      await expect(dialog.getByText("AI setup saved.", { exact: true }).first()).toBeVisible()
       expect(f.requests.filter(item => item.path === "/api/dochaus/provider-candidate/models" && item.body.modelIDs).at(-1)!.body.modelIDs).toEqual(["served-primary"])
       expect(f.tests().map(item => item.body.modelID)).toEqual(["served-primary"])
-      await expect(dialog.getByText("AI setup saved.", { exact: true })).toBeVisible()
+      await expect(dialog.getByText("AI setup saved.", { exact: true }).first()).toBeVisible()
       expect(f.state.config).toEqual({ model: "fixture-local/served-primary", small_model: "fixture-local/served-primary", provider: {
         "fixture-local": { npm: "@ai-sdk/openai-compatible", name: "Fixture local", options: { baseURL: "http://127.0.0.1:1234/v1" }, models: { "served-primary": { name: "served-primary" } } },
       } })
@@ -586,7 +632,7 @@ try {
       expect(f.sessions().at(-1)!.body).toEqual({ providerID: "fixture-local", options: { baseURL: "http://127.0.0.1:1235/v1" }, connection: { type: "key", key: "synthetic-local-key", answer: {} } })
       await dialog.getByLabel("Fast model ID", { exact: true }).fill("served-fast")
       await save.click()
-      await expect(dialog.getByText("AI setup saved.", { exact: true })).toBeVisible()
+      await expect(dialog.getByText("AI setup saved.", { exact: true }).first()).toBeVisible()
       expect(f.requests.filter(item => item.path === "/api/dochaus/provider-candidate/models" && item.body.modelIDs).at(-1)!.body.modelIDs).toEqual(["served-primary", "served-fast"])
       expect(f.tests().slice(-2).map(item => item.body.modelID)).toEqual(["served-primary", "served-fast"])
       expect(f.state.config.provider?.["fixture-local"]?.options?.baseURL).toBe("http://127.0.0.1:1235/v1")
@@ -626,7 +672,7 @@ try {
       await noOverflow(f.page)
       await f.page.screenshot({ path: path.join(evidence, "settings-selected-reuse.png") })
       await save.click()
-      await expect(dialog.getByText("AI setup saved.", { exact: true })).toBeVisible()
+      await expect(dialog.getByText("AI setup saved.", { exact: true }).first()).toBeVisible()
       expect(f.state.config).toEqual({ model: "other-fixture/primary", small_model: "other-fixture/primary" })
     } finally { await f.context.close() }
   })

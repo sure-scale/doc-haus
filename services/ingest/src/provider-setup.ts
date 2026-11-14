@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import { patchEngineConfig, validateSettingsPatch } from "./engine-config"
 
-type Selection = { sessionID: string; primary: string; fast: string }
+type Selection = { sessionID: string; primary?: string; fast?: string }
 type Options = {
   engine?: string
   password?: () => string | undefined
@@ -20,7 +20,7 @@ export function providerSetupRoutes(options: Options = {}) {
     if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return c.json({ error: "Origin is not allowed." }, 403)
     if (c.req.header("content-type")?.split(";")[0].trim().toLowerCase() !== "application/json") return c.json({ error: "Save AI setup using JSON." }, 415)
     const input = await readSelection(c.req.raw)
-    if (!input) return c.json({ error: "Select a tested connection and both models." }, 400)
+    if (!input) return c.json({ error: "Select a tested connection and any model choices to save." }, 400)
     // Keep the credential/config transition ordered across concurrent Save clicks.
     if (saving) return c.json({ error: "Another AI setup is being saved. Try again shortly." }, 409)
     saving = true
@@ -39,15 +39,18 @@ export function providerSetupRoutes(options: Options = {}) {
       let patch: Record<string, unknown>
       try {
         const prepared = await request("prepare")
-        if (!prepared.ok) return c.json({ error: "The selected connection and models must pass their tests before saving.", code: "setup_not_ready" }, 400)
+        if (!prepared.ok) return c.json({ error: "The selected connection and any model choices must pass their tests before saving.", code: "setup_not_ready" }, 400)
         const result: unknown = await prepared.json()
         if (!result || typeof result !== "object" || !("patch" in result)) throw new Error()
         patch = validateSettingsPatch(result.patch)
-        const primary = typeof patch.model === "string" ? patch.model : ""
-        const fast = typeof patch.small_model === "string" ? patch.small_model : ""
-        if (Object.keys(patch).some(key => !["model", "small_model", "provider"].includes(key)) ||
-            primary.slice(primary.indexOf("/") + 1) !== input.primary || fast.slice(fast.indexOf("/") + 1) !== input.fast ||
-            primary.split("/")[0] !== fast.split("/")[0]) throw new Error()
+        const withModels = input.primary !== undefined
+        if (Object.keys(patch).some(key => !(withModels ? ["model", "small_model", "provider"] : ["provider"]).includes(key)) ||
+            (withModels ? !("model" in patch) || !("small_model" in patch) : "model" in patch || "small_model" in patch || !("provider" in patch))) throw new Error()
+        if (withModels) {
+          const primary = typeof patch.model === "string" ? patch.model : ""
+          const fast = typeof patch.small_model === "string" ? patch.small_model : ""
+          if (primary.slice(primary.indexOf("/") + 1) !== input.primary || fast.slice(fast.indexOf("/") + 1) !== input.fast) throw new Error()
+        }
       } catch {
         return c.json({ error: "Could not validate AI setup. Your current setup is unchanged.", code: "setup_validation_failed" }, 400)
       }
@@ -93,10 +96,12 @@ async function readSelection(request: Request): Promise<Selection | undefined> {
       chunks.push(chunk.value)
     }
     const value: unknown = JSON.parse(new TextDecoder().decode(Buffer.concat(chunks)))
-    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "fast,primary,sessionID") return
+    if (!value || typeof value !== "object" || Array.isArray(value) || !["sessionID", "fast,primary,sessionID"].includes(Object.keys(value).sort().join(","))) return
     const input = value as Selection
-    if (typeof input.sessionID !== "string" || !/^[a-zA-Z0-9._-]{1,128}$/.test(input.sessionID) ||
-        [input.primary, input.fast].some(model => typeof model !== "string" || !model || model.length > 256 || /[\s\0]/.test(model))) return
+    if (typeof input.sessionID !== "string" || !/^[a-zA-Z0-9._-]{1,128}$/.test(input.sessionID)) return
+    if (input.primary !== undefined || input.fast !== undefined) {
+      if ([input.primary, input.fast].some(model => typeof model !== "string" || !model || model.length > 256 || /[\s\0]/.test(model))) return
+    }
     return input
   } catch { return }
   finally { clearTimeout(timer); reader.releaseLock() }

@@ -22,7 +22,7 @@ export function validModelPair(config: { model?: unknown; small_model?: unknown 
   if (typeof config.model !== "string" || typeof config.small_model !== "string") return false
   const primary = catalogModel(config.model, models)
   const fast = catalogModel(config.small_model, models)
-  return Boolean(primary && fast && primary.providerID === fast.providerID)
+  return Boolean(primary && fast)
 }
 
 /** Reads the engine's model catalog, for a matter's directory when given. */
@@ -94,7 +94,7 @@ export function setupRoutes(options: { directory: string; config?: () => { model
       if (!SETUP_STEPS.includes(value.step) || !["completed", "skipped"].includes(value.status)) throw new Error("Choose a setup step and status.")
       if (value.step === "models" && value.status === "skipped") throw new Error("Save both models before continuing.")
       const current = await read()
-      if (value.step === "models" && !current.ready) throw new Error("Save an available primary and fast model from the same provider before continuing.")
+      if (value.step === "models" && !current.ready) throw new Error("Save an available primary and fast model before continuing.")
       if (value.step !== "models" && !current.completed.includes("models")) throw new Error("Complete model setup first.")
       const progress: Progress = { version: 1, completed: current.completed.filter(step => step !== value.step), skipped: current.skipped.filter(step => step !== value.step) }
       progress[value.status].push(value.step)

@@ -149,6 +149,14 @@ test("native draft tests exact connection and both models before deferred save; 
               })
               expect(JSON.stringify(prepared)).not.toContain("synthetic-new")
               expect(calls).toHaveLength(2)
+              // Adding a provider can save only its connection, leaving the
+              // already-tested model roles untouched.
+              const connectionOnly = (await manager.handle("prepare", { sessionID: session.sessionID })) as {
+                patch: Record<string, unknown>
+              }
+              expect(Object.keys(connectionOnly.patch)).toEqual(["provider"])
+              expect(connectionOnly.patch).not.toHaveProperty("model")
+              expect(connectionOnly.patch).not.toHaveProperty("small_model")
               expect(
                 calls.every(
                   (call) =>

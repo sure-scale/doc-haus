@@ -655,32 +655,67 @@ export function providerCandidates(options: {
             return { data }
           }
           if (["prepare", "save"].includes(action)) {
-            if (!keys(input, ["sessionID", "primary", "fast"]))
-              throw new ProviderCandidateError("Choose both models before saving.")
-            if (
-              !modelReference(input.primary) ||
-              !modelReference(input.fast) ||
-              !entry.tested.has(input.primary) ||
-              !entry.tested.has(input.fast)
-            )
-              throw new ProviderCandidateError("Test both selected models before saving.")
-            const patch = {
-              model: `${entry.input.providerID}/${input.primary}`,
-              small_model: `${entry.input.providerID}/${input.fast}`,
-              provider: {
-                [entry.input.providerID]: {
-                  ...(entry.input.local
-                    ? { npm: "@ai-sdk/openai-compatible", name: entry.input.local.name.trim() }
-                    : {}),
-                  ...(entry.modelIDs.size
-                    ? { models: Object.fromEntries(Array.from(entry.modelIDs, (id) => [id, { name: id }])) }
-                    : {}),
-                  options: {
-                    ...entry.input.options,
-                    ...(entry.input.local ? { baseURL: entry.input.local.baseURL.trim() } : {}),
-                  },
+            const withModels = "primary" in input || "fast" in input
+            if (withModels ? !("primary" in input && "fast" in input && keys(input, ["sessionID", "primary", "fast"])) : !keys(input, ["sessionID"]))
+              throw new ProviderCandidateError("Choose the provider connection to save.")
+            const provider = {
+              [entry.input.providerID]: {
+                ...(entry.input.local
+                  ? { npm: "@ai-sdk/openai-compatible", name: entry.input.local.name.trim() }
+                  : {}),
+                ...(entry.modelIDs.size
+                  ? { models: Object.fromEntries(Array.from(entry.modelIDs, (id) => [id, { name: id }])) }
+                  : {}),
+                options: {
+                  ...entry.input.options,
+                  ...(entry.input.local ? { baseURL: entry.input.local.baseURL.trim() } : {}),
                 },
               },
+            }
+            let patch: Record<string, unknown> = { provider }
+            if (withModels) {
+              if (
+                !modelReference(input.primary) ||
+                !modelReference(input.fast) ||
+                !entry.tested.has(input.primary) ||
+                !entry.tested.has(input.fast)
+              )
+                throw new ProviderCandidateError("Test both selected models before saving.")
+              patch = {
+                model: `${entry.input.providerID}/${input.primary}`,
+                small_model: `${entry.input.providerID}/${input.fast}`,
+                provider,
+              }
+              const selectedModels = await within(
+                entry,
+                Model.Service.use((models) =>
+                  Effect.all([
+                    ...[input.primary as string, input.fast as string].map((selected) => {
+                      const ref = Model.Ref.parse(`${entry.input.providerID}/${selected}`)
+                      return models
+                        .get(ref.providerID, ref.id)
+                        .pipe(
+                          Effect.map((model) =>
+                            model &&
+                            (ref.variant === undefined || model.variants.some((variant) => variant.id === ref.variant))
+                              ? model
+                              : undefined,
+                          ),
+                        )
+                    }),
+                  ]),
+                ),
+              )
+              if (
+                selectedModels.some(
+                  (model) =>
+                    !model?.enabled ||
+                    !model.capabilities.input.includes("text") ||
+                    !model.capabilities.output.includes("text"),
+                ) ||
+                !selectedModels[0]?.capabilities.tools
+              )
+                throw new ProviderCandidateError("Choose available text models and a primary model that supports tools.")
             }
             const policy = (options.settings ?? readEffectiveSettings)()
             if (
@@ -688,36 +723,8 @@ export function providerCandidates(options: {
               (Array.isArray(policy.enabled_providers) && !policy.enabled_providers.includes(entry.input.providerID))
             )
               throw new ProviderCandidateError("This provider is disabled by installation policy.")
-            const selectedModels = await within(
-              entry,
-              Model.Service.use((models) =>
-                Effect.all([
-                  ...[input.primary as string, input.fast as string].map((selected) => {
-                    const ref = Model.Ref.parse(`${entry.input.providerID}/${selected}`)
-                    return models
-                      .get(ref.providerID, ref.id)
-                      .pipe(
-                        Effect.map((model) =>
-                          model &&
-                          (ref.variant === undefined || model.variants.some((variant) => variant.id === ref.variant))
-                            ? model
-                            : undefined,
-                        ),
-                      )
-                  }),
-                ]),
-              ),
-            )
-            if (
-              selectedModels.some(
-                (model) =>
-                  !model?.enabled ||
-                  !model.capabilities.input.includes("text") ||
-                  !model.capabilities.output.includes("text"),
-              ) ||
-              !selectedModels[0]?.capabilities.tools
-            )
-              throw new ProviderCandidateError("Choose available text models and a primary model that supports tools.")
+            if (!withModels && !entry.tested.size)
+              throw new ProviderCandidateError("Test the connection before saving.")
             if (action === "prepare") return { patch }
             if (saving && saving !== input.sessionID)
               throw new ProviderCandidateError(
@@ -729,7 +736,8 @@ export function providerCandidates(options: {
               Integration.Service.use((service) => service.connection.active(entry.integrationID)),
             )
             entry.previous = active?.type === "credential" ? active.id : undefined
-            if (!entry.tested.size) throw new ProviderCandidateError("Test the selected models before saving.")
+            if (withModels && !entry.tested.size)
+              throw new ProviderCandidateError("Test the selected models before saving.")
             const selected = entry.input.connection
             const snapshot = entry.session.credential(entry.integrationID)
             const original =
