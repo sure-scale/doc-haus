@@ -12,14 +12,27 @@ const PREFS_DIR = () => path.join(workspaceRoot(), ".preferences")
 const JSON_FILE = () => path.join(PREFS_DIR(), "preferences.json")
 const INSTRUCTIONS_FILE = () => path.join(PREFS_DIR(), "drafting.md")
 
-export function readDraftingPreferences(): DraftingPreferences {
-  if (!existsSync(JSON_FILE())) return DEFAULT_DRAFTING
-  return normalizePreferences(readSavedPreferences())
+// Drafting Auto mode is a file-only installation setting: the settings API
+// neither returns nor accepts it, so a settings save cannot switch it. The
+// raw preferences file keeps it; the runtime reads it per job
+// (draftingAutoModeEnabled).
+type DraftingSettings = Omit<DraftingPreferences, "draftingAutoMode">
+function settingsView(prefs: DraftingPreferences): DraftingSettings {
+  const { draftingAutoMode: _installation, ...view } = prefs
+  return view
 }
 
-export function writeDraftingPreferences(input: unknown): DraftingPreferences {
+export function readDraftingPreferences(): DraftingSettings {
+  if (!existsSync(JSON_FILE())) return settingsView(DEFAULT_DRAFTING)
+  return settingsView(normalizePreferences(readSavedPreferences()))
+}
+
+export function writeDraftingPreferences(input: unknown): DraftingSettings {
   validateResearchPreferences(input)
-  const prefs = normalizePreferences({ ...readDraftingPreferences(), ...input as Record<string, unknown> })
+  // Merge onto the raw saved file, not the settings view: the file-only Auto
+  // mode flag is absent from the view and must survive every ordinary save.
+  const saved = existsSync(JSON_FILE()) ? readSavedPreferences() as Record<string, unknown> : {}
+  const prefs = normalizePreferences({ ...saved, ...input as Record<string, unknown> })
   const instructions = renderInstructions(prefs)
   const json = JSON.stringify(prefs, null, 2) + "\n"
   mkdirSync(PREFS_DIR(), { recursive: true })
@@ -33,7 +46,7 @@ export function writeDraftingPreferences(input: unknown): DraftingPreferences {
   } finally {
     rmSync(temporary, { force: true })
   }
-  return prefs
+  return settingsView(prefs)
 }
 
 export class PreferencesValidationError extends Error {}
@@ -66,6 +79,8 @@ export function validateResearchPreferences(input: unknown): asserts input is Re
   }
   if (Object.hasOwn(patch, "courtlistenerMcpEnabled") && typeof patch.courtlistenerMcpEnabled !== "boolean")
     throw new PreferencesValidationError("Choose whether to enable the CourtListener connector.")
+  if (Object.hasOwn(patch, "draftingAutoMode"))
+    throw new PreferencesValidationError("Drafting Auto mode is an installation setting kept in the preferences file; it is not part of the drafting settings.")
   if (Object.hasOwn(patch, "approvedSources")) {
     if (!Array.isArray(patch.approvedSources) || patch.approvedSources.length > 100 || patch.approvedSources.some(value =>
       typeof value !== "string" || !normalizeApprovedSources([value]).length))

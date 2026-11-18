@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { LegalPlugin } from "../plugin/legal/policy"
 import { recordSessionAgent } from "../plugin/legal/session"
-import { DEFAULT_DRAFTING, LEGEND_MAX_LENGTH, normalizeLegend, normalizePreferences, readFirmDraftingPreferences, renderInstructions } from "../lib/drafting-preferences"
+import { DEFAULT_DRAFTING, LEGEND_MAX_LENGTH, draftingAutoModeEnabled, normalizeLegend, normalizePreferences, readFirmDraftingPreferences, renderInstructions } from "../lib/drafting-preferences"
 import { writeLeanPlan } from "../workflows/lean/plan"
 
 const previous = process.env.WORKSPACE_ROOT
@@ -209,7 +209,7 @@ test("invalid drafting field types and choices fall back to the same valid defau
     expect(renderInstructions(preferences, "explanation")).not.toContain("undefined")
   }
   for (const invalid of [null, false, 42, [], "unsupported"]) {
-    expect(normalizePreferences(invalid)).toEqual(DEFAULT_DRAFTING)
+    expect(normalizePreferences(invalid)).toEqual({ ...DEFAULT_DRAFTING, draftingAutoMode: false })
   }
 })
 
@@ -250,4 +250,23 @@ test("a legend is one capped line of the firm's own text, its script's format ch
   expect(normalizeLegend("x".repeat(LEGEND_MAX_LENGTH + 10))).toHaveLength(LEGEND_MAX_LENGTH)
   expect(normalizeLegend("محرمانه‌است")).toBe("محرمانه‌است")
   expect(normalizeLegend(null)).toBe("")
+})
+
+test("drafting Auto mode defaults off, takes only an explicit true, and never reaches model instructions", () => {
+  expect(DEFAULT_DRAFTING.draftingAutoMode).toBeUndefined()
+  expect(normalizePreferences(DEFAULT_DRAFTING).draftingAutoMode).toBe(false)
+  expect(normalizePreferences({}).draftingAutoMode).toBe(false)
+  expect(normalizePreferences({ draftingAutoMode: true }).draftingAutoMode).toBe(true)
+  for (const value of ["true", 1, null, {}]) expect(normalizePreferences({ draftingAutoMode: value }).draftingAutoMode).toBe(false)
+  const off = normalizePreferences({})
+  const on = normalizePreferences({ draftingAutoMode: true })
+  expect(renderInstructions(on)).toBe(renderInstructions(off))
+  expect(renderInstructions(on, "explanation")).toBe(renderInstructions(off, "explanation"))
+  expect(draftingAutoModeEnabled()).toBe(false)
+  mkdirSync(preferences, { recursive: true })
+  writeFileSync(path.join(preferences, "preferences.json"), JSON.stringify({ draftingAutoMode: true }))
+  expect(draftingAutoModeEnabled()).toBe(true)
+  expect(readFirmDraftingPreferences()).toBe(renderInstructions(on))
+  writeFileSync(path.join(preferences, "preferences.json"), JSON.stringify({ draftingAutoMode: "yes" }))
+  expect(draftingAutoModeEnabled()).toBe(false)
 })

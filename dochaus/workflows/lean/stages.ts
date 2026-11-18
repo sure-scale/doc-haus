@@ -17,7 +17,7 @@ import { READER_CHECK_CONTRACT } from "./reader-check"
 import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
 import { evidenceOutputValid } from "./evidence"
 import { currentResearchGaps, intakeDiscrepancy, researchOutputValid } from "./research"
-import { appliedDraftingPreferences, normalizeLegend, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
+import { appliedDraftingPreferences, draftingAutoModeEnabled, normalizeLegend, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { firmPracticeAreaContext } from "../../lib/practice-areas"
 import { pageFurniture, type FurnitureKind, type RequestedFurniture } from "../../lib/page-furniture"
 import { matterClient } from "../../lib/matter-client"
@@ -328,7 +328,8 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
     // Only with a client recorded on the matter, so a matter without one keeps its key.
     const client = matterClient(directory)
     // Intake reads the discrepancy record without the gaps a source supplies (intakeDiscrepancy).
-    return [...outlineInputs(directory, step), file(INSTRUCTIONS_FILE), { name: "discrepancy.json", bytes: intakeDiscrepancy(directory) }, ...(client ? [{ name: "matter-client", bytes: client }] : [])]
+    // Auto mode re-keys intake only when enabled, so an off installation keeps its key.
+    return [...outlineInputs(directory, step), file(INSTRUCTIONS_FILE), { name: "discrepancy.json", bytes: intakeDiscrepancy(directory) }, ...(client ? [{ name: "matter-client", bytes: client }] : []), ...(draftingAutoModeEnabled() ? [{ name: "drafting-auto-mode", bytes: "on" }] : [])]
   }
   // The act record reads the instructions, the sources and the approved research; it runs before the spine and reads no discrepancy record.
   if (step === "acts") return [...outlineInputs(directory, step), file("intake.json"), file("research.json"), file("research-review.json"), { name: "act-record-contract", bytes: ACT_RECORD_CONTRACT }]
