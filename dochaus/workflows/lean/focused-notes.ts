@@ -421,9 +421,9 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
         // checks through microtasks and starve native HTTP/timer callbacks.
         await new Promise<void>(resolve => setImmediate(resolve))
         if (!feedback.length) {
-          const documents = readLeanPlan(directory)?.documents ?? []
+          // The one authoritative document catalog (IDs, titles, roles) is the
+          // coverage prompt's own escaped tag; the packet carries no duplicate.
           const checking = () => ({ ...writing, text: [writing.text,
-            tagged("planned_dependency_documents", escapeTagOpeners(json(documents.map(({ id, title }) => ({ id, title }))))),
             ...dependencyContext(),
           ].join("\n\n") })
           // Evidence selection is separate from rewriting: inspect one actual
