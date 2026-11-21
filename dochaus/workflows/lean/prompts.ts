@@ -13,6 +13,7 @@ import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenanc
 import { escapeTagOpeners } from "../../lib/untrusted"
 import { readRepairRound, changesRepairSections, notesRepair } from "./repairs"
 import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings, reviewText } from "./review-findings"
+import { provisionalMarkerReviewText } from "./provisional-fact-markers"
 import { disclosableItems } from "./stages"
 import { QUESTION_KIND_CONTRACT, WORKING_DRAFT, isReviewStage, answeredQuestions, answeredQuestionsText, delegatedQuestions, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type StageID } from "./state"
 import { matterDatesBlock } from "./intake"
@@ -143,6 +144,9 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const operative = operativeDocument(plannedDocument(directory, document))
   const outline = tagged("document_outline", JSON.stringify(operative && withGrounds(directory, document, operative)))
   const preferenceScope = revisionPreferenceScope(directory, document)
+  // The source-fidelity review also carries the provisional marker duties, so
+  // an unmarked dependent passage is repaired while amendments still run.
+  const markerDuties = stage === "review-independent" ? provisionalMarkerReviewText(directory, document) : ""
   if (options.contextOnly) return [request, spineBlock, acting, answerBlock, sources, planned, composition, outline, preferenceScope, finished].filter(Boolean).join("\n\n")
   const sections: Partial<Record<StageID, string[]>> = {
     draft: options.outline ? [
@@ -204,6 +208,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
     review: [
       `This is a lean drafting run. Independently review the draft${named} below against the lawyer's request and the matter's sources.`,
       tagged("review_focus", isReviewStage(stage) ? [REVIEW_FOCUS[stage], ...(stage === "review-playbook" && reviewTemplate ? [TEMPLATE_FOCUS] : [])].join(" ") : ""),
+      ...(markerDuties ? [tagged("provisional_marker_duties", markerDuties)] : []),
       request, spineBlock, acting, answerBlock, sources, ...(stage === "review-playbook" ? [guidanceBlock(directory, document)] : []), planned, composition, outline, preferenceScope, finished, paragraphs,
       ...(stage === "review-wording" ? [draftingStyleWarningsBlock(directory, styleScopedRows(directory, document, readParagraphs(directory, document)))] : []),
       tagged("output_contract", [

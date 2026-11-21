@@ -11,7 +11,7 @@ import { coverageItems, planCoverageCurrent } from "./package-coverage"
 import { placementItems, planPlacementCurrent, SPINE_ATOMS } from "./spine-placement"
 import { readActRecord } from "./act-record"
 import { requestedFilesItems } from "./requested-files"
-import { PROVISIONAL_FACT_MARKER_CONTRACT, provisionalFactMarkerItems } from "./provisional-fact-markers"
+import { PROVISIONAL_FACT_MARKER_CONTRACT, provisionalFactMarkerItems, provisionalMarkerReviewText } from "./provisional-fact-markers"
 import { draftedDefaultItems } from "./drafted-defaults"
 import { READER_CHECK_CONTRACT } from "./reader-check"
 import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverables"
@@ -373,7 +373,9 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   const counterparty = existsSync(leanFile(directory, `${document}/counterparty.json`)) ? [at("counterparty.json")] : []
   // The guidance review's key carries its contract and guidance list, so the other reviews keep theirs.
   const guidance = stage === "review-playbook" ? [{ name: "guidance-review-contract", bytes: GUIDANCE_REVIEW_CONTRACT }, { name: "review-guidance", bytes: JSON.stringify(reviewGuidance(directory, document)) }] : []
-  if (isReviewStage(stage)) return [{ name: "playbook-selection", bytes: JSON.stringify(plannedDocument(directory, document)?.playbook_review ?? null) }, ...guidance, file("request.md"), at("paragraphs.json"), sources, finished, acting, scope, ...composed, ...dated]
+  // The source-fidelity review's key carries the rendered marker duties it is shown, so the other reviews keep theirs.
+  const markerDuties = stage === "review-independent" ? provisionalMarkerReviewText(directory, document) : ""
+  if (isReviewStage(stage)) return [{ name: "playbook-selection", bytes: JSON.stringify(plannedDocument(directory, document)?.playbook_review ?? null) }, ...guidance, ...(markerDuties ? [{ name: "provisional-fact-marker-duties", bytes: markerDuties }] : []), file("request.md"), at("paragraphs.json"), sources, finished, acting, scope, ...composed, ...dated]
   if (stage === "change-prepare") return [file("request.md"), entry, at("paragraphs.json"), at("change-plan.json"), answers, sources, finished, acting, scope, ...composed, ...dated, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
   if (stage === "change-review") return [...(repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-review-contract", bytes: "prepared-dependency-component-review-2-proposed-body" }] : []), { name: "review-contract", bytes: "phase-aware-owned-body-review-2" }, file("request.md"), entry, at("paragraphs.json"), at("changes.json"), at("paragraphs-projected.json"), at("change-plan.json"), at("change-preparation.json"), ...reviewStages(directory, document).map(stage => at(`${stage}.json`)), ...counterparty, answers, sources, finished, acting, scope, ...composed, ...dated, { name: "questions", bytes: keyedQuestions(directory) }, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
   if (stage === "changes" || stage === "change-plan") {
