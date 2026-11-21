@@ -372,6 +372,89 @@ test("one-to-many baseline mappings preserve every link within one combined depe
   }
 })
 
+test("exact-text selection resolves canonical spans in code; miscounted offsets remain rejected without clamping", () => {
+  const condition = "Acceptance remains conditional on the inspection date."
+  const filler = "Unrelated transport directions. ".repeat(500)
+  const target = "The custodian accepts the container."
+  const large: NotesBody = { ...body, current: [row("p222222222222", target), row("p333333333333", filler + condition)] }
+  const plan = notesEvidencePlan(packet(large, ["p222222222222", "p333333333333"]), { ownership: "one-point", bodies: [large] })
+  const inspection = plan.inspections.find(row => row.available.some(span => span.text.includes(condition)))!
+  // The selector supplies material wording only; code owns the exact offsets.
+  const checked = checkNotesInspection({ excerpts: [{ document: "d1", pid: "p333333333333", baseline: "current", text: condition, role: "qualification" }], limitation: "" }, inspection, [large])
+  expect(checked.issues).toEqual([])
+  expect(checked.value!.excerpts).toEqual([{ document: "d1", pid: "p333333333333", baseline: "current", start: filler.length, end: filler.length + condition.length, role: "qualification" }])
+  const targetInspection = plan.inspections.find(row => row.id === "d1:current:p222222222222:0")!
+  const targetChecked = checkNotesInspection({ excerpts: [{ document: "d1", pid: "p222222222222", baseline: "current", text: target, role: "target" }], limitation: "" }, targetInspection, [large])
+  expect(targetChecked.issues).toEqual([])
+  expect(targetChecked.value!.excerpts).toEqual([{ document: "d1", pid: "p222222222222", baseline: "current", start: 0, end: target.length, role: "target" }])
+  const others = plan.inspections.filter(row => row !== inspection && row !== targetInspection)
+    .map(row => checkNotesInspection({ excerpts: [], limitation: "No additional relevant evidence in this range." }, row, [large]).value!)
+  const owner = assembleNotesOwnerEvidence(plan, [checked.value!, targetChecked.value!, ...others], [large])
+  expect(owner).toContain(condition)
+  expect(owner).toContain(target)
+  expect(owner).not.toContain("Unrelated transport directions")
+  // The diagnosed failure mode stays a rejection: a miscounted end is never clamped.
+  const paragraphEnd = filler.length + condition.length
+  for (const end of [paragraphEnd + 1, paragraphEnd + 6]) {
+    const miscounted = checkNotesInspection({ excerpts: [{ document: "d1", pid: "p333333333333", baseline: "current", start: filler.length, end, role: "qualification" }], limitation: "" }, inspection, [large])
+    expect(miscounted.issues.join(" ")).toContain("excerpts[0].end")
+    expect(miscounted.value).toBeUndefined()
+  }
+})
+
+test("text quotes reject ambiguity, inexact wording and mixed shapes; target confinement and the length cap still apply", () => {
+  const repeated = "The seal requires inspection. The seal requires inspection. Final approval follows."
+  const filler = "Unrelated transport directions. ".repeat(500)
+  const far = "The final condition still applies."
+  const long = "x".repeat(4_001)
+  const large: NotesBody = { ...body, current: [row("p222222222222", filler + far), row("p333333333333", repeated), row("p444444444444", long)] }
+  const plan = notesEvidencePlan(packet(large, ["p222222222222", "p333333333333", "p444444444444"]), { ownership: "one-point", bodies: [large] })
+  const inspection = plan.inspections.find(row => row.available.some(span => span.text.includes("Final approval follows")))!
+  const quote = (text: string) => ({ document: "d1", pid: "p333333333333", baseline: "current", text, role: "qualification" })
+  const check = (candidate: unknown) => checkNotesInspection({ excerpts: [candidate], limitation: "" }, inspection, [large]).issues.join(" ")
+  expect(check(quote("The seal requires inspection."))).toContain("more than once")
+  const unique = "The seal requires inspection. Final approval follows."
+  const uniqueChecked = checkNotesInspection({ excerpts: [quote(unique)], limitation: "" }, inspection, [large])
+  expect(uniqueChecked.issues).toEqual([])
+  expect(uniqueChecked.value!.excerpts[0]).toMatchObject({ start: repeated.indexOf(unique), end: repeated.length })
+  expect(check(quote("The  seal requires inspection."))).toContain("not an exact substring")
+  expect(check(quote("The seal needs inspection."))).toContain("not an exact substring")
+  expect(check(quote(""))).toContain("excerpts[0].text")
+  expect(check({ ...quote("Final approval follows."), start: 0, end: 10 })).toContain("not both")
+  expect(check({ document: "d1", pid: "p333333333333", baseline: "current", role: "qualification" })).toContain("excerpts[0]")
+  expect(check({ ...quote("Final approval follows."), text: 42 })).toContain("excerpts[0].text")
+  // A quote resolving outside the assigned slice stays target-confined; qualification may cross ranges.
+  const sliced = plan.inspections.find(row => row.id === "d1:current:p222222222222:0")!
+  const farQuote = { document: "d1", pid: "p222222222222", baseline: "current", text: far, role: "target" }
+  expect(checkNotesInspection({ excerpts: [farQuote], limitation: "" }, sliced, [large]).issues.join(" ")).toContain("outside the assigned available target ranges")
+  const farChecked = checkNotesInspection({ excerpts: [{ ...farQuote, role: "qualification" }], limitation: "" }, sliced, [large])
+  expect(farChecked.issues).toEqual([])
+  expect(farChecked.value!.excerpts[0]).toMatchObject({ start: filler.length, end: filler.length + far.length })
+  const longInspection = plan.inspections.find(row => row.id === "d1:current:p444444444444:0")!
+  expect(checkNotesInspection({ excerpts: [{ document: "d1", pid: "p444444444444", baseline: "current", text: long, role: "qualification" }], limitation: "" }, longInspection, [large]).issues.join(" ")).toContain("at most 4000")
+})
+
+test("without trusted bodies, text quotes resolve within the supplied available span only", () => {
+  const condition = "Acceptance remains conditional on the inspection date."
+  const directions = Array.from({ length: 500 }, (_, index) => `Direction ${index} for unrelated transport.`).join(" ")
+  const large: NotesBody = { ...body, current: [row("p222222222222", "The custodian accepts the container."), row("p333333333333", `${directions} ${condition}`)] }
+  const plan = notesEvidencePlan(packet(large, ["p222222222222", "p333333333333"]), { ownership: "one-point" })
+  const inspection = plan.inspections.find(row => row.available.some(span => span.text.includes(condition)))!
+  const checked = checkNotesInspection({ excerpts: [{ document: "d1", pid: "p333333333333", baseline: "current", text: condition, role: "qualification" }], limitation: "" }, inspection)
+  expect(checked.issues).toEqual([])
+  expect(checked.value!.excerpts[0]).toMatchObject({ start: directions.length + 1, end: directions.length + 1 + condition.length })
+  // Wording outside this supplied span cannot resolve without a trusted body; no cross-slice guessing.
+  expect(checkNotesInspection({ excerpts: [{ document: "d1", pid: "p333333333333", baseline: "current", text: "Direction 0 for unrelated transport.", role: "qualification" }], limitation: "" }, inspection).issues.join(" ")).toContain("not an exact substring")
+  const sliced = plan.inspections.find(row => row.id === "d1:current:p333333333333:4000")!
+  const line = "Direction 137 for unrelated transport."
+  const at = `${directions} ${condition}`.indexOf(line)
+  expect(at).toBeGreaterThanOrEqual(4_000)
+  expect(at + line.length).toBeLessThanOrEqual(8_000)
+  const slicedChecked = checkNotesInspection({ excerpts: [{ document: "d1", pid: "p333333333333", baseline: "current", text: line, role: "qualification" }], limitation: "" }, sliced)
+  expect(slicedChecked.issues).toEqual([])
+  expect(slicedChecked.value!.excerpts[0]).toMatchObject({ start: at, end: at + line.length })
+})
+
 test("mapped current siblings retain their qualification even when selected as separate targets; unknown indices stay explicit", () => {
   const large: NotesBody = { ...body, current: [row("p222222222222", "Handling detail. ".repeat(1_000)), body.current[1]!] }
   const text = packet(large, ["p222222222222", "p333333333333"])
