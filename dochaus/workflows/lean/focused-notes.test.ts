@@ -129,6 +129,92 @@ test("an unsupported section retries alone and an unchanged resume reuses every 
   expect(notes).not.toContain("Remove the archive label")
 })
 
+test("a retry presents the exact rejected prose as the correction base", async () => {
+  const directory = noteMatter(OPEN_POINTS)
+  const qualification = "The seal design is not supplied; the custodian must supply it before the handover."
+  const rejected = `${qualification} The instruction is "Remove the archive label." [source: ${SOURCE}].`
+  const corrected = "The seal design remains for the custodian to supply before the handover."
+  const model = scriptedSections(input => input.initial.includes(OPEN_POINTS[1]!.detail) && input.attempt === 0 ? rejected : corrected)
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  const retried = model.prompts.filter(input => input.initial.includes(OPEN_POINTS[1]!.detail))
+  expect(retried).toHaveLength(2)
+  expect(retried[0]!.text).toContain("<section_kind>")
+  expect(retried[0]!.text).not.toContain("<rejected_prose>")
+  expect(retried[1]!.text).toContain("Correct only this section's errors")
+  expect(retried[1]!.text).toContain(`<rejected_prose>\n${rejected}\n</rejected_prose>`)
+  expect(retried[1]!.text).toContain("those words are not in that document")
+  for (const session of new Set(model.prompts.filter(input => !input.initial.includes(OPEN_POINTS[1]!.detail)).map(input => input.sessionID)))
+    expect(model.prompts.filter(input => input.sessionID === session)).toHaveLength(1)
+  const notes = readLeanText(directory, "drafting-notes.md")!
+  expect(notes).toContain(corrected)
+  expect(notes).not.toContain("Remove the archive label")
+})
+
+test("a coverage rewrite returns the rejected prose with the reconciled missing-content rule", async () => {
+  const directory = noteMatter()
+  const rejected = "The handover note is ready for the custodian."
+  const corrected = "The custodian must keep the archive label attached during the handover."
+  const model = scriptedSections(
+    input => input.initial.includes("<section_kind>\npassage\n") && input.attempt === 0 ? rejected : corrected,
+    text => JSON.stringify(text.includes(corrected)
+      ? { status: "pass", reason: "The synthetic section substantively explains its assigned point." }
+      : { status: "rewrite", reason: "The explanation omits the stated label instruction." }),
+  )
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  const retried = model.prompts.filter(input => input.initial.includes("<section_kind>\npassage\n"))
+  expect(retried).toHaveLength(2)
+  expect(retried[1]!.text).toContain(`<rejected_prose>\n${rejected}\n</rejected_prose>`)
+  expect(retried[1]!.text).toContain("The explanation omits the stated label instruction.")
+  expect(retried[1]!.text).toContain("the missing explanation must be written in this reply, not referenced from earlier text")
+  expect(retried[1]!.text).not.toContain("earlier or interrupted text cannot supply missing content")
+  expect(model.verifications.filter(text => text.includes(`<proposed_prose>\n${rejected}\n</proposed_prose>`))).toHaveLength(1)
+  expect(readLeanText(directory, "drafting-notes.md")).toContain(corrected)
+})
+
+test("a correction dropping a material qualification is rejected and the latest rejection becomes the base", async () => {
+  const directory = noteMatter()
+  const qualification = "The label colour is not supplied; the custodian must confirm it before the handover."
+  const first = `${qualification} The instruction is "Remove the archive label." [source: ${SOURCE}].`
+  const dropped = "The custodian must keep the archive label attached during the handover."
+  const corrected = `${qualification} ${dropped}`
+  const model = scriptedSections(
+    input => {
+      if (!input.initial.includes("<section_kind>\npassage\n")) return corrected
+      if (input.attempt === 0) return first
+      if (input.attempt === 1) return dropped
+      return corrected
+    },
+    text => JSON.stringify(text.includes(qualification)
+      ? { status: "pass", reason: "The synthetic section substantively explains its assigned point." }
+      : { status: "rewrite", reason: "The explanation omits the unresolved label-colour qualification." }),
+  )
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  const retried = model.prompts.filter(input => input.initial.includes("<section_kind>\npassage\n"))
+  expect(retried).toHaveLength(3)
+  expect(retried[1]!.text).toContain(`<rejected_prose>\n${first}\n</rejected_prose>`)
+  expect(retried[1]!.text).toContain("those words are not in that document")
+  expect(retried[2]!.text).toContain(`<rejected_prose>\n${dropped}\n</rejected_prose>`)
+  expect(retried[2]!.text).toContain("The explanation omits the unresolved label-colour qualification.")
+  expect(retried[2]!.text).not.toContain("Remove the archive label")
+  expect(model.verifications.filter(text => text.includes(`<proposed_prose>\n${dropped}\n</proposed_prose>`))).toHaveLength(1)
+  const notes = readLeanText(directory, "drafting-notes.md")!
+  expect(notes).toContain(qualification)
+  expect(notes).toContain(corrected)
+})
+
+test("an empty rejected reply supplies no correction base", async () => {
+  const directory = noteMatter(OPEN_POINTS)
+  const model = scriptedSections(input => input.initial.includes(OPEN_POINTS[1]!.detail) && input.attempt === 0
+    ? ""
+    : "The seal design remains for the custodian to supply.")
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  const retried = model.prompts.filter(input => input.initial.includes(OPEN_POINTS[1]!.detail))
+  expect(retried).toHaveLength(2)
+  expect(retried[1]!.text).toContain("Correct only this section's errors")
+  expect(retried[1]!.text).toContain("This notes section is empty")
+  expect(retried[1]!.text).not.toContain("<rejected_prose>")
+})
+
 test("a section exhausting its retries preserves accepted neighbors for recovery", async () => {
   const directory = noteMatter(OPEN_POINTS)
   const broken = scriptedSections(input => input.initial.includes(OPEN_POINTS[1]!.detail)

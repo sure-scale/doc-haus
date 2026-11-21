@@ -405,12 +405,25 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
       sessions.push(sessionID)
       progress({ session_id: sessions[0], session_ids: [...sessions] })
       let feedback: string[] = []
+      let rejected = ""
       const dependencies: NotesDependencyObservation[] = []
       const dependencyContext = () => notesDependencyEvidence(dependencies, bodies).map(row => tagged(row.name, escapeTagOpeners(row.text)))
       for (let attempt = 0; attempt <= LEAN_MAX_RETRIES; attempt++) {
         appendLeanEvent(directory, { stage: "finalize", step: input.id, event: attempt ? "retry" : "model_call", attempt, session_id: sessionID })
         const asked = performance.now()
-        const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: attempt ? `Correct only this section's errors, retaining its original assignment and supported explanation. Return this section only.\n${feedback.map(issue => `- ${issue}`).join("\n")}` : writing.text })
+        // A retry corrects the exact rejected prose instead of regenerating the
+        // section from the assignment: unaffected wording is carried unchanged
+        // and only the findings change. The unchanged checkers still verify the
+        // complete reply, so dropped or altered content is rejected as before.
+        const text = attempt
+          ? [
+              "Correct only this section's errors, retaining its original assignment and supported explanation. The rejected prose below is the correction base: carry its unaffected wording unchanged and correct only what the findings identify. Return the complete corrected section, and this section only.",
+              ...(rejected.trim() ? [tagged("rejected_prose", escapeTagOpeners(rejected))] : []),
+              feedback.map(issue => `- ${issue}`).join("\n"),
+            ].join("\n\n")
+          : writing.text
+        const reply = await deps.sessions.prompt({ directory, sessionID, agent, text })
+        rejected = reply
         const answered = performance.now()
         feedback = checkFocusedNotesSection(directory, writing, reply, attempt >= LEAN_MAX_RETRIES)
         calls.count++
@@ -441,7 +454,7 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
             if (coverage.status === "failed") { failures.push(coverage.reason); return }
             if (coverage.status === "pass") break
             if (coverage.status === "rewrite") {
-              feedback = [`This prose does not substantively explain its assigned point: ${coverage.reason} Return the complete substantive section; earlier or interrupted text cannot supply missing content.`, ...dependencyContext()]
+              feedback = [`This prose does not substantively explain its assigned point: ${coverage.reason} Return the complete substantive section; the missing explanation must be written in this reply, not referenced from earlier text.`, ...dependencyContext()]
               progress({ feedback })
               break
             }
