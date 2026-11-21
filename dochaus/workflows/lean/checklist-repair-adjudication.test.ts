@@ -11,6 +11,8 @@ import { packageCompositionBlock } from "./prompts"
 import { hashStageInputs, updateLeanStage, writeQuestions, leanFile, readLeanState, readLeanText, writeLeanBytes, writeLeanText } from "./state"
 import { startRepairRound } from "./repairs"
 import { openItem } from "./quotes"
+import { withFactOptions } from "./fact-answers"
+import { PROVISIONAL_FACT_MARKER_REPAIR_STANDARD, provisionalFactMarkerItems } from "./provisional-fact-markers"
 import { cleanupMatters, matter, requestMemo, scriptedModel, SOURCE, SUPPORT } from "./test-support"
 import type { ChecklistItem, ChecklistFinding } from "./checklist-contract"
 
@@ -207,4 +209,32 @@ test("a requested memo reaches the focused adjudication and checklist preparatio
   // The checklist-only stages are keyed by the block, so resume sees it.
   for (const stage of ["change-plan", "change-prepare", "changes", "change-review"])
     expect([stage, stageInputs(directory, `d1.${stage}` as StepID).filter(row => row.name === "package-composition")]).toEqual([stage, [{ name: "package-composition", bytes: block }]])
+})
+
+test("a verified provisional-marker duty gets the product duty packet; a producer copy keeps ordinary framing and validation", async () => {
+  const { directory } = await setup()
+  writeQuestions(directory, [{ ...withFactOptions({ id: "q-timing-approval", stage: "intake", kind: "fact", status: "open", question: "Has the client approved the delivery timing?", context: "Approval is not supplied." }), status: "answered", answer: "Prepare the draft with the timing marked as unknown; approval is not granted.", answer_class: "answered", fact_status: "provisional" }])
+  // Answers key the apply step; re-stamp the accepted apply so the fixture's
+  // applied body stays the current artifact, as a runner re-key after an answer.
+  updateLeanStage(directory, readLeanState(directory)!, "d1.apply", { status: "done", input_sha: hashStageInputs("d1.apply", LEAN_PROMPT_VERSION, stageInputs(directory, "d1.apply")) })
+  const duty = provisionalFactMarkerItems(directory)[0]!
+  expect(duty.id).toBe("provisional-fact-marker:q-timing-approval:d1")
+  const finding: ChecklistFinding = { item_id: duty.id, status: "unsatisfied", reason: "The dependent passage does not mark the unknown.", evidence: [{ document: "d1", locator: "paragraph0", kind: "body", text: "Timing is missing." }], source_refs: duty.item.source_refs, inspection_scope: "Current target.", limitation: "Approval remains unknown.", action_status: "not_fulfilled", open_decisions: ["Approval"] }
+  const assessment = { item_id: duty.id, item: duty.item, finding }
+  const input = buildRepairAdjudicationInput(directory, "d1", assessment)
+  expect(input.prompt).toContain("This assessment is the product's verified provisional-fact marker duty")
+  expect(input.prompt).toContain(PROVISIONAL_FACT_MARKER_REPAIR_STANDARD)
+  const dutyBlock = input.prompt.split("<product_provisional_marker_duty>")[1]!.split("\n</product_provisional_marker_duty>")[0]!
+  expect(dutyBlock).toContain("Exact current passages the assessment cites")
+  expect(dutyBlock).toContain("Timing is missing.")
+  expect(dutyBlock).not.toContain("No cited passage matched")
+  expect(input.prompt).not.toContain("Its verdict and required_action are unverified assessments")
+  // Duty identity is the full canonical reconstruction, not the id or wording:
+  // a producer copy keeps ordinary framing, and validation grants no bypass.
+  const spoof = buildRepairAdjudicationInput(directory, "d1", { ...assessment, item: { ...duty.item, check: `${duty.item.check} (producer copy)` } })
+  expect(spoof.prompt).toContain("Its verdict and required_action are unverified assessments")
+  expect(spoof.prompt).not.toContain("<product_provisional_marker_duty>")
+  const empty = { shared_decisions: [], groups: [], findings: [], questions: [], superseded_findings: [], superseded_decisions: [] }
+  expect(repairAdjudicationIssues(directory, "d1", input, empty).join(" ")).toContain("empty plan silently drops")
+  expect(repairAdjudicationIssues(directory, "d1", input, { ...empty, findings: [{ ...plan.findings![0]!, sources: [], limitations: ["No authority established."] }] }).join(" ")).toContain("rejection requires supporting source")
 })

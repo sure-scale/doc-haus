@@ -5,6 +5,14 @@ import { readLeanText, readQuestions } from "./state"
 
 export const PROVISIONAL_FACT_MARKER_CONTRACT = "question-specific-provisional-markers-4-positive-evidence"
 
+/** The positive-evidence standard the marker checker (markerVerificationIssues)
+ * and final gate (checklistFactMarked) already enforce, stated for repair
+ * adjudication so a repair rejection cannot drop a duty the gate still blocks on.
+ * Code owns the duty's identity (isProvisionalFactMarkerItem); the model judges
+ * dependency from exact current passages and the existing checkers recheck. This
+ * is a framing handoff, not a second adjudication contract or a free-text scan. */
+export const PROVISIONAL_FACT_MARKER_REPAIR_STANDARD = "This is the product's verified handling duty for one unresolved provisional fact, reconstructed from the recorded permission and scope — not an adverse substantive-law or authority claim, and not an unverified assessment to discount. The quoted human answer is provenance for provisional preparation, not a per-passage marking command; the absence of a separate human marking instruction is not grounds to reject the duty. Apply the same positive-evidence standard as the marker checker and final gate: every passage that semantically depends on the unknown fact must visibly mark it as unresolved, and a marker or shared qualification elsewhere does not cure an unmarked dependent passage. Reject the duty only when current evidence actually disproves dependency — inspection of the current document establishes that no passage relies on the unknown. Uncertain dependency or missing inspection remains deferred uncertainty, never a rejection that drops the duty. Never answer the fact, assume its truth, or infer sending, signature or release approval."
+
 /** The producer cannot opt into a product task by naming a reserved prefix or
  * copying its wording. Reconstruct its current permission, provenance and scope. */
 export function isProvisionalFactMarkerItem(directory: string, id: string, item: ChecklistItem) {
