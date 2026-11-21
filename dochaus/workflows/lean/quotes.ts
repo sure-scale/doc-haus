@@ -1,10 +1,10 @@
 import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { boundPlaybook } from "../../lib/playbook-source"
 import { approvedResearch, researchSource } from "./research"
-import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearSpan, nearestGap, normalize, normalizeWithMap, quotePlaces, verifyQuote } from "../../lib/quote-verify"
+import { openLegalDbForRead } from "../../lib/legal-db"
 import { runPosture, type DocID } from "./plan"
 import { confirmationDocument, INSTRUCTIONS_FILE } from "./instructions"
 import { leanUserUpdates } from "./requests"
@@ -177,7 +177,7 @@ function readMatterSourceIDs(directory: string): string[] {
   const playbook = boundPlaybook(directory)
   const policy = playbook?.text ? [playbook.source_id] : []
   if (!existsSync(file)) return policy
-  const db = new Database(file, { readonly: true })
+  const db = openLegalDbForRead(file)
   try {
     return (db.query("SELECT DISTINCT doc_name FROM chunks ORDER BY doc_name").all() as { doc_name: string }[])
       .map(row => row.doc_name).concat(policy)
@@ -197,7 +197,7 @@ function readMatterSourceBasis(directory: string) {
   const file = path.join(directory, ".dochaus", "legal.db")
   const playbook = boundPlaybook(directory)
   if (!existsSync(file)) return playbook ? shortHash(JSON.stringify(playbook), 40) : ""
-  const db = new Database(file, { readonly: true })
+  const db = openLegalDbForRead(file)
   try {
     const sources = db.query("SELECT doc_name, text FROM chunks ORDER BY doc_name, rowid").all()
     // Creating an empty index during delivery introduces no new evidence.

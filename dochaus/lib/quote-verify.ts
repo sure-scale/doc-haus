@@ -6,10 +6,11 @@
 // cross-boundary) lives in one place.
 
 import { boundPlaybook } from "./playbook-source"
-import { Database } from "bun:sqlite"
+import type { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { chunkText } from "./chunk-text"
+import { openLegalDbForRead } from "./legal-db"
 
 export const SHORT_QUOTE = 20
 export const MAX_RENDERED_HITS = 5
@@ -347,7 +348,7 @@ function verifyIndexedQuote(args: { directory: string; quote: string; document?:
   const needle = normalize(args.quote)
   if (!needle) return { found: false, hits: [], reason: "empty-quote" }
 
-  const db = new Database(dbPath, { readonly: true })
+  const db = openLegalDbForRead(dbPath)
   try {
     const docNames = (
       args.document
@@ -654,7 +655,7 @@ function documentTexts(directory: string, document: string): string[] {
 function indexedText(directory: string, document: string): string[] {
   const dbPath = path.join(directory, ".dochaus", "legal.db")
   if (!existsSync(dbPath)) return []
-  const db = new Database(dbPath, { readonly: true })
+  const db = openLegalDbForRead(dbPath)
   try {
     const chunks = db
       .query("SELECT section, text, char_start, char_end FROM chunks WHERE doc_name = ? ORDER BY char_start, rowid")

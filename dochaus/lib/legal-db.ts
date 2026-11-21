@@ -3,13 +3,16 @@ import { Database } from "bun:sqlite"
 import { existsSync, mkdirSync, realpathSync } from "node:fs"
 import path from "node:path"
 
-// How long an engine write to legal.db waits for another connection's write
-// lock. The ingest service holds that lock while it commits an upload or a
-// startup backfill; it runs in its own process and finishes while this one
-// waits, so a short wait turns an at-once SQLITE_BUSY into a write. bun:sqlite
-// waits synchronously and blocks this process meanwhile, so the wait stays
-// short and a longer commit still fails as SQLITE_BUSY.
-const WRITE_BUSY_TIMEOUT_MS = 2000
+// How long a legal.db connection waits for another connection's lock. The
+// ingest service holds the write lock while it commits an upload or a startup
+// backfill; it runs in its own process and finishes while this one waits, so a
+// short wait turns an at-once SQLITE_BUSY into a write. Reads need the same
+// wait: when the last connection across processes closes, SQLite checkpoints
+// and removes the WAL under an exclusive lock, and a concurrent read-only
+// open's first query meets that moment even with no writer committing.
+// bun:sqlite waits synchronously and blocks this process meanwhile, so the
+// wait stays short and a longer hold still fails as SQLITE_BUSY.
+const BUSY_TIMEOUT_MS = 2000
 
 /** A read-write connection to a matter's legal.db for the engine's own rows
  * (redlines, redactions, key dates). */
@@ -17,8 +20,19 @@ export function openLegalDbForWrite(matterDir: string) {
   const dir = path.join(matterDir, ".dochaus")
   mkdirSync(dir, { recursive: true })
   return prepared(new Database(path.join(dir, "legal.db")), (db) => {
-    db.run(`PRAGMA busy_timeout = ${WRITE_BUSY_TIMEOUT_MS}`)
+    db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`)
     db.run("PRAGMA journal_mode = WAL")
+  })
+}
+
+/** A read-only connection to a matter's legal.db file, with the same bounded
+ * lock wait as the write opener: bun:sqlite's default busy_timeout is 0, so a
+ * read whose first query meets another connection's exclusive moment (the
+ * last-close WAL checkpoint, an ingest commit) fails at once as "database is
+ * locked" instead of waiting it out. Takes the db file path; never creates. */
+export function openLegalDbForRead(file: string) {
+  return prepared(new Database(file, { readonly: true }), (db) => {
+    db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`)
   })
 }
 

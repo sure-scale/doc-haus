@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { listKeyDates, recordKeyDate } from "./key-dates"
 import { listRedactions, recordRedaction } from "./redactions"
-import { openLegalDbForWrite } from "./legal-db"
+import { openLegalDbForRead, openLegalDbForWrite } from "./legal-db"
 import { pendingRedlinesForDoc, recordRedline } from "./redlines"
 
 // The engine's legal.db writers against a write lock held by another process,
@@ -172,3 +172,53 @@ test("a failed redaction or key-date write closes its connection", () => {
   expect(listRedactions(directory)).toEqual([])
   expect(listKeyDates(directory)).toEqual([])
 })
+
+// Another process holds a reader-blocking exclusive lock briefly. In WAL the
+// production case is the last-close checkpoint/unlink moment (proven by an
+// open/close stress repro); exclusive locking mode holds the same kind of
+// exclusive hold deterministically so the wait contract is testable.
+async function readLockedBriefly(directory: string) {
+  const holder = Bun.spawn(
+    [
+      process.execPath,
+      "-e",
+      `const { Database } = require("bun:sqlite")
+      const db = new Database(${JSON.stringify(path.join(directory, ".dochaus", "legal.db"))})
+      db.run("PRAGMA locking_mode = EXCLUSIVE")
+      db.run("BEGIN IMMEDIATE")
+      db.run("INSERT INTO ingest_rows DEFAULT VALUES")
+      console.log("locked")
+      setTimeout(() => { db.run("COMMIT"); db.close() }, 300)`,
+    ],
+    { stdout: "pipe" },
+  )
+  const reader = holder.stdout.getReader()
+  expect(new TextDecoder().decode((await reader.read()).value)).toContain("locked")
+  reader.releaseLock()
+  return holder
+}
+
+test("a legal.db read waits out another process's brief exclusive hold instead of failing at once", async () => {
+  const directory = matter()
+  const file = path.join(directory, ".dochaus", "legal.db")
+  const holder = await readLockedBriefly(directory)
+  try {
+    // bun:sqlite's default busy_timeout is 0: the first query fails at once.
+    const raw = new Database(file, { readonly: true })
+    try {
+      expect(() => raw.query("SELECT 1 FROM ingest_rows").get()).toThrow("database is locked")
+    } finally {
+      raw.close()
+    }
+    // The shared read opener waits and reads once the holder commits.
+    const db = openLegalDbForRead(file)
+    try {
+      expect(db.query("SELECT count(*) AS n FROM ingest_rows").get()).toEqual({ n: 1 })
+    } finally {
+      db.close()
+    }
+  } finally {
+    holder.kill()
+    await holder.exited
+  }
+}, 30_000)
