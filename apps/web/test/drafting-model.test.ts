@@ -429,6 +429,78 @@ test("a combined file belongs to the exact body and notes ingest names, never to
   expect(isLeanDraftingStatus({ ...status, combined_output: { name: "Supply note", file: "Supply note.docx" } })).toBe(false)
 })
 
+/** A completed combined run whose plan names an authored memo document (d2,
+ * "Cover memo"): the memo inside the combined file is that document's
+ * registered body, which ingest reports under `notes` (combinedParts), while
+ * the drafting notes are delivered as their own row. `file`/`saved` name the
+ * combined file as in memoRun; `rows` adds further summary rows before it. */
+function authoredMemoRun({ file = "Supply note.docx", saved = file, rows: more = [] }: { file?: string; saved?: string | null; rows?: LeanDocument[] } = {}) {
+  const [body, redline, ...notes] = completed.documents.documents
+  const memoRows: LeanDocument[] = [
+    { kind: "body", document: "d2", title: "Cover memo", path: ".dochaus/lean/d2/body-applied.docx", sha256: "e".repeat(64), deliverable: "Cover memo.docx" },
+    { kind: "redline", document: "d2", title: "Cover memo", path: ".dochaus/lean/d2/redline.docx", sha256: "f".repeat(64), deliverable: "Cover memo - redline.docx" },
+  ]
+  const savedRow: LeanDocument[] = saved ? [{ kind: "combined", document: "d1", title: "Supply note", path: saved, sha256: "c".repeat(64), deliverable: saved }] : []
+  return lean({
+    ...completed,
+    memo: "cover memo",
+    plan: { documents: [{ id: "d1", title: "Supply note", purpose: "" }, { id: "d2", title: "Cover memo", purpose: "" }] },
+    documents: { ...completed.documents, documents: [{ ...body!, deliverable: "Supply note - clean.docx" }, redline!, ...memoRows, ...notes, ...more, ...savedRow] },
+    combined_output: { document: "d1", name: "Supply note", file, body: "Supply note - clean.docx", notes: "Cover memo.docx" },
+  })
+}
+
+const authoredDraft: DraftedOutput = { name: "Supply note - clean.docx", role: "draft" }
+const authoredRedline: DraftedOutput = { name: "Supply note - redline.docx", role: "redline" }
+const authoredMemo: DraftedOutput = { name: "Cover memo.docx", role: "draft" }
+const authoredMemoRedline: DraftedOutput = { name: "Cover memo - redline.docx", role: "redline" }
+const authoredNotes: DraftedOutput = { name: "Supply note - drafting notes.docx", role: "notes" }
+const authoredNames = ["Supply note - clean.docx", "Supply note - redline.docx", "Cover memo.docx", "Cover memo - redline.docx", "Supply note - drafting notes.docx", "Supply note.docx"]
+
+test("a combined file whose memo part is the authored memo body is the run's current combined file", () => {
+  const status = authoredMemoRun()
+  const groups: DraftedGroup[] = [
+    { main: authoredDraft, extras: [authoredRedline], combined: "Supply note.docx" },
+    { main: authoredMemo, extras: [authoredMemoRedline] },
+    { main: authoredNotes, extras: [] },
+  ]
+  expect(draftedGroups(status)).toStrictEqual(groups)
+  expect(deliverableGroups(authoredNames, status)).toStrictEqual(groups)
+  // The saved file is the current combined one, never an earlier one, while its parts are registered.
+  expect(deliverableGroups(authoredNames, status).flatMap((group) => [group.main, ...group.extras]).filter((output) => output.role === "earlier_combined")).toEqual([])
+  // Its draft no longer in the matter: the saved file still leads a row of its own as the current combined one.
+  const withoutDraft = deliverableGroups(authoredNames.filter((name) => name !== "Supply note - clean.docx" && name !== "Supply note - redline.docx"), status)
+  expect(withoutDraft[0]).toStrictEqual({ main: { name: "Supply note.docx", role: "combined" }, extras: [] })
+
+  // Only the exact reported names, of the reported document and a part's kind, carry the file.
+  const reportedAs = (output: Partial<NonNullable<LeanDraftingStatus["combined_output"]>>) =>
+    draftedGroups(lean({ ...status, combined_output: { ...status.combined_output!, ...output } })).some((group) => group.combined)
+  expect(reportedAs({})).toBe(true)
+  expect(reportedAs({ notes: "Cover memo (2).docx" })).toBe(false)
+  expect(reportedAs({ notes: "cover memo.docx" })).toBe(false)
+  expect(reportedAs({ notes: "Cover memo - redline.docx" })).toBe(false)
+  expect(reportedAs({ body: "Supply note - clean (2).docx" })).toBe(false)
+  expect(reportedAs({ document: "d2" })).toBe(false)
+  // The memo body dropped from the summary leaves the file unofferable; the saved file then reads as an earlier one.
+  const dropped = lean({ ...status, documents: { ...status.documents!, documents: status.documents!.documents.filter((row) => !(row.kind === "body" && row.document === "d2")) } })
+  expect(draftedGroups(dropped).some((group) => group.combined)).toBe(false)
+  expect(deliverableGroups(authoredNames, dropped).flatMap((group) => [group.main, ...group.extras]).find((output) => output.name === "Supply note.docx")?.role).toBe("earlier_combined")
+})
+
+test("an authored-memo combined file keeps the current file on its draft and an earlier kept file beside it", () => {
+  // The lawyer kept changes in the earlier combined file under the requested name; this run's took "(2)".
+  const earlier: LeanDocument = { kind: "combined", document: "d1", title: "Supply note", path: "Supply note.docx", sha256: "b".repeat(64), deliverable: "Supply note.docx" }
+  const status = authoredMemoRun({ file: "Supply note (2).docx", rows: [earlier] })
+  const groups: DraftedGroup[] = [
+    { main: authoredDraft, extras: [authoredRedline], combined: "Supply note (2).docx" },
+    { main: authoredMemo, extras: [authoredMemoRedline] },
+    { main: authoredNotes, extras: [] },
+    { main: { name: "Supply note.docx", role: "earlier_combined" }, extras: [] },
+  ]
+  expect(draftedGroups(status)).toStrictEqual(groups)
+  expect(deliverableGroups([...authoredNames, "Supply note (2).docx"], status)).toStrictEqual(groups)
+})
+
 const resultDownload = (name: string) => `<a href="${documentDownloadUrl("m1", name)}" download="${name}"`
 const resultCard = (status: LeanDraftingStatus) => renderToStaticMarkup(createElement(ResultCard, { status, matterId: "m1", onViewDocument: () => {} }))
 const resultPage = (html: string) => html.slice(html.indexOf('<div class="result-document">'), html.indexOf('<ul class="result-stack"'))

@@ -183,9 +183,11 @@ export type LeanDraftingStatus = {
    * document is delivered as: the requested memo, then the body. `document` is
    * the planned document's id, and `body` and `notes` the exact names its two
    * parts are registered under (the body as "<name> - clean" or its next free
-   * name). Ingest reports it only once both parts are delivered; the file is
-   * saved in the matter at delivery and rebuilt when a change is accepted into
-   * a part. Null otherwise, absent from an older ingest. */
+   * name; `notes` names the memo part — the plan's authored memo document's
+   * body, or the drafting notes for a legacy plan). Ingest reports it only once
+   * both parts are delivered; the file is saved in the matter at delivery and
+   * rebuilt when a change is accepted into a part. Null otherwise, absent from
+   * an older ingest. */
   combined_output?: { document: string; name: string; file: string; body: string; notes: string } | null
   /** The lawyer's drafting request as the run recorded it. */
   request?: string | null
