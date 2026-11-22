@@ -9,12 +9,13 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 // rebuilt from them after each change and never split back. Paragraph pointers
 // are kept, except that a memo pointer the body already uses gets a fresh one.
 //
-// The memo is the registered notes .docx itself, spliced in, not re-rendered
-// from markdown. The notes may carry accepted Word changes and addenda that
-// exist only in that file, and the Docxodus projection is lossy as a markdown
-// source (block quotes lose their style; a nested bullet under a numbered item
-// comes back as a plain "o ..." paragraph). The body package stays as it was:
-// its styles, numbering, headers, footers and other parts.
+// The memo is the registered memo part itself, spliced in, not re-rendered
+// from markdown: the plan's authored memo document when it names one, else the
+// notes .docx (a legacy plan). That part may carry accepted Word changes and
+// addenda that exist only in that file, and the Docxodus projection is lossy as
+// a markdown source (block quotes lose their style; a nested bullet under a
+// numbered item comes back as a plain "o ..." paragraph). The body package
+// stays as it was: its styles, numbering, headers, footers and other parts.
 //
 // A memo style is reused only when the body defines it identically; otherwise
 // it is copied under a new id, so memo headings never pick up a template's

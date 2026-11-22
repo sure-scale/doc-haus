@@ -196,13 +196,15 @@ function passageSpan(raw: string, quote: string, document: string): { start: num
 
 /** The files that deliver target `id`: a document's body and redline (or the
  * notes file for the notes), then a combined file that contains it (its body
- * or the memo's notes), with the properties of that file built now in memory,
+ * or its memo — the plan's authored memo document, or the notes for a legacy
+ * plan), with the properties of that file built now in memory,
  * and their current_evidence rows. Never another target's files. Names and
  * composition come from code, never from the target's own text. One check run
  * builds the combined file once. */
 export function checklistDeliveryEvidence(directory: string, id: string): { delivery: ReturnType<typeof deliveryArtifactEvidence>; evidence: ChecklistCurrentEvidence[] } {
+  const memo = readLeanPlan(directory)?.memo_document ?? "notes"
   const delivery = snapshotRead(`delivery-artifacts\0${directory}`, () => deliveryArtifactEvidence(directory, { build: true }))
-    .filter(row => row.kind === "combined" ? [row.document, "notes"].includes(id) : id === "notes" ? row.kind === "drafting_notes" : row.document === id)
+    .filter(row => row.kind === "combined" ? [row.document, memo].includes(id) : id === "notes" ? row.kind === "drafting_notes" : row.document === id)
   return { delivery, evidence: delivery.map(row => row.kind === "combined"
     ? { document: row.download_filename, locator: `${DELIVERY_ARTIFACTS_ROW} for the one delivered file that contains this target, from the current plan with registration's naming logic`, text: JSON.stringify(row), kind: "artifact" }
     : { document: row.planned_filename, locator: `${DELIVERY_ARTIFACTS_ROW} for a file that delivers this target (kind ${row.kind}), from the current plan with registration's naming logic`, text: JSON.stringify(row), kind: "artifact" }) }
