@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { advisePrompt } from "./advise"
 import { type GateResult } from "./gate"
-import { researchPrompt } from "./research"
+import { acceptResearchReply, researchPrompt } from "./research"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { LEAN_PROMPT_VERSION, researchBasis, stageInputs } from "./stages"
@@ -37,7 +37,7 @@ afterAll(() => {
 const quiet = { ...happyPath, [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: noChanges }
 const AUTO = "Drafting Auto mode is enabled for this installation:"
 const OFF_RULE = "ask a material gap marked lawyer unless an answer or instruction now settles it; the others stay disclosed placeholders or open items."
-const ON_RULE = "ask a material gap marked lawyer only when the work cannot proceed without it and no answer or instruction now settles it; the others stay disclosed placeholders or open items, carried through the discrepancy record, the drafting spine and the review."
+const REVIEW_READY = "Otherwise return ready when the draft can serve its purpose for review with a missing or disputed fact visibly marked."
 
 // The shared smoke fixture: a request that needs a delivery location no source
 // records. The gap rides the discrepancy record, the spine and the review; the
@@ -88,42 +88,38 @@ const locationReplies = () => ({
   [AGENT.finalize]: locationNotes,
 })
 
-test("off keeps the intake prompt and every key byte-identical; on swaps only the gap rule and adds its guidance and the intake key", () => {
-  const directory = matter()
+test("Auto readiness uses the original request and only changes the intake key", () => {
+  const directory = matter(SOURCE_TEXT, LOCATION_REQUEST)
   const prompt = () => researchPrompt(directory, "intake", researchBasis(directory))
   const steps = ["discrepancy", "intake", "research", "research-review", "spine"] as const
   const keys = () => steps.map(step => hashStageInputs(step, LEAN_PROMPT_VERSION, stageInputs(directory, step)))
-  // A fresh installation has no preferences file at all.
   const offPrompt = prompt()
   const offKeys = keys()
   expect(offPrompt).toContain(OFF_RULE)
+  expect(offPrompt).toContain("Ask unresolved material decisions together")
   expect(offPrompt).not.toContain(AUTO)
-  expect(offPrompt).not.toContain("only when the work cannot proceed without it")
   expect(stageInputs(directory, "intake").map(row => row.name)).not.toContain("drafting-auto-mode")
+  expect(acceptResearchReply(directory, "intake", "{}").issues[0]).toContain("Never mark ready while a material decision is unresolved.")
   setAutoMode(true)
   const onPrompt = prompt()
-  expect(onPrompt).toContain(ON_RULE)
   expect(onPrompt).toContain(AUTO)
+  expect(onPrompt).toContain(`Original request:\n\n${LOCATION_REQUEST}`)
+  expect(onPrompt).toContain("check the original request, later instructions and recorded answers first")
+  expect(onPrompt).toContain(REVIEW_READY)
+  expect(onPrompt).toContain("A fact may be essential before the document is used and still be left open for review.")
+  expect(onPrompt).toContain("If the lawyer reserved a decision that the requested draft must carry out, ask for that decision before drafting")
+  expect(onPrompt).not.toContain("Ask unresolved material decisions together")
   expect(onPrompt).not.toContain(OFF_RULE)
-  // The only differences: the gap rule swapped, and the guidance inserted after it.
-  const inserted = onPrompt.slice(onPrompt.indexOf(ON_RULE) + ON_RULE.length, onPrompt.indexOf("\n\nBefore any outline"))
-  expect(inserted.startsWith(`\n\n${AUTO}`)).toBe(true)
-  expect(offPrompt.replace(OFF_RULE, ON_RULE + inserted)).toBe(onPrompt)
-  expect(stageInputs(directory, "intake")).toContainEqual({ name: "drafting-auto-mode", bytes: "on" })
+  expect(acceptResearchReply(directory, "intake", "{}").issues[0]).toContain("If the lawyer's instructions allow a useful review draft with a visible gap, return ready.")
+  expect(stageInputs(directory, "intake")).toContainEqual({ name: "drafting-auto-mode", bytes: "review-draft-v2" })
   expect(keys().map((key, index) => key !== offKeys[index])).toEqual([false, true, false, false, false])
   for (const stage of ["research", "research-review"] as const)
     expect(researchPrompt(directory, stage, researchBasis(directory))).not.toContain(AUTO)
-  // The existing guardrails stand unchanged beside the guidance, off and on.
-  for (const rule of ["Ask only material unresolved decisions",
-    "A choice to wait remains binding until the lawyer supplies the fact or changes that choice.",
-    "Routine missing details can remain disclosed placeholders.",
+  for (const rule of ["A choice to wait remains binding until the lawyer supplies the fact or changes that choice.",
     "An instruction to obtain evidence is outstanding human work, never proof it was obtained."]) {
     expect(offPrompt).toContain(rule)
     expect(onPrompt).toContain(rule)
   }
-  // The guidance itself keeps approval, holds and indispensable facts on the question path.
-  expect(onPrompt).toContain("Still ask for what needs the lawyer: approval, an explicit hold, an indispensable fact the work cannot proceed without, and conflicting instructions.")
-  expect(onPrompt).toContain("Auto mode supplies no missing fact, answers no question for the lawyer and lifts no hold")
   setAutoMode(false)
   expect(prompt()).toBe(offPrompt)
   expect(keys()).toEqual(offKeys)
@@ -140,7 +136,7 @@ test("with Auto mode on, an unresolved delivery location rides the discrepancy, 
   expect(readLeanJson(directory, "discrepancy.json")).toEqual({ entries: [], gaps: [LOCATION_GAP], limitations: [] })
   const intake = model.prompts.find(row => row.agent === AGENT.intake)!.text
   expect(intake).toContain(AUTO)
-  expect(intake).toContain("only when the work cannot proceed without it")
+  expect(intake).toContain(REVIEW_READY)
   // The spine carries the gap as an open-item entry beside the settled fact, both placed.
   expect((readLeanJson(directory, "spine.json") as { entries: { kind: string }[] }).entries.map(row => row.kind)).toEqual(["fact", "open-item"])
   expect(readLeanJson(directory, "placement.json")).toMatchObject({ status: "placed", issues: [] })
