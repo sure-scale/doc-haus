@@ -132,6 +132,61 @@ test("on the last attempt an unverifiable finding is withheld and disclosed; bef
   expect(readLeanJson(directory, "research.json")).toEqual({ status: "limited", findings: [verified], limitations: withheld })
 })
 
+test("research ingress assigns omitted finding ids after reserving supplied ones; invalid ids and missing fields stay rejected, and the persisted reader stays strict", () => {
+  const directory = matter()
+  const research = retrieved(directory)
+  const { snapshot: _, id: __, ...base } = research.findings[0]!
+  const assignText = "A tenant may assign with consent."
+  fetched(directory, assignText, "https://example.gov/assignment")
+  // Round one: three verified findings keyed by citation — r1 (Rule 1, notice),
+  // r2 (Rule 2, assignment) and r3 (Rule 5, notice) — then reviewed and approved.
+  const prior1 = { ...base, id: "r1", citation: "Rule 1" }
+  const prior2 = { ...base, id: "r2", citation: "Rule 2", url: "https://example.gov/assignment", quote: assignText, title: "Assignment provision", claim: "Assignment needs consent" }
+  const prior3 = { ...base, id: "r3", citation: "Rule 5", claim: "A fifth proposition" }
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ status: "limited", findings: [prior1, prior2, prior3], limitations: ["Currency remains to be confirmed"] })).issues).toEqual([])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1", "r2", "r3"], rejected: [], limitations: [], gaps: [] })).issues).toEqual([])
+
+  const field = (row: Record<string, unknown>) => ({ ...base, claim: "A proposition", title: "Authority", citation: "Rule X", ...row })
+  // Duplicate, null, empty and wrong-type ids, and an empty semantic field on an
+  // id-less row, all still fail; nothing is saved.
+  const invalid = acceptResearchReply(directory, "research", JSON.stringify({ status: "limited", findings: [
+    field({ id: "r9" }), field({ id: "r9" }), field({ id: null }), field({ id: "" }), field({ id: 7 }), field({ quote: "" }),
+  ], limitations: [] }))
+  expect(invalid.issues.filter(issue => issue.includes("Every finding must include"))).toHaveLength(4)
+  expect(invalid.issues).toContain("Finding id r9 is repeated.")
+  expect((readLeanJson(directory, "research.json") as typeof research).findings.map(row => row.id)).toEqual(["r1", "r2", "r3"])
+  // The persisted reader is unchanged: an omitted id is still a shape error there.
+  expect(checkResearch(directory, { status: "limited", findings: [field({})], limitations: ["A limit"] })).toEqual(["Every finding must include the specified source text, claim, jurisdiction, currency and limitation fields."])
+
+  // A mixed re-run: omitted ids around an explicit later id (r1, reserved), a
+  // citation-key replacement of two priors, a new authority, an unverifiable
+  // authority, and an unverifiable echo of the third prior — whose prior is kept.
+  const replacement = field({ citation: "Rule 1", claim: "Updated notice proposition" })
+  const explicit = field({ id: "r1", citation: "Rule 2", url: "https://example.gov/assignment", quote: assignText, title: "Assignment provision", claim: "Assignment needs consent" })
+  const extra = field({ citation: "Rule 3", claim: "A third proposition" })
+  const invented = field({ citation: "Rule 9", quote: "Invented text", title: "Remembered rule", claim: "Termination needs no notice" })
+  const echo = field({ citation: "Rule 5", quote: "Invented text", claim: "A fifth proposition" })
+  const reply = { status: "limited", findings: [replacement, explicit, extra, invented, echo], limitations: [] }
+  const before = acceptResearchReply(directory, "research", JSON.stringify(reply))
+  expect(before.issues).toHaveLength(2)
+  expect(before.issues.every(issue => issue.includes("the quotation is not in the text official-source retrieved from https://example.gov/legal-notice"))).toBe(true)
+  expect((readLeanJson(directory, "research.json") as typeof research).findings.map(row => row.id)).toEqual(["r1", "r2", "r3"])
+  const last = acceptResearchReply(directory, "research", JSON.stringify(reply), { final: true })
+  expect(last.issues).toEqual([])
+  const saved = readLeanJson(directory, "research.json") as { status: string; findings: { id: string; citation: string }[]; limitations: string[] }
+  // Omitted ids were assigned in input order (r2, r3, r4, r5) around the reserved
+  // explicit r1; the two replaced priors are dropped, and the withheld echo's prior
+  // (Rule 5) is kept, taking a fresh id after the survivors.
+  expect(saved.findings.map(row => row.id)).toEqual(["r2", "r1", "r3", "r4"])
+  expect(saved.findings.map(row => row.citation)).toEqual(["Rule 1", "Rule 2", "Rule 3", "Rule 5"])
+  expect(saved.status).toBe("limited")
+  expect(saved.limitations).toHaveLength(2)
+  expect(saved.limitations.every(text => text.includes("Authority withheld because its quotation could not be verified"))).toBe(true)
+  expect(checkResearch(directory, saved)).toEqual([])
+  expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1", "r2", "r3", "r4"], rejected: [], limitations: [], gaps: [] })).issues).toEqual([])
+  expect(approvedResearch(directory)).toHaveLength(4)
+})
+
 test("of two retrievals of one URL that both contain the quotation, the latest is recorded; a saved matching id is kept", () => {
   const directory = matter()
   const text = "A party must give written notice before termination."
