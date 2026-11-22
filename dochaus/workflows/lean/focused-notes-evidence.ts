@@ -40,7 +40,7 @@ export type NotesInspectionSelection = {
   excerpts: NotesEvidenceExcerpt[]
   limitation: string
 }
-export const NOTES_INSPECTION_OUTPUT_CONTRACT = 'Return only JSON {"excerpts":[{"document":"planned document id","pid":"exact paragraph PID","baseline":"current","start":0,"end":1,"role":"target"}],"limitation":""}. This is the only selection shape: do not return targets, pids lists or replacement text. Each excerpt needs document, pid, baseline (current or initial), UTF-16 start/end offsets (end exclusive), and role (target or qualification). Target-role spans must stay within the supplied available_evidence ranges. Qualification-role spans may also reference material dependencies retrieved from planned current bodies or their mapped initial baselines, including recorded applied deletions; preserve the current/initial distinction. Select exact spans of at most 4000 characters, retaining every material condition in the inspected range. Code copies canonical text. An empty excerpts list requires the actual relevance/inspection limitation. Neither selection nor missing inspection proves absence, resolution or approval. Do not write the original point\'s explanation.'
+export const NOTES_INSPECTION_OUTPUT_CONTRACT = 'Return only JSON {"excerpts":[{"document":"planned document id","pid":"exact paragraph PID","baseline":"current","text":"exact canonical words","role":"target"}],"limitation":""}. This is the only selection shape: do not return targets, pids lists or replacement text. Each excerpt needs document, pid, baseline (current or initial), text, and role (target or qualification). text is a verbatim substring of that canonical paragraph, copied exactly with its punctuation and whitespace; code resolves its exact UTF-16 start/end offsets, so never compute offsets yourself. A quote occurring more than once in the paragraph is ambiguous: extend it with surrounding canonical words until it is unique. Target-role quotes must stay within the supplied available_evidence ranges. Qualification-role quotes may also reference material dependencies retrieved from planned current bodies or their mapped initial baselines, including recorded applied deletions; preserve the current/initial distinction. Select exact quotes of at most 4000 characters, retaining every material condition in the inspected range. Code copies canonical text. An empty excerpts list requires the actual relevance/inspection limitation. Neither selection nor missing inspection proves absence, resolution or approval. Do not write the original point\'s explanation.'
 export type NotesEvidencePlan = {
   ownerText: string
   inspections: NotesEvidenceInspection[]
@@ -237,17 +237,17 @@ export function checkNotesInspection(reply: unknown, inspection: NotesEvidenceIn
   if (!value || typeof value !== "object" || Array.isArray(value)) return fail("$: return an excerpts[]/limitation object.")
   const row = value as Record<string, unknown>
   const extra = Object.keys(row).find(key => !["excerpts", "limitation"].includes(key))
-  if (extra) return fail(`$.${extra} is not part of the inspection schema. Return only excerpts[] and limitation; every excerpt uses scalar pid, baseline, start, end and role.`)
+  if (extra) return fail(`$.${extra} is not part of the inspection schema. Return only excerpts[] and limitation; every excerpt uses scalar pid, baseline, role and either a text quote or start/end offsets.`)
   if (!Array.isArray(row.excerpts)) return fail("$.excerpts: expected a list of exact paragraph locations, not a scalar pid or targets list.")
   if (typeof row.limitation !== "string") return fail("$.limitation: expected a string, empty only when no inspection limitation remains.")
   const excerpts: NotesEvidenceExcerpt[] = []
   const manifest = inspection.available.map(span => `${span.document}/${span.baseline}/${span.pid} [${span.start},${span.end})`).join("; ")
   for (const [index, candidate] of row.excerpts.entries()) {
     const path = `$.excerpts[${index}]`
-    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return fail(`${path}: expected document, pid, baseline, start, end and role.`)
-    const excerpt = candidate as NotesEvidenceExcerpt
-    const extra = Object.keys(candidate).find(key => !["document", "pid", "baseline", "start", "end", "role"].includes(key))
-    if (extra) return fail(`${path}.${extra}: not part of an excerpt location; code copies canonical text. Use scalar pid, baseline, start, end and role.`)
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return fail(`${path}: expected document, pid, baseline, role and either a text quote or start/end offsets.`)
+    const excerpt = candidate as NotesEvidenceExcerpt & { text?: unknown }
+    const extra = Object.keys(candidate).find(key => !["document", "pid", "baseline", "start", "end", "text", "role"].includes(key))
+    if (extra) return fail(`${path}.${extra}: not part of an excerpt location; code copies canonical text. Use scalar pid, baseline, role and either a text quote or start/end offsets.`)
     if (!["current", "initial"].includes(excerpt.baseline)) return fail(`${path}.baseline=${JSON.stringify(excerpt.baseline)}: expected current or initial.`)
     if (!["target", "qualification"].includes(excerpt.role)) return fail(`${path}.role=${JSON.stringify(excerpt.role)}: expected target or qualification.`)
     const body = bodies.find(body => body.document === excerpt.document)
@@ -263,12 +263,35 @@ export function checkNotesInspection(reply: unknown, inspection: NotesEvidenceIn
     const trusted = canonical.find(row => row.pid === excerpt.pid)
     const span = available.find(span => span.pid === excerpt.pid)
     const end = trusted?.text.length ?? span!.paragraphEnd
-    if (!Number.isInteger(excerpt.start) || excerpt.start < 0 || excerpt.start >= end) return fail(`${path}.start=${JSON.stringify(excerpt.start)}: outside ${excerpt.document}/${excerpt.baseline}/${excerpt.pid} [0,${end}). Offsets are UTF-16, end exclusive.`)
-    if (!Number.isInteger(excerpt.end) || excerpt.end <= excerpt.start || excerpt.end > end) return fail(`${path}.end=${JSON.stringify(excerpt.end)}: expected > start ${excerpt.start} and <= ${end} for ${excerpt.document}/${excerpt.baseline}/${excerpt.pid} [0,${end}).`)
-    if (excerpt.end - excerpt.start > PASSAGE_CHARS) return fail(`${path}.end=${excerpt.end}: a selected range may contain at most ${PASSAGE_CHARS} characters; split material spans without dropping qualifications.`)
-    if (excerpt.role === "target" && (!span || excerpt.start < span.start || excerpt.end > span.end)) return fail(`${path}.role=target: ${excerpt.document}/${excerpt.baseline}/${excerpt.pid} [${excerpt.start},${excerpt.end}) is outside the assigned available target ranges: ${manifest}. External passages may be qualification-role evidence only when materially relevant to the original point.`)
-    if (!body && (!span || excerpt.start < span.start || excerpt.end > span.end)) return fail(`${path}: no trusted canonical body was supplied for this qualification; available ranges: ${manifest}.`)
-    excerpts.push({ document: excerpt.document, pid: excerpt.pid, baseline: excerpt.baseline, start: excerpt.start, end: excerpt.end, role: excerpt.role })
+    // The model chooses material evidence; code owns the exact UTF-16 offsets.
+    // A verbatim quote is located in the canonical paragraph (or, without a
+    // trusted body, the supplied available span). An ambiguous or inexact quote
+    // is rejected with its reason, never guessed, normalized or clamped.
+    const hasText = "text" in excerpt
+    const hasOffsets = "start" in excerpt || "end" in excerpt
+    if (hasText && hasOffsets) return fail(`${path}: supply either a text quote or start/end offsets, not both.`)
+    if (!hasText && !hasOffsets) return fail(`${path}: supply a text quote of the canonical wording, or start/end offsets.`)
+    let start: number
+    let stop: number
+    if (hasText) {
+      const quote = excerpt.text
+      if (typeof quote !== "string" || !quote.length) return fail(`${path}.text: expected a nonempty verbatim string quote of the canonical wording.`)
+      const haystack = trusted ? trusted.text : span!.text
+      const first = haystack.indexOf(quote)
+      if (first === -1) return fail(`${path}.text: not an exact substring of ${excerpt.document}/${excerpt.baseline}/${excerpt.pid}. Copy the canonical words verbatim, including punctuation and whitespace; no paraphrase, ellipsis or reformatting.`)
+      if (haystack.indexOf(quote, first + 1) !== -1) return fail(`${path}.text: this quote occurs more than once in ${excerpt.document}/${excerpt.baseline}/${excerpt.pid}; extend it with surrounding canonical words until it is unique.`)
+      start = (trusted ? 0 : span!.start) + first
+      stop = start + quote.length
+    } else {
+      if (!Number.isInteger(excerpt.start) || excerpt.start < 0 || excerpt.start >= end) return fail(`${path}.start=${JSON.stringify(excerpt.start)}: outside ${excerpt.document}/${excerpt.baseline}/${excerpt.pid} [0,${end}). Offsets are UTF-16, end exclusive.`)
+      if (!Number.isInteger(excerpt.end) || excerpt.end <= excerpt.start || excerpt.end > end) return fail(`${path}.end=${JSON.stringify(excerpt.end)}: expected > start ${excerpt.start} and <= ${end} for ${excerpt.document}/${excerpt.baseline}/${excerpt.pid} [0,${end}).`)
+      start = excerpt.start
+      stop = excerpt.end
+    }
+    if (stop - start > PASSAGE_CHARS) return fail(`${path}.end=${stop}: a selected range may contain at most ${PASSAGE_CHARS} characters; split material spans without dropping qualifications.`)
+    if (excerpt.role === "target" && (!span || start < span.start || stop > span.end)) return fail(`${path}.role=target: ${excerpt.document}/${excerpt.baseline}/${excerpt.pid} [${start},${stop}) is outside the assigned available target ranges: ${manifest}. External passages may be qualification-role evidence only when materially relevant to the original point.`)
+    if (!body && (!span || start < span.start || stop > span.end)) return fail(`${path}: no trusted canonical body was supplied for this qualification; available ranges: ${manifest}.`)
+    excerpts.push({ document: excerpt.document, pid: excerpt.pid, baseline: excerpt.baseline, start, end: stop, role: excerpt.role })
   }
   if (!excerpts.length && !row.limitation.trim()) return fail("$.limitation: an empty excerpts list requires the truthful relevance/inspection limitation; it never proves absence.")
   return { issues: [], value: { inspectionID: inspection.id, excerpts, limitation: row.limitation.trim() } }

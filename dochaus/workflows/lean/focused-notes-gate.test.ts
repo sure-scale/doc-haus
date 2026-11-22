@@ -103,14 +103,17 @@ for (const passes of [true, false]) test(`saved finalize failure uses scoped wri
   expect(readRepairRound(directory)).toEqual(repair)
   for (const [file, bytes] of cached) expect(readFileSync(leanFile(directory, `notes-sections/${file}`))).toEqual(bytes)
   expect(ownerWrites.length - writtenBefore).toBe(passes ? 2 : LEAN_MAX_RETRIES + 1)
-  expect(ownerChecks.length).toBeGreaterThanOrEqual(LEAN_MAX_RETRIES + 1)
-  expect(ownerChecks.slice(0, LEAN_MAX_RETRIES + 1).every(text => text.includes(`<proposed_prose>\n${overclaim}\n</proposed_prose>`))).toBe(true)
+  // One inspection answers the absence ask; the exact repeat returns the
+  // scope-rewrite limitation, so recovery rechecks the same prose with the
+  // inspected evidence instead of re-inspecting on each writer attempt.
+  expect(ownerChecks.length).toBe(passes ? 3 : LEAN_MAX_RETRIES + 2)
+  expect(ownerChecks.slice(0, 2).every(text => text.includes(`<proposed_prose>\n${overclaim}\n</proposed_prose>`))).toBe(true)
   expect(ownerChecks[0]).not.toContain("dependency_evidence")
   expect(ownerChecks[1]).toContain("dependency_evidence")
   if (!passes) {
     expect(resumed.status).toBe("failed")
     expect(resumed.stop_reason).toContain("unsupported at this inspection scope")
-    expect(inspections).toBe(LEAN_MAX_RETRIES * (LEAN_MAX_RETRIES + 1))
+    expect(inspections).toBe(1)
     expect(registration.names).toEqual([])
     expect(existsSync(leanFile(directory, "gate.json"))).toBe(false)
     for (const file of readdirSync(leanFile(directory, "notes-sections")))
@@ -118,7 +121,7 @@ for (const passes of [true, false]) test(`saved finalize failure uses scoped wri
     return
   }
   expect(resumed.status).toBe("completed")
-  expect(inspections).toBe(LEAN_MAX_RETRIES)
+  expect(inspections).toBe(1)
   for (const step of ["finalize", "checklist-check", "package-review", "gate"] as const)
     expect(resumed.stages[step]?.status).toBe("done")
   expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", checked_at: expect.any(String) })

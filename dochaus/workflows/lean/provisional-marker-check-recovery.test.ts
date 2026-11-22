@@ -14,8 +14,10 @@ import { writeLeanPlan } from "./plan"
 import { enqueueLeanRequest } from "./requests"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, startRepairRound } from "./repairs"
 import { runLean } from "./runner"
-import { leanFile, readLeanJson, readLeanText, readQuestions, writeLeanBytes, writeLeanText, writeQuestions, type Question } from "./state"
-import { AGENT, cleanupMatters, drafter, happyPath, matter, NO_FINDINGS, noChanges, registering, scriptedModel } from "./test-support"
+import { leanFile, readLeanJson, readLeanText, readQuestions, questionOptions, writeLeanBytes, writeLeanText, writeQuestions, type Question } from "./state"
+import { AGENT, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, NO_FINDINGS, noChanges, pidOf, registering, sameSession, scriptedModel } from "./test-support"
+import { stagePrompt } from "./prompts"
+import { stageInputs } from "./stages"
 
 afterEach(cleanupMatters)
 
@@ -202,4 +204,124 @@ for (const legacyInvalid of [true, false]) test(`marker contract recovery preser
   expect(repeated.checks).toEqual(saved.checks)
   expect(readLeanText(directory, "questions.json")).toBe(questions)
   expect(readFileSync(leanFile(directory, "d1/body.docx"))).toEqual(Buffer.from(bytes))
+})
+
+test("the early source-fidelity review repairs an unmarked dependent passage before the checklist", async () => {
+  const directory = matter("The receiving and dispatch records refer to the rehearsal batch label, which has not been supplied.",
+    "Prepare a rehearsal-equipment handover recording the receiving and dispatch references from the supplied information.")
+  const offered = withFactOptions({ id: "q-rehearsal-label", stage: "intake", status: "open", kind: "fact", question: questionText, context: "The batch label is absent from the supplied information." })
+  const question: Question = { ...offered, status: "answered", answer: permission, answer_class: "answered", fact_status: "provisional" }
+  writeQuestions(directory, [question])
+  // The repair allowance is intact: the duty must reach the early review, not
+  // arrive only at the late checklist after the allowance is used up.
+  const unmarked = "The dispatch reference also awaits the batch label."
+  const repaired = "The dispatch reference also awaits the batch label, which remains to be supplied [open item: verify the batch label before dispatch]."
+  const topical = "The handover procedure requires a batch label to be recorded before equipment leaves the site."
+  const draft = `# Rehearsal equipment handover\n\n## Receiving\n\n${receiving}\n\n## Dispatch\n\n${unmarked}\n\n## Procedure\n\n${topical}\n`
+  const dutyID = `provisional-fact-marker:${question.id}:d1`
+  const registration = registering()
+  const packets: CheckPacket[] = []
+  const firstChecks = new Map<string, CheckPacket>()
+  const model = scriptedModel({ ...happyPath,
+    [AGENT.draft]: drafter(draft),
+    [AGENT.review]: () => NO_FINDINGS,
+    // The reviewer judges dependency from the draft wording; the duty itself is
+    // the product's, carried by the prompt only when the permission is provisional.
+    [AGENT["review-independent"]]: sameSession(prompt => prompt.includes(dutyID) ? JSON.stringify({ findings: [{
+      pids: [pidOf(prompt, unmarked)], origin: "missing_fact", balance: "neutral",
+      finding: "The dispatch reference relies on the unknown batch label without visibly marking it as unresolved.",
+      instead: repaired, sources: [],
+    }] }) : NO_FINDINGS),
+    [AGENT["change-plan"]]: prompt => {
+      const resolves = listedFindingIDs(prompt)
+      return JSON.stringify({ shared_decisions: [], groups: resolves.length ? [{
+        id: "marker-coverage", pids: [pidOf(prompt, unmarked)],
+        goal: "Mark the unknown batch label in the dependent dispatch reference, preserving its assertion.",
+        sources: [], limitations: ["The batch label remains unknown; the amendment rewords the reference and adds the required open-item marker."],
+        resolves,
+      }] : [], findings: [], questions: [] })
+    },
+    [AGENT.changes]: sameSession(prompt => {
+      const plan = JSON.parse(/<change_plan>\n([\s\S]*?)\n<\/change_plan>/.exec(prompt)?.[1] ?? '{"groups":[]}') as { groups: { pids: string[] }[] }
+      const pid = pidOf(prompt, unmarked)
+      return plan.groups.some(group => group.pids.includes(pid))
+        ? JSON.stringify({ amendments: [{ pid, updated: repaired, reason: "Visibly mark the unknown batch label the dispatch reference depends on.", sources: [] }], questions: [] })
+        : noChanges(prompt, 0)
+    }),
+    [AGENT.finalize]: () => "The batch label remains unknown. Obtain it before relying on either the receiving or dispatch reference. Permission covers preparation of a review draft only; dispatch and signature remain unapproved.",
+    [CHECKLIST_JOB_AGENTS.check]: (text, _index, sessionID) => {
+      const raw = text.split("CHECK_INPUT:\n\n")[1]
+      if (raw) firstChecks.set(sessionID!, JSON.parse(raw))
+      const packet = firstChecks.get(sessionID!)!
+      expect(packet).toBeDefined()
+      packets.push(packet)
+      if (packet.verification !== "provisional_fact_marker") return JSON.stringify({
+        item_id: packet.item_id, status: "not_applicable", action_status: "not_applicable",
+        reason: "The quoted preparation permission does not impose the product's per-dependent-passage marker rule.",
+        open_decisions: [questionText], evidence: packet.current_evidence.filter(row => row.kind === "body"),
+        source_refs: packet.item.source_refs, inspection_scope: "The current receiving and dispatch references.", limitation: "The factual label remains unknown.",
+      })
+      // Judge from the actual current body: the procedural paragraph mentions
+      // the label's topic but does not rely on the unknown, so it stays out of
+      // the dependent set and the evidence.
+      const record = readLeanJson(directory, `checklist-context/${packet.item.target.document}.json`) as ChecklistDocumentRecord
+      const dependent = record.paragraphs.filter(row => /^(The receiving record|The dispatch reference)/.test(row.paragraph_text))
+      expect(dependent).toHaveLength(2)
+      const marked = dependent.every(row => /\[open item: [^\]]*\bbatch label\b[^\]]*\]/.test(row.paragraph_text))
+      const evidence = dependent.map(row => ({ document: packet.item.target.document,
+        locator: `native PIDs ${row.pids.join(", ")}; accepted paragraph_index ${row.paragraph_index}`,
+        text: row.paragraph_text, kind: "body" }))
+      return JSON.stringify({ item_id: packet.item_id, status: marked ? "satisfied" : "unsatisfied",
+        action_status: marked ? "fulfilled" : "not_fulfilled", open_decisions: [], evidence, source_refs: packet.item.source_refs,
+        reason: marked ? "Both fact-dependent references visibly preserve this exact unknown label. Its truth and release approval remain unsettled."
+          : "A dependent reference lacks an explicit marker for the unknown batch label.",
+        inspection_scope: "Every receiving and dispatch paragraph in the current accepted body.",
+        limitation: "This assesses treatment of an unknown fact, not its answer or authority to dispatch or sign.",
+      })
+    },
+  })
+  const result = await runLean(directory, { sessions: model.port, ...registration })
+  expect(result.status).toBe("completed")
+  // The duty reached the early review with its canonical identity and
+  // qualifications, and the amendment ran through the early change plan.
+  const earlyReview = model.prompts.find(prompt => prompt.agent === AGENT["review-independent"])!.text
+  expect(earlyReview).toContain(dutyID)
+  expect(earlyReview).toContain("Current provisional permission allows preparation only.")
+  expect(model.prompts.find(prompt => prompt.agent === AGENT.changes)!.text).toContain("marker-coverage")
+  expect(readRepairRound(directory)).toBeUndefined()
+  expect(packets.length).toBeGreaterThan(0)
+  expect(packets.every(packet => packet.verification === "provisional_fact_marker")).toBe(true)
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
+  const checks = readLeanJson(directory, "checklist/checks.json") as { checks: { finding?: { status: string; open_decisions?: string[]; action_status?: string } }[] }
+  expect(checks.checks.every(row => row.finding?.status === "satisfied" && row.finding.action_status === "fulfilled" && row.finding.open_decisions?.length === 0)).toBe(true)
+  const text = readDocxCommentParagraphs(readFileSync(leanFile(directory, "d1/body-applied.docx"))).map(row => row.paragraph_text)
+  expect(text).toContain(receiving)
+  expect(text).toContain(repaired)
+  // Topic overlap alone is not dependency: the procedural paragraph stays unmarked.
+  expect(text.find(row => row.startsWith("The handover procedure"))).toBe(topical)
+  expect(registration.names.length).toBeGreaterThan(0)
+}, 120_000)
+
+test("the marker duty reaches only the source-fidelity review, and a wait holds no duty", () => {
+  const directory = matter("The receiving and dispatch records refer to the rehearsal batch label, which has not been supplied.",
+    "Prepare a rehearsal-equipment handover recording the receiving and dispatch references from the supplied information.")
+  writeLeanPlan(directory, [{ title: "Rehearsal equipment handover", purpose: "Record receiving and dispatch references.", file: "rehearsal-equipment-handover.docx", parts: [{ heading: "Receiving", scope: "The receiving reference dependent on the batch label." }] }])
+  const offered = withFactOptions({ id: "q-rehearsal-label", stage: "intake", status: "open", kind: "fact", question: questionText, context: "The batch label is absent from the supplied information." })
+  const dutyID = `provisional-fact-marker:${offered.id}:d1`
+  writeQuestions(directory, [{ ...offered, status: "answered", answer: permission, answer_class: "answered", fact_status: "provisional" }])
+  const prompt = stagePrompt(directory, "d1.review-independent")
+  expect(prompt).toContain("<provisional_marker_duties>")
+  expect(prompt).toContain(dutyID)
+  const duties = stageInputs(directory, "d1.review-independent").find(row => row.name === "provisional-fact-marker-duties")
+  expect(duties).toBeDefined()
+  expect(duties!.bytes as string).toContain(dutyID)
+  // The other reviews keep their prompts and keys.
+  expect(stagePrompt(directory, "d1.review")).not.toContain(dutyID)
+  expect(stageInputs(directory, "d1.review").map(row => row.name)).not.toContain("provisional-fact-marker-duties")
+  // A wait answer holds no duty: the early review keeps its prompt and key.
+  const wait = questionOptions(offered).find(option => option.id === "o2")!
+  writeQuestions(directory, [{ ...offered, status: "answered", answer: wait.text, answer_class: "answered", answer_kind: "option", option_id: "o2" }])
+  expect(currentFactDisposition(directory, readQuestions(directory)[0]!)).toBe("wait")
+  expect(stagePrompt(directory, "d1.review-independent")).not.toContain("<provisional_marker_duties>")
+  expect(stageInputs(directory, "d1.review-independent").map(row => row.name)).not.toContain("provisional-fact-marker-duties")
 })

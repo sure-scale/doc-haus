@@ -106,7 +106,10 @@ test("an unanswered evidence request never falls through to acceptance within bo
   const scripted = model("unanswered")
   expect((await runFocusedNotes(directory, readLeanState(directory)!, { sessions: scripted.port }, () => {})).status).toBe("failed")
   expect(scripted.ownerWrites).toBe(LEAN_MAX_RETRIES + 1)
-  expect(scripted.lookups).toHaveLength(LEAN_MAX_RETRIES * (LEAN_MAX_RETRIES + 1))
+  // The first ask is inspected once; every later identical ask returns the
+  // scope-rewrite limitation instead of cycling, so bounded writer recovery
+  // never falls through to acceptance and never re-inspects the same request.
+  expect(scripted.lookups).toHaveLength(1)
   expect(readLeanText(directory, "drafting-notes.md")).toBeUndefined()
   const saved = readdirSync(leanFile(directory, "notes-sections")).map(file => readLeanText(directory, `notes-sections/${file}`))
   expect(saved.length).toBeGreaterThan(0)
@@ -165,12 +168,15 @@ for (const mode of ["scoped", "essential", "contradiction"] as const) test(`comp
   const scripted = scopedModel(mode)
   const result = await runFocusedNotes(directory, readLeanState(directory)!, { sessions: scripted.port }, () => {})
   expect(result.status).toBe(mode === "scoped" ? "done" : "failed")
-  expect(scripted.lookups).toBe(LEAN_MAX_RETRIES)
+  // One inspection answers the ask; the exact repeat returns the scope-rewrite
+  // limitation, and every later recheck carries that same inspected evidence.
+  expect(scripted.lookups).toBe(1)
   expect(scripted.ownerWrites).toBe(mode === "scoped" ? 2 : LEAN_MAX_RETRIES + 1)
-  expect(scripted.checks.slice(0, LEAN_MAX_RETRIES + 1).every(text => text.includes(`<proposed_prose>\n${unsupportedScope}`))).toBe(true)
-  const inspected = scripted.checks.slice(1, LEAN_MAX_RETRIES + 1)
+  expect(scripted.checks.slice(0, 2).every(text => text.includes(`<proposed_prose>\n${unsupportedScope}`))).toBe(true)
+  const inspected = scripted.checks.slice(1)
   const evidenceText = mode === "contradiction" ? "Acceptance requires inspection." : "Keep the archive label visible."
-  expect(inspected.map(text => text.split(evidenceText).length)).toEqual(Array(LEAN_MAX_RETRIES).fill(inspected[0]!.split(evidenceText).length))
+  expect(inspected[0]).toContain(evidenceText)
+  expect(inspected.map(text => text.split(evidenceText).length)).toEqual(Array(inspected.length).fill(inspected[0]!.split(evidenceText).length))
   if (mode !== "scoped") {
     expect(readLeanText(directory, "drafting-notes.md")).toBeUndefined()
     return

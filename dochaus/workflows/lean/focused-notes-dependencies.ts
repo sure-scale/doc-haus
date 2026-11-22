@@ -1,3 +1,5 @@
+import { normalize, normalizeWithMap, quotePlaces, sourceReadings, verifyQuote } from "../../lib/quote-verify"
+import { matterSourceIDs } from "./quotes"
 import { escapeTagOpeners } from "../../lib/untrusted"
 import { parseJsonObject } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
@@ -7,8 +9,12 @@ import { tagged } from "./prompts"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, stepSessionTitle, type LeanDeps } from "./stages"
 import type { LeanStageState, LeanState } from "./state"
 
-export type NotesEvidenceRequest = { document: DocID; claim: string; question: string }
-export type NotesDependencyObservation = { request: NotesEvidenceRequest; targets: NotesTarget[]; limitation: string }
+export type NotesEvidenceRequest = { claim: string; question: string } & (
+  | { document: DocID; source_id?: never }
+  | { source_id: string; document?: never }
+)
+type NotesSourcePassage = { source_id: string; section: string; text: string; excerpt: boolean }
+export type NotesDependencyObservation = { request: NotesEvidenceRequest; targets: NotesTarget[]; sources?: NotesSourcePassage[]; limitation: string }
 export type NotesDependencyResult =
   | { status: "resolved"; evidence: NotesContext[]; limitation: string; observation: NotesDependencyObservation }
   | { status: "failed"; reason: string }
@@ -31,20 +37,24 @@ export function notesDependencyEvidence(observations: NotesDependencyObservation
   return [{ name: "dependency_evidence", text: JSON.stringify({
     role: "Evidence for checking the original prose owner, not an additional explanation owner. Initial evidence is historical; current accepted evidence controls present-body claims. Every original claim, question and actual inspection limitation remains separate. The unchanged or scoped rewritten prose must still pass its ordinary checker.",
     scope: "Selected canonical passages and their material nearby qualifications only. A selection, empty limitation or EOF alone never establishes document-wide absence, an exact global count, resolution or approval. An observation's limitation is not a finding that its claim is false.",
-    observations, context: unique,
+    observations: observations.map(({ sources: _sources, ...observation }) => observation), context: unique,
+    sources: [...new Map(observations.flatMap(observation => observation.sources ?? []).map(source => [`${source.source_id}\0${source.text}`, source])).values()],
   }) }]
 }
 
 /** Missing packet evidence is not a false claim. Bind each lookup to one
  * actual prose claim and a planned document, without deciding its truth. */
-export function checkNotesEvidenceRequest(value: unknown, bodies: Pick<NotesBody, "document">[], prose: string): { request?: NotesEvidenceRequest; issues: string[] } {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return { issues: ["request: return one object with document, claim and question."] }
+export function checkNotesEvidenceRequest(value: unknown, bodies: Pick<NotesBody, "document">[], prose: string, sources: string[] = []): { request?: NotesEvidenceRequest; issues: string[] } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { issues: ["request: return one object with exactly one document or source_id, claim and question."] }
   const row = value as Record<string, unknown>
-  if (!bodies.some(body => body.document === row.document)) return { issues: [`request.document=${JSON.stringify(row.document)}: select one planned document ID. Planned document IDs: ${bodies.map(body => body.document).join(", ") || "none available"}.`] }
+  if ((typeof row.document === "string") === (typeof row.source_id === "string"))
+    return { issues: ["request: select exactly one document (current planned body) or source_id (original matter source), not both."] }
+  if (row.source_id !== undefined && !sources.includes(row.source_id as string)) return { issues: [`request.source_id=${JSON.stringify(row.source_id)}: select an exact canonical source ID. Source IDs: ${sources.join(", ") || "none available"}.`] }
+  if (row.source_id === undefined && !bodies.some(body => body.document === row.document)) return { issues: [`request.document=${JSON.stringify(row.document)}: select one planned document ID. Planned document IDs: ${bodies.map(body => body.document).join(", ") || "none available"}.`] }
   if (typeof row.claim !== "string" || !row.claim.trim() || !prose.includes(row.claim))
     return { issues: ["request.claim: copy a nonempty exact span from proposed_prose, including capitalization and punctuation. Do not paraphrase, normalize or change the prose; correct only this request field."] }
-  if (typeof row.question !== "string" || !row.question.trim()) return { issues: ["request.question: ask one concrete question about the missing current-body evidence."] }
-  return { request: { document: row.document as DocID, claim: row.claim, question: row.question.trim() }, issues: [] }
+  if (typeof row.question !== "string" || !row.question.trim()) return { issues: ["request.question: ask one concrete question about the missing dependency evidence."] }
+  return { request: { ...(typeof row.source_id === "string" ? { source_id: row.source_id } : { document: row.document as DocID }), claim: row.claim, question: row.question.trim() }, issues: [] }
 }
 
 /** One native read-only selection job. Its answer locates evidence; only code
@@ -53,8 +63,9 @@ export function checkNotesEvidenceRequest(value: unknown, bodies: Pick<NotesBody
 export async function resolveFocusedNotesDependency(directory: string, state: LeanState, deps: LeanDeps,
   input: { id: string; text: string }, prose: string, request: NotesEvidenceRequest, bodies: NotesBody[],
   progress: (patch: Partial<LeanStageState>) => void, observations: NotesDependencyObservation[] = []): Promise<NotesDependencyResult> {
-  const validated = checkNotesEvidenceRequest(request, bodies, prose)
+  const validated = checkNotesEvidenceRequest(request, bodies, prose, matterSourceIDs(directory))
   if (!validated.request) return { status: "failed", reason: validated.issues.join(" ") }
+  if (request.source_id !== undefined) return resolveNotesSourceDependency(directory, state, deps, input, request, progress)
   const body = bodies.find(body => body.document === request.document)!
   const agent = LEAN_STAGE_AGENTS.notesEvidence
   const step = `${input.id}:dependency-evidence`
@@ -99,4 +110,76 @@ export async function resolveFocusedNotesDependency(directory: string, state: Le
     }) }] }
   }
   return { status: "failed", reason: `The dependency lookup for ${input.id} supplied no valid selection after ${LEAN_MAX_RETRIES} retries: ${issues.join(" ")}` }
+}
+
+/** Copy canonical source context around a verified locator quotation. The
+ * selected words locate evidence; they are never accepted as model-authored
+ * source text. A bounded window is explicitly an excerpt, not completeness. */
+function sourcePassage(directory: string, source_id: string, quote: string): NotesSourcePassage | undefined {
+  const hit = verifyQuote({ directory, document: source_id, quote }).hits.find(hit => hit.doc === source_id)
+  if (!hit) return
+  if (hit.verbatim.length <= 4_000) return { source_id, section: hit.section, text: hit.verbatim, excerpt: false }
+  for (const reading of sourceReadings(source_id)) {
+    const normalized = normalizeWithMap(hit.verbatim, reading)
+    const needle = quotePlaces(normalized.text, normalize(quote), { first: true })
+    const at = needle.places[0]
+    if (at === undefined) continue
+    const start = normalized.map[at], end = normalized.end[at + needle.length - 1]
+    if (start === undefined || end === undefined || end - start > 4_000) continue
+    const padding = Math.floor((4_000 - (end - start)) / 2)
+    const from = Math.max(0, start - padding), to = Math.min(hit.verbatim.length, end + padding)
+    return { source_id, section: hit.section, text: hit.verbatim.slice(from, to), excerpt: true }
+  }
+}
+
+/** A separate source selection uses the same read-only evidence role and
+ * quote-verification primitive as other source-grounded checks. It does not
+ * give the verifier tools or silently trust a writer's unseen retrieval. */
+async function resolveNotesSourceDependency(directory: string, state: LeanState, deps: LeanDeps,
+  input: { id: string }, request: NotesEvidenceRequest & { source_id: string },
+  progress: (patch: Partial<LeanStageState>) => void): Promise<NotesDependencyResult> {
+  const agent = LEAN_STAGE_AGENTS.notesEvidence
+  const step = `${input.id}:source-evidence`
+  const sessionID = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent,
+    title: stepSessionTitle(directory, "finalize", step), model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
+  progress({ session_ids: [sessionID] })
+  const contract = 'Return only {"quotes":[{"source_id":"the requested exact source ID","quote":"exact locating words"}],"limitation":"actual inspection limitation, or empty"}. Select at most four bounded quotations that support or contradict the claim, retaining material qualifications. Each quote is at most 4000 characters. If unavailable return no quotes and the actual limitation; missing inspection never establishes a false claim.'
+  const prompt = [
+    tagged("source_dependency_lookup", "Inspect one original matter source for the requested prose claim and its material qualifications. Select exact quotations as locations, whether supporting or contradicting the claim. Code verifies those locations and supplies canonical surrounding source text to the independent checker. Do not decide the claim's truth, draft notes, supply missing facts or grant approval."),
+    tagged("evidence_request", escapeTagOpeners(JSON.stringify(request))),
+    tagged("retrieval_scope", "Use read-document or search-document on the exact requested source_id. Do not inspect the whole matter. A retrieved source passage does not change the original section's owner scope. Report any material qualification you could not inspect as a limitation."),
+    tagged("output_contract", contract),
+  ].join("\n\n")
+  let issues: string[] = []
+  for (let attempt = 0; attempt <= LEAN_MAX_RETRIES; attempt++) {
+    appendLeanEvent(directory, { stage: "finalize", step, event: attempt ? "retry" : "model_call", attempt, session_id: sessionID })
+    const asked = performance.now()
+    const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: attempt
+      ? `Correct only the source-selection reply. ${issues.join(" ")}\n${contract}` : prompt })
+    const answered = performance.now()
+    const parsed = parseJsonObject(reply)
+    const row = parsed.ok ? parsed.value : undefined
+    issues = []
+    const sources: NotesSourcePassage[] = []
+    if (!row || !Array.isArray(row.quotes) || row.quotes.length > 4 || typeof row.limitation !== "string")
+      issues.push("Return quotes (at most four) and limitation in the exact source-selection schema.")
+    else {
+      for (const [index, selected] of row.quotes.entries()) {
+        const value = selected && typeof selected === "object" ? selected as Record<string, unknown> : undefined
+        const passage = value?.source_id === request.source_id && typeof value.quote === "string" && value.quote.trim() && value.quote.length <= 4_000
+          ? sourcePassage(directory, request.source_id, value.quote) : undefined
+        if (!passage) issues.push(`quotes[${index}]: quote must locate exact existing words in requested source_id ${JSON.stringify(request.source_id)}; re-read the source. Do not invent text or select another source.`)
+        else sources.push(passage)
+      }
+      if (!sources.length && !row.limitation.trim()) issues.push("An empty quotes list requires the actual inspection limitation; it does not establish absence.")
+    }
+    progress({ calls: attempt + 1, attempts: attempt + 1, feedback: issues })
+    appendLeanEvent(directory, { stage: "finalize", step, event: "checker", attempt, issues,
+      wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
+    if (issues.length) continue
+    const limitation = (row!.limitation as string).trim()
+    const observation: NotesDependencyObservation = { request, targets: [], sources, limitation }
+    return { status: "resolved", limitation, observation, evidence: notesDependencyEvidence([observation], []) }
+  }
+  return { status: "failed", reason: `The source lookup for ${input.id} supplied no valid selection after ${LEAN_MAX_RETRIES} retries: ${issues.join(" ")}` }
 }

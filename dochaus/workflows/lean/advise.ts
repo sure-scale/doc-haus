@@ -10,6 +10,7 @@ import { retryPrompt, tagged } from "./prompts"
 import { REQUEST_SOURCE, isAnswerSource, matterSourceIDs, quoteFound, quoteMissIssue, sourceNameIssue } from "./quotes"
 import { scopeQuestionOffersNewDocument, scopeQuestionTitles } from "./package-coverage"
 import { matterClient } from "../../lib/matter-client"
+import { draftingAutoModeEnabled } from "../../lib/drafting-preferences"
 import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../lib/source-provenance"
 import { confirmationDocument, currentInstructions, INSTRUCTIONS_FILE, type Instruction, type InstructionDocument } from "./instructions"
 import { sourceText } from "./template-structure"
@@ -238,6 +239,7 @@ export function advisePrompt(directory: string, question: Question, siblings: Qu
     ...(question.kind !== "scope" && readLeanPlan(directory) ? [FIXED_PLAN] : []),
     tagged("existing_topics", [...new Set(readQuestions(directory).flatMap(row => row.group ? [row.group] : []))].join("\n") || "None. Reuse the same short topic for questions about the same point."),
     ...(question.stage === "intake" && question.kind === "fact" ? ["These choices govern how to handle missing evidence, not what the missing fact is. Neither choice supplies or verifies it. Recommend waiting when an existing instruction requires it; provisional drafting does not override a hold or authorise release. Obtaining evidence from another person remains the lawyer's task, not an action this run can carry out."] : []),
+    ...(question.stage === "intake" && question.kind === "fact" && draftingAutoModeEnabled() ? ["Drafting Auto mode is enabled for this installation: where the missing fact does not block a useful review draft, recommend the provisional choice so the work proceeds with the fact disclosed as an open item. Still recommend waiting where an instruction or hold requires it, or the fact is indispensable to the work. Recommending is not answering: the lawyer decides, and no choice supplies the fact or authorises release."] : []),
     tagged("question", `Kind: ${question.kind ?? "not stated"}\n${question.question}`),
     ...(question.context ? [tagged("context", question.context)] : []),
     ...(paragraph ? [tagged("affected_paragraph", paragraph)] : []),

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { quotedInParagraph } from "../../lib/list-label"
-import { checklistFindingSchema, checklistFindingRecovery, isDeliveryArtifactEvidence, type ChecklistItem } from "./checklist-contract"
+import { checklistFindingSchema, checklistFindingRecovery, checklistItemSchema, isDeliveryArtifactEvidence, type ChecklistItem } from "./checklist-contract"
 import { readChecklistAdjudicationCounterevidence, readEffectiveChecklistItems } from "./checklist-flow"
 import { checklistDeliveryEvidence } from "./checklist-document-context"
 import { normalize } from "../../lib/quote-verify"
@@ -11,6 +11,7 @@ import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { excerpt, openItem, withSourceSnapshot } from "./quotes"
 import { hashStageInputs, isReviewStage, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText, type LeanState, type OpenItem } from "./state"
 import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
+import { isProvisionalFactMarkerItem, PROVISIONAL_FACT_MARKER_REPAIR_STANDARD } from "./provisional-fact-markers"
 
 // Repair inputs for the changes stage. The changes stage owns every fixable
 // defect in the body: unsupported content found in the draft, and whatever the
@@ -134,6 +135,17 @@ function checklistItemIDs(items: OpenItem[]) {
   })
 }
 
+/** Whether a checklist repair item is the canonical product marker duty.
+ * Identity is reconstructed from permission and scope, never from the detail's
+ * wording or a reserved prefix, so a copied assessment cannot opt into the duty. */
+function markerDutyRepair(directory: string, item: OpenItem) {
+  if (item.stage !== "checklist-check") return false
+  try {
+    const value = JSON.parse(item.detail.slice(item.detail.indexOf("\n") + 1)) as { item_id?: unknown; item?: unknown }
+    return typeof value.item_id === "string" && isProvisionalFactMarkerItem(directory, value.item_id, checklistItemSchema.parse(value.item))
+  } catch { return false }
+}
+
 /** Last admitted repair input for this document, while its non-repair inputs
  * remain current. Retained context is not a new blocking finding or admission. */
 export function documentRepairs(directory: string, document: DocID) {
@@ -184,6 +196,12 @@ export function changesRepairSections(directory: string, document: DocID, { audi
     ...(documentRepairs(directory, document)?.items ?? []),
   ]
   const checklistFindings = required.filter(item => item.stage === "checklist-check")
+  // The product marker duty is a verified handling requirement, not an unverified
+  // adverse assessment: it gets its own standard tag so the two framings never
+  // conflict inside one section. Identity is canonical, not the detail's wording.
+  const dutyIDs = new Set(checklistFindings.filter(item => markerDutyRepair(directory, item)).map(item => item.id))
+  const markerDuties = checklistFindings.filter(item => dutyIDs.has(item.id))
+  const otherChecklist = checklistFindings.filter(item => !dutyIDs.has(item.id))
   const defects = required.filter(item => item.stage !== "checklist-check")
   const unverifiedFindings = items.filter(item => isReviewStage(item.stage) && item.kind === "quote_miss")
   const review = audience === "review"
@@ -192,9 +210,13 @@ export function changesRepairSections(directory: string, document: DocID, { audi
       ...(review ? ["Findings the previous review raised; verify each against the projected body and report only what is still present:"] : REPAIR_INSTRUCTIONS),
       ...defects.map(item => `- ${item.id} ${pidLabel(item, paragraphs)}: ${item.detail}${quoteLabel(item)}`),
     ].join("\n")) : "",
-    checklistFindings.length ? tagged("checklist_findings", [
+    otherChecklist.length ? tagged("checklist_findings", [
       "These are unverified adverse assessments for source adjudication, not established defects. Reassess source support, applicability, qualifications and actual current text before proposing a correction. Preserve proposals as proposals; do not force an unsupported or uncertain duty into the document. Carry forward every still-supported existing amendment.",
-      ...checklistFindings.map(item => `- ${item.id} ${pidLabel(item, paragraphs)}: ${item.detail}${quoteLabel(item)}`),
+      ...otherChecklist.map(item => `- ${item.id} ${pidLabel(item, paragraphs)}: ${item.detail}${quoteLabel(item)}`),
+    ].join("\n")) : "",
+    markerDuties.length ? tagged("product_provisional_marker_duty", [
+      PROVISIONAL_FACT_MARKER_REPAIR_STANDARD,
+      ...markerDuties.map(item => `- ${item.id} ${pidLabel(item, paragraphs)}: ${item.detail}${quoteLabel(item)}`),
     ].join("\n")) : "",
     unverifiedFindings.length ? tagged("unverified_findings", [
       "These quotations in the review were not found in the named source. Check the source before relying on the finding:",
@@ -333,7 +355,9 @@ export function checklistRepairItems(directory: string, skip: (item_id: string, 
       if (!pid && initial.size === 1) pid = [...initial][0]
     }
     return [openItem("checklist-check", "omission", [
-      "Reassess this focused checklist assessment against actual sources, qualifications and current text; its adverse verdict is not authority or an instruction to force a change. Preserve proposals as proposals and unsupported requirements as uncertain. Do not invent approval or replacement wording from the verdict. Retain every still-supported existing amendment; correct or drop an earlier amendment if source adjudication shows it caused this defect.",
+      isProvisionalFactMarkerItem(directory, record.id, record.item)
+        ? "This is the product's verified provisional-fact marker duty, not an adverse substantive-law claim. Judge dependency from the exact current passages; reject only if current evidence actually disproves dependency, and keep uncertain dependency deferred. A marker or shared qualification elsewhere does not cure an unmarked dependent passage. Retain every still-supported existing amendment; do not answer the fact or infer approval."
+        : "Reassess this focused checklist assessment against actual sources, qualifications and current text; its adverse verdict is not authority or an instruction to force a change. Preserve proposals as proposals and unsupported requirements as uncertain. Do not invent approval or replacement wording from the verdict. Retain every still-supported existing amendment; correct or drop an earlier amendment if source adjudication shows it caused this defect.",
       JSON.stringify({ item_id: record.id, item: record.item, finding, current_artifact: `.dochaus/lean/${file}`, current_target_paragraphs: inspected }),
     ].join("\n"), { document: document.id, repair_target: "body", ...(pid ? { pid } : {}) })]
    }))

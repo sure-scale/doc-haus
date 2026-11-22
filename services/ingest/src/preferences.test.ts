@@ -2,7 +2,7 @@ import { afterAll, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { normalizePreferences, readFirmDraftingPreferences } from "../../../dochaus/lib/drafting-preferences"
+import { draftingAutoModeEnabled, normalizePreferences, readFirmDraftingPreferences } from "../../../dochaus/lib/drafting-preferences"
 
 const previous = process.env.WORKSPACE_ROOT
 const root = mkdtempSync(path.join(tmpdir(), "dochaus-research-preferences-"))
@@ -59,7 +59,7 @@ test("writer normalizes invalid drafting values before saving canonical JSON and
     telemetry: { retention_days: 21, retention_days_source: "user" },
   })
   expect(readDraftingPreferences()).toEqual(saved)
-  expect(JSON.parse(readFileSync(path.join(root, ".preferences/preferences.json"), "utf8"))).toEqual(saved)
+  expect(JSON.parse(readFileSync(path.join(root, ".preferences/preferences.json"), "utf8"))).toEqual({ ...saved, draftingAutoMode: false })
   const instructions = readFileSync(path.join(root, ".preferences/drafting.md"), "utf8")
   expect(readFirmDraftingPreferences()).toBe(instructions)
   expect(instructions).toContain("Use formal legal drafting style throughout.")
@@ -140,6 +140,35 @@ test("document matching IDs default on, round-trip a firm opt-out and stay off m
     expect(readDraftingPreferences().documentMatchingId).toBe(false)
   }
   expect(writeDraftingPreferences({ documentMatchingId: true }).documentMatchingId).toBe(true)
+})
+
+test("drafting Auto mode is file-only: off by default, preserved by ordinary saves, rejected through the settings API", () => {
+  expect(DEFAULT_DRAFTING.draftingAutoMode).toBeUndefined()
+  expect(normalizePreferences({}).draftingAutoMode).toBe(false)
+  const file = path.join(root, ".preferences", "preferences.json")
+  const flag = () => JSON.parse(readFileSync(file, "utf8")).draftingAutoMode
+  const saved = writeDraftingPreferences({ houseStyle: "Keep the saved house style." })
+  expect(saved).not.toHaveProperty("draftingAutoMode")
+  expect(readDraftingPreferences()).not.toHaveProperty("draftingAutoMode")
+  expect(flag()).toBe(false)
+  expect(draftingAutoModeEnabled()).toBe(false)
+  // The operator enables it in the file itself; the settings API cannot.
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), draftingAutoMode: true }))
+  expect(draftingAutoModeEnabled()).toBe(true)
+  expect(writeDraftingPreferences({ houseStyle: "An ordinary save keeps the flag." })).not.toHaveProperty("draftingAutoMode")
+  expect(flag()).toBe(true)
+  expect(writeDraftingPreferences({ ...readDraftingPreferences() })).not.toHaveProperty("draftingAutoMode")
+  expect(flag()).toBe(true)
+  for (const draftingAutoMode of [true, false, "true", 1, null, {}]) {
+    expect(() => writeDraftingPreferences({ draftingAutoMode })).toThrow("Drafting Auto mode is an installation setting kept in the preferences file; it is not part of the drafting settings.")
+    expect(flag()).toBe(true)
+  }
+  expect(readDraftingPreferences()).not.toHaveProperty("draftingAutoMode")
+  expect(readFirmDraftingPreferences()).not.toContain("draftingAutoMode")
+  expect(readFirmDraftingPreferences()).not.toContain("Auto mode")
+  // The operator turns it off the same way.
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), draftingAutoMode: false }))
+  expect(draftingAutoModeEnabled()).toBe(false)
 })
 
 test("malformed saved credentials are never echoed and cannot be overwritten by a partial save", () => {

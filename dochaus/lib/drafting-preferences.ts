@@ -62,6 +62,14 @@ export type DraftingPreferences = {
   // starts the full run ("off"). Read by the web app and never rendered into
   // drafting.md.
   quickDraftOffer: "ask" | "auto" | "off"
+  // Opt-in drafting Auto mode for the lean run: intake and question advice may
+  // proceed through non-blocking gaps as disclosed placeholders and open items
+  // instead of waiting on every omission. Approval, explicit holds,
+  // indispensable facts and conflicting instructions still go to the lawyer.
+  // A file-only installation setting: the settings API neither returns nor
+  // accepts it, so an ordinary settings save cannot switch it. Read per job
+  // (draftingAutoModeEnabled); never rendered into drafting.md.
+  draftingAutoMode?: boolean
   // Settings → Background agents: optional model jobs that start without a
   // click. Each sends matter text to the model. Read by ingest and the web app;
   // never rendered into drafting.md.
@@ -159,6 +167,7 @@ export function normalizePreferences(value: unknown): DraftingPreferences {
     documentMatchingId: input.documentMatchingId !== false,
     styleTemplate: normalizeStyleTemplate(input.styleTemplate),
     quickDraftOffer: input.quickDraftOffer === "auto" || input.quickDraftOffer === "off" ? input.quickDraftOffer : DEFAULT_DRAFTING.quickDraftOffer,
+    draftingAutoMode: input.draftingAutoMode === true,
     backgroundAgents: normalizeBackgroundAgents(input.backgroundAgents),
   }
 }
@@ -359,4 +368,12 @@ export function renderInstructions(prefs: DraftingPreferences, mode: "full" | "e
 export function readFirmDraftingPreferences(mode: "full" | "explanation" = "full", posture?: Posture, sources?: DateFormat) {
   const prefs = normalizePreferences(readFirmPreferences())
   return renderInstructions(posture ? { ...prefs, posture } : prefs, mode, sources)
+}
+
+/** Whether this installation opted into drafting Auto mode: the lean run's
+ * intake and question advice may proceed through non-blocking gaps with
+ * disclosed placeholders and open items. Read per job, so a save applies on
+ * the next one; off unless explicitly enabled. */
+export function draftingAutoModeEnabled(): boolean {
+  return normalizePreferences(readFirmPreferences()).draftingAutoMode === true
 }

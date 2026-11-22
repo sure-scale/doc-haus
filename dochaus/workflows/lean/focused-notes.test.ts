@@ -1,5 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
+import { Database } from "bun:sqlite"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
+import path from "node:path"
 import { delegatedDecisionsText, stagePrompt } from "./prompts"
 import { readLeanPlan, writeLeanPlan } from "./plan"
 import { leanFile, readLeanState, readLeanText, writeLeanText, writeOpenItems, writeQuestions, type OpenItem, type Question } from "./state"
@@ -7,7 +9,7 @@ import { paragraphSha256 } from "../../lib/drafting-amendment"
 import { checkDraftingNotes } from "./checks"
 import { assembleFocusedNotes, checkFocusedNotesSection, focusedNotesInputs, runFocusedNotes } from "./focused-notes"
 import { LEAN_MAX_RETRIES, type LeanDeps, type StageSessionPort } from "./stages"
-import { cleanupMatters, matter, SOURCE } from "./test-support"
+import { cleanupMatters, matter, SOURCE, SOURCE_TEXT } from "./test-support"
 import { nativeStageResult } from "./native-stage-result"
 import { NOTES_COVERAGE_AGENT } from "./focused-notes-coverage"
 
@@ -127,6 +129,92 @@ test("an unsupported section retries alone and an unchanged resume reuses every 
   const notes = readLeanText(directory, "drafting-notes.md")!
   for (const item of OPEN_POINTS) expect(notes).toContain(`[ref: ${item.id}]`)
   expect(notes).not.toContain("Remove the archive label")
+})
+
+test("a retry presents the exact rejected prose as the correction base", async () => {
+  const directory = noteMatter(OPEN_POINTS)
+  const qualification = "The seal design is not supplied; the custodian must supply it before the handover."
+  const rejected = `${qualification} The instruction is "Remove the archive label." [source: ${SOURCE}].`
+  const corrected = "The seal design remains for the custodian to supply before the handover."
+  const model = scriptedSections(input => input.initial.includes(OPEN_POINTS[1]!.detail) && input.attempt === 0 ? rejected : corrected)
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  const retried = model.prompts.filter(input => input.initial.includes(OPEN_POINTS[1]!.detail))
+  expect(retried).toHaveLength(2)
+  expect(retried[0]!.text).toContain("<section_kind>")
+  expect(retried[0]!.text).not.toContain("<rejected_prose>")
+  expect(retried[1]!.text).toContain("Correct only this section's errors")
+  expect(retried[1]!.text).toContain(`<rejected_prose>\n${rejected}\n</rejected_prose>`)
+  expect(retried[1]!.text).toContain("those words are not in that document")
+  for (const session of new Set(model.prompts.filter(input => !input.initial.includes(OPEN_POINTS[1]!.detail)).map(input => input.sessionID)))
+    expect(model.prompts.filter(input => input.sessionID === session)).toHaveLength(1)
+  const notes = readLeanText(directory, "drafting-notes.md")!
+  expect(notes).toContain(corrected)
+  expect(notes).not.toContain("Remove the archive label")
+})
+
+test("a coverage rewrite returns the rejected prose with the reconciled missing-content rule", async () => {
+  const directory = noteMatter()
+  const rejected = "The handover note is ready for the custodian."
+  const corrected = "The custodian must keep the archive label attached during the handover."
+  const model = scriptedSections(
+    input => input.initial.includes("<section_kind>\npassage\n") && input.attempt === 0 ? rejected : corrected,
+    text => JSON.stringify(text.includes(corrected)
+      ? { status: "pass", reason: "The synthetic section substantively explains its assigned point." }
+      : { status: "rewrite", reason: "The explanation omits the stated label instruction." }),
+  )
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  const retried = model.prompts.filter(input => input.initial.includes("<section_kind>\npassage\n"))
+  expect(retried).toHaveLength(2)
+  expect(retried[1]!.text).toContain(`<rejected_prose>\n${rejected}\n</rejected_prose>`)
+  expect(retried[1]!.text).toContain("The explanation omits the stated label instruction.")
+  expect(retried[1]!.text).toContain("the missing explanation must be written in this reply, not referenced from earlier text")
+  expect(retried[1]!.text).not.toContain("earlier or interrupted text cannot supply missing content")
+  expect(model.verifications.filter(text => text.includes(`<proposed_prose>\n${rejected}\n</proposed_prose>`))).toHaveLength(1)
+  expect(readLeanText(directory, "drafting-notes.md")).toContain(corrected)
+})
+
+test("a correction dropping a material qualification is rejected and the latest rejection becomes the base", async () => {
+  const directory = noteMatter()
+  const qualification = "The label colour is not supplied; the custodian must confirm it before the handover."
+  const first = `${qualification} The instruction is "Remove the archive label." [source: ${SOURCE}].`
+  const dropped = "The custodian must keep the archive label attached during the handover."
+  const corrected = `${qualification} ${dropped}`
+  const model = scriptedSections(
+    input => {
+      if (!input.initial.includes("<section_kind>\npassage\n")) return corrected
+      if (input.attempt === 0) return first
+      if (input.attempt === 1) return dropped
+      return corrected
+    },
+    text => JSON.stringify(text.includes(qualification)
+      ? { status: "pass", reason: "The synthetic section substantively explains its assigned point." }
+      : { status: "rewrite", reason: "The explanation omits the unresolved label-colour qualification." }),
+  )
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  const retried = model.prompts.filter(input => input.initial.includes("<section_kind>\npassage\n"))
+  expect(retried).toHaveLength(3)
+  expect(retried[1]!.text).toContain(`<rejected_prose>\n${first}\n</rejected_prose>`)
+  expect(retried[1]!.text).toContain("those words are not in that document")
+  expect(retried[2]!.text).toContain(`<rejected_prose>\n${dropped}\n</rejected_prose>`)
+  expect(retried[2]!.text).toContain("The explanation omits the unresolved label-colour qualification.")
+  expect(retried[2]!.text).not.toContain("Remove the archive label")
+  expect(model.verifications.filter(text => text.includes(`<proposed_prose>\n${dropped}\n</proposed_prose>`))).toHaveLength(1)
+  const notes = readLeanText(directory, "drafting-notes.md")!
+  expect(notes).toContain(qualification)
+  expect(notes).toContain(corrected)
+})
+
+test("an empty rejected reply supplies no correction base", async () => {
+  const directory = noteMatter(OPEN_POINTS)
+  const model = scriptedSections(input => input.initial.includes(OPEN_POINTS[1]!.detail) && input.attempt === 0
+    ? ""
+    : "The seal design remains for the custodian to supply.")
+  expect((await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})).status).toBe("done")
+  const retried = model.prompts.filter(input => input.initial.includes(OPEN_POINTS[1]!.detail))
+  expect(retried).toHaveLength(2)
+  expect(retried[1]!.text).toContain("Correct only this section's errors")
+  expect(retried[1]!.text).toContain("This notes section is empty")
+  expect(retried[1]!.text).not.toContain("<rejected_prose>")
 })
 
 test("a section exhausting its retries preserves accepted neighbors for recovery", async () => {
@@ -563,4 +651,198 @@ test("ready writer replies return to the event loop before submitting another ch
   await new Promise<void>(resolve => setImmediate(resolve))
   expect(retryObserved.length).toBeGreaterThan(1)
   expect(retryObserved.every(Boolean)).toBe(true)
+})
+
+// One owner's dependency admissions are pooled across its writer attempts. The
+// real-path control mirrors the observed finalize trace: three productive source
+// asks, then a current-body ask on unchanged prose; the intermediate writer
+// attempts draw rewrite verdicts and the last attempt adds distinct real
+// qualifications before the same current-body ask returns. Source-dependency
+// sessions fall through to the writer answer in this harness, so they are
+// scripted explicitly with verified canonical quotations.
+const PASSAGE_KIND = "<section_kind>\npassage\n"
+const GENERIC_SECTION = "The note preserves the container label instruction."
+const passVerdict = () => JSON.stringify({ status: "pass", reason: "The synthetic section substantively explains its assigned point." })
+const needsEvidence = (request: { source_id: string; claim: string; question: string } | { document: string; claim: string; question: string }) =>
+  JSON.stringify({ status: "needs-evidence", reason: "This concrete claim needs dependency evidence before the prose can be assessed.", request })
+const sourceQuoteReply = (quote: string) => JSON.stringify({ quotes: [{ source_id: SOURCE, quote }], limitation: "" })
+
+// noteMatter's source is the container instruction; these controls need a source
+// whose canonical text holds the quoted supply terms, so the read-only source
+// selector's quotations verify against the fixture index.
+function sourceNoteMatter() {
+  const directory = matter(SOURCE_TEXT, "Prepare a handover note for the archive custodian.")
+  writeLeanPlan(directory, [{ title: "Archive handover", purpose: "Explain the container handover.", parts: [{ heading: "Container", scope: "Label instruction." }] }])
+  const paragraphs = [row("p111111111111", "Keep the archive label on the container.")]
+  writeLeanText(directory, "d1/paragraphs.json", JSON.stringify(paragraphs))
+  writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify(paragraphs))
+  return directory
+}
+
+test("three productive source asks then a current-body ask on unchanged prose share one pooled admission budget", async () => {
+  const directory = sourceNoteMatter()
+  const delivery = "The supply terms require delivery within thirty days of the order date."
+  const payment = "Payment is due on delivery under the supply terms."
+  const supplier = "The supplier must deliver the goods as ordered."
+  const label = "The current handover keeps the archive label on the container."
+  const prose = `${delivery} ${payment} ${supplier} ${label}`
+  const bankQuestion = "Does the current accepted body retain the archive label instruction?"
+  const sourceAsks = [
+    { claim: delivery, question: "What delivery period do the supply terms state?" },
+    { claim: payment, question: "When do the supply terms make payment due?" },
+    { claim: supplier, question: "Who must deliver the goods under the supply terms?" },
+  ]
+  const quotes: Record<string, string> = {
+    "What delivery period do the supply terms state?": "within thirty days of the order date",
+    "When do the supply terms make payment due?": "Payment is due on delivery",
+    "Who must deliver the goods under the supply terms?": "The supplier shall deliver the goods",
+    "Does the delivery period run from the order date?": "thirty days of the order date",
+    "Is payment tied to delivery rather than the order date?": "Payment is due on delivery",
+  }
+  let checks = 0
+  const model = scriptedSections(input => {
+    if (input.initial.includes("<source_dependency_lookup>")) {
+      const request = JSON.parse(/<evidence_request>\n([\s\S]*?)\n<\/evidence_request>/.exec(input.text)![1]!) as { question: string }
+      return sourceQuoteReply(quotes[request.question]!)
+    }
+    if (input.initial.includes(PASSAGE_KIND)) return prose
+    return GENERIC_SECTION
+  }, text => {
+    if (!text.includes(PASSAGE_KIND)) return passVerdict()
+    checks++
+    if (checks <= 3) return needsEvidence({ source_id: SOURCE, ...sourceAsks[checks - 1]! })
+    if (checks === 4) return needsEvidence({ document: "d1", claim: label, question: bankQuestion })
+    // The current-body ask is answered only once its observation reaches the packet.
+    if (text.includes(bankQuestion)) return passVerdict()
+    if (checks <= 6) return JSON.stringify({ status: "rewrite", reason: "The prose still lacks the current-body qualification for the label claim." })
+    if (checks === 7) return needsEvidence({ source_id: SOURCE, claim: delivery, question: "Does the delivery period run from the order date?" })
+    if (checks === 8) return needsEvidence({ source_id: SOURCE, claim: payment, question: "Is payment tied to delivery rather than the order date?" })
+    if (checks === 9) return needsEvidence({ document: "d1", claim: label, question: "Is the label instruction unconditional in the current body?" })
+    return needsEvidence({ document: "d1", claim: label, question: bankQuestion })
+  }, () => JSON.stringify({ targets: [{ document: "d1", pids: ["p111111111111"] }], limitation: "" }))
+  const result = await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})
+  expect(result.status).toBe("done")
+  const writers = model.prompts.filter(input => input.initial.includes(PASSAGE_KIND))
+  expect(writers).toHaveLength(1)
+  expect(model.prompts.filter(input => input.initial.includes("<source_dependency_lookup>"))).toHaveLength(3)
+  expect(model.lookups).toHaveLength(1)
+  expect(checks).toBe(5)
+  expect(readLeanText(directory, "drafting-notes.md")).toContain(label)
+})
+
+test("an exact repeat evidence request returns the scope-rewrite limitation while a distinct question is still admitted", async () => {
+  const directory = sourceNoteMatter()
+  const claim = "The supply terms require delivery within thirty days of the order date."
+  const prose = `${claim} The current handover keeps the archive label on the container.`
+  const scoped = `${claim} The delivery period is stated in the supply terms; the current handover keeps the archive label on the container.`
+  const firstQuestion = "What delivery period do the supply terms state?"
+  const secondQuestion = "Does the delivery period run from the order date rather than shipment?"
+  let checks = 0
+  const model = scriptedSections(input => {
+    if (input.initial.includes("<source_dependency_lookup>")) return sourceQuoteReply("within thirty days of the order date")
+    if (input.initial.includes(PASSAGE_KIND)) return input.attempt ? scoped : prose
+    return GENERIC_SECTION
+  }, text => {
+    if (!text.includes(PASSAGE_KIND)) return passVerdict()
+    checks++
+    if (checks === 1) return needsEvidence({ source_id: SOURCE, claim, question: firstQuestion })
+    if (checks === 2) return needsEvidence({ source_id: SOURCE, claim, question: firstQuestion })
+    if (checks === 3) return needsEvidence({ source_id: SOURCE, claim, question: secondQuestion })
+    return passVerdict()
+  })
+  const result = await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})
+  expect(result.status).toBe("done")
+  const writers = model.prompts.filter(input => input.initial.includes(PASSAGE_KIND))
+  expect(writers).toHaveLength(2)
+  expect(writers[1]!.text).toContain("<scope_rewrite>")
+  expect(writers[1]!.text).toContain(firstQuestion)
+  expect(writers[1]!.text).toContain("This exact claim remains unsupported at this inspection scope")
+  expect(model.prompts.filter(input => input.initial.includes("<source_dependency_lookup>"))).toHaveLength(2)
+  expect(readLeanText(directory, "drafting-notes.md")).toContain(scoped)
+})
+
+test("the pooled admission ceiling blocks the thirteenth distinct request at twelve", async () => {
+  const directory = sourceNoteMatter()
+  const claim = "The supply terms require delivery within thirty days of the order date."
+  const prose = `${claim} The current handover keeps the archive label on the container.`
+  const scoped = `${claim} The delivery period is stated in the supply terms; the current handover keeps the archive label on the container.`
+  const questions = Array.from({ length: 13 }, (_, index) => `Delivery qualification question ${index + 1}?`)
+  let checks = 0
+  const model = scriptedSections(input => {
+    if (input.initial.includes("<source_dependency_lookup>")) return sourceQuoteReply("within thirty days of the order date")
+    if (input.initial.includes(PASSAGE_KIND)) return input.attempt ? scoped : prose
+    return GENERIC_SECTION
+  }, text => {
+    if (!text.includes(PASSAGE_KIND)) return passVerdict()
+    checks++
+    if (checks <= 13) return needsEvidence({ source_id: SOURCE, claim, question: questions[checks - 1]! })
+    return passVerdict()
+  })
+  const result = await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})
+  expect(result.status).toBe("done")
+  expect(LEAN_MAX_RETRIES * (LEAN_MAX_RETRIES + 1)).toBe(12)
+  expect(model.prompts.filter(input => input.initial.includes("<source_dependency_lookup>"))).toHaveLength(12)
+  const writers = model.prompts.filter(input => input.initial.includes(PASSAGE_KIND))
+  expect(writers).toHaveLength(2)
+  expect(writers[1]!.text).toContain("<scope_rewrite>")
+  expect(writers[1]!.text).toContain(questions[12]!)
+  expect(readLeanText(directory, "drafting-notes.md")).toContain(scoped)
+})
+
+test("a contradicting source admission never accepts the prose; the coverage recheck decides", async () => {
+  const directory = sourceNoteMatter()
+  const wrong = "The supply terms require payment before delivery."
+  const prose = `${wrong} The current handover keeps the archive label on the container.`
+  const corrected = "The supply terms make payment due on delivery. The current handover keeps the archive label on the container."
+  let checks = 0
+  const model = scriptedSections(input => {
+    if (input.initial.includes("<source_dependency_lookup>")) return sourceQuoteReply("Payment is due on delivery")
+    if (input.initial.includes(PASSAGE_KIND)) return input.attempt ? corrected : prose
+    return GENERIC_SECTION
+  }, text => {
+    if (!text.includes(PASSAGE_KIND)) return passVerdict()
+    checks++
+    if (checks === 1) return needsEvidence({ source_id: SOURCE, claim: wrong, question: "When do the supply terms make payment due?" })
+    if (text.includes(`<proposed_prose>\n${prose}\n</proposed_prose>`)) return JSON.stringify({ status: "rewrite", reason: "The supply terms state payment is due on delivery, not before delivery; correct the claim." })
+    return passVerdict()
+  })
+  const result = await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})
+  expect(result.status).toBe("done")
+  expect(model.prompts.filter(input => input.initial.includes("<source_dependency_lookup>"))).toHaveLength(1)
+  const writers = model.prompts.filter(input => input.initial.includes(PASSAGE_KIND))
+  expect(writers).toHaveLength(2)
+  expect(writers[1]!.text).toContain("payment is due on delivery, not before delivery")
+  const notes = readLeanText(directory, "drafting-notes.md")!
+  expect(notes).toContain(corrected)
+  expect(notes).not.toContain(wrong)
+})
+
+test("a source named like a planned document id remains a distinct evidence kind", async () => {
+  const directory = sourceNoteMatter()
+  // Index a second canonical source literally named "d1": its identity equals
+  // the planned document id, but a source ask is a different evidence kind and
+  // the same claim/question must not suppress it as a repeat.
+  const db = new Database(path.join(directory, ".dochaus", "legal.db"))
+  try { db.query("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)").run("d1", "1", SOURCE_TEXT, 0, SOURCE_TEXT.length) } finally { db.close() }
+  const claim = "The supply terms require delivery within thirty days of the order date."
+  const question = "What delivery period do the supply terms state?"
+  const prose = `${claim} The current handover keeps the archive label on the container.`
+  let checks = 0
+  const model = scriptedSections(input => {
+    if (input.initial.includes("<source_dependency_lookup>")) return JSON.stringify({ quotes: [{ source_id: "d1", quote: "The supplier shall deliver the goods" }], limitation: "" })
+    if (input.initial.includes(PASSAGE_KIND)) return prose
+    return GENERIC_SECTION
+  }, text => {
+    if (!text.includes(PASSAGE_KIND)) return passVerdict()
+    checks++
+    if (checks === 1) return needsEvidence({ document: "d1", claim, question })
+    // The source observation is the only packet content carrying its source_id.
+    if (!text.includes('"source_id":"d1"')) return needsEvidence({ source_id: "d1", claim, question })
+    return passVerdict()
+  }, () => JSON.stringify({ targets: [{ document: "d1", pids: ["p111111111111"] }], limitation: "" }))
+  const result = await runFocusedNotes(directory, readLeanState(directory)!, model.deps, () => {})
+  expect(result.status).toBe("done")
+  expect(checks).toBe(3)
+  expect(model.lookups).toHaveLength(1)
+  expect(model.prompts.filter(input => input.initial.includes("<source_dependency_lookup>"))).toHaveLength(1)
 })

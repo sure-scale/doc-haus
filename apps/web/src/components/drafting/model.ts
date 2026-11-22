@@ -420,17 +420,19 @@ export function addedDraftNote(status: LeanDraftingStatus | undefined, name: str
 
 /** The draft a combined document's one file belongs to. Ingest reports the
  * file with the document's id and the exact names it registered the body and
- * notes under; the file is offered only while the summary lists it as the
- * document's registered combined row under that name, and only rows that are
- * exactly those parts carry it, so no file is taken for the combined one by
- * its name and no other "- clean" row is guessed at. */
+ * the memo under; the memo is the plan's authored memo document's body, or the
+ * drafting notes for a legacy plan (combinedParts). The file is offered only
+ * while the summary lists it as the document's registered combined row under
+ * that name, and only rows that are exactly those parts carry it, so no file
+ * is taken for the combined one by its name and no other "- clean" row is
+ * guessed at. */
 function combinedBody(status: LeanDraftingStatus, documents: LeanDocument[]) {
   const output = status.combined_output
   if (!output) return undefined
   const saved = documents.some((row) => row.kind === "combined" && row.document === output.document && row.deliverable === output.file)
   const body = documents.find((row) => row.kind === "body" && row.document === output.document && row.deliverable === output.body)
-  const notes = documents.some((row) => row.kind === "drafting_notes" && row.deliverable === output.notes)
-  return saved && body && notes ? { body, file: output.file } : undefined
+  const memo = documents.some((row) => (row.kind === "drafting_notes" || row.kind === "body") && row.deliverable === output.notes)
+  return saved && body && memo ? { body, file: output.file } : undefined
 }
 
 /** The matter's generated files as drafted groups: what the run's status names
