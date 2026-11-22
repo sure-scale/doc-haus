@@ -329,7 +329,7 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
     const client = matterClient(directory)
     // Intake reads the discrepancy record without the gaps a source supplies (intakeDiscrepancy).
     // Auto mode re-keys intake only when enabled, so an off installation keeps its key.
-    return [...outlineInputs(directory, step), file(INSTRUCTIONS_FILE), { name: "discrepancy.json", bytes: intakeDiscrepancy(directory) }, ...(client ? [{ name: "matter-client", bytes: client }] : []), ...(draftingAutoModeEnabled() ? [{ name: "drafting-auto-mode", bytes: "on" }] : [])]
+    return [...outlineInputs(directory, step), file(INSTRUCTIONS_FILE), { name: "discrepancy.json", bytes: intakeDiscrepancy(directory) }, ...(client ? [{ name: "matter-client", bytes: client }] : []), ...(draftingAutoModeEnabled() ? [{ name: "drafting-auto-mode", bytes: "review-draft-v2" }] : [])]
   }
   // The act record reads the instructions, the sources and the approved research; it runs before the spine and reads no discrepancy record.
   if (step === "acts") return [...outlineInputs(directory, step), file("intake.json"), file("research.json"), file("research-review.json"), { name: "act-record-contract", bytes: ACT_RECORD_CONTRACT }]
