@@ -37,7 +37,7 @@ afterAll(() => {
 const quiet = { ...happyPath, [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: noChanges }
 const AUTO = "Drafting Auto mode is enabled for this installation:"
 const OFF_RULE = "ask a material gap marked lawyer unless an answer or instruction now settles it; the others stay disclosed placeholders or open items."
-const REVIEW_READY = "Return ready when the draft can serve its purpose for review with a missing or disputed fact visibly marked."
+const REVIEW_READY = "Otherwise return ready when the draft can serve its purpose for review with a missing or disputed fact visibly marked."
 
 // The shared smoke fixture: a request that needs a delivery location no source
 // records. The gap rides the discrepancy record, the spine and the review; the
@@ -104,10 +104,10 @@ test("Auto readiness uses the original request and only changes the intake key",
   const onPrompt = prompt()
   expect(onPrompt).toContain(AUTO)
   expect(onPrompt).toContain(`Original request:\n\n${LOCATION_REQUEST}`)
-  expect(onPrompt).toContain("checking the original request, later instructions and recorded answers")
+  expect(onPrompt).toContain("check the original request, later instructions and recorded answers first")
   expect(onPrompt).toContain(REVIEW_READY)
   expect(onPrompt).toContain("A fact may be essential before the document is used and still be left open for review.")
-  expect(onPrompt).toContain("grant a required approval, or lift a hold before useful drafting can proceed")
+  expect(onPrompt).toContain("If the lawyer reserved a decision that the requested draft must carry out, ask for that decision before drafting")
   expect(onPrompt).not.toContain("Ask unresolved material decisions together")
   expect(onPrompt).not.toContain(OFF_RULE)
   expect(acceptResearchReply(directory, "intake", "{}").issues[0]).toContain("If the lawyer's instructions allow a useful review draft with a visible gap, return ready.")
