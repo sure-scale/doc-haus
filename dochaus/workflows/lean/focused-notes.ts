@@ -5,7 +5,7 @@ import { comparisonDescription } from "./comparison"
 import { deliveryArtifactEvidence, requestedMemo } from "./deliverables"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { checkFocusedNotesCoverage } from "./focused-notes-coverage"
-import { notesDependencyEvidence, resolveFocusedNotesDependency, type NotesDependencyObservation } from "./focused-notes-dependencies"
+import { notesDependencyEvidence, resolveFocusedNotesDependency, type NotesDependencyObservation, type NotesEvidenceRequest } from "./focused-notes-dependencies"
 import { assembleNotesOwnerEvidence, checkNotesInspection, checkNotesTargets, currentNotesPids, notesCurrentEvidence, notesEvidencePlan, NOTES_CURRENT_EVIDENCE_VERSION, NOTES_INSPECTION_OUTPUT_CONTRACT, type NotesBody } from "./focused-notes-evidence"
 import { raisedFindings } from "./review-findings"
 import { matterDatesBlock } from "./intake"
@@ -24,6 +24,17 @@ import { answeredQuestionsText, delegatedQuestions, hashStageInputs, readLeanJso
 const NOTES_SECTIONS_CONTRACT = "focused-notes-sections-2-checked-explanation"
 const NOTES_OWNER_CONTRACT = "one-semantic-owner-1-inspected-dependencies"
 const PASSAGE_CHARS = 4_000
+// One owner's dependency admissions are pooled across its writer attempts: the
+// unchanged maximum is LEAN_MAX_RETRIES inspection rounds for each of the
+// LEAN_MAX_RETRIES + 1 writer attempts. A resolved lookup is evidence, never an
+// accepting verdict; an exact repeat of an already-inspected request (same
+// evidence kind and id, anchored claim and question) returns the existing
+// scope-rewrite limitation rather than cycling. A distinct claim or question
+// remains a distinct real qualification and is still admitted. The kind is part
+// of the identity: a source named like a planned document id is a different
+// evidence kind, not a repeat.
+const NOTES_DEPENDENCY_MAX = LEAN_MAX_RETRIES * (LEAN_MAX_RETRIES + 1)
+const notesEvidenceRequestKey = (request: NotesEvidenceRequest) => `${request.document ?? ""}\0${request.source_id ?? ""}\0${request.claim}\0${request.question}`
 
 export type FocusedNotesInput = {
   id: string
@@ -442,7 +453,7 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
           // Evidence selection is separate from rewriting: inspect one actual
           // claim, then check the same prose with trusted current passages.
           // A request or an unanswered inspection is never an accepting verdict.
-          for (let round = 0; ; round++) {
+          for (;;) {
             let observedCalls = 0
             const observe = (patch: Partial<LeanStageState>) => {
               for (const id of patch.session_ids ?? []) if (!sessions.includes(id)) sessions.push(id)
@@ -458,7 +469,11 @@ export async function runFocusedNotes(directory: string, state: LeanState, deps:
               progress({ feedback })
               break
             }
-            if (round >= LEAN_MAX_RETRIES) {
+            // Pool the admission budget across this owner's writer attempts and
+            // stop an exact repeat request from cycling: both return the existing
+            // scope-rewrite limitation, never an accepting verdict.
+            const repeated = dependencies.some(observation => notesEvidenceRequestKey(observation.request) === notesEvidenceRequestKey(coverage.request))
+            if (repeated || dependencies.length >= NOTES_DEPENDENCY_MAX) {
               feedback = [
                 tagged("scope_rewrite", escapeTagOpeners(json({ claim: coverage.request.claim, question: coverage.request.question, reason: coverage.reason }))),
                 "This exact claim remains unsupported at this inspection scope; that does not establish that it is false. Reconsider its scope against the actual accepted evidence and recorded inspection limits below. Return the complete original section, preserving its supported explanation, uncertainty, practical consequence and required action. Narrow or omit an optional unsupported assertion instead of claiming global absence, a complete count or completed approval from a subset.",
