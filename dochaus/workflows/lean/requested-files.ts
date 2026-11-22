@@ -124,7 +124,8 @@ export function requestedFilesPrompt(directory: string, documents: PlannedDocume
       "\"quote\": the lawyer's exact words describing this requested file, copied verbatim, including the words that give its name. A contextual permission to accept the plan is not a replacement for those source words.",
       "- Put each planned document in one file at most. List only the files the lawyer's words ask for, and in each only what those words put in it.",
       "- A file the lawyer's words name as the output of the whole request holds everything the run drafts for it, including each planned document the plan adds to carry the request out; a file they name for one document holds only that document. " +
-      "Put a planned document in a file only where the lawyer's words place it.",
+      "Put a planned document in a file only where the lawyer's words place it. " +
+      "An instruction to draft or authorize a companion instrument governs its substance and executing party, not its delivery: it goes in the file the words name for the whole request, and only an instruction giving that document its own delivery — a file, recipient or access of its own — places it in a file apart.",
       '- For each file also give "answered_question": the exact ID of an answered requested-files question in <answers> whose actual answer permits the delivery that question described as planned for this file, and still permits it under the current instructions, or null when none applies or applicability is uncertain. An answer asking for delivery as requested does not permit keeping a mismatching plan. Read the answer itself, not just the question or shared words. An unrelated update leaves an applicable answer standing; changed or qualified instructions may supersede it. Never transfer an answer to another file. The question must describe this same complete file (its contents, order and name).',
       `- ${FILES_SHAPE}`,
       "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply.",
@@ -374,7 +375,8 @@ export function unheldDocumentPrompt(directory: string, document: PlannedDocumen
     tagged("file", `The one file the lawyer asks to receive${file.name ? `, ${file.name}` : ""}, in these words: "${file.quote}"`),
     tagged("output_contract", [
       "- Answer from the request, the lawyer's updates and answers only.",
-      "- The plan may add a document the lawyer's words do not ask for, to carry out what they ask; it then goes in the file in <file>. Words that ask for an act or term the document carries out, or for the file in <file>, do not ask for this document apart.",
+      "- The plan may add a document the lawyer's words do not ask for, to carry out what they ask; it then goes in the file in <file>. Words that ask for an act or term the document carries out, or for the file in <file>, do not ask for this document apart. " +
+      "An instruction to draft or authorize this document as a companion governs its substance and executing party, not its delivery; only an instruction giving it its own delivery — a file, recipient or access of its own — asks to receive it apart.",
       '- "quote": the lawyer\'s exact words, copied verbatim, that ask to receive this document as a file apart from the file in <file>, or null when no words do.',
       '- "apart": true when "quote" gives such words; false when it is null.',
       `- ${APART_SHAPE}`,
