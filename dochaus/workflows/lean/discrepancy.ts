@@ -36,7 +36,7 @@ type Gaps = { key: string; gaps: Gap[]; limitations: string[] }
 /** A job's accepted answer, or how the stage stops. */
 type Outcome<T> = { value: T } | { stop: Extract<StageRun, { status: "failed" | "restart" }> }
 
-/** The stage's inputs without the instruction list: all DIFFERENCES and VERIFY read. */
+/** The stage's inputs without the instruction list, which only GAPS reads. */
 function sourceInputs(directory: string) {
   return stageInputs(directory, "discrepancy").filter(part => part.name !== INSTRUCTIONS_FILE)
 }
@@ -80,6 +80,8 @@ export async function runDiscrepancyStage(directory: string, state: LeanState, d
   const failed = (label: string, issues: string[]) => ({ stop: { status: "failed" as const, reason: `discrepancy: ${label} checker failed after ${LEAN_MAX_RETRIES} retries: ${issues.join(" ")}` } })
   const restart = { stop: { status: "restart" as const } }
   const inputs = sourceInputs(directory)
+  // The verification jobs read their assigned claim and sources, not the draft availability block.
+  const verifyInputs = inputs.filter(part => part.name !== "working-draft-context")
   const keys = { differences: hashStageInputs("discrepancy", LEAN_PROMPT_VERSION, inputs), gaps: gapsKey(directory) }
   // Each answer is saved only under the inputs it was asked on; a change meanwhile restarts the walk.
   const sourcesChanged = () => differencesKey(directory) !== keys.differences
@@ -133,7 +135,7 @@ export async function runDiscrepancyStage(directory: string, state: LeanState, d
   }
 
   // A gap whose verify job never passes stays unverified (assembleDiscrepancy).
-  const verifyGaps = (candidates: Gap[]) => verifyEach<Gap, GapVerify>(VERIFY_FILE, "verify gap", candidates, gap => verifyKey(inputs, gap), gap => gapVerifyPrompt(directory, gap),
+  const verifyGaps = (candidates: Gap[]) => verifyEach<Gap, GapVerify>(VERIFY_FILE, "verify gap", candidates, gap => verifyKey(verifyInputs, gap), gap => gapVerifyPrompt(directory, gap),
     (gap, value) => checkGapVerify(directory, value, gap),
     value => ({ supplied: value.supplied as boolean, evidence: value.evidence as SourceQuote[], limitations: value.limitations as string[] }))
 
@@ -141,7 +143,7 @@ export async function runDiscrepancyStage(directory: string, state: LeanState, d
   // when its verify job never passed, or when it quotes no passage to compare.
   const verifyDifferences = async (entries: Discrepancy[]): Promise<Outcome<(boolean | undefined)[]>> => {
     const quoted = entries.filter(entry => entry.evidence.length)
-    const verified = await verifyEach(DIFFERS_FILE, "verify difference", quoted, entry => differsKey(inputs, entry), differenceVerifyPrompt,
+    const verified = await verifyEach(DIFFERS_FILE, "verify difference", quoted, entry => differsKey(verifyInputs, entry), differenceVerifyPrompt,
       (_entry, value) => checkDifferenceVerify(value), value => ({ differs: value.differs as boolean }))
     if ("stop" in verified) return verified
     const answers = new Map(quoted.map((entry, index) => [entry, verified.value[index]?.differs]))

@@ -47,7 +47,7 @@ import { askedAtOrBefore, reviewGuidance, reviewStages, FIRST_DOCUMENT, planActi
 import { acceptReviewReply, forwardedFindings, readReviewRecord } from "./review-findings"
 import { templateSource } from "./template-contract"
 import { INSTRUCTIONS_FILE, instructionsOutputValid } from "./instructions"
-import { completedDocumentsText, delegatedDecisionsText, packageCompositionBlock } from "./prompts"
+import { completedDocumentsText, delegatedDecisionsText, packageCompositionBlock, workingDraftInputBlock } from "./prompts"
 import { matterSourceBasis, matterSourceIDs } from "./quotes"
 import { documentRepairs, LEAN_MAX_SUBSTANTIVE_REPAIRS, readRepairRound, unverifiedMarkingBasis } from "./repairs"
 import {
@@ -313,6 +313,14 @@ function keyedQuestions(directory: string, gate = false) {
     .toSorted((a, b) => a.id.localeCompare(b.id)).map(questionContent))
 }
 
+/** The pre-draft jobs that report the working draft's presence read this
+ * explicit context, so a job cached before that report re-runs; a run without
+ * a draft keeps its keys. */
+function workingDraftContext(directory: string) {
+  const bytes = workingDraftInputBlock(directory)
+  return bytes ? [{ name: "working-draft-context", bytes }] : []
+}
+
 function baseStageInputs(directory: string, step: StepID, options: { repairContext?: false; researchGaps?: false }): { name: string; bytes: string | Uint8Array }[] {
   const file = (name: string) => ({ name, bytes: existsSync(leanFile(directory, name)) ? readFileSync(leanFile(directory, name)) : "" })
   const answers = { name: "answers", bytes: answeredQuestionsText(directory, { asked: askedAtOrBefore(directory, step) }) }
@@ -323,13 +331,13 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   if (step === "instructions") return outlineInputs(directory, step, { settled: false })
   // The gaps job reads the instruction list to find what the sources leave
   // silent; the differences and verify jobs' own keys leave it out (discrepancy.ts).
-  if (step === "discrepancy") return [...outlineInputs(directory, step), file(INSTRUCTIONS_FILE), { name: "discrepancy-contract", bytes: DISCREPANCY_CONTRACT }]
+  if (step === "discrepancy") return [...outlineInputs(directory, step), file(INSTRUCTIONS_FILE), { name: "discrepancy-contract", bytes: DISCREPANCY_CONTRACT }, ...workingDraftContext(directory)]
   if (step === "intake") {
     // Only with a client recorded on the matter, so a matter without one keeps its key.
     const client = matterClient(directory)
     // Intake reads the discrepancy record without the gaps a source supplies (intakeDiscrepancy).
     // Auto mode re-keys intake only when enabled, so an off installation keeps its key.
-    return [...outlineInputs(directory, step), file(INSTRUCTIONS_FILE), { name: "discrepancy.json", bytes: intakeDiscrepancy(directory) }, ...(client ? [{ name: "matter-client", bytes: client }] : []), ...(draftingAutoModeEnabled() ? [{ name: "drafting-auto-mode", bytes: "review-draft-v2" }] : [])]
+    return [...outlineInputs(directory, step), file(INSTRUCTIONS_FILE), { name: "discrepancy.json", bytes: intakeDiscrepancy(directory) }, ...(client ? [{ name: "matter-client", bytes: client }] : []), ...(draftingAutoModeEnabled() ? [{ name: "drafting-auto-mode", bytes: "review-draft-v2" }] : []), ...workingDraftContext(directory)]
   }
   // The act record reads the instructions, the sources and the approved research; it runs before the spine and reads no discrepancy record.
   if (step === "acts") return [...outlineInputs(directory, step), file("intake.json"), file("research.json"), file("research-review.json"), { name: "act-record-contract", bytes: ACT_RECORD_CONTRACT }]

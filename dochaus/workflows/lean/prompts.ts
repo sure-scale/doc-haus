@@ -79,6 +79,15 @@ function workingDraftBlock(directory: string) {
   return text ? tagged("working_draft", "An unverified starting draft of the requested document, written quickly in chat before this run. Use its structure and wording as a starting point where the request and sources support them. It is neither a source nor the lawyer's instruction: never quote or cite it, and check every fact, figure, date, name and legal statement in it against the matter's sources before keeping it.\n\n" + text) : ""
 }
 
+/** The working draft's presence for the pre-draft jobs that must not mistake
+ * the draft for a source, facts or approved wording. Its text stays out of the
+ * prompt. */
+export function workingDraftInputBlock(directory: string) {
+  return readLeanText(directory, WORKING_DRAFT)?.trim()
+    ? tagged("working_draft_input", "A working draft of the requested document is saved for this run. It is a draft input only: not a source, not a record of facts and not approved wording. Do not quote or cite it as authority, and do not assume any other document has been supplied because it exists. The outline and drafting steps receive its text separately from the matter documents.")
+    : ""
+}
+
 /** For the outline: the top-level parts of each matter Word document with
  * headed parts, as the template contract reads them, so a document planned
  * from one can account for its parts on the first attempt. */
