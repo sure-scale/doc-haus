@@ -52,9 +52,9 @@ const generateWithUsage = Effect.fn("dochaus.generateWithUsage")(function* (prom
       message: `Model not found: ${ref.providerID}/${ref.id}`,
     })
   if (outputContract === DOCUMENT_AMENDMENT_LEGAL_OUTPUT) {
-    const result = yield* ai.generateObject({
-      model: resolved.model, prompt, jsonSchema: documentAmendmentLegalJsonSchema,
-      http: { headers: { "x-opencode-session": SessionID.create() } },
+    const result = yield* ai.generate({
+      model: resolved.model, prompt, schema: documentAmendmentLegalJsonSchema,
+      headers: { "x-opencode-session": SessionID.create() },
     }).pipe(ModelRetry.retryOneShot, Effect.result)
     if (result._tag === "Failure") {
       // A schema refusal can still have incurred a provider charge. Preserve
@@ -70,7 +70,7 @@ const generateWithUsage = Effect.fn("dochaus.generateWithUsage")(function* (prom
     model: resolved.model,
     prompt,
     // Gateways require session attribution even for a stateless call; no Session is stored.
-    http: { headers: { "x-opencode-session": SessionID.create() } },
+    headers: { "x-opencode-session": SessionID.create() },
   }))).pipe(
     ModelRetry.retryOneShot,
     Effect.mapError((error: AIError) => new Generate.UnavailableError({ message: error.message, service: resolved.ref.providerID })),

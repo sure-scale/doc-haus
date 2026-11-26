@@ -1,6 +1,7 @@
 import { expect } from "bun:test"
 import { Effect, Schema } from "effect"
-import { ai, LLMRequest, Message } from "../../src/effect.js"
+import { ai, Message, ToolCallPart, ToolDefinition, ToolNamespace } from "../../src/effect.js"
+import { compileRequest } from "../../src/route/client.js"
 import { LLMClient } from "../../src/route/client.js"
 import { OpenAI, Azure, XAI } from "../../src/providers/index.js"
 import { testEffect } from "../lib/effect.js"
@@ -43,16 +44,13 @@ for (const model of [
       expect(first.text).toBe("")
       const codec = Schema.fromJsonString(Message)
       const message = Schema.decodeSync(codec)(Schema.encodeSync(codec)(first.message))
-      yield* LLMClient.generate(
-        LLMRequest.update(request, { messages: [...request.messages, message, Message.user("continue")] }),
-      )
-      const rejected = yield* LLMClient.generate(
-        LLMRequest.update(request, {
-          model: XAI.configure({ apiKey: "test" }).responses("grok-4.6"),
-          providerOptions: {},
-          messages: [message],
-        }),
-      ).pipe(Effect.flip)
+      yield* LLMClient.generate({ ...request, messages: [...request.messages, message, Message.user("continue")] })
+      const rejected = yield* LLMClient.generate({
+        ...request,
+        model: XAI.configure({ apiKey: "test" }).responses("grok-4.6"),
+        providerOptions: {},
+        messages: [message],
+      }).pipe(Effect.flip)
       expect(rejected.reason._tag).toBe("InvalidRequest")
     }),
   )
@@ -138,5 +136,43 @@ testEffect(
     if (part?.type !== "compaction") return
     expect(part.id).toMatch(/^cmp_[0-9a-f]{32}$/)
     expect(part.encrypted).toBe("opaque")
+  }),
+)
+
+// /compact must send the same history and tools as the steps before it, so it reads the prefix they cached.
+const flatRequest = ai.request({
+  model: XAI.configure({ apiKey: "test" }).responses("grok-4.6"),
+  tools: [
+    ToolNamespace.make({
+      name: "crm",
+      description: "CRM tools",
+      tools: [ToolDefinition.make({ name: "lookup", description: "Look up", inputSchema: {} })],
+    }),
+  ],
+  messages: [
+    Message.user("Look up Ada"),
+    Message.assistant(ToolCallPart.make({ id: "call_1", name: "lookup", namespace: "crm", input: {} })),
+    Message.tool({ id: "call_1", name: "lookup", namespace: "crm", result: { output: "found" } }),
+  ],
+})
+const names = (body: { input: ReadonlyArray<Record<string, unknown>>; tools?: ReadonlyArray<Record<string, unknown>> }) => ({
+  calls: body.input.flatMap((item) => (item.type === "function_call" ? [item.name] : [])),
+  tools: (body.tools ?? []).map((tool) => tool.name),
+})
+const compactBodies: Array<{ input: ReadonlyArray<Record<string, unknown>> }> = []
+
+testEffect(
+  dynamicResponse(({ text, respond }) =>
+    Effect.sync(() => {
+      compactBodies.push(JSON.parse(text))
+      return respond(JSON.stringify({ object: "response.compaction", output: [checkpoint] }))
+    }),
+  ),
+).effect("xAI compaction sends namespaced tools and past calls under the names every step uses", () =>
+  Effect.gen(function* () {
+    const step = names((yield* compileRequest(flatRequest)).body as Parameters<typeof names>[0])
+    expect(step).toEqual({ calls: ["crm_lookup"], tools: ["crm_lookup"] })
+    yield* ai.compact(flatRequest, { mechanism: "endpoint" })
+    expect(names(compactBodies[0] as Parameters<typeof names>[0])).toEqual(step)
   }),
 )

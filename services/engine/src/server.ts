@@ -4,6 +4,7 @@ import { appendTrace, describeError, ensureTraceRoot, resolveTraceRoot, sha256, 
 import { NodeServices } from "@effect/platform-node"
 import { LLMClient } from "@opencode/ai/effect"
 import { RequestExecutor } from "@opencode/ai/route"
+import { App } from "@opencode/core/app"
 import { Config } from "@opencode/core/config"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Bus } from "@opencode/core/bus"
@@ -91,7 +92,7 @@ if (tracing) process.env[TRACE_ROOT_ENV] = tracing
 const legalConfig = makeLocationNode({
   service: Config.Service,
   layer: legalConfigLayer(legal),
-  deps: [Watcher.node, Bus.node, FSUtil.node, Global.node, Location.node, Credential.node, WellKnown.node, AppProcess.node],
+  deps: [Watcher.node, Bus.node, FSUtil.node, Global.node, Location.node, Credential.node, WellKnown.node, AppProcess.node, App.node],
 })
 
 const ChildInput = Schema.Struct({
@@ -195,6 +196,7 @@ await runEngine(
               remove: () => Effect.void,
               resolve: () => Effect.succeed([]),
               cached: () => Effect.succeed([]),
+              clearCached: () => Effect.void,
             })),
             Config.node.replace(legalConfig),
             InstructionDiscovery.node.replace(InstructionDiscovery.configured({ global: false, project: false })),

@@ -23,7 +23,7 @@ test("native stateless probe preserves provider output limits and sends only its
       expect(request.tools).toEqual([])
       expect(request.messages).toHaveLength(1)
       expect(JSON.stringify(request.messages)).toContain("Reply with OK.")
-      expect(request.http?.headers?.["x-opencode-session"]).toMatch(/^ses_/)
+      expect(request.headers?.["x-opencode-session"]).toMatch(/^ses_/)
     }).pipe(Effect.provide(Layer.mergeAll(
       Layer.mock(Model.Service, { get: () => Effect.succeed(selected) }),
       Layer.mock(ModelResolver.Service, { resolve: () => Effect.succeed({ model: runtime, ref, capabilities: selected.capabilities, cost: selected.cost, limit: selected.limit }) }),

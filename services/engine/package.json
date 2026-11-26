@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/server.ts",
-    "typecheck": "tsgo -b",
+    "typecheck": "bun check --no-script",
     "test": "bun test"
   },
   "dependencies": {
@@ -19,7 +19,6 @@
   },
   "devDependencies": {
     "@tsconfig/bun": "catalog:",
-    "@types/bun": "catalog:",
-    "@typescript/native-preview": "catalog:"
+    "@types/bun": "catalog:"
   }
 }

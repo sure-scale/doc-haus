@@ -1,5 +1,6 @@
 import { NodeServices } from "@effect/platform-node"
 import { Bus } from "@opencode/core/bus"
+import { App } from "@opencode/core/app"
 import { Config } from "@opencode/core/config"
 import { Credential } from "@opencode/core/credential"
 import { Database } from "@opencode/core/database/database"
@@ -18,7 +19,7 @@ import { LayerNode } from "@opencode/util/effect/layer-node"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
 import { AppProcess } from "@opencode/util/process"
-import { Context, Deferred, Effect, Layer } from "effect"
+import { Clock, Context, Deferred, Effect, Layer } from "effect"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -42,12 +43,24 @@ export function setupMemoryCredentials(initial?: SetupCredential) {
     all: () => Effect.sync(() => Array.from(records.values())),
     list: integrationID => Effect.sync(() => Array.from(records.values()).filter(record => record.integrationID === integrationID)),
     get: id => Effect.sync(() => records.get(id)),
-    // As natively, concurrent refreshes of one credential share the first operation's result.
-    lock: (id, operation) => Effect.suspend(() => {
+    // As natively, concurrent refreshes of one credential share the first operation's
+    // result, including its failure; a row refreshed or replaced meanwhile wins.
+    refresh: (id, input) => Effect.suspend(() => {
       const current = refreshing.get(id)
       if (current) return Deferred.await(current)
       const deferred = Deferred.makeUnsafe<Credential.OAuth | undefined, unknown>()
       refreshing.set(id, deferred)
+      const operation = Effect.gen(function* () {
+        const info = records.get(id)
+        if (info?.value.type !== "oauth") return undefined
+        if (!input.stale(info.value, yield* Clock.currentTimeMillis)) return info.value
+        const value = yield* input.refresh(info.value).pipe(Effect.timeout("30 seconds"))
+        const latest = records.get(id)
+        if (latest?.value.type !== "oauth") return undefined
+        if (latest.value.access !== info.value.access || latest.value.refresh !== info.value.refresh) return latest.value
+        records.set(id, new Credential.Info({ ...latest, value: structuredClone(value) }))
+        return value
+      })
       return operation.pipe(Effect.onExit(exit => Effect.suspend(() => {
         refreshing.delete(id)
         return Deferred.done(deferred, exit)
@@ -103,7 +116,7 @@ export function createProviderSetupSession(options: {
     const config = makeLocationNode({
       service: Config.Service,
       layer: legalConfigLayer(options.legal, { shipped: path.join(options.legal, "opencode.json"), overrides }),
-      deps: [Watcher.node, Bus.node, FSUtil.node, Global.node, Location.node, Credential.node, WellKnown.node, AppProcess.node],
+      deps: [Watcher.node, Bus.node, FSUtil.node, Global.node, Location.node, Credential.node, WellKnown.node, AppProcess.node, App.node],
     })
     const built = AppNodeBuilder.build(LayerNode.group([Instance.graph, Bus.node, Credential.node]), [
       Location.node.replace(Location.boundNode(Location.Ref.make({ directory: AbsolutePath.make(workspace) }))),
@@ -119,7 +132,7 @@ export function createProviderSetupSession(options: {
       WellKnown.node.replace(Layer.succeed(WellKnown.Service, {
         entries: () => Effect.succeed([]), snapshot: () => [], refresh: () => Effect.succeed(false),
         add: () => Effect.fail(new Error("Remote configuration discovery is disabled during setup")),
-        remove: () => Effect.void, resolve: () => Effect.succeed([]), cached: () => Effect.succeed([]),
+        remove: () => Effect.void, resolve: () => Effect.succeed([]), cached: () => Effect.succeed([]), clearCached: () => Effect.void,
       })),
       Config.node.replace(config),
       InstructionDiscovery.node.replace(InstructionDiscovery.configured({ global: false, project: false })),
@@ -127,7 +140,7 @@ export function createProviderSetupSession(options: {
     const context = yield* Layer.build(built)
     const bus = Context.get(context, Bus.Service)
     memory.setNotify((info, switched) => Effect.gen(function* () {
-      yield* bus.publish(Credential.Event.Updated, {}, { global: true })
+      yield* bus.publish(Credential.Event.Updated, { integrationID: info.integrationID, credentialID: info.id }, { global: true })
       if (switched) yield* bus.publish(Credential.Event.Switched, {
         integrationID: info.integrationID,
         credentialID: Array.from(yield* memory.service.list(info.integrationID)).at(-1)?.id ?? null,

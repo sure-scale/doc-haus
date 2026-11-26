@@ -143,6 +143,10 @@ test("native provider turn executes a legal tool through the v2 plugin", async (
     void observing.catch(error => { if (!eventController.signal.aborted) throw error })
     expect((await request("/api/session", { id: "ses_parent_fixture", agent: "runtime-parent", model: { providerID: "local-fixture", id: "local-fixture" }, location: { directory: matter } })).status).toBe(200)
     expect((await request("/api/session/ses_parent_fixture/prompt", { id: "msg_parent_fixture", text: "Delegate the local read and report completion." })).status).toBe(200)
+    // Upstream v2.4 runs every subagent in the background: task returns its
+    // sessionID immediately, and the parent receives a <background-result>
+    // message once the child goes idle. Wait for that report before reading
+    // the child's transcript.
     const childDeadline = Date.now() + 30_000
     while (true) {
       const messages = (await (await request("/api/session/ses_parent_fixture/message")).json()).data
@@ -150,17 +154,21 @@ test("native provider turn executes a legal tool through the v2 plugin", async (
       if (task?.state.status === "running" && task.state.metadata.sessionId) {
         expect(task.state.metadata.parentSessionId).toBe("ses_parent_fixture")
       }
-      if (task?.state.status === "completed" && messages.some((message: { type: string; finish?: string }) => message.type === "assistant" && message.finish === "stop")) {
+      const report = messages.find((message: { text?: string }) =>
+        typeof message.text === "string" && message.text.includes("<background-result ") &&
+        message.text.includes('kind="subagent"') && message.text.includes('state="completed"'))
+      if (task?.state.status === "completed" && report && messages.some((message: { type: string; finish?: string }) => message.type === "assistant" && message.finish === "stop")) {
         expect(task.state.metadata.parentSessionId).toBe("ses_parent_fixture")
         expect(task.state.metadata.sessionId).toBe(task.state.metadata.sessionID)
         expect(eventsText).toContain('"parentSessionId":"ses_parent_fixture"')
         expect(eventsText).toContain('"status":"running"')
+        expect(JSON.stringify(task.state.content)).toContain("working in the background")
         const child = await (await request(`/api/session/${task.state.metadata.sessionID}`)).json()
         expect(child.data.parentID).toBe("ses_parent_fixture")
         expect(child.data.agent).toBe("qa-worker")
         const childMessages = await (await request(`/api/session/${task.state.metadata.sessionID}/message`)).json()
         expect(JSON.stringify(childMessages)).toContain("No documents have been indexed for this matter yet.")
-        expect(JSON.stringify(task.state.content)).toContain("The local tool check completed.")
+        expect(JSON.stringify(report)).toContain("The local tool check completed.")
         break
       }
       if (Date.now() > childDeadline) throw new Error(`Child task incomplete: ${JSON.stringify(messages)}\n${await readFile(logPath, "utf8")}`)

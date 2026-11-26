@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { App } from "@opencode/core/app"
 import { Config } from "@opencode/core/config"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Location } from "@opencode/core/location"
@@ -28,11 +29,11 @@ import type { ConfigPolicy } from "@opencode/schema/config/policy"
 import { ConfigPolicyPlugin } from "@opencode/core/config/plugin/policy"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 const emptyCredentialNode = makeGlobalNode({ service: Credential.Service, layer: Layer.succeed(Credential.Service, Credential.Service.of({
-  all: () => Effect.succeed([]), list: () => Effect.succeed([]), get: () => Effect.undefined, lock: () => Effect.die("unused"),
+  all: () => Effect.succeed([]), list: () => Effect.succeed([]), get: () => Effect.undefined, refresh: () => Effect.die("unused"),
   create: () => Effect.die("unused"), activate: () => Effect.die("unused"), update: () => Effect.die("unused"), remove: () => Effect.die("unused"),
 })), deps: [] })
 const emptyWellknownNode = makeGlobalNode({ service: WellKnown.Service, layer: Layer.succeed(WellKnown.Service, {
-  entries: () => Effect.succeed([]), snapshot: () => [], refresh: () => Effect.succeed(false), add: () => Effect.die("unused"), remove: () => Effect.void, resolve: () => Effect.succeed([]), cached: () => Effect.succeed([]),
+  entries: () => Effect.succeed([]), snapshot: () => [], refresh: () => Effect.succeed(false), add: () => Effect.die("unused"), remove: () => Effect.void, resolve: () => Effect.succeed([]), cached: () => Effect.succeed([]), clearCached: () => Effect.void,
 }), deps: [] })
 const emptyIntegrationNode = makeLocationNode({ service: Integration.Service, deps: [], layer: Layer.succeed(Integration.Service, Integration.Service.of({
   revision: () => 0, get: () => Effect.undefined, list: () => Effect.succeed([]), reload: () => Effect.void,
@@ -42,6 +43,7 @@ const emptyIntegrationNode = makeLocationNode({ service: Integration.Service, de
   command: { connect: () => Effect.die("unused"), status: () => Effect.die("unused"), cancel: () => Effect.die("unused") },
 })) })
 const unusedWebSearch = WebSearch.Service.of({
+  available: () => Effect.die("unused"),
   providers: () => Effect.die("unused"), default: () => Effect.die("unused"), select: () => Effect.die("unused"), query: () => Effect.die("unused"),
   transform: () => Effect.succeed({ dispose: Effect.void }), reload: () => Effect.void,
 })
@@ -60,7 +62,7 @@ test("independent native config services retain policy, overrides and both watch
     writeFileSync(paths.shipped, JSON.stringify({ default_agent: "draft", permission: { bash: "deny" }, agent: { draft: { description: "Draft" } } }))
     writeFileSync(paths.overrides, JSON.stringify({ model: "test/primary", small_model: "test/fast", agent: { narrator: { model: "test/explicit" } }, disabled_providers: [], enabled_providers: ["opencode", "opencode-go"], policies: [{ action: "provider.use", resource: "*", effect: "allow" }] }))
     writeFileSync(path.join(matter, "opencode.json"), JSON.stringify({ model: "untrusted/model" }))
-    const node = makeLocationNode({ service: Config.Service, layer: legalConfigLayer(legal, paths), deps: [Watcher.node, Bus.node, FSUtil.node, Global.node, Location.node, Credential.node, WellKnown.node, AppProcess.node] })
+    const node = makeLocationNode({ service: Config.Service, layer: legalConfigLayer(legal, paths), deps: [Watcher.node, Bus.node, FSUtil.node, Global.node, Location.node, Credential.node, WellKnown.node, AppProcess.node, App.node] })
     const built = AppNodeBuilder.build(LayerNode.group([node, Provider.node, Model.node, Bus.node, Credential.node]), [
       Location.node.replace(Layer.succeed(Location.Service, Location.Service.of({ directory: AbsolutePath.make(matter), project: { id: Project.ID.global, directory: AbsolutePath.make(matter), canonical: AbsolutePath.make(matter) } }))),
       Global.node.replace(Global.layerWith({ config: path.join(root, "global"), home: root, data: path.join(root, "data"), state: path.join(root, "state"), cache: path.join(root, "cache"), bin: path.join(root, "bin"), log: path.join(root, "log"), repos: path.join(root, "repos") })),

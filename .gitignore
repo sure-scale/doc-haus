@@ -1,7 +1,6 @@
 .DS_Store
 node_modules
 .worktrees
-.sst
 .env
 .env.local
 .idea
@@ -97,3 +96,6 @@ id_ed25519.*
 **/private-notes/
 **/internal-notes/
 /artifacts/
+
+# Legal drafts pending review are kept outside the repository; never copy them in.
+legal-drafts-private/

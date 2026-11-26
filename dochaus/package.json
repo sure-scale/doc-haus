@@ -23,6 +23,7 @@
     "rtf-stream-parser": "4.0.0",
     "unpdf": "^1.6.2",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "@opencode/ai": "workspace:*",
     "@opencode/plugin": "workspace:*",
     "@opencode/client": "workspace:*",
     "zod": "catalog:",

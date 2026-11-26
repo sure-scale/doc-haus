@@ -1,4 +1,5 @@
-import type { SessionContext } from "@opencode/plugin/promise/session"
+import type { SessionContext, SessionRequestMessage } from "@opencode/plugin/promise/session"
+import type { ContentPart, TextPart, ToolResultPart } from "@opencode/ai/effect"
 import { isProjectedUserAdmission } from "../../lib/engine-v2-projection"
 import type { Message, Part } from "./policy-types"
 import { MAX_STEPS_PROMPT } from "@opencode/core/session/runner/max-steps"
@@ -27,35 +28,62 @@ export function applyLegalContextChanges(event: SessionContext, before: History,
       return [[part.callID, { type: "error" as const, value: part.state.error }] as const]
     return []
   })))
-  event.messages = event.messages.flatMap(message => {
+  event.messages = event.messages.flatMap((message): SessionRequestMessage[] => {
     const original = message.id ? originals.get(message.id) : undefined
     const changed = message.id ? changes.get(message.id) : undefined
     if (original && !changed) return []
     const used = new Set<string>()
-    const content = message.content.flatMap((part): typeof message.content => {
-      if (part.type === "tool-result") {
-        if (removedTools.has(part.id)) return []
-        const result = outputs.get(part.id)
+    // Only removes parts, replaces text with text and swaps tool results for
+    // tool results, so the mapped parts stay within the source role's union.
+    const transform = <P extends ContentPart>(part: P): Array<P | TextPart> => {
+      const value: ContentPart = part
+      if (value.type === "tool-result") {
+        if (removedTools.has(value.id)) return []
+        const result = outputs.get(value.id)
         return [result ? { ...part, result } : part]
       }
       if (!original || !changed) return [part]
       const prior = original.parts.find(item => !used.has(item.id) && (
-        part.type === "tool-call" ? item.type === "tool" && item.callID === part.id :
-        (part.type === "text" || part.type === "reasoning") && item.type === part.type && item.text === part.text
+        value.type === "tool-call" ? item.type === "tool" && item.callID === value.id :
+        (value.type === "text" && item.type === "text" && item.text === value.text) ||
+        (value.type === "reasoning" && item.type === "reasoning" && item.text === value.text)
       ))
       if (!prior) return [part]
       used.add(prior.id)
       const next = changed.parts.find(item => item.id === prior.id)
       if (!next) return []
-      if (next.type === "text" && (part.type !== "text" || next.text !== part.text))
+      if (next.type === "text" && (value.type !== "text" || next.text !== value.text))
         return [{ type: "text", text: next.text }]
       return [part]
-    })
-    if (original && changed) content.push(...changed.parts.flatMap(part =>
+    }
+    const appended = original && changed ? changed.parts.flatMap(part =>
       part.type === "text" && !original.parts.some(prior => prior.id === part.id)
         ? [{ type: "text" as const, text: part.text }] : [],
-    ))
-    return content.length ? [{ ...message, content }] : []
+    ) : []
+    switch (message.role) {
+      case "system": {
+        const content = [...message.content.flatMap(transform), ...appended]
+        return content.length ? [{ ...message, content }] : []
+      }
+      case "user": {
+        const content = [...message.content.flatMap(transform), ...appended]
+        return content.length ? [{ ...message, content }] : []
+      }
+      case "assistant": {
+        const content = [...message.content.flatMap(transform), ...appended]
+        return content.length ? [{ ...message, content }] : []
+      }
+      case "tool": {
+        // Tool messages carry only tool results: the text/reasoning matching in
+        // transform never applies, and appended text has no tool-message form.
+        const content = message.content.flatMap((part): ToolResultPart[] => {
+          if (removedTools.has(part.id)) return []
+          const result = outputs.get(part.id)
+          return [result ? { ...part, result } : part]
+        })
+        return content.length ? [{ ...message, content }] : []
+      }
+    }
   })
   // A compaction checkpoint may replace the original user boundary. Rehydrate
   // only newly prepared evidence, never replay the original prompt or outputs.
@@ -78,16 +106,19 @@ export function applyLegalContextChanges(event: SessionContext, before: History,
     message.parts.length === 1 && message.parts[0]?.type === "text" && message.parts[0].text === INTERRUPTED_STREAM_CONTROL
       ? [message.info.id] : [],
   ))
-  event.messages = event.messages.map(message => {
+  event.messages = event.messages.map((message): SessionRequestMessage => {
+    // Both adaptations apply only to user messages; narrowing here keeps the
+    // rebuilt content within the user role's part union.
+    if (message.role !== "user") return message
     const part = message.content[0]
     // Adapt the provider request only. Native history, retry timing, tool
     // permissions and completed actions remain owned by the native runner.
-    if (message.id && interruptions.has(message.id) && message.role === "user" && message.content.length === 1 &&
+    if (message.id && interruptions.has(message.id) && message.content.length === 1 &&
       part?.type === "text" && part.text === INTERRUPTED_STREAM_CONTROL)
       return { ...message, content: [{ ...part, text:
         "The previous response was interrupted. Return a complete replacement final output for this stage, including every required part already written before the interruption. The latest successful reply alone is accepted; earlier errored or partial replies are not accepted as part of it. Use the inspected evidence and supplied context, preserving all required unknowns, limitations, questions, source checks and human approval requirements. Do not repeat completed tool actions, obtain new tool permissions, invent evidence or answers, or present unfinished work as complete. Follow the existing stage output contract and tool limits.",
       }] }
-    if (message.id !== undefined || message.role !== "user" || message.content.length !== 1 ||
+    if (message.id !== undefined || message.content.length !== 1 ||
       part?.type !== "text" || part.text !== MAX_STEPS_PROMPT) return message
     return { ...message, content: [{ ...part, text:
       "MAXIMUM STEPS REACHED. Tools remain disabled; make no tool calls. Return this stage's required output format using only the inspected evidence and supplied context. The limit changes tool availability only, not the existing output contract or source checks. Follow that contract's requirements for remaining uncertainty, questions and limitations. Do not invent evidence or answers, omit essential requirements silently, or present unfinished work as complete.",

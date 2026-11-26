@@ -68,7 +68,7 @@ test("model and endpoint cloning preserve the scope without mutating shared orig
   expect(scope(original)).toBeUndefined()
   expect(selected.route.auth).not.toBe(original.route.auth)
   expect(Object.getPrototypeOf(selected.route.auth)).toBe(Object.getPrototypeOf(original.route.auth))
-  const modelClone = LanguageModel.update(selected, { defaults: { generation: { maxTokens: 32 } } })
+  const modelClone = LanguageModel.update(selected, { options: { maxTokens: 32 } })
   const routeClone = LanguageModel.update(modelClone, { route: modelClone.route.with({ endpoint: { baseURL: "https://proxy.invalid/v1" } }) })
   expect(scope(routeClone)).toBe(scope(selected))
   const noAccess = model()

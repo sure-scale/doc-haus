@@ -72,7 +72,7 @@ export function chatClient(
       }
       const native = OpenCode.make({ baseUrl: origin, fetch: transport as typeof globalThis.fetch })
       return {
-        async *[Symbol.asyncIterator]() {
+        async *[Symbol.asyncIterator](): AsyncGenerator<V2Event> {
           for await (const event of native.event.subscribe({ signal })) {
             // Do not render or even forward raw model JSON, reasoning, tools,
             // reviewer text, or unchecked proposal/citation data.

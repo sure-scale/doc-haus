@@ -43,7 +43,7 @@ export function probeProvider(ref: Model.Ref) {
     yield* LLMClient.Service.use(client => client.generate(ai.request({
       model: resolved.model,
       prompt: "Reply with OK.",
-      http: { headers: { "x-opencode-session": SessionID.create() } },
+      headers: { "x-opencode-session": SessionID.create() },
     })))
     return { ok: true } as const
   }).pipe(Effect.catchCause(cause => Effect.succeed(providerTestFailure(cause))))

@@ -19,7 +19,7 @@ export function concurrencyProbe(ref: Model.Ref) {
     const result = yield* LLMClient.Service.use(client => client.generate(ai.request({
       model: resolved.model,
       prompt: "Write eight short friendly sentences, each on a separate line, about everyday activities.",
-      http: { headers: { "x-opencode-session": SessionID.create() } },
+      headers: { "x-opencode-session": SessionID.create() },
     })))
     return result.text.trim() ? { ok: true } as const : { ok: false, kind: "empty" } as const
   }).pipe(Effect.catchCause(cause => {

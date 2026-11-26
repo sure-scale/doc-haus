@@ -65,7 +65,7 @@ describe("Plugin native full session history", () => {
       const forked = yield* sessions.fork({ sessionID: parent.id })
       const reads: SessionStore.MessagesInput[] = []
       const native = Session.Service.of({ ...sessions, messages: input => { reads.push(input); return sessions.messages(input) } })
-      const host = yield* PluginHost.make({ list: () => Effect.succeed([]) }).pipe(Effect.provideService(Session.Service, native))
+      const host = yield* PluginHost.make({ list: () => Effect.succeed([]) }, "test").pipe(Effect.provideService(Session.Service, native))
       expect((yield* host.session.get({ sessionID: parent.id })).id).toBe(parent.id)
       expect(reads).toEqual([])
       const rows = yield* host.session.messages({ sessionID: parent.id })
@@ -113,7 +113,7 @@ describe("Plugin native full session history", () => {
       yield* sessions.prompt({ sessionID: session.id, id, text: "Neutral admitted request", resume: false })
       yield* SessionInbox.promote(db, bus, session.id, "steer")
       yield* db.run(sql`update session_message set data = '{"time":{"created":0}}' where id = ${id}`).pipe(Effect.orDie)
-      const host = yield* PluginHost.make({ list: () => Effect.succeed([]) })
+      const host = yield* PluginHost.make({ list: () => Effect.succeed([]) }, "test")
       const expected = { _tag: "Session.MessageDecodeError", sessionID: session.id, messageID: id }
       expect(yield* host.session.messages({ sessionID: session.id }).pipe(Effect.flip)).toMatchObject(expected)
       yield* fromPromise({
