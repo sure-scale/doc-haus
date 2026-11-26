@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { ai, LLMClient } from "@opencode/ai/effect"
 import { configure } from "@opencode/ai/providers/openai"
 import { llmClient } from "@opencode/core/effect/app-node-platform"
+import { Provider } from "@opencode/core/provider"
 import { httpClient } from "@opencode/util/effect/app-node-platform"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Effect } from "effect"
@@ -71,3 +72,15 @@ test("caller abort still cancels a quiet native model fetch", async () => {
   await expect(pending).rejects.toThrow()
   expect(options?.signal?.aborted).toBe(true)
 }, 1_000)
+
+// Upstream v2.4.2 wires header/chunk timeouts into every resolved model. The chunk default
+// must outlast documented 15–20-minute quiet drafting turns; it matches the session
+// WebSocket's 30-minute idle watchdog. Explicit provider settings still override it.
+test("default chunk timeout outlasts quiet drafting turns", () => {
+  const quietTurnMS = 20 * 60_000
+  const defaults = Provider.timeouts({})
+  expect(defaults.timeout).toBeUndefined()
+  expect(defaults.chunkTimeout).toBeGreaterThanOrEqual(quietTurnMS)
+  expect(Provider.timeouts({ chunkTimeout: false }).chunkTimeout).toBe(false)
+  expect(Provider.timeouts({ chunkTimeout: 60_000 }).chunkTimeout).toBe(60_000)
+})

@@ -11,6 +11,7 @@ function explicitTimeoutViolations(config: {
 }) {
   // Check explicit settings only. Omitted timeouts leave defaults and transport
   // behavior to the provider/executor; this check makes no guarantee about them.
+  // The chunk default itself is guarded in services/engine/src/model-timeout.test.ts.
   return Object.entries(config.provider ?? {}).flatMap(([providerID, provider]) =>
     timeoutOptions.flatMap((option) => {
       const timeout = provider.options?.[option]

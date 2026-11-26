@@ -246,9 +246,11 @@ export const DEFAULT_TIMEOUT_MS = 300_000
 /**
  * Applied to `chunkTimeout` when provider settings leave it unset or invalid. Some providers, such as DeepSeek, have
  * specifically asked clients to allow at least 15 minutes, because their models can stream nothing for minutes while
- * they reason.
+ * they reason. Legal drafting turns can stay quiet for 15–20 minutes, so this default matches the session WebSocket's
+ * 30-minute idle watchdog instead of ending a quiet turn at 15 minutes; explicit provider settings still override it.
+ * Guarded by services/engine/src/model-timeout.test.ts.
  */
-export const DEFAULT_CHUNK_TIMEOUT_MS = 900_000
+export const DEFAULT_CHUNK_TIMEOUT_MS = 1_800_000
 
 /** One timeout setting without a default; invalid values are dropped. */
 export function timeout(value: unknown) {
