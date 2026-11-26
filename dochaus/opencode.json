@@ -3,6 +3,7 @@
   "default_agent": "draft",
   "compaction": {
     "auto": true,
+    "background": false,
     "reserved": 32768
   },
   "skills": {
