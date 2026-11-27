@@ -4,7 +4,6 @@ import path from "node:path"
 import { readLeanDocuments } from "./deliverables"
 import { focusedNotesInputs } from "./focused-notes"
 import { readLeanPlan } from "./plan"
-import { stagePrompt } from "./prompts"
 import { runLean } from "./runner"
 import { writeLeanText } from "./state"
 import { AGENT, cleanupMatters, happyPath, matter, registering, scriptedModel } from "./test-support"
@@ -14,10 +13,6 @@ afterEach(cleanupMatters)
 test("one planned substantive body supplies a requested body, tracked redline and accompanying notes", async () => {
   const directory = matter()
   writeLeanText(directory, "request.md", "Prepare a revised supply note with its tracked redline and accompanying drafting notes.")
-  const prompt = stagePrompt(directory, "d1.draft", { outline: true })
-  expect(prompt).toContain("workflow renders the final Word document")
-  expect(prompt).toContain("generates its tracked redline")
-  expect(prompt).toContain("one final drafting-notes memo")
   const model = scriptedModel(happyPath)
   const deliverables = registering()
   expect((await runLean(directory, { sessions: model.port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")

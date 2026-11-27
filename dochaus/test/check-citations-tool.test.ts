@@ -1,31 +1,26 @@
-import { describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { afterEach, describe, expect, test } from "bun:test"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import checkCitationsTool from "../tool/check-citations"
 
-// Tool wrapper test: descriptor shape, execute return shape, and report file
-// output. Behavior of the underlying citation-check library is covered by
-// test/citation-check.test.ts; here we confirm the tool exposes the right args,
-// returns the agreed shape, and writes the JSON report.
+// Tool wrapper test: execute return shape and JSON report output.
+// Behavior of the underlying citation-check library is covered by
+// test/citation-check.test.ts.
 
-describe("check-citations tool descriptor", () => {
-  test("exposes description, artifacts, and output args", () => {
-    expect(checkCitationsTool.description).toMatch(/citation checker/i)
-    expect(checkCitationsTool.description).toMatch(/verified.*unresolved.*unsupported/is)
-    expect(checkCitationsTool.args.artifacts).toBeDefined()
-    expect(checkCitationsTool.args.output).toBeDefined()
-  })
-
-  test("description contains no fixture-specific legal values", () => {
-    expect(checkCitationsTool.description).not.toMatch(/\$\d/)
-    expect(checkCitationsTool.description).not.toMatch(/\b20\d{2}\b/)
-  })
+const dirs: string[] = []
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
+const tempMatter = () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "check-citations-tool-"))
+  dirs.push(dir)
+  return dir
+}
 
 describe("check-citations tool execute", () => {
   test("returns summary output and writes JSON report on an empty matter", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "check-citations-tool-"))
+    const dir = tempMatter()
     const result = await checkCitationsTool.execute({}, { directory: dir } as any)
     expect(typeof result).toBe("object")
     expect(result).not.toBeNull()
@@ -39,7 +34,7 @@ describe("check-citations tool execute", () => {
   })
 
   test("detects verified and unsupported citations from matter artifacts", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "check-citations-tool-"))
+    const dir = tempMatter()
     writeFileSync(
       path.join(dir, "source-map.md"),
       "# Source Map\n\nThe Generic Authority Act § 12 requires written notice.\n",

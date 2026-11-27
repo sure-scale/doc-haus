@@ -214,9 +214,17 @@ test("checkout tracking is optional but a missing canonical release remote retur
   await f.git(f.clone, "config", "--unset", "branch.dochaus.remote")
   expect((await f.updater.check()).error).toBeUndefined()
   await f.git(f.clone, "remote", "remove", "origin")
-  const result = await f.updater.check(true)
-  expect(result.available).toBe(false)
-  expect(result.error).toBeTruthy()
+  const app = updateRoutes(f.updater, async () => false, async () => { throw new Error("Restart must not run") }, () => { throw new Error("Signal must not run") })
+  const failed = await app.request("/updates?refresh=1")
+  expect(failed.status).toBe(200)
+  expect(await failed.json()).toMatchObject({ available: false, error: expect.any(String) })
+  const apply = await app.request("/updates/apply", { method: "POST", headers: { origin: "http://localhost:5174", "x-dochaus-update": "1", "content-type": "application/json" }, body: JSON.stringify({ target: f.original }) })
+  expect(apply.status).toBe(409)
+  expect(await apply.json()).toHaveProperty("error", "The available update changed. Check for updates again.")
+  // Cached error stays until explicit refresh after the remote recovers.
+  await f.git(f.clone, "remote", "add", "origin", f.source)
+  expect(await (await app.request("/updates")).json()).toHaveProperty("error")
+  expect(await (await app.request("/updates?refresh=1")).json()).not.toHaveProperty("error")
 })
 
 test("HTTP rejects foreign origins, active work, stale targets and unmanaged launchers", async () => {

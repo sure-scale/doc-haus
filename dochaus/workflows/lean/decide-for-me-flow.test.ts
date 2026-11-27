@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test"
-import { readdirSync, readFileSync } from "node:fs"
 import { finalGate, type GateResult } from "./gate"
 import { openItem } from "./quotes"
 import { enqueueLeanRequest, queuedAnswerIDs, type StoredLeanRequest } from "./requests"
@@ -110,10 +109,3 @@ test("an adopted recommendation runs through the queue as the lawyer's answer, r
   expect(answer).not.toHaveProperty("answer_kind")
   expect(model.count(AGENT.spine)).toBeGreaterThan(spines)
 }, 180_000)
-
-test("no agent's rules say a point is left to the drafter", () => {
-  const agents = new URL("../../agent/", import.meta.url)
-  const names = readdirSync(agents).filter(name => name.endsWith(".md"))
-  expect(names.filter(name => name.startsWith("lean-")).length).toBeGreaterThan(10)
-  for (const name of names) expect([name, LEFT_TO_DRAFTER.exec(readFileSync(new URL(name, agents), "utf8").replace(/\s+/g, " "))?.[0]]).toEqual([name, undefined])
-})

@@ -6,13 +6,13 @@ import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
 import { matterPosture } from "../../lib/matter-client"
 import { acceptChangePlan, changePlanPrompt, deferredFindingItems } from "./change-pipeline"
 import { packageReviewPrompt } from "./package-review"
-import { leanSteps, readLeanPlan, runPosture, stepStage, writeLeanPlan, type ActingFor } from "./plan"
+import { leanSteps, readLeanPlan, runPosture, writeLeanPlan, type ActingFor } from "./plan"
 import { stagePrompt } from "./prompts"
 import { issueRegister } from "./register"
 import { findingsFor, routedFindingItems } from "./review-findings"
 import { runLean, stageInputSha } from "./runner"
 import { acceptStageReply, stageInputs } from "./stages"
-import { isReviewStage, writeLeanText } from "./state"
+import { writeLeanText } from "./state"
 import { AGENT, SOURCE, SUPPORT, cleanupMatters, happyPath, matter, pidOf, scriptedModel } from "./test-support"
 
 // How far the run's drafts lean toward the party the lawyer acts for: the
@@ -134,54 +134,6 @@ test("a matter without a Posture keeps its stage keys, and a plan saved without 
   expect(leanSteps(directory).filter((step, index) => keys()[index] === before[index])).toEqual(leanSteps(directory).filter(step => step.endsWith(".draft")))
 })
 
-test("every review takes the frozen Posture's standard for the side the lawyer acts for, and measures balance against neutral market practice whoever it acts for; with no side stated it reviews even-handedly", () => {
-  const directory = matter()
-  const documents = [{ title: "Supply note", purpose: "Record supplied terms", parts: [{ heading: "Delivery", scope: "Delivery" }] }]
-  const reviews = () => leanSteps(directory).filter(step => isReviewStage(stepStage(step)))
-  const PROTECTS = "whether it protects that party's position, and whether a protection a careful drafter would include for that party is missing."
-  const MARKET = "whether it lacks a protection for that party that a neutral, mid-market document of this kind, prepared for neither party, would contain."
-  // The balance label's reference is neutral market practice under every Posture and side,
-  // never a market document for the client's side (itself a push under Balanced).
-  const REFERENCE = "measured against what a neutral, mid-market document of this kind, prepared for neither party, would contain, whichever party the lawyer acts for"
-  const SIDED_FRAME = ["for that side", "market-standard document"]
-  const NEUTRAL = "Assess each provision as a reviewing lawyer who acts for neither party"
-  const BALANCE = '"balance":"neutral|market|beyond_market"'
-  // The live settings say Client-favorable; the plan's frozen Posture governs.
-  save({ posture: "client-favorable" })
-  recordMatter(directory, { posture: "client-favorable" })
-  for (const posture of ["client-favorable", "balanced", "conservative"] as const) {
-    writeLeanPlan(directory, documents, undefined, { party: "Northwind Traders Ltd", basis: "stated" }, undefined, posture)
-    expect(reviews().length).toBeGreaterThan(1)
-    for (const step of reviews()) {
-      const prompt = stagePrompt(directory, step)
-      expect(prompt).toContain("Assess each provision as the reviewing lawyer for the party the lawyer acts for")
-      // Every finding states its balance; code, not a plea, holds back what goes beyond market.
-      expect(prompt).toContain(BALANCE)
-      expect(prompt).toContain(REFERENCE)
-      for (const frame of SIDED_FRAME) expect(prompt).not.toContain(frame)
-      expect(prompt).not.toContain("Do not press")
-      if (posture === "client-favorable") {
-        expect(prompt).toContain(PROTECTS)
-        expect(prompt).not.toContain(MARKET)
-      } else {
-        expect(prompt).toContain(MARKET)
-        expect(prompt).not.toContain("whether it protects that party's position")
-      }
-    }
-    // No side stated: the same neutral review under every Posture.
-    writeLeanPlan(directory, documents, undefined, undefined, undefined, posture)
-    for (const step of reviews()) {
-      const prompt = stagePrompt(directory, step)
-      expect(prompt).toContain(NEUTRAL)
-      expect(prompt).toContain(BALANCE)
-      expect(prompt).toContain(REFERENCE)
-      for (const frame of SIDED_FRAME) expect(prompt).not.toContain(frame)
-      expect(prompt).not.toContain(MARKET)
-      expect(prompt).not.toContain("whether it protects that party's position")
-    }
-  }
-})
-
 // A review finding that gives one party more than market practice is held back
 // unless the run acts for a side under Client-favorable: it reaches no change
 // plan and is disclosed as a recommendation naming the side it favours.
@@ -251,12 +203,3 @@ test("on a matter whose client is recorded under a Balanced Posture, the coordin
   expect(shown(AGENT.finalize)).toContain("Not drafted: it favours Northwind Traders Ltd beyond market practice, and the run's Posture is Balanced.")
   expect(readFileSync(path.join(directory, ".dochaus", "lean", "register.json"), "utf8")).toContain('"disposition": "held_back"')
 }, 120_000)
-
-test("the review agents defer to the prompt's standard for the party rather than setting their own", () => {
-  for (const name of ["lean-review", "lean-review-independent", "lean-review-client-disadvantage"]) {
-    const text = readFileSync(path.join(import.meta.dir, "..", "..", "agent", `${name}.md`), "utf8")
-    expect(text).toContain("by the standard")
-    expect(text).not.toContain("whether it protects that party's position")
-    expect(text).not.toContain("a protection a careful drafter would include for that party")
-  }
-})

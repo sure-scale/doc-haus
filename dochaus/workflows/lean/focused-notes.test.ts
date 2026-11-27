@@ -512,14 +512,6 @@ test("one repair replaces every linked duplicate while preserving accepted unrel
   expect(readLeanText(directory, "drafting-notes.md")).toContain(historical)
 })
 
-test("the shipped notes role explicitly permits only the target-link JSON exception beside prose work", () => {
-  const system = readFileSync(new URL("../../agent/lean-drafting-notes.md", import.meta.url), "utf8")
-  expect(system).toContain("explicitly labelled current_target_lookup")
-  expect(system).toContain("targets/limitation JSON")
-  expect(system).toContain("Do not draft prose in this linking job")
-  expect(system).toContain("The prose output rules below apply to section-writing jobs")
-})
-
 test("a far-end condition reaches bounded passage writers and the original open-point owner, with one reference and reusable prose", async () => {
   const item: OpenItem = { id: "apply:omission:seal-condition", stage: "apply", kind: "omission", status: "open",
     detail: "Explain the outstanding seal inspection before acceptance.", ref: { document: "d1", pid: "p111111111111" } }

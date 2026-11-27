@@ -52,12 +52,8 @@ test("each lean stage agent loads as a hidden subagent whose own rules allow onl
   }
 })
 
-test("notes evidence selector has only selection duties and inherits its session model", () => {
+test("notes evidence selector inherits its session model", () => {
   const agent = loadAgent(LEAN_STAGE_AGENTS.notesEvidence)
-  expect(agent.system).toContain("not the section's writer or its acceptance checker")
-  expect(agent.system).toContain("notes_evidence_inspection")
-  expect(agent.system).toContain("current_target_lookup")
-  expect(agent.system).toContain("Do not draft notes")
   expect(agent.model).toBeUndefined()
 })
 

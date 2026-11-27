@@ -194,7 +194,7 @@ jobs:
           bun test test/managed-readiness.test.ts --timeout 30000
       - name: Test public regression support
         working-directory: dochaus
-        run: bun test templates/optional.test.ts test/product-boundary-guard.test.ts test/product-boundary.test.ts test/native-trace.test.ts test/lean-observation.test.ts test/prompt-assets.test.ts test/research-source-snippets.test.ts test/legal-tool-approval.test.ts plugin/legal/provider-capture.test.ts
+        run: bun test templates/optional.test.ts test/product-boundary-guard.test.ts test/product-boundary.test.ts test/research-source-snippets.test.ts test/legal-tool-approval.test.ts plugin/legal/provider-capture.test.ts
       - name: Test redline preview attribution and document search scopes
         working-directory: dochaus
         # Synthetic Word files and indexes in temporary matters; no network or model.

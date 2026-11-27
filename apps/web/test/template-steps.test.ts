@@ -1,9 +1,6 @@
 import { expect, test } from "bun:test"
-import { createElement } from "react"
-import { renderToStaticMarkup } from "react-dom/server"
 import { templateResult } from "../src/components/chat/template-result"
 import { toTurns } from "../src/components/chat/turn-model"
-import StepsPanel from "../src/components/chat/StepsPanel"
 import type { Part } from "../src/api/session-view"
 
 const placeholders = ["[insert client name]", "[insert city, region]", "[optional: renewal]"]
@@ -18,9 +15,6 @@ function steps(tool: string, state: Extract<Part, { type: "tool" }>["state"]) {
 test("empty template lookup is a status without an empty expandable output", () => {
   const result = steps("list-templates", { status: "completed", input: {}, title: "0 template(s)", output: "[]" })
   expect(result[0]).toMatchObject({ label: "No saved templates found", status: "done", detail: undefined })
-  const html = renderToStaticMarkup(createElement(StepsPanel, { steps: result, busy: false, answered: true }))
-  expect(html).not.toContain('class="step-detail"')
-  expect(html).not.toContain("[]")
 })
 
 test("lookup errors and nonempty results keep their output", () => {
@@ -33,11 +27,6 @@ test("lookup errors and nonempty results keep their output", () => {
 test("creation shows a summary and collapsed fields without splitting commas inside placeholders", () => {
   const result = steps("create-template", { status: "completed", input: {}, title: "Created template services.docx", output, metadata: { placeholders } })
   expect(result[0]).toMatchObject({ templateResult: { summary: "Added services.docx to the firm template library.", placeholders } })
-  const html = renderToStaticMarkup(createElement(StepsPanel, { steps: result, busy: false, answered: true }))
-  expect(html).toContain('<details class="step-template-fields">')
-  expect(html).toContain("3 placeholders")
-  expect(html).toContain("<li>[insert city, region]</li>")
-  expect(html).not.toContain('<pre class="step-output">')
 })
 
 test("updates use the same presentation and unrecognized or warning-bearing outputs remain intact", () => {

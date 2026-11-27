@@ -2,9 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { providerStopKind } from "../../lib/provider-stop"
 import { conflictQuestion } from "./answer-reconcile"
 import { PACKAGE_SCOPE_QUESTION } from "./package-scope"
-import { writeLeanPlan } from "./plan"
+import { writeLeanPlan, type PlannedDocument, type StepID } from "./plan"
 import { stageInputSha } from "./runner"
-import { LEAN_CHILD_PERMISSIONS, engineSessionPort } from "./stages"
+import { LEAN_CHILD_PERMISSIONS, engineSessionPort, stageInputs } from "./stages"
 import { writeQuestions, type Question } from "./state"
 import { cleanupMatters, matter } from "./test-support"
 
@@ -211,5 +211,36 @@ describe("lean stage keys", () => {
     // included; the gate reads it itself and the document through its review.
     const gate = keys([{ ...answered, id: `${PACKAGE_SCOPE_QUESTION}gate`, stage: "gate", kind: "scope", mixed: true }])
     unchanged(gate, step => !step.startsWith("d1."))
+  })
+
+  test("package-composition inputs key every post-draft body stage only when a memo is requested, distinguishing combined deliverables", () => {
+    const directory = matter()
+    const schedule: Omit<PlannedDocument, "id"> = { title: "Delivery schedule", purpose: "Delivery dates", parts: [{ heading: "Dates", scope: "The delivery dates" }] }
+    const note: Omit<PlannedDocument, "id"> = { title: "Supply note", purpose: "Operative terms", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }
+    const combinedNote: Omit<PlannedDocument, "id"> = { ...note, file: "supply-pack.docx", deliverable: "combined" }
+    const memo = { name: "cover memo", file: "supply-pack - cover memo.docx" }
+    const postDraft = ["review", "review-independent", "review-wording", "review-client-disadvantage", "change-plan", "change-prepare", "changes", "change-review"] as const
+    const steps = (["d1", "d2"] as const).flatMap(doc => postDraft.map(stage => `${doc}.${stage}` as StepID))
+    const composition = (step: StepID) => stageInputs(directory, step).filter(row => row.name === "package-composition")
+
+    writeLeanPlan(directory, [schedule, combinedNote], undefined, undefined, memo)
+    const withMemo = new Map(steps.map(step => [step, stageInputs(directory, step)]))
+    const combinedKeys = new Map(steps.map(step => [step, stageInputSha(directory, step)]))
+    for (const step of steps) expect(composition(step)).toHaveLength(1)
+    expect(composition("d2.review")[0]!.bytes).not.toBe(composition("d1.review")[0]!.bytes)
+    for (const step of ["d1.draft", "d2.draft", "d1.apply", "d2.apply", "finalize", "package-review", "gate"] as StepID[])
+      expect([step, composition(step)]).toEqual([step, []])
+
+    // Turning d2 into a plain body rekeys d2's post-draft stages only.
+    writeLeanPlan(directory, [schedule, note], undefined, undefined, memo)
+    for (const step of steps) {
+      expect(composition(step)).toEqual(composition("d1.review"))
+      expect(stageInputSha(directory, step) === combinedKeys.get(step)).toBe(step.startsWith("d1."))
+    }
+
+    // Without a memo the package-composition input disappears and other inputs stay identical.
+    writeLeanPlan(directory, [schedule, combinedNote])
+    for (const step of steps)
+      expect([step, stageInputs(directory, step)]).toEqual([step, withMemo.get(step)!.filter(row => row.name !== "package-composition")])
   })
 })

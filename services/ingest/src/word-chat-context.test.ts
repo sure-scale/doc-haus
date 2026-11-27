@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { wordChatExcerpts, wordChatHash, wordChatPromptSources, wordChatQuoteVerified, WORD_CHAT_SOURCE_COVERAGE } from "./word-chat-context"
+import { wordChatExcerpts, wordChatHash, wordChatPromptSources, wordChatQuoteVerified } from "./word-chat-context"
 import type { WordChatContext, WordChatSource } from "../../../dochaus/lib/word-chat-contract"
 
 const context: WordChatContext = { text: "Actual […excerpt gap…] words.", paragraphs: [{ id: "p1", text: "Actual […excerpt gap…] words." }], saved: false, capturedAt: "now", truncated: false }
@@ -37,6 +37,4 @@ test("canonical quote admission preserves literal markers and refuses presentati
 test("model source projection supplies explicit coverage without duplicating canonical passages", () => {
   const selected = source({ quote: "Actual", passages: [context.text], complete: false })
   expect(wordChatPromptSources([selected])).toEqual([{ id: "word", name: "Draft.docx", location: "Current Word buffer", provenance: "word-buffer", quote: "Actual", complete: false }])
-  expect(WORD_CHAT_SOURCE_COVERAGE).toContain("absent means completeness is unknown")
-  expect(WORD_CHAT_SOURCE_COVERAGE).toContain("never complete document semantics")
 })

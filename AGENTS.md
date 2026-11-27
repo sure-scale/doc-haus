@@ -141,6 +141,39 @@ the real APIs and record outputs and generic runtime failures. It never
 continues sessions, auto-approves permissions, retries generation or recovers
 workflows. Reusable improvements belong in the product.
 
+## Unit tests
+
+Write unit tests only for real, deterministic invariants in code that could fail
+silently: parsers, validators, state transitions, persistence/resume keys,
+security or containment boundaries, XML/DOCX/file transforms, and HTTP/tool
+contracts. If a test cannot catch a real runtime bug without breaking on a
+harmless wording or layout edit, do not write it (or delete it).
+
+Banned test patterns:
+- **Prompt, markdown, or source-text scraping:** never assert exact sentences,
+  phrases, headings, or regexes on agent/skill `.md` files, prompt builders,
+  tool descriptions, or source files (`readFileSync` of `.ts`/`.tsx`/`.md` to
+  grep prose or JSX). Test frontmatter/permission loading, structured schema
+  boundaries, or prompt-injection escaping instead.
+- **UI copy, CSS, and static-HTML snapshots:** never assert exact label strings,
+  helper prose, CSS class names, SVG markup, or `renderToStaticMarkup` HTML
+  unless verifying a security invariant (such as rejecting `javascript:` URLs).
+  Test pure view-model/state logic directly.
+- **Obsolete contract-upgrade and variant-explosion scripts:** do not add a new
+  test file per bug fix or prompt tweak, or multiply permutations of already
+  covered paths. Fold new edge cases into the owning module's test file and
+  delete superseded contract-upgrade tests once the old path is gone.
+- **Fake hosts, mock-self tests, and upstream SDK checks:** do not test test
+  helpers, mock implementations, or third-party/upstream behavior, and do not
+  build large stateful simulators of external hosts (such as Word/Office.js)
+  where the test mostly validates the mock.
+- **Skipped or dead tests:** never commit unconditional `test.skip(...)` blocks,
+  tests for deleted/unwired code, or tests that leak temporary directories.
+  Delete obsolete tests instead of skipping them; use `git log` for history.
+- **Unrun test sprawl:** place every new unit test in a package test location
+  covered by CI (`.github/workflows/dochaus-ci.yml`) or wire it into CI in the
+  same change, and keep assertions focused on observable behavior.
+
 ## Changes and checks
 
 Use conventional commits. Keep changes additive, TypeScript strict and helpers

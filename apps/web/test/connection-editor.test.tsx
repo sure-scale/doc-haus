@@ -36,26 +36,14 @@ test("a cloud setup's external sign-in stays with its server-credential setup", 
   expect(connectionChoices(vertex, { ...integration, id: "google-vertex", methods }, [])).toEqual([])
 })
 
-test("the editor explains the sign-in before the check and shows the native problem unchanged after it", () => {
-  const before = render()
-  expect(before).toContain("Use your Claude Code sign-in")
-  expect(before).toContain("Uses the Claude Code sign-in on the computer running doc.haus.")
-  expect(before).not.toContain("Check again")
-
-  const missing = render({
-    external: { status: "needs_auth", message: "Claude Code is not installed. Install it, then run `claude auth login`.", url: "https://code.claude.com/docs/en/setup" },
+test("external sign-in links allow https URLs and reject javascript: URLs", () => {
+  const safe = render({
+    external: { status: "needs_auth", message: "Install CLI", url: "https://code.claude.com/docs/en/setup" },
     onCheckAgain: () => {},
   })
-  expect(missing).toContain("Claude Code is not installed. Install it, then run <code>claude auth login</code>.")
-  expect(missing).toContain('href="https://code.claude.com/docs/en/setup"')
-  expect(missing).toMatch(/<button type="button" class="primary">Check again<\/button>/)
-  expect(render({ external: { status: "needs_auth", message: "Check it", url: "javascript:alert(1)" }, onCheckAgain: () => {} })).not.toContain("javascript:")
-
-  const ready = render({ external: { status: "ready" }, onCheckAgain: () => {} })
-  expect(ready).toContain("Claude Code is signed in.")
-  expect(ready).toMatch(/<button type="button" class="ghost">Check again<\/button>/)
-  expect(render({ external: { status: "ready" }, onCheckAgain: () => {}, checking: true, disabled: true })).toContain("Checking…")
-  expect(render({ external: { status: "checking" }, onCheckAgain: () => {} })).toContain("Still checking the sign-in.")
+  expect(safe).toContain('href="https://code.claude.com/docs/en/setup"')
+  const unsafe = render({ external: { status: "needs_auth", message: "Check it", url: "javascript:alert(1)" }, onCheckAgain: () => {} })
+  expect(unsafe).not.toContain("javascript:")
 })
 
 test("an external sign-in with fields is offered with its fields and stays offered beside a saved one", () => {
@@ -71,14 +59,4 @@ test("an external sign-in with fields is offered with its fields and stays offer
   ])
   const saved = { ...info, connections: [{ type: "credential" as const, id: "entra", label: "Azure", method: "external" as const }] }
   expect(connectionChoices(azure, saved, []).map(choice => choice.value)).toEqual(["credential:entra", "method:1", "method:2"])
-
-  const form = { ...draft, choice: "method:2", answer: { resourceName: "synthetic-resource" } }
-  const before = render({ provider: azure, integration: info, draft: form })
-  expect(before).toContain("Azure resource")
-  expect(before).toContain('value="synthetic-resource"')
-  expect(before).toContain("Enter the name of your Azure OpenAI or AI Services resource.")
-  expect(before).toContain("Uses the sign-in on the computer running doc.haus.")
-  const ready = render({ provider: azure, integration: info, draft: form, external: { status: "ready" }, onCheckAgain: () => {} })
-  expect(ready).toContain("Connection prepared. Choose your models to test access.")
-  expect(ready).not.toContain("Check again")
 })

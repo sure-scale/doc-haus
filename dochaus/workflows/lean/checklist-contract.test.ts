@@ -1,10 +1,9 @@
 import { afterEach, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { checklistFindingRecovery, checklistTextMeasuresMeaning, type ChecklistFinding, buildChecklistReinspectionPrompt, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, buildChecklistRefinementPrompt, CHECKLIST_ITEM_SHAPE, parseChecklistCheckerInput, parseChecklistExtraction, parseChecklistFinding, parseChecklistItem, type ChecklistItem } from "./checklist-contract"
 import { markerVerificationIssues, type ChecklistCheckerInput } from "./checklist-contract"
 import { withFactOptions } from "./fact-answers"
 import { writeLeanPlan } from "./plan"
-import { PROVISIONAL_FACT_MARKER_CONTRACT, provisionalFactMarkerItems } from "./provisional-fact-markers"
+import { provisionalFactMarkerItems } from "./provisional-fact-markers"
 import { readQuestions, writeQuestions, type Question } from "./state"
 import { cleanupMatters, matter } from "./test-support"
 import { paragraphShowsOpenItem } from "./gate"
@@ -26,54 +25,21 @@ const markerPacket: ChecklistCheckerInput = { ...packet, verification: "provisio
   source_refs: [{ document: "request", locator: "questions.json answer (q-storage)", question: "Is the complete specification supplied, and was the container inspected?", quote: "No more information is available. Prepare a review draft and disclose what remains unresolved." }],
 } }
 
-test("marker-only dependency means semantic reliance rather than topic overlap, with substantive effects still covered", () => {
-  const prompt = buildChecklistCheckerPrompt(markerPacket)
-  expect(prompt).toContain("Dependency means semantic reliance")
-  expect(prompt).toContain("truth of an assertion")
-  expect(prompt).toContain("operative effect, permission or sufficiency")
-  expect(prompt).toContain("to the reader")
-  expect(prompt).toContain("Mere topic overlap")
-  expect(prompt).toContain("Descriptions, summaries and cross-references have no exemption")
-  expect(prompt).toContain("necessary conditions are exhaustive or sufficient")
-  expect(prompt).toContain("each unresolved component actually relied upon")
-  expect(prompt).toContain("identify the actual dependent assertion or effect and its missing qualification")
-  expect(prompt).toContain("uncertain dependency or inspection scope remains indeterminate")
-  const ordinary = buildChecklistCheckerPrompt(packet)
-  expect(ordinary).not.toContain("Dependency means semantic reliance")
-  const role = readFileSync(new URL("../../agent/lean-checklist-check.md", import.meta.url), "utf8")
-  expect(role).toContain("semantic reliance")
-  expect(role).toContain("topic overlap alone")
-})
-
-test("the current canonical marker item preserves permission and unknowns while defining semantic dependency", () => {
+test("the current canonical marker item preserves permission and unknowns without mutating saved questions", () => {
   const directory = matter("The complete container specification is unavailable.", "Prepare a storage notice.")
   writeLeanPlan(directory, [{ title: "Storage notice", purpose: "Describe storage handling.", parts: [{ heading: "Storage", scope: "Container identification." }] }])
   const offered = withFactOptions({ id: "q-container", stage: "intake", kind: "fact", status: "open", question: "Is the complete specification available, and was the container inspected?", context: "The complete specification and prior inspection are unknown." })
   const question: Question = { ...offered, status: "answered", answer_kind: "option", option_id: "o1", answer: offered.options![0]!.text, fact_status: "provisional" }
   writeQuestions(directory, [question])
   const current = provisionalFactMarkerItems(directory)[0]!
-  const qualifications = current.item.qualifications.join("\n")
-  expect(qualifications).toContain("semantic reliance")
-  expect(qualifications).toContain("topic overlap")
-  expect(qualifications).toContain("dependent assertion or effect")
   expect(current.item.source_refs[0]!.quote).toBe(question.answer!)
   expect(current.item.source_refs[0]!.question).toBe(question.question)
   expect(readQuestions(directory)).toEqual([question])
-  expect(PROVISIONAL_FACT_MARKER_CONTRACT).toBe("question-specific-provisional-markers-4-positive-evidence")
 })
 
-test("product marker verification has a distinct contract without promoting human provenance to a source duty", () => {
+test("product marker verification preserves check input and rejects invalid verification modes", () => {
   const before = JSON.stringify(markerPacket)
   const prompt = buildChecklistCheckerPrompt(markerPacket)
-  expect(prompt).toContain("application supplies the handling rule")
-  expect(prompt).toContain("do not require a separate human instruction")
-  expect(prompt).toContain("Descriptive or paraphrased markers")
-  expect(prompt).toContain("retain each unresolved component")
-  expect(prompt).toContain("every dependent passage")
-  expect(prompt).toContain("unknown factual answer is not an unresolved marker decision")
-  expect(prompt).toContain("Missing inspection or uncertain dependency coverage is indeterminate")
-  expect(prompt).not.toContain("First independently assess whether the cited sources support the item's stated scope")
-  expect(prompt).not.toContain("Check this one unchanged source-derived checklist item")
   const input = JSON.parse(prompt.split("CHECK_INPUT:\n\n")[1]!)
   expect(input.item).toEqual(markerPacket.item)
   expect(input.verification).toBe("provisional_fact_marker")
@@ -83,17 +49,12 @@ test("product marker verification has a distinct contract without promoting huma
   expect(() => parseChecklistCheckerInput({ ...packet, verification: "source_override" })).toThrow()
   const ordinary = buildChecklistCheckerPrompt(packet)
   expect(buildChecklistCheckerPrompt({ ...packet, verification: undefined })).toBe(ordinary)
-  expect(ordinary).toContain("First independently assess whether the cited sources support the item's stated scope")
+  expect(prompt).not.toBe(ordinary)
 })
 
-test("marker reinspection retains its handling task instead of reintroducing source-duty applicability", () => {
+test("marker reinspection preserves the previous finding payload unchanged", () => {
   const previous: ChecklistFinding = { item_id: markerPacket.item_id, status: "not_applicable", action_status: "not_applicable", reason: "The human did not separately require marking.", evidence, source_refs: markerPacket.item.source_refs, inspection_scope: "The supplied current paragraphs.", limitation: "The facts remain unknown.", open_decisions: ["The prior inspection is unknown."] }
   const prompt = buildChecklistReinspectionPrompt(markerPacket, previous)
-  expect(prompt).toContain("Reinspect this unchanged product-owned marker task")
-  expect(prompt).toContain("do not assume a pass")
-  expect(prompt).toContain("application supplies the handling rule")
-  expect(prompt).not.toContain("Assess source-supported applicability")
-  expect(prompt).not.toContain("A proposal does not require adoption merely because")
   const preserved = prompt.split("\n\n").find(row => row.startsWith("Previous finding (unverified assessment, not source authority): "))!
   expect(JSON.parse(preserved.slice(preserved.indexOf(": ") + 2))).toEqual(previous)
 })

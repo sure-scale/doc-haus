@@ -72,7 +72,6 @@ test("actual tie-break HTTP uses only explicit ambiguous calls, complete evidenc
     } else {
       expect(body.prompt).toContain("<checked-pair-judgments")
       expect(body.prompt).not.toContain("<incoming")
-      expect(body.prompt).toContain("Never choose or default to a current version")
       expect(Buffer.byteLength(body.prompt)).toBeLessThanOrEqual(64 * 1024)
       const summary = JSON.parse(body.prompt.match(/<checked-base-contrasts encoding="json">([\s\S]*?)<\/checked-base-contrasts>/)[1])
       expect(summary.representative).toHaveLength(1)
@@ -151,7 +150,6 @@ test("long sources are fully read in bounded parts, incoming reading is reused, 
       else if (candidate) {
         pairCalls++
         expect(prompt).not.toContain("UNSELECTED_LONG_SOURCE")
-        expect(prompt).toContain("model-selected")
         expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(64 * 1024)
         const row = JSON.parse(candidate[1]), incoming = JSON.parse(prompt.match(/<incoming encoding="json">([\s\S]*?)<\/incoming>/)[1])
         expect(row).not.toHaveProperty("paragraphs")

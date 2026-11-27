@@ -1,32 +1,25 @@
-import { describe, expect, test } from "bun:test"
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { afterEach, describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import verifyTool from "../tool/verify"
 
-// Task 7: verify-tool descriptor + return-shape test. Behavior of the underlying
-// gates is covered by test/verification-loop.test.ts (Task 6); here we only
-// confirm the wrapper exposes the right args and returns the agreed shape.
+// Verify-tool wrapper execution and return-shape test. Behavior of the
+// underlying gates is covered by test/verification-loop.test.ts.
 
-describe("verify tool descriptor", () => {
-  test("exposes description, deliverable, gates, and output args", () => {
-    expect(verifyTool.description).toMatch(/verification gates/i)
-    expect(verifyTool.description).toMatch(/PASS\s*\/\s*PARTIAL\s*\/\s*BLOCKED/)
-    expect(verifyTool.args.deliverable).toBeDefined()
-    expect(verifyTool.args.gates).toBeDefined()
-    expect(verifyTool.args.output).toBeDefined()
-  })
-
-  test("description contains no fixture-specific legal values", () => {
-    // Transfer check: the description must not bake in benchmark artifacts.
-    expect(verifyTool.description).not.toMatch(/\$\d/)
-    expect(verifyTool.description).not.toMatch(/\b20\d{2}\b/)
-  })
+const dirs: string[] = []
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
+const tempMatter = () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "verify-tool-"))
+  dirs.push(dir)
+  return dir
+}
 
 describe("verify tool execute", () => {
   test("returns PASS title/output/metadata on an empty matter and writes the report", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "verify-tool-"))
+    const dir = tempMatter()
     const result = await verifyTool.execute({}, { directory: dir } as any)
     expect(typeof result).toBe("object")
     expect(result).not.toBeNull()
@@ -41,7 +34,7 @@ describe("verify tool execute", () => {
   })
 
   test("gates arg restricts the metadata.gates keys", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "verify-tool-"))
+    const dir = tempMatter()
     writeFileSync(
       path.join(dir, "agreement.md"),
       ["# Agreement", "", "Counterparty: [insert counterparty name]", ""].join("\n"),

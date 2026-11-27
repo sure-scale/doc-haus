@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { readFileSync, writeFileSync } from "node:fs"
+import { writeFileSync } from "node:fs"
 import path from "node:path"
 import { docxodus } from "../../lib/docxodus"
 import { sha256File } from "../../lib/lineage"
@@ -83,15 +83,6 @@ describe("requested files prompt", () => {
     expect(prompt.replace(tagged("request", REQUEST), "")).not.toContain(".docx")
   })
 
-  test("a file named for the whole request holds everything it asks for, a file named for one document only that document", () => {
-    const directory = prepared()
-    const rule = (contents: string) => "- A file the lawyer's words name as the output of the whole request holds everything the run drafts for it, including each planned document the plan adds to carry the request out; " +
-      `a file they name for one document holds only that document. Put ${contents} in a file only where the lawyer's words place it.`
-    const prompt = requestedFilesPrompt(directory, DOCUMENTS, MEMO_ID)
-    expect(prompt).toContain(rule("a planned document"))
-    expect(prompt).not.toContain("Named files are all the files")
-    expect(requestedFilesPrompt(directory, MEMOLESS, undefined)).toContain(rule("a planned document"))
-  })
 })
 
 describe("parse requested files", () => {
@@ -1117,14 +1108,6 @@ describe("requested file decision applicability", () => {
     expect(prompt).toContain("As planned.")
     expect(prompt).toContain("Address the documents to the Orchard Committee.")
     expect(prompt).toContain("or null when none applies or applicability is uncertain")
-    // Both instruction layers describe the same record: the requested file
-    // remains the comparison subject; permission is not a replacement shape.
-    expect(prompt).toContain("this is not a list of the files the plan will deliver after permissions are applied")
-    expect(prompt).toContain("Do not split, combine, rename or discard the requested file merely to reproduce the accepted plan")
-    expect(prompt).toContain("A contextual permission to accept the plan is not a replacement for those source words")
-    const agent = readFileSync(new URL("../../agent/lean-files.md", import.meta.url), "utf8")
-    expect(agent).toContain("it does not replace the requested file with the accepted plan's files")
-    expect(agent).toContain("including instructions given in an answer")
   })
 
   test("a substantive answer changes the requested file and cannot inherit the former file's permission", () => {

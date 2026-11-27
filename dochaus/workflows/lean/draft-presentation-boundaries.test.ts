@@ -105,3 +105,12 @@ test("mixed-source heading-only polish uses expanded names and direct current pr
     expect(result.getElementsByTagNameNS("urn:foreign", "spacing").length).toBe(0)
   }
 })
+
+test("a draft presented without its title loses only the title, not a later Heading 1", async () => {
+  const rendered = await renderMarkdownToDocx("# Notice letter\n\n## Opening\n\nWhy we write.\n\n# Later heading\n\nWhat follows.\n")
+  const { bytes } = presentDraft(rendered.bytes, [{ heading: "Opening", display_heading: "" }], false)
+  const body = strFromU8(unzipSync(bytes)["word/document.xml"]!)
+  expect(body).not.toContain("Notice letter")
+  expect(body).toContain("Later heading")
+  expect(body.match(/w:val="Heading1"/g)).toHaveLength(1)
+})
