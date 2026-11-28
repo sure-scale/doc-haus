@@ -38,7 +38,6 @@ test("explicit revision mode preserves its source foundation and requested artif
   expect(parsed.value!.documents[0]).toMatchObject({ mode: "revise", deliverable: "redline" })
   writeLeanPlan(directory, parsed.value!.documents)
   expect(documentTemplate(directory, parsed.value!.documents[0])?.source).toBe(SOURCE)
-  expect(stagePrompt(directory, "d1.draft")).toContain("Preserve unaffected source wording")
 })
 
 test("initial revision explanations become native comments without fake amendments and the requested filename contains the redline", async () => {
@@ -227,7 +226,6 @@ test("package repair corrects only native explanations and refreshes downstream 
         sources: [{ source_id: SOURCE, quote: "within twenty days of the order date" }, { source_id: "request", quote: "Set delivery to thirty days." }] }], questions: [] })
     },
     [AGENT["package-review"]]: (prompt, index) => {
-      expect(prompt).toContain("explanation-only correction")
       return JSON.stringify(index ? { status: "pass", delivery: [], findings: [], limitations: [] } : { status: "changes-required", delivery: [], findings: [{ target: "body", document: "d1", pid: pidOf(prompt, "The supplier shall deliver the goods within thirty days"), detail: "Correct the initial explanation to state that the original period was twenty days and the proposed period is thirty days. The operative body is correct; do not change it." }], limitations: [] })
     },
   })

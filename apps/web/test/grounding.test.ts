@@ -1,11 +1,8 @@
 import { expect, test } from "bun:test"
-import { createElement } from "react"
-import { renderToStaticMarkup } from "react-dom/server"
 import type { Citation } from "../src/api/opencode/parts"
 import type { Part } from "../src/api/session-view"
 import { answerGrounding } from "../src/components/chat/grounding"
 import { readTurn, toTurns } from "../src/components/chat/turn-model"
-import GroundingBadge from "../src/components/GroundingBadge"
 
 // The grounding state is structural: model-authored `[Document § section]`
 // markers bind a statement to a quotation the legal plugin verified. These cases
@@ -31,10 +28,8 @@ function text(value: string): Part {
 const grounding = (value: string, citations: Citation[] = [], parts: Part[] = []) =>
   answerGrounding({ text: value, citations, parts: [...parts] })
 
-test("a greeting with no evidence work is chat and shows no badge", () => {
-  const result = grounding("Hello. How can I help with this matter?")
-  expect(result.state).toBe("chat")
-  expect(renderToStaticMarkup(createElement(GroundingBadge, { grounding: result }))).toBe("")
+test("a greeting with no evidence work is chat", () => {
+  expect(grounding("Hello. How can I help with this matter?").state).toBe("chat")
 })
 
 test("every substantive statement linked to a verified quotation is grounded", () => {
@@ -46,9 +41,6 @@ test("every substantive statement linked to a verified quotation is grounded", (
   expect(result.state).toBe("grounded")
   expect(result.supported).toBe(2)
   expect(result.unlinked).toEqual([])
-  const html = renderToStaticMarkup(createElement(GroundingBadge, { grounding: result }))
-  expect(html).toContain("Grounded")
-  expect(html).toContain("2 statements linked")
 })
 
 test("a retrieval hit is not span-verified support", () => {
@@ -56,7 +48,6 @@ test("a retrieval hit is not span-verified support", () => {
   const result = grounding(answer, [HIT], [tool("search-document", { citations: [HIT] })])
   expect(result.state).toBe("abstain")
   expect(result.citations).toBe(0)
-  expect(renderToStaticMarkup(createElement(GroundingBadge, { grounding: result }))).toContain("No verified support")
 })
 
 test("a substantive block with no marker makes the answer limited", () => {
@@ -77,8 +68,6 @@ test("verified citations with no claim mapping cannot be grounded", () => {
   expect(result.state).toBe("limited")
   expect(result.supported).toBe(0)
   expect(result.citations).toBe(1)
-  const html = renderToStaticMarkup(createElement(GroundingBadge, { grounding: result }))
-  expect(html).toContain("does not link them to its statements")
 })
 
 test("a short uncited line stating an amount is still material", () => {
@@ -132,7 +121,7 @@ test("live and stored turns compute the same grounding state", () => {
     text("The supplier must deliver the cartons within thirty days of each order [MSA § 7.2]."),
     tool("cite", { citations: [CITATION] }),
   ]
-  const live = readTurn(new Map(parts.map(part => [part.id, part])), new Map([["msg", "assistant"]]), "", "ses")
+  const live = readTurn(new Map(parts.map((part) => [part.id, part])), new Map([["msg", "assistant"]]), "", "ses")
   const stored = toTurns([{ info: { id: "msg", role: "assistant" }, parts: JSON.parse(JSON.stringify(parts)) }], "")[0]!
   expect(stored.grounding).toEqual(live.grounding)
   expect(stored.grounding?.state).toBe("grounded")

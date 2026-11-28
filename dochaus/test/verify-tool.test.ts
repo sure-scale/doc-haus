@@ -5,7 +5,7 @@ import path from "node:path"
 import verifyTool from "../tool/verify"
 
 // Verify-tool wrapper execution and return-shape test. Behavior of the
-// underlying gates is covered by test/verification-loop.test.ts.
+// underlying gates is covered by lib/verification-loop.test.ts.
 
 const dirs: string[] = []
 afterEach(() => {

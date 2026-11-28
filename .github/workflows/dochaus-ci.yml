@@ -46,7 +46,7 @@ jobs:
         run: bun run release:check --base "$RELEASE_BASE"
       - name: Test release preparation and publication
         working-directory: scripts
-        run: bun test test/release.test.ts test/publish-release.test.ts
+        run: bun test ./test/release.test.ts ./test/publish-release.test.ts
       - name: Resolve the exact updater release commit
         id: release
         env:
@@ -77,23 +77,27 @@ jobs:
 
       - name: Test launcher ownership and restart prompts
         working-directory: scripts
-        run: bun test test/start-runtime.test.ts --timeout 30000
+        run: bun test ./test/start-runtime.test.ts --timeout 30000
 
       - name: Test Bun selection and launcher compatibility
         working-directory: scripts
-        run: bun test test/bun-runtime.test.ts --timeout 30000
+        run: bun test ./test/bun-runtime.test.ts --timeout 30000
 
       - name: Test host requirement checks and install prompts
         working-directory: scripts
-        run: bun test test/requirements.test.ts --timeout 30000
+        run: bun test ./test/requirements.test.ts --timeout 30000
 
       - name: Test Mac app installation and reopen behaviour
         working-directory: scripts
-        run: bun test test/install-launcher.test.ts --timeout 30000
+        run: bun test ./test/install-launcher.test.ts --timeout 30000
 
       - name: Test dependency installation cache
         working-directory: scripts
-        run: bun test test/install-dependencies.test.ts --timeout 30000
+        run: bun test ./test/install-dependencies.test.ts --timeout 30000
+
+      - name: Test data-root path resolution
+        working-directory: scripts
+        run: bun test ./test/data-paths.test.ts --timeout 30000
 
   web-build:
     name: web build
@@ -130,12 +134,12 @@ jobs:
         run: |
           bun run --cwd apps/word-addin build
           bun run --cwd apps/word-addin typecheck
-          (cd apps/word-addin && bun test src)
-          (cd scripts && bun test test/word-addin-setup.test.ts)
+          (cd apps/word-addin && bun test ./src)
+          (cd scripts && bun test ./test/word-addin-setup.test.ts)
 
       - name: Test desktop handoff and selected installation refresh
         working-directory: scripts
-        run: bun test test/desktop-launcher.test.ts test/word-open.test.ts --timeout 30000
+        run: bun test ./test/desktop-launcher.test.ts ./test/word-open.test.ts --timeout 30000
 
       - name: Install updater route dependencies
         run: bun install --cwd services/ingest --frozen-lockfile
@@ -143,9 +147,9 @@ jobs:
       - name: Install process inspection tool for update restart tests
         run: sudo apt-get update && sudo apt-get install --yes lsof
 
-      - name: Test in-app updates and managed restart
+      - name: Test in-app updates, managed restart and settings migration
         working-directory: scripts
-        run: bun test test/updater.test.ts --timeout 30000
+        run: bun test ./test/updater.test.ts ./test/settings-migration.test.ts --timeout 30000
 
       - name: Typecheck legal packages
         run: |
@@ -157,58 +161,25 @@ jobs:
         run: bun run lint
       - name: Test provider response limits and streaming errors
         working-directory: packages/core
-        run: bun test test/provider-response-size.test.ts --timeout 30000
-      - name: Test ordinary settings, matter fields and setup
+        run: bun test ./test/provider-response-size.test.ts --timeout 30000
+      - name: Test ingest service
         working-directory: services/ingest
-        # This suite sets WORKSPACE_ROOT before loading the installation singleton.
-        # A separate process prevents another test file's imports from caching it first.
-        run: |
-          bun test src/preferences.test.ts --timeout 30000
-          bun test src/engine-config.test.ts src/setup.test.ts src/research-connections.test.ts src/auth-reuse.test.ts src/identifiers.test.ts src/source-artifacts.test.ts src/playbook-library.test.ts src/matter.test.ts src/matter-http.test.ts --timeout 30000
-      - name: Test chronology, source identity and Markdown indexing
-        working-directory: services/ingest
-        # Independent synthetic sources and scripted model jobs; no paid provider.
-        run: bun test src/chronology-*.test.ts src/db-source-identity.test.ts src/markdown-source.test.ts src/source-index-consistency.test.ts --timeout 30000
-      - name: Test combined provider setup save and rollback
-        working-directory: services/ingest
-        run: bun test src/provider-setup.test.ts --timeout 30000
-      - name: Test Word proposals through a LibreOffice save
-        working-directory: services/ingest
-        # Committed LibreOffice-saved fixtures and a scripted engine; no model.
-        # The live soffice case skips when LibreOffice is not installed.
-        run: bun test src/document-amendment-libreoffice.test.ts --timeout 30000
-      - name: Test Word amendment and comment reply generation
-        working-directory: services/ingest
-        run: bun test src/document-amendments.test.ts src/markup-replies.test.ts --timeout 30000
-      - name: Test linked Word saves, Source Desk and restricted HTTPS receiver
-        working-directory: services/ingest
-        run: bun test src/word-linked-docx.test.ts src/word-documents-http.test.ts src/word-source-desk.test.ts src/word-https.test.ts src/word-handouts.test.ts src/word-open-tickets.test.ts --timeout 30000
-      - name: Test native discovery and selected sign-in reuse
+        run: bun test ./src --timeout 120000
+      - name: Test engine unit invariants
         working-directory: services/engine
-        run: bun test src/credential-reuse.test.ts test/provider-catalog.test.ts --timeout 30000
-      - name: Test staged provider connections and native authentication
+        run: bun test ./src --timeout 30000
+      - name: Test engine integration flows
         working-directory: services/engine
-        run: |
-          bun test src/provider-candidate.test.ts --timeout 30000
-          bun test src/provider-setup-session.test.ts --timeout 30000
-          bun test test/managed-readiness.test.ts --timeout 30000
-      - name: Test public regression support
+        run: bun test ./test --timeout 120000
+      - name: Test legal library, plugins, templates and tools
         working-directory: dochaus
-        run: bun test templates/optional.test.ts test/product-boundary-guard.test.ts test/product-boundary.test.ts test/research-source-snippets.test.ts test/legal-tool-approval.test.ts plugin/legal/provider-capture.test.ts
-      - name: Test redline preview attribution and document search scopes
+        run: bun test ./lib ./plugin ./templates ./capabilities ./test --timeout 120000
+      - name: Test lean drafting workflow
         working-directory: dochaus
-        # Synthetic Word files and indexes in temporary matters; no network or model.
-        run: bun test test/redline-preview-attribution.test.ts test/search-document-filters.test.ts --timeout 30000
-      - name: Test drafting preferences, research scope and connector consent
-        working-directory: dochaus
-        run: bun test test/drafting-preferences.test.ts test/practice-areas.test.ts workflows/lean/posture.test.ts test/research-scope.test.ts test/research-source-fetch.test.ts test/research-source-exa.test.ts test/research-mcp.test.ts
-      - name: Test lean question advice, delegation and checklist questions
-        working-directory: dochaus
-        # Synthetic matters through the real coordinator with a scripted model; no network.
-        run: bun test workflows/lean/decide-for-me-flow.test.ts workflows/lean/delegated-answer.test.ts workflows/lean/checklist-instruction-question.test.ts workflows/lean/checklist-conflict-question.test.ts
-      - name: Test web model selection and proxy
+        run: bun test ./workflows/lean --timeout 180000
+      - name: Test web app
         working-directory: apps/web
-        run: bun test test --timeout 30000
+        run: bun test ./test --timeout 30000
 
   windows:
     name: windows
@@ -241,16 +212,16 @@ jobs:
 
       - name: Test Windows launcher, host tools, safe names and paths
         run: |
-          (cd scripts && bun test windows)
-          (cd scripts && bun test test/word-addin-setup.test.ts)
-          (cd scripts && bun test test/desktop-launcher.test.ts --timeout 30000)
-          (cd scripts && bun test test/word-open.test.ts --timeout 30000)
-          (cd services/ingest && bun test src/word-handouts.test.ts --timeout 30000)
+          (cd scripts && bun test ./windows)
+          (cd scripts && bun test ./test/word-addin-setup.test.ts)
+          (cd scripts && bun test ./test/desktop-launcher.test.ts --timeout 30000)
+          (cd scripts && bun test ./test/word-open.test.ts --timeout 30000)
+          (cd services/ingest && bun test ./src/word-handouts.test.ts --timeout 30000)
           bun run --cwd apps/word-addin typecheck
-          (cd apps/word-addin && bun test src)
-          (cd dochaus && bun test lib/safe-file-name.test.ts)
-          (cd services/engine && bun test test/provider-catalog.test.ts)
-          (cd apps/web && bun test test/step-labels.test.ts)
+          (cd apps/word-addin && bun test ./src)
+          (cd dochaus && bun test ./lib/safe-file-name.test.ts)
+          (cd services/engine && bun test ./src/provider-catalog.test.ts)
+          (cd apps/web && bun test ./test/step-labels.test.ts)
 
       # The whole stack through start.cmd without host tools: engine, ingest and
       # web must come up, then the launcher stops it and exits 0.

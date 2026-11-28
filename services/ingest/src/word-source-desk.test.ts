@@ -19,7 +19,7 @@ import type { WordGrant } from "./word-grants"
 
 const origin = "https://localhost:47612"
 const keys = ["DOCHAUS_WORD_ORIGIN", "DOCHAUS_WORD_EXTERNAL_HTTPS", "DOCHAUS_RUNTIME_DIR"] as const
-const previous = keys.map(key => process.env[key])
+let previous: Array<string | undefined> = []
 let directory: string
 let app: Hono
 const token = "a".repeat(43)
@@ -38,6 +38,7 @@ const uploadForm = (name: string, bytes: Uint8Array, extra?: [string, string]) =
 }
 
 beforeAll(async () => {
+  previous = keys.map(key => process.env[key])
   directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-source-desk-")))
   process.env.DOCHAUS_WORD_ORIGIN = origin
   process.env.DOCHAUS_WORD_EXTERNAL_HTTPS = "1"

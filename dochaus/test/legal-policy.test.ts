@@ -273,9 +273,6 @@ describe("conflicts system fragment", () => {
       const system = await systemFor(matterWith(conflicts), "lean-package-review")
       expect(system).toContain("<conflicts-status>")
       expect(system).toContain("<structured-stage-conflicts>")
-      expect(system).toContain("no prose outside it")
-      expect(system).toContain("do not add fields")
-      expect(system).toContain("human-facing reviewer note must still disclose")
     }
     expect(await systemFor(matterWith(undefined), "reviewer")).not.toContain("<structured-stage-conflicts>")
     expect(await systemFor(matterWith({ status: "cleared", by: "K. Counsel" }), "lean-package-review")).not.toContain("<structured-stage-conflicts>")

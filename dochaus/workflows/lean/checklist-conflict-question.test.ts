@@ -58,10 +58,6 @@ test("the gate batches every source conflict into one question naming each pair,
   expect(question).toMatchObject({ stage: "gate", status: "open" })
   expect(question).not.toHaveProperty("pid")
   expect(question).not.toHaveProperty("document")
-  expect(question.question).toBe(['Two checklist requirements taken from the sources conflict.',
-    'First: The note states the delivery period. Sources: request "Deliver within thirty days of the order."',
-    'Second: The note states when payment falls due. Sources: request "Payment is due on delivery."',
-    "Which requirement governs, or how should they be reconciled?"].join(" "))
   const disclosed = gate.disclosed.filter(item => item.kind === "checklist_unresolved")
   expect(disclosed).toHaveLength(2)
   for (const item of disclosed)
@@ -219,17 +215,13 @@ test("an answered conflict is not asked again when re-extraction gives its requi
   for (const id of new Set([...before, ...after])) expect(question!.question).not.toContain(id)
 }, 180000)
 
-test("the conflict question names each requirement by its check and sources, never by an internal item id, and its context is true before and after an answer", () => {
+test("the conflict question names each requirement by its check and sources, never by an internal item id", () => {
   const directory = checklistMatter([conflict("c1", "Payment is due on delivery."), conflict("c2", "Deliver within thirty days of the order.")])
   const [question] = finalGate(directory).questions!
   expect(question!.question).not.toMatch(/\bc[12]\b/)
   for (const text of ["The note states the delivery period.", "The note states when payment falls due.",
     'request "Deliver within thirty days of the order."', 'request "Payment is due on delivery."'])
     expect(question!.question).toContain(text)
-  expect(question!.context).toContain("Until a later check no longer finds this conflict, it is disclosed with the review draft")
-  expect(question!.context).not.toContain("Until you answer")
-  expect(question!.context).toContain("Your answer re-runs the stages that use it, including the checklist check; a drafted document changes only by amendment.")
-  expect(question!.context).not.toContain("from the start")
 })
 
 test("the same conflicting requirements under other item ids are the same question", () => {

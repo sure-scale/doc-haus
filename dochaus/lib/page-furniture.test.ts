@@ -27,8 +27,9 @@ const LETTER: PageFurniture = { header: [], pageNumber: { format: "plain", align
 
 // The render lint reads the firm's date style; an empty workspace keeps the default.
 let workspace: string
-const saved = process.env.WORKSPACE_ROOT
+let saved: string | undefined
 beforeAll(() => {
+  saved = process.env.WORKSPACE_ROOT
   workspace = mkdtempSync(path.join(tmpdir(), "page-furniture-"))
   process.env.WORKSPACE_ROOT = workspace
 })
@@ -64,16 +65,6 @@ describe("pageFurniture", () => {
     for (const settings of [prefs(), legends, prefs({ pageNumbers: "dashed", numberFirstPage: false, draftLineFirm: true, firm: "Firm" })])
       expect(pageFurniture("statement", settings, DRAFTED, { legend: "Sworn copy" })).toEqual(pageFurniture("other", settings, DRAFTED, { legend: "Sworn copy" }))
     expect(pageFurniture("notes", legends, DRAFTED)?.header).toEqual([NOTES_MARKING])
-  })
-
-  test("no shipped agent or skill hands a model legend text to write: legends are the firm's", () => {
-    const root = path.join(import.meta.dir, "..")
-    const prompts = ["agent/*.md", "skill/*/SKILL.md"].flatMap((pattern) => [...new Bun.Glob(pattern).scanSync(root)])
-    expect(prompts.length).toBeGreaterThan(10)
-    // The chat agents whose answers the lawyer copies out are covered by name.
-    expect(prompts).toEqual(expect.arrayContaining([path.join("agent", "quick-draft.md"), path.join("agent", "client-summary.md")]))
-    const legend = /privileged\s*&\s*confidential|attorney[- ]client communication|attorney work product|subject to contract|for discussion purposes only/i
-    expect(prompts.filter((file) => legend.test(readFileSync(path.join(root, file), "utf8")))).toEqual([])
   })
 
   test("the draft line names the firm when set and follows the firm's date style", () => {

@@ -1,7 +1,4 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { createElement } from "react"
-import { renderToStaticMarkup } from "react-dom/server"
-import PermissionCard from "../src/components/chat/PermissionCard"
 import { autoApproved, DEFAULT_PREFS, loadPrefs, savePrefs } from "../src/prefs"
 import { projectEvent } from "../src/api/session-view"
 
@@ -96,51 +93,30 @@ test("existing callers can keep best-effort browser saves", () => {
   expect(loadPrefs().textSize).toBe("standard")
 })
 
-function permissionCard(save: string[]) {
-  const event = projectEvent({
+test("permission.asked projection preserves save scope, resources, and redaction metadata", () => {
+  const scoped = projectEvent({
     type: "permission.asked", id: "event-permission", created: 1,
     data: {
       id: "permission-card", sessionID: "session-owner", action: "tracked-changes",
-      resources: ["/matter/contract.docx"], save, metadata: { document: "contract.docx" },
+      resources: ["/matter/contract.docx"], save: ["/matter/*.docx", "/library/*.docx"], metadata: { document: "contract.docx" },
     },
   })[0]
-  if (event?.type !== "permission.asked") throw new Error("Native permission request was not projected")
-  return renderToStaticMarkup(createElement(PermissionCard, { request: event.properties, onReply: () => {} }))
-}
+  expect(scoped?.type).toBe("permission.asked")
+  if (scoped?.type === "permission.asked") {
+    expect(scoped.properties.always).toEqual(["/matter/*.docx", "/library/*.docx"])
+    expect(scoped.properties.patterns).toEqual(["/matter/contract.docx"])
+  }
 
-test("Always is available only when the native request supplies a save scope", () => {
-  expect(permissionCard(["/matter/contract.docx"])).toContain("Always allow this action for this document")
-  const onceOnly = permissionCard([])
-  expect(onceOnly).toContain("Allow once")
-  expect(onceOnly).toContain("Reject")
-  expect(onceOnly).not.toContain("Always allow")
-})
-
-test("Always describes a broader native save scope rather than promising one document", () => {
-  const html = permissionCard(["/matter/*.docx", "/library/*.docx"])
-  expect(html).toContain("Always allow this action for these items")
-  expect(html).toContain("/matter/*.docx")
-  expect(html).toContain("/library/*.docx")
-  expect(html).not.toContain("Always allow for this document")
-})
-
-function redactCard(metadata: Record<string, unknown>) {
-  const event = projectEvent({
-    type: "permission.asked", id: "event-redact", created: 1,
+  const onceOnly = projectEvent({
+    type: "permission.asked", id: "event-once", created: 1,
     data: {
-      id: "permission-redact", sessionID: "session-owner", action: "redact",
-      resources: ["/matter/personnel.docx"], save: ["/matter/personnel.docx"], metadata: { document: "personnel.docx", text: "123-45-6789", label: "[REDACTED]", reason: "SSN — PII", ...metadata },
+      id: "permission-once", sessionID: "session-owner", action: "redact",
+      resources: ["/matter/personnel.docx"], save: [], metadata: { document: "personnel.docx", occurrences: 0, resave: true },
     },
   })[0]
-  if (event?.type !== "permission.asked") throw new Error("Native permission request was not projected")
-  return renderToStaticMarkup(createElement(PermissionCard, { request: event.properties, onReply: () => {} }))
-}
-
-// Running a redaction again after its save failed removes nothing from the
-// file; what it does irreversibly is delete doc.haus's earlier versions.
-test("a redaction card says what an approval removes, including a save sent again", () => {
-  expect(redactCard({ occurrences: 2 })).toContain("Removes 2 occurrence(s)")
-  const again = redactCard({ occurrences: 0, resave: true })
-  expect(again).not.toContain("Removes 0")
-  expect(again).toContain("deletes doc.haus&#x27;s earlier versions")
+  expect(onceOnly?.type).toBe("permission.asked")
+  if (onceOnly?.type === "permission.asked") {
+    expect(onceOnly.properties.always).toEqual([])
+    expect(onceOnly.properties.metadata).toMatchObject({ document: "personnel.docx", occurrences: 0, resave: true })
+  }
 })

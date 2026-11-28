@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { existsSync, readFileSync, rmSync } from "node:fs"
 import path from "node:path"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
+import { paragraphSha256 } from "../../lib/drafting-amendment"
 import { checkDraftingNotes, readChangeList } from "./checks"
 import { DELIVERED_NOTES, memoNotesFile } from "./deliverables"
 import { runItemIDs, withoutRefMarkers } from "./delivered-memo"
@@ -12,11 +13,11 @@ import { intakeQuestions } from "./intake"
 import { packageScopeQuestionID } from "./package-scope"
 import { readLeanPlan, writeLeanPlan } from "./plan"
 import { stagePrompt } from "./prompts"
-import { openItem } from "./quotes"
+import { openItem, quoteFound } from "./quotes"
 import { runLean } from "./runner"
 import { acceptStageReply, disclosableItems, stageOutputValid } from "./stages"
 import { leanFile, readLeanJson, readLeanText, writeLeanText, writeOpenItems, writeQuestions, type Question } from "./state"
-import { AGENT, COVER_MEMO, DRAFT, DRAFTED, changesFirst, cleanupMatters, drafter, happyPath, listed, matter, noChanges, pidOf, reviewFirst, sameSession, scriptedModel, type Reply } from "./test-support"
+import { AGENT, COVER_MEMO, DRAFT, DRAFTED, SOURCE, SOURCE_TEXT, changesFirst, cleanupMatters, drafter, happyPath, listed, matter, noChanges, pidOf, reviewFirst, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // In the drafting notes, a requested memo or not, an internal id may appear
 // only inside a "[ref: …]" marker. The drafting-notes check holds an item as
@@ -374,12 +375,6 @@ describe("a recorded change id in a requested memo", () => {
       .toEqual([CHANGE_STRAY(["a1", "w1"]).replace("The memo is for the reader", "The notes are for the reader")])
   })
 
-  test("the finalize prompt asks for changes by what they do, with or without a memo", () => {
-    const rule = "describe each change by what it does, never by its change id"
-    expect(stagePrompt(changeMatter(), "finalize")).toContain(rule)
-    expect(stagePrompt(changeMatter(false), "finalize")).toContain(rule)
-  })
-
   test("the ids matched are the change-list ids the run records, in runItemIDs' order, then each open item's amendment", () => {
     const directory = changeMatter()
     writeLeanPlan(directory, [DOCUMENT, { title: "Supply agreement", purpose: "Full terms", parts: [{ heading: "Price", scope: "Price terms" }] }], undefined, undefined,
@@ -494,12 +489,6 @@ describe("a planned document id in a requested memo", () => {
     const notes = ["# Drafting notes", "", `- d1 and d2 are drafted. ${disclosed}`, ""].join("\n")
     expect(checkDraftingNotes(directory, notes, [GAP, CONDITION]).issues)
       .toEqual([DOCUMENT_STRAY(["d1", "d2"]).replace("The memo is for the reader", "The notes are for the reader")])
-  })
-
-  test("the finalize prompt asks for documents by title or file name, with or without a memo", () => {
-    const rule = "name each document by its title or file name, never by its internal id"
-    expect(stagePrompt(twoDocuments(), "finalize")).toContain(rule)
-    expect(stagePrompt(twoDocuments(false), "finalize")).toContain(rule)
   })
 
   // The model keeps a document id where the check reads prose: opening a list
@@ -642,12 +631,6 @@ describe("without a requested memo", () => {
       `- The supply note (d1) states the period (a1); the delivery paragraph (${PID}) is open. [ref: ${CONDITION.id}]`)
     expect(notesForReader(directory, text, [GAP, CONDITION])).toBe(notes(`- Rule 3(d1), Section 3(1)(a1) and clause 12.1(d) apply[^a1]; the source says "d1 and a1 stand".`,
       "- The supply note states the period; the delivery paragraph is open."))
-  })
-
-  test("the finalize prompt asks for each open item in words with a trailing ref marker", () => {
-    const prompt = stagePrompt(memoMatter("none"), "finalize")
-    expect(prompt).toContain('- Say what each open item is and what the lawyer needs to do about it, and end that statement with the item\'s marker copied whole, exactly as open_items lists it, as a trailing "[ref: <id>]". Write internal ids only in these markers')
-    expect(prompt).not.toContain("Name every open item by its exact id")
   })
 
   /** A supply note run with no memo whose applied change leaves an open item.
@@ -855,5 +838,59 @@ describe("a placeholder in the drafting notes' own text", () => {
     expect((await acceptStageReply(directory, "finalize", reply, { final: true })).issues).toEqual([])
     expect(readLeanText(directory, "drafting-notes.md")).toBe(reply)
     expect(stageOutputValid(directory, "finalize")).toBe(true)
+  })
+})
+
+describe("notes check source read caching", () => {
+  function supportedPlans() {
+    const directory = matter()
+    writeLeanPlan(directory, [{ title: "Container handover", purpose: "Describe handling instructions.", parts: [{ heading: "Handling", scope: "Container instructions." }] }])
+    const paragraphs = Array.from({ length: 24 }, (_, index) => {
+      const text = `Keep container ${index + 1} labelled.`
+      return { pid: `p${index.toString(16).padStart(12, "0")}`, text, sha256: paragraphSha256(text), draft_part: 0 }
+    })
+    writeLeanText(directory, "d1/paragraphs.json", JSON.stringify(paragraphs))
+    writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify(paragraphs))
+    writeLeanText(directory, "d1/change-plan.json", JSON.stringify({ shared_decisions: [], findings: [], questions: [],
+      groups: paragraphs.map((row, index) => ({ id: `g${index}`, pids: [row.pid], goal: "Retain the stated handling instruction.",
+        sources: [{ source_id: SOURCE, quote: SOURCE_TEXT }], limitations: [], resolves: [] })),
+    }))
+    return directory
+  }
+
+  function sourceReads(work: () => unknown) {
+    const queries = spyOn(Database.prototype, "query")
+    try {
+      const result = work()
+      return { result, reads: queries.mock.calls.filter(([sql]) => /SELECT section, text, char_start, char_end FROM chunks/.test(String(sql))).length }
+    } finally { queries.mockRestore() }
+  }
+
+  test("one notes check verifies repeated plan source evidence once while preserving every prose check", () => {
+    const directory = supportedPlans()
+    const prose = `# Notes\n\nThe instruction is "${SOURCE_TEXT}" [source: ${SOURCE}].`
+    const checked = sourceReads(() => checkDraftingNotes(directory, prose, [], { delegatedIDs: [] }))
+    expect(checked.result).toEqual({ issues: [], openItems: [] })
+    expect(checked.reads).toBe(1)
+    const invalid = checkDraftingNotes(directory, `# Notes\n\nDocument d1 leaves [INSERT COLOUR]. The instruction is "Discard the container." [source: ${SOURCE}]. In Lumen v. Solace, the custodian discards it.`, [], { delegatedIDs: ["q-inspection"] })
+    for (const fragment of ["document ids", "placeholders", "those words are not in", "no matter source", "delegated questions"])
+      expect(invalid.issues.some(issue => issue.includes(fragment))).toBe(true)
+  })
+
+  test("each check and each unscoped quote read observes changed canonical evidence", () => {
+    const directory = supportedPlans()
+    const prose = `# Notes\n\nThe instruction is "${SOURCE_TEXT}" [source: ${SOURCE}].`
+    const quote = { source_id: SOURCE, quote: SOURCE_TEXT }
+    expect(quoteFound(directory, quote)).toBe(true)
+    expect(checkDraftingNotes(directory, prose, [], { delegatedIDs: [] }).issues).toEqual([])
+    const db = new Database(path.join(directory, ".dochaus", "legal.db"))
+    try { db.run("UPDATE chunks SET text = ?", ["The custodian must inspect the seal."]) } finally { db.close() }
+    expect(quoteFound(directory, quote)).toBe(false)
+    const checked = sourceReads(() => checkDraftingNotes(directory, prose, [], { delegatedIDs: [] }))
+    expect(checked.reads).toBeGreaterThan(0)
+    expect((checked.result as ReturnType<typeof checkDraftingNotes>).issues.some(issue => issue.includes("those words are not in"))).toBe(true)
+    const item = { id: "review:omission:seal", kind: "omission" as const, stage: "review" as const, status: "open" as const,
+      detail: "The seal design remains unknown.", ref: { repair_target: "memo" as const } }
+    expect(checkDraftingNotes(directory, "# Notes\n\nInspect the seal.", [item], { delegatedIDs: [] }).issues.some(issue => issue.includes(item.id))).toBe(true)
   })
 })

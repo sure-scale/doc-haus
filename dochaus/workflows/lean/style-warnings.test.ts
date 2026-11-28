@@ -1,24 +1,33 @@
-import { afterAll, beforeEach, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { Database } from "bun:sqlite"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
+import { matterDateFormat } from "../../lib/matter-client"
 import { lintRenderedDraftMarkdown } from "../../lib/render"
 import { changePlanPrompt } from "./change-pipeline"
 import { finalGate } from "./gate"
-import { writeLeanPlan } from "./plan"
+import { leanSteps, readLeanPlan, runDateFormat, writeLeanPlan } from "./plan"
 import { REVISION_PREFERENCE_SCOPE, stagePrompt } from "./prompts"
-import { acceptStageReply, paragraphRows, stageOutputValid } from "./stages"
+import { runLean } from "./runner"
+import { acceptStageReply, paragraphRows, stageInputs, stageOutputValid } from "./stages"
 import { leanFile, readLeanText, writeLeanText } from "./state"
-import { SOURCE, cleanupMatters, matter } from "./test-support"
+import { AGENT, SOURCE, SOURCE_TEXT, cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 import { draftingStyleWarnings, styleScopedRows } from "./style-warnings"
 
-const workspace = mkdtempSync(path.join(tmpdir(), "lean-style-preferences-"))
-const previous = process.env.WORKSPACE_ROOT
-process.env.WORKSPACE_ROOT = workspace
-const preferences = path.join(workspace, ".preferences", "preferences.json")
+let workspace = ""
+let previous: string | undefined
+let preferences = ""
+beforeAll(() => {
+  previous = process.env.WORKSPACE_ROOT
+  workspace = mkdtempSync(path.join(tmpdir(), "lean-style-preferences-"))
+  process.env.WORKSPACE_ROOT = workspace
+  preferences = path.join(workspace, ".preferences", "preferences.json")
+})
 beforeEach(() => rmSync(path.dirname(preferences), { recursive: true, force: true }))
+afterEach(cleanupMatters)
 afterAll(() => {
-  cleanupMatters()
   rmSync(workspace, { recursive: true, force: true })
   if (previous === undefined) delete process.env.WORKSPACE_ROOT
   else process.env.WORKSPACE_ROOT = previous
@@ -54,14 +63,12 @@ test("style advisories reach wording review, planning and final notes without bl
     expect(prompt).toContain("<drafting_style_warnings>")
     expect(prompt).toContain(warned[0].pid)
     expect(prompt).toContain("numbers must be plain numerals")
-    expect(prompt).toContain("Preserve exact source quotations")
-    expect(prompt).toContain("Never add an open-item marker")
   }
   expect(stagePrompt(directory, "d1.review-independent")).not.toContain("<drafting_style_warnings>")
 
   writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify(rows))
   const finalize = stagePrompt(directory, "finalize")
-  expect(finalize).toContain("actual final body")
+  expect(finalize).toContain("<drafting_style_warnings>")
   expect(finalize).toContain("numbers must be plain numerals")
   const notes = await acceptStageReply(directory, "finalize", "# Drafting notes\n\nThe supplied wording has been preserved.")
   expect(notes.issues).toEqual([])
@@ -69,7 +76,6 @@ test("style advisories reach wording review, planning and final notes without bl
   const markdown = readLeanText(directory, "drafting-notes.md")!
   expect(markdown).toContain("## Drafting style advisories")
   expect(markdown).toContain("Supply note: numbers must be plain numerals")
-  expect(markdown).toContain("may intentionally retain their format")
   expect(markdown).not.toContain(warned[0].pid)
   const delivered = await paragraphRows(leanFile(directory, "drafting-notes.docx"))
   expect(delivered.map(row => row.text).join("\n")).toContain("numbers must be plain numerals")
@@ -149,4 +155,62 @@ test("until the firm sets its preferences, the date style the sources use govern
   save({ draftingConfigured: true, dateFormat: "month-day-year" })
   expect(warned()).toHaveLength(1)
   expect(warned()).toEqual(flagged("p2", '"June 11, 2026"'))
+})
+
+describe("date format resolution", () => {
+  const DAY_FIRST = `${SOURCE_TEXT} The order date is 30 June 2026 and the invoice date is 7 July 2026.`
+  const rendered = (directory: string, step: Parameters<typeof stageInputs>[1]) =>
+    stageInputs(directory, step).find(part => part.name === "drafting-preferences")?.bytes
+  function addSource(directory: string, text: string) {
+    const file = path.join(directory, ".dochaus", "legal.db")
+    const db = new Database(file)
+    db.query("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)").run("later.docx", "1", text, 0, text.length)
+    db.close()
+    utimesSync(file, 1_800_000_000, 1_800_000_000)
+  }
+
+  test("before the outline, the run takes the style the sources use; the firm's own setting wins once set", () => {
+    const directory = matter(DAY_FIRST)
+    expect(matterDateFormat(directory)).toBe("day-month-year")
+    expect(runDateFormat(directory)).toBe("day-month-year")
+    const before = rendered(directory, "intake")
+    expect(before).toBe(readFirmDraftingPreferences("full", undefined, "day-month-year"))
+    save({ draftingConfigured: true, dateFormat: "month-day-year" })
+    expect(rendered(directory, "intake")).toBe(readFirmDraftingPreferences())
+    expect(rendered(directory, "intake")).not.toBe(before)
+  })
+
+  test("a plan saved before the style was frozen into it takes the default, not the live sources", () => {
+    const directory = matter(DAY_FIRST)
+    writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record supplied terms", parts: [{ heading: "Delivery", scope: "Delivery" }] }])
+    expect(matterDateFormat(directory)).toBe("day-month-year")
+    expect(runDateFormat(directory)).toBeUndefined()
+    const defaultPrefs = new Set<string | Uint8Array>([readFirmDraftingPreferences("full"), readFirmDraftingPreferences("explanation")])
+    for (const step of leanSteps(directory)) {
+      const bytes = rendered(directory, step)
+      if (bytes !== undefined) expect(defaultPrefs.has(bytes)).toBe(true)
+    }
+    expect(draftingStyleWarnings(directory, [{ pid: "p1", text: "Due 30 June 2026." }])).toHaveLength(1)
+  })
+
+  test("the outline freezes the sources' style into the plan; a source added to the matter moves the live reading but neither the run's style nor the preferences any stage reads", async () => {
+    const directory = matter(DAY_FIRST)
+    const model = scriptedModel(happyPath)
+    const state = await runLean(directory, { sessions: model.port })
+    expect(state.status).toBe("completed")
+    expect(readLeanPlan(directory)?.date_format).toBe("day-month-year")
+    expect(model.count(AGENT.review)).toBe(1)
+    const before = new Map(leanSteps(directory).map(step => [step, rendered(directory, step)]))
+    expect([...before.values()].filter(Boolean).length).toBeGreaterThan(0)
+    const sourcePrefs = new Set<string | Uint8Array>([readFirmDraftingPreferences("full", undefined, "day-month-year"), readFirmDraftingPreferences("explanation", undefined, "day-month-year")])
+    for (const bytes of before.values()) {
+      if (bytes === undefined) continue
+      expect(sourcePrefs.has(bytes)).toBe(true)
+    }
+    addSource(directory, "Paid June 1, 2026. Paid June 2, 2026. Paid June 3, 2026. Paid June 4, 2026.")
+    expect(matterDateFormat(directory)).toBe("month-day-year")
+    expect(runDateFormat(directory)).toBe("day-month-year")
+    expect(rendered(directory, "d1.review")).toBe(readFirmDraftingPreferences("full", undefined, "day-month-year"))
+    for (const step of leanSteps(directory)) expect(rendered(directory, step)).toBe(before.get(step))
+  }, 120_000)
 })

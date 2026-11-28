@@ -1,6 +1,6 @@
 import { quoteFound, instructionFound } from "../workflows/lean/quotes"
 import { LEAN_PROMPT_VERSION, stageInputs } from "../workflows/lean/stages"
-import { LEAN_STATE_SCHEMA, hashStageInputs, readLeanState, writeLeanText } from "../workflows/lean/state"
+import { LEAN_STATE_SCHEMA, hashStageInputs, readLeanState, snapshotStage, writeLeanText } from "../workflows/lean/state"
 import { createHash } from "node:crypto"
 import { afterEach, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs"
@@ -11,10 +11,12 @@ import { z } from "zod"
 import { strToU8, zipSync } from "fflate"
 import { UNTRUSTED_DOCUMENT_NOTICE } from "../lib/untrusted"
 import { renderMarkdownToDocx } from "../lib/render"
-import { ensureParagraphRows, paragraphSha256 } from "../lib/drafting-amendment"
+import { ensureParagraphPointers, ensureParagraphRows, paragraphSha256 } from "../lib/drafting-amendment"
+import { currentDocumentArtifacts } from "../lib/current-document-artifacts"
 import { exportDocxComments, readDocxCommentParagraphs } from "../lib/docx-comments"
 import { docxodus } from "../lib/docxodus"
 import { currentDocumentView } from "../lib/current-document-retrieval"
+import { buildChecklistDocumentContext } from "../workflows/lean/checklist-document-context"
 import { writeLeanPlan } from "../workflows/lean/plan"
 import { leanFile, writeLeanBytes } from "../workflows/lean/state"
 import searchTool from "../tool/search-document"
@@ -221,4 +223,42 @@ test("the revisions view lists header, footnote and formatting changes the body 
     expect(body.representation).toMatch(/main body only/i)
     expect(body.representation).toContain("view=revisions")
   }
+})
+
+test("new draft invalidates old applied body and annotations in context and targeted retrieval", async () => {
+  const directory = fixture()
+  let original = (await renderMarkdownToDocx("Initial violet receipt.")).bytes
+  const applied = (await renderMarkdownToDocx("Applied violet receipt.")).bytes
+  writeLeanBytes(directory, "d1/body.docx", original)
+  await ensureParagraphPointers(leanFile(directory, "d1/body.docx"))
+  original = readFileSync(leanFile(directory, "d1/body.docx"))
+  writeLeanBytes(directory, "d1/body-applied.docx", applied)
+  const anchor = readDocxCommentParagraphs(applied)[0]!
+  const annotated = exportDocxComments(applied, [{ id: "history", author: "Reviewer", text: "Old applied explanation.", anchor: { paragraph_text: anchor.paragraph_text, paragraph_index: anchor.paragraph_index } }]).bytes
+  writeLeanBytes(directory, "d1/redline.docx", annotated)
+  snapshotStage(directory, 1, "d1.draft", ["d1/body.docx"])
+  snapshotStage(directory, 2, "d1.apply", ["d1/body-applied.docx", "d1/redline.docx"])
+  acceptApplyForTest(directory)
+  expect(currentDocumentArtifacts(directory, "d1")).toMatchObject({ body: "d1/body-applied.docx", redline: "d1/redline.docx", applied: true })
+  expect(await currentDocumentView(directory, "d1", "comments")).toMatchObject({ status: "available", entries: [expect.objectContaining({ text: "Old applied explanation." })] })
+  // A pending cumulative repair changes apply inputs, not the accepted body.
+  writeLeanText(directory, "d1/changes.json", JSON.stringify({ amendments: [], questions: [], pending: "new correction" }))
+  expect(currentDocumentArtifacts(directory, "d1")).toMatchObject({ body: "d1/body-applied.docx", redline: "d1/redline.docx", applied: true })
+  expect(await currentDocumentView(directory, "d1", "current_body")).toMatchObject({ status: "available", entries: [expect.objectContaining({ text: "Applied violet receipt." })] })
+  writeLeanBytes(directory, "d1/body.docx", (await renderMarkdownToDocx("Initial violet receipt.")).bytes)
+  await ensureParagraphPointers(leanFile(directory, "d1/body.docx"))
+  const next = readFileSync(leanFile(directory, "d1/body.docx"))
+  expect(readDocxCommentParagraphs(next).map(row => row.pids)).not.toEqual(readDocxCommentParagraphs(original).map(row => row.pids))
+  const selected = currentDocumentArtifacts(directory, "d1")
+  expect(selected.body).toBe("d1/body.docx")
+  expect(selected.applied).toBe(false)
+  expect(selected.redline).toBeUndefined()
+  expect(await currentDocumentView(directory, "d1", "current_body")).toMatchObject({ status: "available", entries: [expect.objectContaining({ text: "Initial violet receipt.", artifact: ".dochaus/lean/d1/body.docx" })] })
+  expect(await currentDocumentView(directory, "d1", "comments")).toMatchObject({ status: "available", entries: [] })
+  const context = buildChecklistDocumentContext(directory, { item_id: "one", item: { check: "Verify violet receipt.", basis: "directive", source_refs: [{ document: "request", locator: "request", quote: "Verify violet receipt." }], qualifications: [], target: { document: "d1", role: "Record", treatment: "operative" } } })
+  expect(context.artifacts[0]!.value.paragraphs).toEqual(readDocxCommentParagraphs(next))
+  expect(context.artifacts[0]!.value.annotations!.some(row => row.artifact.endsWith("redline.docx"))).toBe(false)
+  expect(context.warnings.join(" ")).toContain("not a current accepted apply result")
+  expect(readFileSync(leanFile(directory, "d1/body-applied.docx"))).toEqual(Buffer.from(applied))
+  expect(readFileSync(leanFile(directory, "d1/redline.docx"))).toEqual(Buffer.from(annotated))
 })

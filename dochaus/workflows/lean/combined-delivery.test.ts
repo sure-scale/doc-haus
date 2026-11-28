@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { createHash } from "node:crypto"
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import path from "node:path"
 import { buildCombinedFile } from "../../lib/combined-docx"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
@@ -13,13 +14,13 @@ import { forgetSystemDocx, ownedDeliverable, recordSystemDocx, systemDocxKey } f
 import { workingDocxKey } from "../../lib/working-docx"
 import { combinedDelivery, combinedParts, DELIVERED_NOTES, deliveryArtifactEvidence, forgetUnplannedDocuments, memoNotesFile, readLeanDocuments, recordLeanDocuments, requestedMemo, type LeanDocumentKind } from "./deliverables"
 import { checkDeliverySelections, selectedDeliveryPlan, type DeliverySelection } from "./delivery-selection"
-import { packageReviewPrompt } from "./package-review"
-import { writeLeanPlan, type PlannedDocument } from "./plan"
+import { operativeDocument, parsePlan, readLeanPlan, writeLeanPlan, type PlannedDocument } from "./plan"
 import { openItem } from "./quotes"
 import { LEAN_REQUESTED_FILES_SCHEMA, requestedFilesItems, requestedFilesPlanned, writeRequestedFiles } from "./requested-files"
-import { disclosableItems, type LeanDeps } from "./stages"
-import { leanFile, writeLeanBytes, writeLeanText } from "./state"
-import { cleanupMatters, matter, registering, scriptedModel, SOURCE } from "./test-support"
+import { runLean } from "./runner"
+import { disclosableItems, LEAN_MAX_RETRIES, renderNotes, type LeanDeps } from "./stages"
+import { leanFile, readLeanText, writeLeanBytes, writeLeanText } from "./state"
+import { AGENT, DRAFT, cleanupMatters, drafter, happyPath, matter, registering, scriptedModel, SOURCE, type Reply } from "./test-support"
 
 // A document delivered with the requested memo in one file ("Deliverable:
 // combined"). The body is registered as "<stem> - clean" and the notes under
@@ -1452,18 +1453,6 @@ describe("package review's selection on a combined document", () => {
     writeLeanPlan(plain, [SUPPLY], undefined, undefined, memo([SUPPLY]))
     expect(checkDeliverySelections(plain, [notesRow, selection("body")])).toEqual([PACKAGE_FINDING])
   })
-
-  test("the selection contract states the one-row rule only for a combined package", () => {
-    const rule = 'If the lawyer names the file that holds the memo and document d1, select it by one row: document "d1", role body, that filename. The code builds that file from the memo and the clean body at delivery, so give no drafting_notes row for it.'
-    const combined = matter()
-    writeLeanPlan(combined, [COMBINED], undefined, undefined, memo([COMBINED]))
-    expect(packageReviewPrompt(combined)).toContain(rule)
-    const plain = matter()
-    writeLeanPlan(plain, [SUPPLY], undefined, undefined, memo([SUPPLY]))
-    expect(packageReviewPrompt(plain)).not.toContain("holds the memo and document")
-    writeLeanPlan(plain, [COMBINED])
-    expect(packageReviewPrompt(plain)).not.toContain("holds the memo and document")
-  })
 })
 
 describe("package review's selection names, as registration gives them", () => {
@@ -1495,5 +1484,135 @@ describe("package review's selection names, as registration gives them", () => {
     writeFileSync(path.join(directory, "Supply advice.docx"), (await renderMarkdownToDocx("# Source\n\nInput document.")).bytes)
     writeLeanPlan(directory, [SUPPLY], undefined, undefined, memo([SUPPLY]))
     expect(check(directory, `${instruction}.`, [notesRow("Supply advice.docx", instruction)])).toEqual([])
+  })
+})
+
+describe("combined plan parsing and fallback", () => {
+  const PLAN_REQUEST = "Draft a supply note and a cover memo, and send them together as supply-pack.docx."
+  const NEEDS_MEMO = '"Deliverable: combined" puts a document and the requested memo in one file, so it needs a "Memo:" line'
+  const ONE_DOCUMENT = "only one document can share the file with the memo"
+  const docOutline = (title: string, ...lines: string[]) => [`# ${title}`, "Form: other", ...lines, "## Delivery", "What is delivered."].join("\n")
+  const planOutline = (...lines: string[]) => ["Acting for: not stated", ...lines].join("\n")
+  const PLAN_MEMO = "# Cover memo\nForm: advice"
+
+  test("parses with a Memo line, also for a revision compared against its original", () => {
+    const parsed = parsePlan(planOutline("Memo: cover memo", docOutline("Supply note", "Mode: new", "File: supply-pack.docx", "Deliverable: combined"), PLAN_MEMO), PLAN_REQUEST)
+    expect(parsed.issues).toEqual([])
+    expect(parsed.value?.memo).toBe("cover memo")
+    expect(parsed.value?.documents[0]).toMatchObject({ title: "Supply note", mode: "new", file: "supply-pack.docx", deliverable: "combined" })
+
+    const revised = parsePlan(planOutline("Memo: cover memo", docOutline("Supply note", "Mode: revise", "Compare against: original.docx", "**Deliverable:** Combined"), PLAN_MEMO), PLAN_REQUEST)
+    expect(revised.issues).toEqual([])
+    expect(revised.value?.documents[0]).toMatchObject({ mode: "revise", comparison: "original.docx", deliverable: "combined" })
+  })
+
+  test("without a memo it is retry feedback, and the document stands as the body", () => {
+    const parsed = parsePlan(planOutline(docOutline("Supply note", "Deliverable: combined")), PLAN_REQUEST)
+    expect(parsed.issues).toEqual([expect.stringContaining(NEEDS_MEMO)])
+    expect(parsed.issues[0]).toContain('otherwise write "Deliverable: body"')
+    expect(parsed.value?.documents[0]?.deliverable).toBe("body")
+    expect(parsed.value).not.toHaveProperty("memo")
+
+    const ungrounded = parsePlan(planOutline("Memo: board paper", docOutline("Supply note", "Deliverable: combined")), PLAN_REQUEST)
+    expect(ungrounded.issues).toEqual([expect.stringContaining('names "board paper"'), expect.stringContaining(NEEDS_MEMO)])
+    expect(ungrounded.value?.documents[0]?.deliverable).toBe("body")
+
+    expect(parsePlan(planOutline(docOutline("Supply note", "Deliverable: body")), PLAN_REQUEST).issues).toEqual([])
+  })
+
+  test("more than one combined document is retry feedback, and each stands as the body", () => {
+    const parsed = parsePlan(planOutline("Memo: cover memo", docOutline("Supply note", "Deliverable: combined"), docOutline("Delivery schedule", "Deliverable: combined"), PLAN_MEMO), PLAN_REQUEST)
+    expect(parsed.issues).toEqual([expect.stringContaining(ONE_DOCUMENT)])
+    expect(parsed.issues[0]).toContain('"Supply note", "Delivery schedule"')
+    expect(parsed.value?.documents.map(row => row.deliverable)).toEqual(["body", "body", undefined])
+    expect(parsed.value?.memo).toBe("cover memo")
+
+    const one = parsePlan(planOutline("Memo: cover memo", docOutline("Supply note", "Deliverable: combined"), docOutline("Delivery schedule", "Deliverable: redline"), PLAN_MEMO), PLAN_REQUEST)
+    expect(one.issues).toEqual([])
+    expect(one.value?.documents.map(row => row.deliverable)).toEqual(["combined", "redline", undefined])
+  })
+
+  test("under the memo itself it is retry feedback, and the memo keeps no deliverable", () => {
+    const parsed = parsePlan(planOutline("Memo: cover memo", docOutline("Supply note", "File: supply-pack.docx"), `${PLAN_MEMO}\nDeliverable: combined`), PLAN_REQUEST)
+    expect(parsed.issues).toEqual(['"Deliverable: combined" is under the memo "Cover memo" itself. Write it under the document the request asks to deliver with the memo, and leave it out under the memo.'])
+    expect(parsed.value?.documents.map(row => [row.title, row.deliverable])).toEqual([["Supply note", undefined], ["Cover memo", undefined]])
+  })
+
+  test("a saved plan accepts combined and rejects an unknown deliverable", () => {
+    const directory = matter()
+    const [planned] = parsePlan(planOutline("Memo: cover memo", docOutline("Supply note", "Deliverable: combined"), PLAN_MEMO), PLAN_REQUEST).value!.documents
+    const plan = writeLeanPlan(directory, [planned!], undefined, undefined, { name: "cover memo" })
+    expect(readLeanPlan(directory)?.documents[0]?.deliverable).toBe("combined")
+    writeLeanText(directory, "plan.json", JSON.stringify({ ...plan, documents: [{ ...plan.documents[0], deliverable: "bundle" }] }))
+    expect(readLeanPlan(directory)).toBeUndefined()
+  })
+
+  test("operative drafting inputs do not carry the deliverable", () => {
+    const body: PlannedDocument = { id: "d1", title: "Supply note", purpose: "What is delivered.", parts: [{ heading: "Delivery", scope: "What is delivered." }], mode: "new" }
+    const combined = operativeDocument({ ...body, deliverable: "combined", file: "supply-pack.docx" })
+    expect(combined).not.toHaveProperty("deliverable")
+    expect(combined).toEqual(operativeDocument({ ...body, deliverable: "body" }))
+  })
+
+  test("an outline that keeps combined without a memo through the last retry runs with the document as the body", async () => {
+    const directory = matter()
+    writeLeanText(directory, "request.md", PLAN_REQUEST)
+    const deliverables = registering()
+    const draft = drafter(DRAFT)
+    const combined: Reply = (prompt, index) => {
+      const reply = draft(prompt, index)
+      return reply.startsWith("Acting for:") ? reply.replace("# Supply note", "# Supply note\nDeliverable: combined") : reply
+    }
+    const model = scriptedModel({ ...happyPath, [AGENT.draft]: combined })
+    expect((await runLean(directory, { sessions: model.port, registerDeliverable: deliverables.registerDeliverable })).status).toBe("completed")
+
+    expect(model.prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.includes(NEEDS_MEMO))).toHaveLength(LEAN_MAX_RETRIES)
+    expect(readLeanPlan(directory)?.documents[0]?.deliverable).toBe("body")
+    expect(readLeanPlan(directory)).not.toHaveProperty("memo")
+    expect(readLeanText(directory, "d1/draft.md")?.split("\n")[0]).toBe("# Supply note")
+  }, 120_000)
+
+  test("with a firm template numbered through a list style, the notes are in the house style and combine with the document", async () => {
+    const NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+    const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    const TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml"
+    const level = (ilvl: number, text: string, style: string) =>
+      `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="${style}"/><w:lvlText w:val="${text}"/><w:lvlJc w:val="left"/></w:lvl>`
+    const heading = (n: number) =>
+      `<w:style w:type="paragraph" w:styleId="Heading${n}"><w:name w:val="heading ${n}"/><w:basedOn w:val="Normal"/><w:pPr><w:numPr><w:ilvl w:val="${n - 1}"/><w:numId w:val="7"/></w:numPr><w:outlineLvl w:val="${n - 1}"/></w:pPr></w:style>`
+    const xml = (text: string) => strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${text}`)
+    const template = zipSync({
+      "[Content_Types].xml": xml(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="${TYPE}.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="${TYPE}.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="${TYPE}.numbering+xml"/></Types>`),
+      "_rels/.rels": xml(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/officeDocument" Target="word/document.xml"/></Relationships>`),
+      "word/_rels/document.xml.rels": xml(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/styles" Target="styles.xml"/><Relationship Id="rId2" Type="${REL}/numbering" Target="numbering.xml"/></Relationships>`),
+      "word/document.xml": xml(`<w:document ${NS}><w:body><w:p><w:r><w:t>Firm template</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:body></w:document>`),
+      "word/styles.xml": xml(`<w:styles ${NS}><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>${heading(1)}${heading(2)}<w:style w:type="numbering" w:customStyle="1" w:styleId="HeadingList"><w:name w:val="Heading List"/><w:pPr><w:numPr><w:numId w:val="8"/></w:numPr></w:pPr></w:style></w:styles>`),
+      "word/numbering.xml": xml(`<w:numbering ${NS}><w:abstractNum w:abstractNumId="3"><w:nsid w:val="11223344"/><w:multiLevelType w:val="multilevel"/><w:styleLink w:val="HeadingList"/>${level(0, "%1.", "Heading1")}${level(1, "%1.%2", "Heading2")}</w:abstractNum><w:abstractNum w:abstractNumId="4"><w:nsid w:val="55667788"/><w:multiLevelType w:val="multilevel"/><w:numStyleLink w:val="HeadingList"/></w:abstractNum><w:num w:numId="7"><w:abstractNumId w:val="4"/></w:num><w:num w:numId="8"><w:abstractNumId w:val="3"/></w:num></w:numbering>`),
+    }, { mtime: new Date(1980, 0, 1) })
+
+    const saved = process.env.WORKSPACE_ROOT
+    const workspace = mkdtempSync(path.join(tmpdir(), "notes-style-"))
+    try {
+      process.env.WORKSPACE_ROOT = workspace
+      mkdirSync(path.join(workspace, ".templates"), { recursive: true })
+      mkdirSync(path.join(workspace, ".preferences"), { recursive: true })
+      writeFileSync(path.join(workspace, ".templates", "Firm style.docx"), template)
+      writeFileSync(path.join(workspace, ".preferences", "preferences.json"), JSON.stringify({ styleTemplate: "Firm style.docx" }))
+      const directory = matter()
+      const body = (await renderMarkdownToDocx("# Supply terms\n\n## Delivery\n\nGoods are delivered on the agreed date.")).bytes
+      expect(strFromU8(unzipSync(body)["word/numbering.xml"]!)).toContain('<w:numStyleLink w:val="HeadingList"/>')
+      const notes = "# Advice\n\n## Background\n\nThe supply terms follow the request.\n\n## Open points\n\nNone."
+      expect(buildCombinedFile({ memo: (await renderMarkdownToDocx(notes)).bytes, body })).toMatchObject({ refused: "unsupported_memo_numbering" })
+      const renderedMemo = await renderNotes(directory, notes)
+      expect(strFromU8(unzipSync(renderedMemo)["word/numbering.xml"] ?? new Uint8Array())).not.toContain("numStyleLink")
+      const combined = buildCombinedFile({ memo: renderedMemo, body })
+      expect(combined).toHaveProperty("bytes")
+      const document = strFromU8(unzipSync((combined as { bytes: Uint8Array }).bytes)["word/document.xml"]!)
+      expect(document.indexOf("Background")).toBeLessThan(document.indexOf("Delivery"))
+    } finally {
+      if (saved === undefined) delete process.env.WORKSPACE_ROOT
+      else process.env.WORKSPACE_ROOT = saved
+      rmSync(workspace, { recursive: true, force: true })
+    }
   })
 })

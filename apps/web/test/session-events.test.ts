@@ -1,9 +1,14 @@
 import { expect, test } from "bun:test"
-import { OpenCode, type SessionMessageInfo, type V2Event } from "@opencode/client"
-import { clientDirectories } from "../src/api/opencode/client"
+import { OpenCode, type SessionCreateInput, type SessionMessageInfo, type V2Event } from "@opencode/client"
+import { clientDirectories, type Client } from "../src/api/opencode/client"
 import { subscribeEvents } from "../src/api/opencode/events"
+import { routeAgent } from "../src/api/opencode/routing"
+import { createSession } from "../src/api/opencode/sessions"
+import { projectEvent, projectMessages, type Event } from "../src/api/session-view"
+import { toTurns } from "../src/components/chat/turn-model"
+import { isConversation } from "../src/components/dashboard/data"
 import { draftingStageSession } from "../src/components/narration/use-drafting-narration"
-import type { Event } from "../src/api/session-view"
+import { isUserConversation } from "../../../dochaus/lib/session-visibility"
 
 function text(sessionID: string, directory = "/matter"): V2Event {
   return {
@@ -283,4 +288,128 @@ test("active failures and forms remain visible while foreign forms do not trigge
   } finally {
     await view.close()
   }
+})
+
+const stopModel = { providerID: "test", id: "model" }
+const stopTranscript = [
+  { type: "user", id: "msg_u1", text: "Who are the parties?", time: { created: 1 } },
+  { type: "assistant", id: "msg_a1", agent: "qa", model: stopModel, finish: "stop", time: { created: 2, completed: 3 }, content: [{ type: "text", text: "Acme Ltd and Beta LLP." }] },
+  { type: "idle", id: "msg_i1", outcome: "succeeded", time: { created: 4 } },
+  { type: "user", id: "msg_u2", text: "Summarise the letter.", time: { created: 5 } },
+  { type: "assistant", id: "msg_a2", agent: "qa", model: stopModel, finish: "tool-calls", time: { created: 6, completed: 7 }, content: [{ type: "text", text: "I'll read the letter." }] },
+  { type: "assistant", id: "msg_a3", agent: "qa", model: stopModel, finish: "error", error: { type: "aborted", message: "Step interrupted" }, time: { created: 8, completed: 9 }, content: [{ type: "text", text: "The letter demands" }] },
+  { type: "idle", id: "msg_i2", outcome: "interrupted", time: { created: 10 } },
+  { type: "user", id: "msg_u3", text: "When is payment due?", time: { created: 11 } },
+  { type: "assistant", id: "msg_a4", agent: "qa", model: stopModel, finish: "tool-calls", time: { created: 12, completed: 13 }, content: [{ type: "text", text: "Checking the terms." }] },
+  { type: "idle", id: "msg_i3", outcome: "interrupted", time: { created: 14 } },
+  { type: "user", id: "msg_u4", text: "Who signed it?", time: { created: 15 } },
+  { type: "assistant", id: "msg_a5", agent: "qa", model: stopModel, finish: "error", error: { type: "aborted", message: "Step interrupted" }, time: { created: 16, completed: 17 }, content: [] },
+  { type: "idle", id: "msg_i4", outcome: "interrupted", time: { created: 18 } },
+  { type: "user", id: "msg_u5", text: "Which invoice is unpaid?", time: { created: 19 } },
+  { type: "assistant", id: "msg_a6", agent: "qa", model: stopModel, finish: "error", error: { type: "provider.unknown", message: "The provider is unavailable." }, time: { created: 20, completed: 21 }, content: [] },
+  { type: "idle", id: "msg_i5", outcome: "failed", time: { created: 22 } },
+] as SessionMessageInfo[]
+
+test("an interrupted turn's last answer step is stored as stopped; other turns are not", () => {
+  const stopped = projectMessages("ses", stopTranscript)
+    .filter((message) => message.info.stopped)
+    .map((message) => message.info.id)
+  expect(stopped).toEqual(["msg_a3", "msg_a4", "msg_a5"])
+})
+
+test("a stopped answer keeps its partial output, is marked stopped, and does not read as an error", () => {
+  const turns = toTurns(projectMessages("ses", stopTranscript), "matter").filter((turn) => turn.role === "assistant")
+  expect(turns.map(({ text, stopped, error }) => ({ text, stopped: Boolean(stopped), error }))).toEqual([
+    { text: "Acme Ltd and Beta LLP.", stopped: false, error: undefined },
+    { text: "I'll read the letter.\n\nThe letter demands", stopped: true, error: undefined },
+    { text: "Checking the terms.", stopped: true, error: undefined },
+    { text: "", stopped: true, error: undefined },
+    { text: "", stopped: false, error: "The provider is unavailable." },
+  ])
+})
+
+function producerFixture() {
+  const createdSessions: SessionCreateInput[] = [], removed: string[] = []
+  const client = {
+    session: {
+      create: async (input: SessionCreateInput) => { createdSessions.push(input); return { id: "automatic", ...input } },
+      switchAgent: async () => {}, switchModel: async () => {}, prompt: async () => {}, wait: async () => {}, interrupt: async () => {},
+      remove: async ({ sessionID }: { sessionID: string }) => { removed.push(sessionID) },
+    },
+    message: { list: async () => ({ data: [{ type: "assistant", id: "answer", agent: "router", time: { created: 1, completed: 2 }, content: [{ type: "text", text: '{"route":"qa"}' }] }], cursor: {} }) },
+  } as unknown as Client
+  clientDirectories.set(client, "/synthetic/matter")
+  return { client, created: createdSessions, removed }
+}
+
+test("actual router producer creates an explicitly owned session excluded by conversation and dashboard predicates", async () => {
+  const { client, created: createdSessions, removed } = producerFixture()
+  expect(await routeAgent({ client, smallModel: "fixture/fast", candidates: [{ name: "qa", description: "Answer" }], history: [], text: "Explain this clause" })).toEqual({ name: "qa" })
+  expect(createdSessions).toHaveLength(1)
+  expect(createdSessions[0]).toMatchObject({ location: { directory: "/synthetic/matter" }, metadata: { dochaus_role: "chat-router" } })
+  expect(createdSessions[0]).not.toHaveProperty("parentID")
+  const session = { metadata: createdSessions[0]!.metadata }
+  expect(isUserConversation(session)).toBe(false)
+  expect(isConversation(session)).toBe(false)
+  expect(removed).toEqual(["automatic"])
+})
+
+test("ordinary session producer preserves human titles and metadata-free legacy visibility", async () => {
+  const { client, created: createdSessions } = producerFixture()
+  const title = "doc.haus grid: My own discussion"
+  await createSession(client, title, 1000, [{ action: "*", resource: "*", effect: "deny" }])
+  expect(createdSessions[0]).toEqual({ title, location: { directory: "/synthetic/matter" }, permissions: [{ action: "*", resource: "*", effect: "deny" }] })
+  const session = { metadata: createdSessions[0]!.metadata }
+  expect(isUserConversation(session)).toBe(true)
+  expect(isConversation(session)).toBe(true)
+})
+
+test("native session messages retain the chat's agent, text, tools, and citations", () => {
+  const messages = [
+    { type: "agent-switched", id: "msg_agent", agent: "extract", time: { created: 1 } },
+    { type: "user", id: "msg_user", text: "Summarise", time: { created: 2 } },
+    {
+      type: "assistant", id: "msg_answer", agent: "extract", model: { providerID: "test", id: "model" },
+      time: { created: 3, completed: 5 },
+      content: [
+        { type: "tool", id: "call_search", name: "search-document", time: { created: 3, completed: 4 }, state: {
+          status: "completed", input: { query: "Summarise" }, content: [{ type: "text", text: "Found passage" }],
+          metadata: { citations: [{ section: "A", excerpt: "Passage" }] },
+        } },
+        { type: "text", text: "Answer" },
+      ],
+    },
+  ] as SessionMessageInfo[]
+
+  const projected = projectMessages("ses_matter", messages)
+  expect(projected).toHaveLength(2)
+  expect(projected[0]?.info.agent).toBe("extract")
+  expect(projected[1]?.info.parentID).toBe("msg_user")
+  expect(projected[1]?.parts[0]).toMatchObject({
+    type: "tool", tool: "search-document", state: { status: "completed", output: "Found passage", metadata: { citations: [{ section: "A" }] } },
+  })
+  expect(projected[1]?.parts[1]).toMatchObject({ type: "text", text: "Answer" })
+})
+
+test("native permission events retain the decision target and document resource", () => {
+  const event = {
+    type: "permission.asked", id: "evt_permission", created: 1,
+    data: { id: "per_1", sessionID: "ses_matter", action: "redline", resources: ["contract.docx"], source: { type: "tool", messageID: "msg_answer", id: "call_edit" } },
+  } as V2Event
+  expect(projectEvent(event)).toEqual([{
+    type: "permission.asked",
+    properties: {
+      id: "per_1", sessionID: "ses_matter", permission: "redline", patterns: ["contract.docx"],
+      metadata: {}, always: [], tool: { messageID: "msg_answer", callID: "call_edit" },
+    },
+  }])
+})
+
+test("native execution success projects to session.idle; a step end projects nothing", () => {
+  const native = (type: string, data: Record<string, unknown>) =>
+    ({ type, id: `evt_${type}`, created: 1, durable: { aggregateID: "ses_matter", seq: 1, version: 1 }, data: { sessionID: "ses_matter", ...data } }) as V2Event
+  expect(projectEvent(native("session.step.ended", { assistantMessageID: "msg_step", finish: "tool-calls" }))).toEqual([])
+  expect(projectEvent(native("session.execution.succeeded", {}))).toEqual([
+    { type: "session.idle", properties: { sessionID: "ses_matter" } },
+  ])
 })

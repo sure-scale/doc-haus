@@ -1,5 +1,6 @@
 // Run from dochaus/: bun test lib/markdown.test.ts
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
+import { docxodus } from "./docxodus"
 import { lintRenderedDraftMarkdown, renderMarkdownToDocx } from "./render"
 import { strFromU8, unzipSync } from "fflate"
 import {
@@ -7,6 +8,7 @@ import {
   inspectDraftMarkdownNamespace,
   lintDraftMarkdown,
   lintTemplateBody,
+  renumberHeadings,
   splitBlocks,
 } from "./markdown"
 
@@ -480,5 +482,66 @@ describe("lintTemplateBody", () => {
       CLEAN.replace("## 4. Entire Agreement", "## 4. No Hire [optional: non-solicitation]"),
     )
     expect(problems.some((p) => p.includes("[optional: non-solicitation]") && p.includes("more than once"))).toBe(true)
+  })
+})
+
+describe("optional clause markers", () => {
+  const fixtureMarkdown = [
+    "# Synthetic optional-clause example",
+    ...Array.from({ length: 7 }, (_, index) => `## ${index + 1}. Example clause\n\nSynthetic clause text.`),
+    "## 8. Governing Law\n\n[insert governing jurisdiction]",
+    "## 9. Non-Solicitation [optional: non-solicitation]\n\nDo not solicit for employment for [insert non-solicit period in months] months.",
+    "## 10. Entire Agreement\n\nSynthetic closing clause.",
+  ].join("\n\n")
+  let fixtureBytes: Uint8Array
+  let dx: Awaited<ReturnType<typeof docxodus>>
+
+  beforeAll(async () => {
+    fixtureBytes = (await renderMarkdownToDocx(fixtureMarkdown)).bytes
+    dx = await docxodus()
+  })
+
+  test("template exposes the marker as an alternative_clause placeholder and its fill as an instruction", () => {
+    const session = dx.openDocxSession(fixtureBytes, {})
+    const placeholders = session.findPlaceholders()
+    session.close()
+    expect(
+      placeholders.some((p) => p.kind === "alternative_clause" && p.match.text === "[optional: non-solicitation]"),
+    ).toBe(true)
+    expect(
+      placeholders.some((p) => p.kind === "instruction" && p.match.text === "[insert non-solicit period in months]"),
+    ).toBe(true)
+  })
+
+  test("omit removes the whole clause and renumberHeadings closes the heading-number hole", () => {
+    const session = dx.openDocxSession(fixtureBytes, {})
+    const anchor = session.findByText("[optional: non-solicitation]", { ignoreWhitespace: true })!
+    expect(anchor.kind).toBe("h")
+    session.deleteSection(anchor.id)
+    renumberHeadings(session)
+    const text = session.project().markdown.replaceAll("\\", "")
+    const placeholders = session.findPlaceholders().map((p) => p.match.text)
+    session.close()
+    expect(text).not.toContain("Non-Solicitation")
+    expect(text).not.toContain("solicit for employment")
+    expect(text).toContain("8. Governing Law")
+    expect(text).toContain("9. Entire Agreement")
+    expect(text).not.toContain("10. Entire Agreement")
+    expect(placeholders).not.toContain("[insert non-solicit period in months]")
+  })
+
+  test("keep strips the marker but leaves the clause", () => {
+    const session = dx.openDocxSession(fixtureBytes, {})
+    session.fillPlaceholders((p) => (p.match.text.startsWith("[optional:") ? "" : null), {
+      kinds: dx.PlaceholderKinds.AlternativeClause,
+      coalesceWhitespaceAroundEmptyFill: true,
+    })
+    const text = session.project().markdown.replaceAll("\\", "")
+    const placeholders = session.findPlaceholders().map((p) => p.match.text)
+    session.close()
+    expect(text).toContain("Non-Solicitation")
+    expect(text).not.toContain("[optional:")
+    expect(placeholders.filter((t) => t.startsWith("[optional:"))).toEqual([])
+    expect(placeholders).toContain("[insert non-solicit period in months]")
   })
 })

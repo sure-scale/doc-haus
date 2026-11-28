@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
+import { Hono } from "hono"
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -6,6 +7,7 @@ import { Document, InsertedTextRun, Packer, Paragraph } from "docx"
 import { DOMParser } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { openDb } from "./db"
+import { wordCors } from "./word-documents"
 import type { DeskSources } from "../../../dochaus/lib/word-source-desk-contract"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { linkedWordDocx, readWordLink } from "../../../dochaus/lib/word-linked-docx"
@@ -765,4 +767,45 @@ test("saved recovery strips an inherited Word grant while retaining document con
   const handoutCopy = await handout("Unlinked recovery.docx")
   expect(handoutCopy.link.document).not.toBe(link.document)
   expect(handoutCopy.link.token).not.toBe(seed.link.token)
+})
+
+test("stale Word clients cannot reach any token-route mutation, while current clients and preflight work", async () => {
+  const keys = ["DOCHAUS_WORD_ORIGIN", "DOCHAUS_WORD_EXTERNAL_HTTPS", "DOCHAUS_RUNTIME_DIR"] as const
+  const previous = keys.map((key) => process.env[key])
+  const origin = "https://localhost:47612"
+  process.env.DOCHAUS_WORD_ORIGIN = origin
+  process.env.DOCHAUS_WORD_EXTERNAL_HTTPS = "1"
+  process.env.DOCHAUS_RUNTIME_DIR = path.join(tmpdir(), `dochaus-word-version-${crypto.randomUUID()}`)
+  let mutations = 0
+  const app = new Hono()
+  app.use("/word/*", wordCors)
+  app.post("/word/:operation", (c) => { mutations++; return c.json({ ok: true }) })
+  try {
+    for (const operation of ["saves", "heartbeat", "done"]) {
+      for (const version of [undefined, "0.0.0.0"]) {
+        const response = await app.request(`/word/${operation}`, {
+          method: "POST", headers: { Origin: origin, ...(version ? { "x-dochaus-word-version": version } : {}) },
+        })
+        expect(response.status).toBe(426)
+        expect(response.headers.get("Access-Control-Allow-Origin")).toBe(origin)
+        expect(await response.json()).toMatchObject({ code: "word_addin_update_required" })
+        expect(mutations).toBe(0)
+      }
+    }
+    const preflight = await app.request("/word/saves", { method: "OPTIONS", headers: { Origin: origin } })
+    expect(preflight.status).toBe(204)
+    expect(preflight.headers.get("Access-Control-Allow-Headers")?.toLowerCase()).toContain("x-dochaus-word-version")
+    expect(mutations).toBe(0)
+    for (const operation of ["saves", "heartbeat", "done"]) {
+      expect((await app.request(`/word/${operation}`, {
+        method: "POST", headers: { Origin: origin, "x-dochaus-word-version": WORD_PROTOCOL_VERSION },
+      })).status).toBe(200)
+    }
+    expect(mutations).toBe(3)
+  } finally {
+    keys.forEach((key, index) => {
+      if (previous[index] === undefined) delete process.env[key]
+      else process.env[key] = previous[index]
+    })
+  }
 })

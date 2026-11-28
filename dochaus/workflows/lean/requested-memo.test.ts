@@ -23,10 +23,6 @@ const REQUEST = "Draft a short supply note from the supply terms, with a cover m
 const DOCUMENT = { title: "Supply note", purpose: "Operative terms", parts: [{ heading: "Delivery", scope: "Delivery terms" }] }
 const DELIVERY = "The supplier shall deliver the goods."
 const JUDGED = "The supplier shall deliver the goods in good condition [open item: confirm the condition standard chosen]."
-const MEMO_OPENING = 'The request asks for a memo to accompany the drafted documents, "cover memo". Write the drafting notes as that memo.'
-const MEMO_ORDER = "Lead with the discrepancies found and the choices made, then give the recommendations and the open points, in plain language."
-const NOTES_OPENING = "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents."
-const MARKER_RULE = 'end that statement with the item\'s marker copied whole, exactly as open_items lists it, as a trailing "[ref: <id>]"'
 
 /** An outline with this Memo line, planning the memo titled `memo` when given. */
 const outline = (line: string, memo?: string) => `Acting for: not stated\n${line}\n# Supply note\nForm: other\n## Delivery${memo ? `\n# ${memo}\nForm: advice` : ""}`
@@ -172,26 +168,18 @@ describe("the requested memo's notes file", () => {
 })
 
 describe("finalize in memo mode", () => {
-  test("writes the notes as the memo; with or without a memo the notes carry ref markers, and without one the plan and finalize inputs are as before", () => {
+  test("adds the requested-memo contract and planned filename only when a memo is planned", () => {
     const directory = matter()
     const plan = writeLeanPlan(directory, [DOCUMENT])
     expect(readLeanText(directory, "plan.json")).toBe(`${JSON.stringify({ schema: plan.schema, documents: plan.documents, acting_for: undefined, basis: undefined }, null, 2)}\n`)
     const notes = stagePrompt(directory, "finalize")
     const notesInputs = stageInputs(directory, "finalize").map(row => row.name)
-    expect(notes).toContain(NOTES_OPENING)
-    expect(notes).toContain(MARKER_RULE)
+    expect(notes).toContain('"planned_filename": "Supply note - drafting notes.docx"')
     expect(notesInputs).not.toContain("requested-memo-contract")
-    expect(stagePrompt(directory, "d1.draft", { outline: true })).toContain("When the request asks for a memo or note alongside the documents, whatever its subject, write one line \"Memo: <its name in the request's own words>\" before the first \"# \" title and plan that memo as a \"# \" document with that title and \"Form: advice\"")
 
     writeLeanPlan(directory, [DOCUMENT], undefined, undefined, { name: "cover memo" })
     const memo = stagePrompt(directory, "finalize")
-    expect(memo).toContain(MEMO_OPENING)
-    expect(memo).toContain(MEMO_ORDER)
-    expect(memo).toContain(MARKER_RULE)
-    // Only the opening and the notes file's planned name differ; every other
-    // contract line, the ref-marker rule included, stays.
-    const memoLines = new Set(memo.split("\n"))
-    expect(notes.split("\n").filter(line => !memoLines.has(line))).toEqual([NOTES_OPENING, expect.stringContaining('"planned_filename": "Supply note - drafting notes.docx"')])
+    expect(memo).toContain('"planned_filename": "Supply note - cover memo.docx"')
     expect(stageInputs(directory, "finalize").map(row => row.name)).toEqual([...notesInputs.slice(0, notesInputs.indexOf("drafting-notes-contract") + 1), "requested-memo-contract", ...notesInputs.slice(notesInputs.indexOf("drafting-notes-contract") + 1)])
   })
 
@@ -234,16 +222,20 @@ describe("a requested memo through the run", () => {
     const marker = readOpenItems(directory).find(item => item.kind === "placeholder" && item.stage === "apply")!
     const prompts = finalizePrompts(model)
     for (const prompt of prompts.filter(prompt => prompt.includes("<section_kind>"))) {
-      expect(prompt).toContain("<notes_role>\nThese sections form the requested accompanying memo, titled cover memo.")
+      expect(prompt).toContain("<notes_role>")
+      expect(prompt).toContain("cover memo")
       expect(prompt).toContain(`<current_request>\n${REQUEST}`)
-      expect(prompt).not.toContain(MARKER_RULE)
     }
-    const retry = model.prompts.find(prompt => prompt.agent === AGENT.finalize && prompt.text.includes("Correct only this section's errors"))!
-    expect(retry.text).toContain("The coordinator attaches its reference markers")
-    const sameSection = model.prompts.filter(prompt => prompt.agent === AGENT.finalize && prompt.sessionID === retry.sessionID)
-    expect(sameSection).toHaveLength(2)
-    expect(sameSection[0]!.text).toContain("<section_kind>\nopen-item\n")
-    expect(sameSection[0]!.text).not.toContain(marker.id)
+    const bySession = new Map<string, string[]>()
+    for (const prompt of model.prompts.filter(p => p.agent === AGENT.finalize)) {
+      const rows = bySession.get(prompt.sessionID) ?? []
+      rows.push(prompt.text)
+      bySession.set(prompt.sessionID, rows)
+    }
+    const retried = [...bySession.values()].filter(rows => rows.length === 2)
+    expect(retried).toHaveLength(1)
+    expect(retried[0]![0]!).toContain("<section_kind>\nopen-item\n")
+    expect(retried[0]![0]!).not.toContain(marker.id)
     const saved = readLeanText(directory, "drafting-notes.md")!
     expect(saved).toStartWith("# cover memo\n")
     expect(saved.split(`[ref: ${marker.id}]`)).toHaveLength(2)
@@ -296,9 +288,6 @@ describe("a requested memo through the run", () => {
     expect(model.prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.includes('"Memo:" line names "cover memo"'))).toHaveLength(LEAN_MAX_RETRIES)
     expect(readLeanPlan(directory)).not.toHaveProperty("memo_document")
     expect(readLeanPlan(directory)).not.toHaveProperty("memo")
-    const [prompt] = finalizePrompts(model)
-    expect(prompt).toContain("<notes_role>\nThese sections form the drafting notes for the lawyer accompanying the drafted documents.")
-    expect(prompt).not.toContain("These sections form the requested accompanying memo")
     expect(readLeanText(directory, "drafting-notes.md")).toStartWith("# Drafting notes\n")
     expect(notesRow(directory)?.deliverable).toBe("Supply note - drafting notes.docx")
   }, 120_000)
@@ -359,4 +348,192 @@ describe("memo mode keys on the plan's memo name, not its notes file", () => {
     const rename = { document: "d2" as const, role: "body" as const, file: "Covering Final.docx", instruction_quote: INSTRUCTION }
     expect(requestedMemo(directory, selectedDeliveryPlan(directory, [rename]))?.file).toBe("Covering Final - cover memo.docx")
   })
+})
+
+describe("the Memo line names one planned document", () => {
+  const docOutline = (title: string, ...lines: string[]) => [`# ${title}`, "What it is for.", "Form: other", ...lines, "## Terms", "What it covers."].join("\n")
+  const planText = (...lines: string[]) => ["Acting for: not stated", ...lines].join("\n")
+  const MEMO_PARTS = ["What this is and what you need to do", "Decisions taken and why", "Discrepancies and how handled", "What the documents do", "Research relied on and its limits"]
+  const unplanned = (memo: string, titles: string[]) =>
+    `The "Memo:" line names "${memo}", but no planned title is that memo; the planned titles are ${titles.map(title => `"${title}"`).join(", ")}. Plan the memo as one "# " document whose title has the memo's words, with "Form: advice", and plan its parts as for any document.`
+
+  test("that document is the memo: last, advice, executed by no one, keeping its title, purpose, file and parts", () => {
+    const request = "Draft a licence for the workshop unit and a brief covering note to the tenant, delivered as tenant-note.docx."
+    const parsed = parsePlan(planText("Memo: brief covering note to the tenant",
+      docOutline("Covering Note to Tenant", "File: tenant-note.docx", "Form: letter", "Executed by: Landlord", "Mode: revise"), docOutline("Workshop licence")), request)
+    expect(parsed.issues).toEqual([])
+    expect(parsed.value?.memo).toBe("brief covering note to the tenant")
+    expect(parsed.value?.documents.map(row => row.title)).toEqual(["Workshop licence", "Covering Note to Tenant"])
+    const memo = parsed.value!.documents[1]!
+    expect(memo).toMatchObject({ title: "Covering Note to Tenant", purpose: "What it is for.", file: "tenant-note.docx", form: "advice", executed_by: [], mode: "new" })
+    expect(memo.parts).toEqual([{ heading: "Terms", scope: "What it covers.", display_heading: "" }])
+  })
+
+  test("a memo planned with parts keeps them in order; one planned without parts gets the five", () => {
+    const request = "Draft a supply note, with a memo on the pricing issues."
+    const issues = ["Pricing mechanism", "Indexation", "Termination exposure", "Recommendation"]
+    const parted = parsePlan(planText("Memo: memo on the pricing issues", docOutline("Supply note"),
+      "# Memo on the Pricing Issues", "Form: advice", ...issues.flatMap(heading => [`## ${heading}`, `What ${heading.toLowerCase()} covers.`])), request)
+    expect(parted.issues).toEqual([])
+    expect(parted.value?.documents.at(-1)?.parts.map(part => part.heading)).toEqual(issues)
+
+    const bare = parsePlan(planText("Memo: cover memo", "# Cover memo", "Form: advice", docOutline("Supply note")), "Draft a supply note, with a cover memo.")
+    expect(bare.issues).toEqual([])
+    const memo = bare.value!.documents.at(-1)!
+    expect(memo.parts.map(part => part.heading)).toEqual(MEMO_PARTS)
+    expect(memo.parts.every(part => /^At most \d+ words: /.test(part.scope) && part.display_heading === undefined)).toBe(true)
+  })
+
+  test("a memorandum titled for its reader is the memo the line names", () => {
+    const parsed = parsePlan(planText("Memo: cover memo", docOutline("Supply note"), docOutline("Cover Memorandum to Partner")), "Draft a supply note, with a cover memo to the partner.")
+    expect(parsed.issues).toEqual([])
+    expect(parsed.value?.documents.map(row => [row.title, row.form])).toEqual([["Supply note", "other"], ["Cover Memorandum to Partner", "advice"]])
+  })
+
+  test("a memo naming the document it covers is not that document", () => {
+    const parsed = parsePlan(planText("Memo: explanatory note on the Employment Contract", docOutline("Employment Contract"), docOutline("Explanatory note")),
+      "Draft the Employment Contract for the new CFO and an explanatory note on the Employment Contract for the board.")
+    expect(parsed.issues).toEqual([])
+    expect(parsed.value?.documents.map(row => [row.title, row.form])).toEqual([["Employment Contract", "other"], ["Explanatory note", "advice"]])
+  })
+
+  test("a Memo line naming no planned document is retry feedback; on the last attempt the memo is added in its parts", () => {
+    const parsed = parsePlan(planText("Memo: cover note", docOutline("Advice on Tax Treatment")), "Draft advice on the tax treatment of the unit sale, with a cover note.")
+    expect(parsed.issues).toEqual([unplanned("cover note", ["Advice on Tax Treatment"])])
+    expect(parsed.value?.documents.map(row => row.title)).toEqual(["Advice on Tax Treatment", "Cover note"])
+    expect(parsed.value?.documents[1]).toMatchObject({ form: "advice", executed_by: [], mode: "new" })
+    expect(parsed.value?.documents[1]?.purpose).toContain("cover memo")
+    expect(parsed.value?.documents[1]?.parts.map(part => part.heading)).toEqual(MEMO_PARTS)
+  })
+
+  test("a one-word Memo line names a memo titled with more words", () => {
+    const parsed = parsePlan(planText("Memo: memo", docOutline("Supply note"), "# Cover Memo", "Form: advice"), "Draft a supply note, with a memo.")
+    expect(parsed.issues).toEqual([])
+    expect(parsed.value?.documents.map(row => [row.title, row.form])).toEqual([["Supply note", "other"], ["Cover Memo", "advice"]])
+  })
+
+  test("with no title naming the memo, the last attempt adopts the one document planned as advice or titled a memo", () => {
+    const request = "Draft a supply note, with a cover note."
+    const advice = parsePlan(planText("Memo: cover note", docOutline("Supply note"), "# Advice to the Buyer", "Form: advice"), request)
+    expect(advice.issues).toEqual([unplanned("cover note", ["Supply note", "Advice to the Buyer"])])
+    expect(advice.value?.documents.map(row => [row.title, row.form])).toEqual([["Supply note", "other"], ["Advice to the Buyer", "advice"]])
+    expect(advice.value?.documents[1]?.parts.map(part => part.heading)).toEqual(MEMO_PARTS)
+
+    const titled = parsePlan(planText("Memo: cover note", docOutline("Board Memorandum"), docOutline("Supply note")), request)
+    expect(titled.value?.documents.map(row => [row.title, row.form])).toEqual([["Supply note", "other"], ["Board Memorandum", "advice"]])
+
+    // Of two such documents, neither is adopted: the memo is added.
+    const two = parsePlan(planText("Memo: cover note", docOutline("Board Memorandum"), "# Advice to the Buyer", "Form: advice", "## Terms"), request)
+    expect(two.value?.documents.map(row => row.title)).toEqual(["Board Memorandum", "Advice to the Buyer", "Cover note"])
+  })
+
+  test("several documents repeating the memo are retry feedback; on the last attempt the one planned as advice is the memo", () => {
+    const request = "Draft a licence for the workshop unit, with a covering note to the tenant."
+    const parsed = parsePlan(planText("Memo: covering note to the tenant", docOutline("Covering Note"), "# Covering Note to the Tenant", "Form: advice", docOutline("Workshop licence")), request)
+    expect(parsed.issues).toEqual([`The "Memo:" line names "covering note to the tenant", which "Covering Note", "Covering Note to the Tenant" all repeat. Plan the memo as one "# " document, and give the others titles that do not repeat it.`])
+    expect(parsed.value?.documents.map(row => [row.title, row.form])).toEqual([["Covering Note", "other"], ["Workshop licence", "other"], ["Covering Note to the Tenant", "advice"]])
+
+    const none = parsePlan(planText("Memo: covering note to the tenant", docOutline("Covering Note to the Tenant"), docOutline("Covering Note"), docOutline("Workshop licence")), request)
+    expect(none.value?.documents.map(row => row.title)).toEqual(["Covering Note to the Tenant", "Workshop licence", "Covering Note"])
+  })
+
+  test("without a Memo line, or with a non-answer, the plan is as outlined", () => {
+    const plain = "Draft a licence for the workshop unit, with a brief covering note to the tenant."
+    for (const memo of [[], ["Memo: none"]]) {
+      const parsed = parsePlan(planText(...memo, docOutline("Covering Note to Tenant"), docOutline("Workshop licence")), plain)
+      expect(parsed.issues).toEqual([])
+      expect(parsed.value).not.toHaveProperty("memo")
+      expect(parsed.value?.documents.map(row => [row.title, row.form, row.parts.map(part => part.heading)])).toEqual([["Covering Note to Tenant", "other", ["Terms"]], ["Workshop licence", "other", ["Terms"]]])
+    }
+  })
+
+  test("a memo the request names only by its file name is in the request's words", () => {
+    const request = "Please prepare the supply note and cover-memo-to-client.docx."
+    const memo = ["# Cover Memo to Client", "File: cover-memo-to-client.docx", "Form: advice", "## Terms", "What it covers."]
+    const parsed = parsePlan(planText("Memo: Cover Memo to Client", ...memo, docOutline("Supply note")), request)
+    expect(parsed.issues).toEqual([])
+    expect(parsed.value?.memo).toBe("Cover Memo to Client")
+    expect(parsed.value?.documents.map(row => [row.title, row.form, row.file])).toEqual([["Supply note", "other", undefined], ["Cover Memo to Client", "advice", "cover-memo-to-client.docx"]])
+    expect(parsePlan(planText("Memo: Advice Memo", ...memo, docOutline("Supply note")), request).issues[0]).toContain('The "Memo:" line names "Advice Memo", but the request does not use those words.')
+  })
+
+  test("without a Memo line, the one document planned as advice, when no other is and another document is planned, is the memo whatever its title, planned last", () => {
+    const request = "Please prepare the supply note and cover-memo-to-client.docx."
+    const memo = ["# Cover Memo to Client", "Form: advice", "## Terms", "What it covers."]
+    const parsed = parsePlan(planText(...memo, docOutline("Supply note")), request)
+    expect(parsed.issues).toEqual([])
+    expect(parsed.value?.memo).toBe("Cover Memo to Client")
+    expect(parsed.value?.documents.map(row => row.title)).toEqual(["Supply note", "Cover Memo to Client"])
+    expect(parsed.value?.documents[1]).toMatchObject({ form: "advice", executed_by: [], mode: "new" })
+
+    const adopted = (...lines: string[]) => {
+      const plan = parsePlan(planText(...lines), request).value
+      return [plan?.memo, plan?.documents.map(row => [row.title, row.form])]
+    }
+    expect(adopted("# Advice on Pricing", "Form: advice", "## Terms", docOutline("Supply note")))
+      .toEqual(["Advice on Pricing", [["Supply note", "other"], ["Advice on Pricing", "advice"]]])
+    expect(adopted(...memo, docOutline("Board Memorandum"), docOutline("Supply note")))
+      .toEqual(["Cover Memo to Client", [["Board Memorandum", "other"], ["Supply note", "other"], ["Cover Memo to Client", "advice"]]])
+
+    const asOutlined = (...lines: string[]) => {
+      const plan = parsePlan(planText(...lines), request).value
+      expect(plan).not.toHaveProperty("memo")
+      return plan?.documents.map(row => row.title)
+    }
+    expect(asOutlined("# Memorandum of Understanding", "Form: agreement", "## Terms", docOutline("Supply note"))).toEqual(["Memorandum of Understanding", "Supply note"])
+    expect(asOutlined("# Cover Memo to Client", "Form: advice letter", "## Terms", docOutline("Supply note"))).toEqual(["Cover Memo to Client", "Supply note"])
+    expect(asOutlined(...memo, "# Advice on Pricing", "Form: advice", "## Terms", docOutline("Supply note"))).toEqual(["Cover Memo to Client", "Advice on Pricing", "Supply note"])
+    expect(asOutlined("# Advice on Pricing", "Form: advice", "## Terms")).toEqual(["Advice on Pricing"])
+    expect(asOutlined("# Memo on Pricing", "Form: advice", "## Terms")).toEqual(["Memo on Pricing"])
+  })
+
+  test("a Memo line the request does not word is retry feedback to rename it, and the one advice document stays the memo", () => {
+    const name = "Cover Memo on Supply Note Pricing"
+    const parsed = parsePlan(planText(`Memo: ${name}`, docOutline("Supply note"), "# Cover Memo on Pricing", "Form: advice", "## Terms", "What it covers."),
+      "Draft a supply note, with a cover memo on pricing.")
+    expect(parsed.issues).toEqual([`The "Memo:" line names "${name}", but the request does not use those words. Name the memo in a few of the request's own words, as it writes them, and keep the memo planned as its "# " document. Leave the line and that document out only when the request does not ask for a memo or note.`])
+    expect(parsed.value?.memo).toBe("Cover Memo on Pricing")
+    expect(parsed.value?.documents.map(row => [row.title, row.form])).toEqual([["Supply note", "other"], ["Cover Memo on Pricing", "advice"]])
+  })
+
+  test("plan.json records the memo document by its id, and an id outside the plan is not read", () => {
+    const directory = matter()
+    const plan = writeLeanPlan(directory, [{ title: "Supply note", purpose: "p", parts: [{ heading: "Terms", scope: "s" }] }, { title: "Cover memo", purpose: "p", parts: [{ heading: "Terms", scope: "s" }] }],
+      undefined, undefined, { name: "cover memo", document: "d2" })
+    expect(JSON.parse(readLeanText(directory, "plan.json")!)).toMatchObject({ memo: "cover memo", memo_document: "d2" })
+    expect(readLeanPlan(directory)).toMatchObject({ memo: "cover memo", memo_document: "d2" })
+    writeLeanText(directory, "plan.json", JSON.stringify({ ...plan, memo_document: "d3" }))
+    expect(readLeanPlan(directory)).toBeUndefined()
+  })
+
+  test("is planned last as its own document, by id", async () => {
+    const directory = matter()
+    writeLeanText(directory, "request.md", "Draft a short supply note from the supply terms, with a cover memo.")
+    const draft = drafter(COVER_MEMO, DRAFT)
+    const outlined: Reply = (prompt, index) => draft(prompt, index).replace("Acting for: not stated", "Acting for: not stated\nMemo: cover memo")
+    const model = scriptedModel({ ...happyPath, [AGENT.draft]: outlined, [AGENT.review]: reviewFirst, [AGENT.changes]: changesFirst })
+    const run = await runLean(directory, { sessions: model.port, registerDeliverable: registering().registerDeliverable })
+    expect([run.status, run.stop_reason]).toEqual(["completed", null])
+
+    expect(model.prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.includes("no planned document is that memo"))).toHaveLength(0)
+    const plan = readLeanPlan(directory)
+    expect(plan).toMatchObject({ memo: "cover memo", memo_document: "d2" })
+    expect(plan?.documents.map(row => [row.id, row.title, row.form])).toEqual([["d1", "Supply note", "other"], ["d2", "Cover memo", "advice"]])
+    expect(plan?.documents[1]?.parts.map(part => part.heading)).toEqual(MEMO_PARTS)
+  }, 120_000)
+
+  test("a memo the outline never plans is retried, then added as the last document", async () => {
+    const directory = matter()
+    writeLeanText(directory, "request.md", "Draft a short supply note from the supply terms, with a cover memo.")
+    const draft = drafter(DRAFT, COVER_MEMO)
+    const outlined: Reply = (prompt, index) => /^Draft part /m.test(prompt) ? draft(prompt, index)
+      : draft(prompt, index).replace("Acting for: not stated", "Acting for: not stated\nMemo: cover memo").split("\n# Cover memo")[0]!
+    const model = scriptedModel({ ...happyPath, [AGENT.draft]: outlined, [AGENT.review]: reviewFirst, [AGENT.changes]: changesFirst })
+    const run = await runLean(directory, { sessions: model.port, registerDeliverable: registering().registerDeliverable })
+    expect([run.status, run.stop_reason]).toEqual(["completed", null])
+
+    expect(model.prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.includes(unplanned("cover memo", ["Supply note"])))).toHaveLength(LEAN_MAX_RETRIES)
+    expect(readLeanPlan(directory)?.documents.map(row => [row.id, row.title, row.form])).toEqual([["d1", "Supply note", "other"], ["d2", "Cover memo", "advice"]])
+    expect(readLeanPlan(directory)?.memo_document).toBe("d2")
+  }, 120_000)
 })

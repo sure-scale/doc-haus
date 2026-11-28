@@ -8,6 +8,7 @@ import { LayerNode } from "@opencode/util/effect/layer-node"
 import { withCapacityScope } from "@opencode/core/model-resolver"
 import { FetchHttpClient } from "effect/http"
 import { ModelAdmission, limitModelClient, makeModelConcurrencyNode } from "./model-concurrency"
+import { runConcurrencyTest } from "./concurrency-test"
 import type { Context } from "effect"
 
 const until = async (condition: () => boolean) => {
@@ -269,5 +270,19 @@ describe("model request admission", () => {
       expect(await Promise.race([accepted, Bun.sleep(40).then(() => false)])).toBe(true)
       controller.abort()
     }
+  })
+
+  test("runConcurrencyTest counts overlapping admitted requests and groups failures", async () => {
+    let release!: () => void
+    const barrier = new Promise<void>(resolve => { release = resolve })
+    let started = 0
+    const result = runConcurrencyTest("synthetic/model", 3, async observer => {
+      observer.start()
+      if (++started === 3) release()
+      await barrier
+      observer.end()
+      return started-- === 3 ? { ok: false, kind: "empty" } : { ok: true }
+    })
+    expect(await result).toMatchObject({ requested: 3, succeeded: 2, failed: 1, peak: 3, errors: [{ kind: "empty", count: 1 }] })
   })
 })

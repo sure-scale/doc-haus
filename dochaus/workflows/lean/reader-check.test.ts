@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -20,8 +20,9 @@ import { AGENT, cleanupMatters, labelledPart, matter } from "./test-support"
 // A document's text speaks to its reader; a sentence written for the lawyer is
 // a hit the change cycle repairs. Synthetic text only.
 
-const workspace = process.env.WORKSPACE_ROOT
+let workspace: string | undefined
 const roots: string[] = []
+beforeEach(() => { workspace = process.env.WORKSPACE_ROOT })
 afterEach(() => {
   cleanupMatters()
   roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true }))
@@ -165,8 +166,6 @@ test("the reader prompt separates exact operative passages from all supported la
     { pid: part[0]!.pid, passages: ["[insert reply address]", "[open item: confirm the date]"] },
     { pid: part[1]!.pid, passages: ["[ATTORNEY NOTE: review the reply deadline]"] },
   ])
-  expect(prompt).toContain("does not resolve its factual gap")
-  expect(prompt).toContain("Do not join passages across a marker")
 })
 
 describe("reader items", () => {

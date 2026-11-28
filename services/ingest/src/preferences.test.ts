@@ -1,17 +1,23 @@
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { draftingAutoModeEnabled, normalizePreferences, readFirmDraftingPreferences } from "../../../dochaus/lib/drafting-preferences"
+import { DEFAULT_DRAFTING, readDraftingPreferences, writeDraftingPreferences } from "./preferences"
 
-const previous = process.env.WORKSPACE_ROOT
-const root = mkdtempSync(path.join(tmpdir(), "dochaus-research-preferences-"))
-process.env.WORKSPACE_ROOT = root
-const { DEFAULT_DRAFTING, readDraftingPreferences, writeDraftingPreferences } = await import("./preferences")
+let previous: string | undefined
+let root = ""
+
+beforeAll(() => {
+  previous = process.env.WORKSPACE_ROOT
+  root = mkdtempSync(path.join(tmpdir(), "dochaus-research-preferences-"))
+  process.env.WORKSPACE_ROOT = root
+})
+
 afterAll(() => {
   if (previous === undefined) delete process.env.WORKSPACE_ROOT
   else process.env.WORKSPACE_ROOT = previous
-  rmSync(root, { recursive: true, force: true })
+  if (root) rmSync(root, { recursive: true, force: true })
 })
 
 test("new installations default to the entire web without creating preferences", () => {

@@ -32,20 +32,23 @@ export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"
   const entries = unzipSync(bytes)
   const document = new DOMParser().parseFromString(strFromU8(entries["word/document.xml"]!), "application/xml")
   const namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-  const paragraphs = Array.from(document.getElementsByTagNameNS(namespace, "p")).filter(paragraph => {
-    // A carried table's cell headings are source content, not drafting part
-    // labels. They must not influence shifts or gain presentation formatting.
+  const inTable = (paragraph: Element) => {
     let ancestor = paragraph.parentNode
     while (ancestor) {
-      if (ancestor.nodeType === 1 && (ancestor as Element).namespaceURI === namespace && (ancestor as Element).localName === "tbl") return false
+      if (ancestor.nodeType === 1 && (ancestor as Element).namespaceURI === namespace && (ancestor as Element).localName === "tbl") return true
       ancestor = ancestor.parentNode
     }
-    return true
-  }).map(paragraph => {
-    const styled = paragraph.getElementsByTagNameNS(namespace, "pStyle")[0]
+    return false
+  }
+  const paragraphs = Array.from(document.getElementsByTagNameNS(namespace, "p")).map(paragraph => {
+    // A carried table's cell headings are source content, not drafting part
+    // labels. They must not influence shifts or gain presentation formatting,
+    // though their paragraphs still belong to the surrounding part for attribution.
+    const table = inTable(paragraph)
+    const styled = table ? undefined : paragraph.getElementsByTagNameNS(namespace, "pStyle")[0]
     return {
-      paragraph, styled, style: styled?.getAttributeNS(namespace, "val") ?? undefined,
-      text: Array.from(paragraph.getElementsByTagNameNS(namespace, "t")).map(node => node.textContent ?? "").join(""),
+      paragraph, table, styled, style: styled?.getAttributeNS(namespace, "val") ?? undefined,
+      text: table ? "" : Array.from(paragraph.getElementsByTagNameNS(namespace, "t")).map(node => node.textContent ?? "").join(""),
     }
   })
   const firstTitle = paragraphs.findIndex(row => row.style === "Heading1")
@@ -76,7 +79,13 @@ export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"
   })
   const attribution = new Map<string, { draft_part: number | null; draft_heading: boolean }>()
   let promoted = false
-  paragraphs.forEach(({ paragraph, styled, style }, at) => {
+  paragraphs.forEach(({ paragraph, table, styled, style }, at) => {
+    const owner = owners[at]
+    const part = owner === undefined ? null : parts[owner]!.part ?? null
+    if (table) {
+      paragraphPointers(paragraph).forEach(pointer => attribution.set(pointer.pid, { draft_part: part, draft_heading: false }))
+      return
+    }
     const boundary = boundaryAt.has(at) ? parts[boundaryAt.get(at)!] : undefined
     if (at === titleAt || boundary?.display_heading === "") {
       paragraph.parentNode?.removeChild(paragraph)
@@ -92,13 +101,11 @@ export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"
       paragraph.appendChild(run)
     }
     if ((style === "Heading1" && at > firstTitle) || boundary?.attachment) pageBreakBefore(paragraph)
-    const owner = owners[at]
     const shift = owner === undefined ? 0 : shifts[owner]!
     if (!boundary && shift && /^Heading[3-6]$/.test(style ?? "")) {
       styled!.setAttributeNS(namespace, "w:val", `Heading${Number(style!.slice(-1)) - shift}`)
       promoted = true
     }
-    const part = owner === undefined ? null : parts[owner]!.part ?? null
     paragraphPointers(paragraph).forEach(pointer => attribution.set(pointer.pid, { draft_part: part, draft_heading: Boolean(boundary && boundary.part !== undefined) || style === "Heading1" }))
   })
   function pageBreakBefore(paragraph: Element) {

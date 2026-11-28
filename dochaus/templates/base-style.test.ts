@@ -60,19 +60,19 @@ describe("_base.docx styles", () => {
   }, 120000)
 
   test("body paragraphs have clear line spacing", () => {
-    const styles = strFromU8(unzipSync(readFileSync("templates/_base.docx"))["word/styles.xml"]!)
+    const styles = strFromU8(unzipSync(readFileSync(path.join(import.meta.dir, "_base.docx")))["word/styles.xml"]!)
     expect(defaultParagraphSpacing(styles)).toEqual({ after: 200, line: 276 })
   })
 
   test("headings have enough vertical spacing for rendered legal drafts", () => {
-    const styles = strFromU8(unzipSync(readFileSync("templates/_base.docx"))["word/styles.xml"]!)
+    const styles = strFromU8(unzipSync(readFileSync(path.join(import.meta.dir, "_base.docx")))["word/styles.xml"]!)
     expect(headingSpacing(styles, "Heading1")).toEqual({ before: 320, after: 160 })
     expect(headingSpacing(styles, "Heading2")).toEqual({ before: 280, after: 140 })
     expect(headingSpacing(styles, "Heading3")).toEqual({ before: 220, after: 120 })
   })
 
   test("the page margins place page furniture half an inch from the page edge", () => {
-    const document = strFromU8(unzipSync(readFileSync("templates/_base.docx"))["word/document.xml"]!)
+    const document = strFromU8(unzipSync(readFileSync(path.join(import.meta.dir, "_base.docx")))["word/document.xml"]!)
     const margins = new DOMParser().parseFromString(document, "application/xml").getElementsByTagNameNS(W, "pgMar")[0]!
     expect(["header", "footer", "gutter"].map(name => margins.getAttributeNS(W, name))).toEqual(["720", "720", "0"])
   })

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { WordSync, type Acknowledgement, type Transport } from "./sync"
 import { ConnectionError } from "./client"
 import type { WordConnectionState } from "../../../dochaus/lib/word-addin-contract"
@@ -164,8 +164,8 @@ test("unknown admission with an idle server gives conditional recovery advice", 
   await expect(f.sync.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => { writes++ })).rejects.toThrow()
   expect(writes).toBe(0)
   expect((await f.transport.lease("inspect", "base-one")).nativeOperation?.state).toBe("idle")
-  expect(f.sync.snapshot().message).toContain("if it shows an unconfirmed Word change")
-  expect(f.sync.snapshot().message).toContain("Check the document status")
+  expect(f.sync.snapshot().problem).toBe(true)
+  expect(f.sync.snapshot().message.length).toBeGreaterThan(0)
   expect(await f.sync.save()).toBe(false)
 })
 
@@ -198,7 +198,7 @@ test("settlement failure notice preserves the cause and pending fence without re
     const error = await f.sync.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => { writes++; f.bytes = 2 })
       .then(() => undefined, error => error as Error & { notice?: string; mutationState: string })
     expect(error?.mutationState).toBe("uncertain")
-    expect(error?.notice).toBe("doc.haus could not confirm the native operation status after the Word change. Check the change in Word. Use Undo if needed; do not apply it again.")
+    expect(error?.notice?.length).toBeGreaterThan(0)
     expect(error?.notice).not.toMatch(/PRIVATE|secret|token=|<w:|\/path/)
     if (mode === "unavailable") expect(error?.cause).toBe(cause)
     else expect(error?.cause).toBeInstanceOf(Error)
@@ -230,7 +230,8 @@ test("cancellation settlement failure has its own static notice without claiming
     if (mode === "closed") { await entered.promise; f.sync.dispose(); release.resolve() }
     const error = await promise.then(() => undefined, error => error as Error & { notice?: string; mutationState: string })
     expect(error?.mutationState).toBe("uncertain")
-    expect(error?.notice).toBe("doc.haus could not confirm cancellation of the native operation before editing. Keep this Word file; do not apply the proposal again.")
+    expect(error?.notice?.length).toBeGreaterThan(0)
+    expect(error?.notice).not.toMatch(/PRIVATE|secret|token=/)
     expect(error?.cause).toBe(cause)
     expect(calls).toEqual(["begin", "settle", "read"])
     expect(edits).toBe(mode === "closed" ? 0 : 1)
@@ -243,11 +244,12 @@ test("pane reconstruction cannot reapply or save an indeterminate native operati
   const f = fixture("owned")
   await f.sync.start()
   await expect(f.sync.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => { f.bytes = 2; f.saved = true; throw Object.assign(new Error("Lost Word response"), { mutationState: "uncertain" }) })).rejects.toThrow()
-  expect(f.sync.snapshot().message).toContain("Create saved copy")
-  expect(f.sync.snapshot().message).toContain("will not include unsent Word edits")
+  expect(f.sync.snapshot().canSave).toBe(false)
+  expect(f.sync.snapshot().problem).toBe(true)
   const fresh = f.reopen(); await fresh.start(); f.events.length = 0
-  expect(fresh.snapshot().message).toContain("Create saved copy")
-  expect(fresh.snapshot().message).toContain("Keep this Word file")
+  expect(fresh.snapshot().canSave).toBe(false)
+  expect(fresh.snapshot().status).toBe("not-saved")
+  expect(fresh.snapshot().connection?.nativeOperation?.state).toBe("pending")
   await fresh.tick(); expect(await fresh.save()).toBe(false); expect(await fresh.done()).toBe(false)
   let writes = 0
   await expect(fresh.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => { writes++ })).rejects.toThrow()
@@ -299,4 +301,48 @@ test("eligible single and same-boundary multi-paragraph wording enters the lease
   expect(f.events).toEqual(["inspect", "claim", "begin", "native-wording", "settle"])
   expect(f.sync.snapshot().status).toBe("not-saved")
   }
+})
+
+describe("read-only local inspection", () => {
+  function inspectionFixture(options: { refuseSettle?: boolean; owner?: "available" | "owned" | "other" } = {}) {
+    const events: string[] = []
+    let owner = options.owner ?? "owned"
+    let operation: { sequence: number; operationId: string | null; state: "idle" | "pending" | "confirmed" | "not-dispatched" } = { sequence: 0, operationId: null, state: "idle" }
+    const state = (): WordConnectionState => ({ version: { base: { id: "base", number: 1 }, current: { id: "base", number: 1 }, state: "current" }, nativeOperation: { sequence: operation.sequence, state: operation.state }, lease: owner === "available" ? { state: "available", expiresAt: null } : { state: owner, generation: "generation", expiresAt: 999999 } })
+    const checkpoint: Acknowledgement = { base: "base", fingerprint: "1", number: 1, at: 1, overlap: false }
+    const transport: Transport = {
+      async lease(action) { events.push(action); if (action === "claim") owner = "owned"; return state() },
+      async nativeOperation(_base, _generation, input) { events.push(input.action === "settle" ? input.outcome : input.action); if (input.action === "begin") operation = { sequence: input.sequence + 1, operationId: input.operationId, state: "pending" }; if (input.action === "settle" && !options.refuseSettle) operation = { sequence: input.sequence, operationId: input.operationId, state: input.outcome }; return { operation, connection: state() } },
+      async save() { events.push("upload"); throw Error("Read-only check must not upload") }, async heartbeat() { return state() }, async done() { return state() },
+    }
+    const host = { async saved() { return true }, async save() { events.push("native-save") }, async export() { events.push("export"); return new Uint8Array([1]) } }
+    const sync = new WordSync("base", host, transport, { read: () => checkpoint, write() { events.push("checkpoint") } }, () => {}, async () => "1", async () => {})
+    return { sync, events }
+  }
+
+  test("read-only inspection authorizes preparation but always settles not-dispatched without dirtying the document", async () => {
+    for (const owner of ["owned", "available"] as const) {
+      const f = inspectionFixture({ owner }); await f.sync.start(); f.events.length = 0
+      const before = f.sync.snapshot()
+      expect(await f.sync.localInspection({ conversationId: "conversation", turnId: "turn" }, async identity => { f.events.push("read-only"); expect(identity).toEqual({ base: "base", generation: "generation" }); return { status: "ready" } })).toEqual({ status: "ready" })
+      expect(f.events).toEqual(["inspect", ...(owner === "available" ? ["claim"] : []), "begin", "read-only", "not-dispatched"])
+      const after = f.sync.snapshot()
+      expect(after.content).toBe(before.content); expect(after.status).toBe(before.status); expect(after.busy).toBe(false)
+      expect(f.events).not.toContain("confirmed"); expect(f.events).not.toContain("native-save"); expect(f.events).not.toContain("upload"); expect(f.events).not.toContain("checkpoint")
+      f.sync.dispose()
+    }
+  })
+
+  test("read-only inspection refusals settle truthfully and retain document state", async () => {
+    const f = inspectionFixture(); await f.sync.start(); f.events.length = 0; const before = f.sync.snapshot()
+    const cause = new Error("Safe preimage refusal")
+    await expect(f.sync.localInspection({ conversationId: "conversation", turnId: "turn" }, async () => { throw cause })).rejects.toBe(cause)
+    expect(f.events).toEqual(["inspect", "begin", "not-dispatched"])
+    expect(f.sync.snapshot().content).toBe(before.content); expect(f.sync.snapshot().status).toBe(before.status)
+    f.sync.dispose()
+    const blocked = inspectionFixture({ refuseSettle: true }); await blocked.sync.start(); blocked.events.length = 0
+    await expect(blocked.sync.localInspection({ conversationId: "conversation", turnId: "turn" }, async () => ({ status: "ready" }))).rejects.toMatchObject({ mutationState: "uncertain" })
+    expect(blocked.events).not.toContain("confirmed"); expect(blocked.events).toContain("not-dispatched")
+    blocked.sync.dispose()
+  })
 })

@@ -1,19 +1,23 @@
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { sampleMatterRoutes } from "./seed"
+import { deleteMatter, listMatters } from "./matter"
 
-const workspace = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-sample-matter-")))
-const previous = process.env.WORKSPACE_ROOT
-process.env.WORKSPACE_ROOT = workspace
-// Imported after WORKSPACE_ROOT is set: the template library path is fixed at import.
-const { sampleMatterRoutes } = await import("./seed")
-const { deleteMatter, listMatters } = await import("./matter")
+let workspace = ""
+let previous: string | undefined
+
+beforeAll(() => {
+  workspace = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-sample-matter-")))
+  previous = process.env.WORKSPACE_ROOT
+  process.env.WORKSPACE_ROOT = workspace
+})
 
 afterAll(() => {
   if (previous === undefined) delete process.env.WORKSPACE_ROOT
   else process.env.WORKSPACE_ROOT = previous
-  rmSync(workspace, { recursive: true, force: true })
+  if (workspace) rmSync(workspace, { recursive: true, force: true })
 })
 
 const add = () => sampleMatterRoutes.request("/sample-matter", { method: "POST" })

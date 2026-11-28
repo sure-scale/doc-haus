@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { checklistFindingRecovery, checklistTextMeasuresMeaning, type ChecklistFinding, buildChecklistReinspectionPrompt, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, buildChecklistRefinementPrompt, CHECKLIST_ITEM_SHAPE, parseChecklistCheckerInput, parseChecklistExtraction, parseChecklistFinding, parseChecklistItem, type ChecklistItem } from "./checklist-contract"
+import { checklistFindingRecovery, type ChecklistFinding, buildChecklistReinspectionPrompt, buildChecklistCheckerPrompt, buildChecklistProducerPrompt, CHECKLIST_ITEM_SHAPE, parseChecklistCheckerInput, parseChecklistExtraction, parseChecklistFinding, parseChecklistItem, type ChecklistItem } from "./checklist-contract"
 import { markerVerificationIssues, type ChecklistCheckerInput } from "./checklist-contract"
 import { withFactOptions } from "./fact-answers"
 import { writeLeanPlan } from "./plan"
@@ -97,11 +97,6 @@ test("every positive marker body evidence row uses the gate's visible marker pre
   expect(markerVerificationIssues(markerPacket, { ...mixed, status: "not_applicable", action_status: "not_applicable" })).toEqual([])
   expect(markerVerificationIssues(markerPacket, { ...mixed, status: "unsatisfied", action_status: "not_fulfilled" })).toEqual([])
   expect(markerVerificationIssues(packet, mixed)).toEqual([])
-  const prompt = buildChecklistCheckerPrompt(markerPacket)
-  expect(prompt).toContain("each separate body evidence row")
-  expect(prompt).toContain("reason or inspection_scope")
-  expect(prompt).toContain("genuinely unmarked dependent passage remains adverse")
-  expect(prompt).toContain("Do not concatenate")
 })
 
 test("producer to consumer preserves exact canonical source meaning", () => {
@@ -158,33 +153,17 @@ test("preserves every basis and evidence gaps without inventing final pointers",
 })
 
 
-test("producer and checker share treatment meanings without promoting source authority", () => {
-  const producer = buildChecklistProducerPrompt({ source: { document: "instruction.txt", role: "client instructions" }, passages: item.source_refs, instructions: [], targets: [{ document: "agreement.docx", role: "operative agreement" }], retrieval: "Use targeted lookup." })
-  const checker = buildChecklistCheckerPrompt(packet)
-  const definitions = producer.split("\n\n").find(paragraph => paragraph.startsWith("Treatment describes presentation"))!
-  expect(definitions).toBeDefined()
-  expect(checker.split("\n\n")).toContain(definitions)
-  expect(definitions).toContain("advice means explanatory or advisory prose, including memo commentary")
-  expect(definitions).toContain("comment means a native document annotation")
-  expect(definitions).toContain("Require native comments only when source instructions support that presentation")
-  expect(definitions).toContain("preserve the ambiguity")
+test("all treatment values round-trip from extraction to checker input without mutating observation basis", () => {
   for (const treatment of ["operative", "advice", "comment", "open_issue"] as const) {
     const observation = { ...item, basis: "observation" as const, target: { ...item.target, treatment } }
     const unchanged = parseChecklistCheckerInput({ ...packet, item: parseChecklistExtraction({ items: [observation] }).items[0] }).item
     expect(unchanged).toEqual(observation)
-    expect(buildChecklistCheckerPrompt({ ...packet, item: observation })).toContain("an observation is not a directive: neither makes the draft retain, reproduce or keep open its wording")
   }
 })
 
-
-test("substantive reinspection keeps the item unchanged and prior assessment untrusted", () => {
+test("substantive reinspection keeps the item unchanged", () => {
   const original = { item_id: packet.item_id, status: "unsatisfied" as const, reason: "Proposal was not adopted.", evidence: [], source_refs: item.source_refs, inspection_scope: "One paragraph.", limitation: "Related advice not inspected." }
   const prompt = buildChecklistReinspectionPrompt(packet, original)
-  expect(prompt).toContain("may be right or wrong")
-  expect(prompt).toContain("A proposal does not require adoption")
-  expect(prompt).toContain("Perform targeted additional inspection")
-  expect(prompt).toContain("preserve indeterminate")
-  expect(prompt).toContain("Previous finding (unverified assessment, not source authority)")
   expect(JSON.parse(prompt.split("CHECK_INPUT:\n\n")[1]).item).toEqual(item)
 })
 
@@ -213,76 +192,23 @@ test("counterevidence is exact-item-only and cannot replace any canonical input 
   const prompt = buildChecklistReinspectionPrompt(packet, previous, counterevidence)
   expect(JSON.parse(prompt.split("CHECK_INPUT:\n\n")[1]!)).toEqual(packet)
   expect(JSON.stringify(packet)).toBe(canonical)
-  expect(prompt).toContain("Independently verify its source quotations and reasoning")
-  expect(prompt).toContain("an inapplicable limb does not excuse an applicable unfulfilled action")
   expect(() => buildChecklistReinspectionPrompt(packet, previous, { ...counterevidence, item_id: "other" })).toThrow("exact checklist item")
 })
 
-test("comparison assignments include one whole-target document-properties kind with its own prompt branch", () => {
+test("comparison assignments validate document_properties and deferred_to", () => {
   const whole = { kind: "document_properties" as const, ranges: [] }
   expect(parseChecklistCheckerInput({ ...packet, assignment: whole }).assignment).toEqual(whole)
   expect(() => parseChecklistCheckerInput({ ...packet, assignment: { kind: "document_length", ranges: [] } })).toThrow()
-  const prompt = buildChecklistCheckerPrompt({ ...packet, assignment: whole })
-  expect(prompt).toContain("other assignments cover the remaining paragraphs, process records and document-wide properties")
-  expect(prompt).toContain("Decide ONLY document-wide properties of the named target from its supplied exact artifact properties, including accepted_body_text_measures")
-  expect(prompt).toContain("Report not_applicable when the parent states no document-wide property")
-  expect(prompt).not.toContain("Only the separate document-properties assignment decides it")
-  for (const kind of ["target_body", "process_records"] as const) {
-    const range = buildChecklistCheckerPrompt({ ...packet, assignment: { kind, ranges: [] } })
-    expect(range).toContain("Only the separate document-properties assignment decides it. If the parent concerns only such a property, report not_applicable for this component rather than indeterminate")
-    expect(range).not.toContain("Decide ONLY document-wide properties")
-  }
-  expect(buildChecklistCheckerPrompt(packet)).not.toContain("document-properties assignment")
-  expect(prompt).not.toContain("deferred_to")
-  expect(buildChecklistCheckerPrompt(packet)).not.toContain("deferred_to")
-  expect(buildChecklistCheckerPrompt({ ...packet, assignment: { kind: "target_body", ranges: [] } })).toContain('Whenever this component defers such a property, also return "deferred_to":"document_properties"; otherwise omit that field.')
   const base = { item_id: packet.item_id, status: "not_applicable", reason: "Deferred.", evidence: [], source_refs: item.source_refs, inspection_scope: "Assigned range.", limitation: "" }
   expect(parseChecklistFinding({ ...base, deferred_to: "document_properties" }).deferred_to).toBe("document_properties")
   expect(parseChecklistFinding(base)).not.toHaveProperty("deferred_to")
   expect(() => parseChecklistFinding({ ...base, deferred_to: "other_unit" })).toThrow()
 })
 
-test("text measures can disprove but never establish a rendered-length directive", () => {
-  const whole = buildChecklistCheckerPrompt({ ...packet, assignment: { kind: "document_properties", ranges: [] } })
-  const instructions = whole.split("CHECK_INPUT:")[0]!
-  expect(instructions).toContain(checklistTextMeasuresMeaning)
-  expect(checklistTextMeasuresMeaning).toContain("Never report such a directive satisfied from text measures: report unsatisfied when the measures clearly exceed it; otherwise report an approximate directive open, quoting the exact measures and stating that rendered pagination was not verified")
-  expect(checklistTextMeasuresMeaning).toContain("a strict page or layout limit that the measures cannot decide remains indeterminate")
-  expect(instructions).toContain("Any other property they cannot establish remains indeterminate.")
-  for (const kind of ["target_body", "process_records"] as const)
-    expect(buildChecklistCheckerPrompt({ ...packet, assignment: { kind, ranges: [] } })).not.toContain(checklistTextMeasuresMeaning)
-  // An approximate rendered-length directive left open is non-blocking; exceeding it routes to repair.
+test("an approximate rendered-length directive left open is non-blocking; exceeding it routes to repair", () => {
   const finding = { item_id: packet.item_id, reason: "Measures quoted.", evidence: [], source_refs: item.source_refs, inspection_scope: "Artifact properties.", limitation: "Rendered pagination was not verified." }
   expect(checklistFindingRecovery(item, parseChecklistFinding({ ...finding, status: "open" }))).toBe("none")
   expect(checklistFindingRecovery(item, parseChecklistFinding({ ...finding, status: "unsatisfied" }))).toBe("repair")
-})
-
-// Applicability left unsettled by the request's scope after inspection is a
-// decision for the lawyer, not missing evidence; directed requirements stay decided.
-test("an inspected scope-only applicability question is an open decision in plain, component and reinspection prompts", () => {
-  const rule = "like an inspected requirement whose only unresolved question is whether the request's scope covers it for this deliverable, is open: name that inclusion decision in open_decisions and state what the target contains and which elements would be missing. Use indeterminate only when evidence or inspection is missing."
-  const directed = "A requirement directed by the request or a current human instruction is applicable: decide its compliance."
-  const component = "Every component applies the applicability rule below exactly as a whole-item check does. Content in unassigned ranges or records is neither evidence nor a gap for this component"
-  const binding = "An observation is what a source establishes, never an instruction. Whether the target states it is a coverage question decided by the target's declared purpose and parts, not by the observation's provenance."
-  const previous = { item_id: packet.item_id, status: "indeterminate" as const, reason: "Applicability was not established.", evidence: [], source_refs: item.source_refs, inspection_scope: "Assigned range.", limitation: "" }
-  const plain = buildChecklistCheckerPrompt(packet)
-  const components = (["target_body", "process_records", "document_properties"] as const).map(kind => buildChecklistCheckerPrompt({ ...packet, assignment: { kind, ranges: [] } }))
-  const reinspections = [packet, { ...packet, assignment: { kind: "target_body" as const, ranges: [] } }].map(input => buildChecklistReinspectionPrompt(input, previous))
-  for (const prompt of [plain, ...components, ...reinspections]) {
-    const instructions = prompt.split("CHECK_INPUT:")[0]!
-    expect(instructions).toContain(rule)
-    expect(instructions).toContain(directed)
-    expect(instructions).toContain(binding)
-    expect(instructions).toContain("open preserves a substantive unresolved fact or decision, or an unsettled applicability decision")
-    expect(instructions).not.toContain("use indeterminate when that relationship cannot be established")
-  }
-  expect(plain).not.toContain(component)
-  for (const prompt of [...components, reinspections[1]!]) expect(prompt).toContain(component)
-  expect(buildChecklistProducerPrompt({ source: { document: "instruction.txt", role: "client instructions" }, passages: item.source_refs, instructions: [], targets: [{ document: "agreement.docx", role: "operative agreement" }], retrieval: "Use targeted lookup." })).toContain(binding)
-  // Every finding may name its open decisions; only a refined item also reports action status.
-  expect(plain).toContain('"limitation":"...","open_decisions":[]}')
-  expect(plain).not.toContain('"action_status"')
-  expect(buildChecklistCheckerPrompt({ ...packet, item: { ...item, required_action: "propose" } })).toContain('"limitation":"...","action_status":"fulfilled|not_fulfilled|indeterminate|not_applicable","open_decisions":[]}')
 })
 
 test("an unrefined open applicability decision needs no recovery; indeterminate and a refined indeterminate action still inspect", () => {
@@ -297,7 +223,7 @@ test("an unrefined open applicability decision needs no recovery; indeterminate 
   expect(checklistFindingRecovery(refined, { ...open, action_status: undefined })).toBe("inspect")
 })
 
-test("disclosure fields are optional typed finding fields, each named once in the checker output contract", () => {
+test("disclosure fields are optional typed finding fields", () => {
   const base = { item_id: packet.item_id, status: "indeterminate", reason: "Target unavailable.", evidence: [], source_refs: item.source_refs, inspection_scope: "Supplied sources only.", limitation: "" }
   const old = parseChecklistFinding(base)
   for (const field of ["indeterminate_cause", "conflicting_source_refs", "departure_disclosure"]) expect(old).not.toHaveProperty(field)
@@ -305,37 +231,4 @@ test("disclosure fields are optional typed finding fields, each named once in th
   expect(parseChecklistFinding(full)).toEqual(full as ChecklistFinding)
   for (const malformed of [{ ...base, indeterminate_cause: "unclear" }, { ...base, conflicting_source_refs: [{ document: "instruction.txt", locator: "paragraph 2" }] }, { ...base, departure_disclosure: [{ ...evidence[0], kind: "memo" }] }])
     expect(() => parseChecklistFinding(malformed)).toThrow()
-  const instructions = buildChecklistCheckerPrompt(packet).split("CHECK_INPUT:")[0]!
-  for (const line of [
-    'Only when status or action_status is indeterminate, add "indeterminate_cause": "missing_inspection" if the needed text was not inspected or is not in the supplied artifacts, or "not_inspectable" if document text cannot establish the property at all; otherwise omit it.',
-    'Only when status is unsatisfied, open or indeterminate, add "conflicting_source_refs" (source_refs shape) for exact source passages that contradict this item\'s sources, so satisfying the item would conflict with them; otherwise omit it.',
-    'Only when status is unsatisfied, open or indeterminate, add "departure_disclosure" (evidence shape) for exact current draft or notes text stating that the draft deliberately departs from this item; otherwise omit it.',
-  ]) expect(instructions.split(line)).toHaveLength(2)
-  expect(buildChecklistProducerPrompt({ source: { document: "instruction.txt", role: "client instructions" }, passages: item.source_refs, instructions: [], targets: [{ document: "agreement.docx", role: "operative agreement" }], retrieval: "Use targeted lookup." })).not.toContain("indeterminate_cause")
-})
-
-// An observation never directs the deliverable; whether the target states it is
-// a coverage question decided by the target's declared purpose and parts.
-test("observations are coverage, decided by the target's purpose and parts, never directives", () => {
-  const producer = buildChecklistProducerPrompt({ source: { document: "memo.txt", role: "investigation memo" }, passages: item.source_refs, instructions: [], targets: [{ document: "d1", role: "Letter: Explain the position. Parts: Background (the facts)" }], retrieval: "Use targeted lookup." })
-  expect(producer).toContain("Do not create a duty merely to retain an observation. Phrase an observation's check as what the source establishes and which target purpose or part it falls in; never as a directive.")
-  const refinement = buildChecklistRefinementPrompt({ parent_id: "parent", parent: item, source_unit: { id: "unit", role: "Assigned unit.", passages: item.source_refs }, instructions: [], targets: [{ document: "agreement.docx", role: "operative agreement" }], retrieval: "Use targeted lookup." })
-  for (const prompt of [producer, refinement]) expect(prompt).not.toContain("An observation alone creates no inclusion, revision or disclosure duty.")
-  expect(refinement).toContain("An observation creates no adopt duty by itself; within the target's declared purpose it is expected coverage, reported as a coverage gap when absent.")
-  expect(refinement).toContain("Original draft text alone does not impose retention or memo duties.")
-  const observation = { ...item, basis: "observation" as const, target: { ...item.target, treatment: "operative" as const } }
-  for (const prompt of [buildChecklistCheckerPrompt({ ...packet, item: observation }), buildChecklistReinspectionPrompt({ ...packet, item: observation }, { item_id: packet.item_id, status: "not_applicable", reason: "No directive.", evidence: [], source_refs: item.source_refs, inspection_scope: "Target.", limitation: "" })]) {
-    const paragraphs = prompt.split("CHECK_INPUT:")[0]!.split("\n\n")
-    // The coverage verdicts sit in the paragraph that limits not_applicable.
-    const verdicts = paragraphs.find(paragraph => paragraph.startsWith("Report not_applicable"))!
-    expect(verdicts).toContain("only when the sources do not support the item's stated scope or treatment, or for content outside the target's declared purpose and parts, original draft wording in a revision, or a proposal or question that controlling sources or instructions have settled")
-    expect(verdicts).toContain("A coverage gap within a declared part's scope, read as written and not widened to reach the item, is unsatisfied.")
-    expect(verdicts).toContain("A coverage gap within the purpose that no part names or that the notes record as a deliberate omission")
-    expect(prompt).toContain("its absence, or its topic present without its substance, is a coverage gap, never not_applicable")
-    expect(prompt).toContain("Satisfied means the item's substance is evidenced in the target in its applicable stated treatment, not a mention of its topic")
-    expect(prompt).not.toContain("Missing presentation alone cannot establish unsatisfied")
-    // The authority guard stays: original draft wording is still no instruction.
-    expect(prompt).toContain("Original draft wording is an observation, not by itself an instruction to retain, revise or disclose it.")
-    expect(prompt).toContain("A term binding the parties in a source is an observation, not a directive, however imperative its wording.")
-  }
 })

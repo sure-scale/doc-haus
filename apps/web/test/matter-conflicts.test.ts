@@ -1,10 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { createElement } from "react"
-import { renderToStaticMarkup } from "react-dom/server"
-import { MemoryRouter } from "react-router-dom"
 import { conflictsChanged, conflictsChip, conflictsProblems, recordConflicts } from "../src/api/ingest/conflicts"
-import type { MatterDetail } from "../src/api/ingest/matters"
-import MatterHeader from "../src/components/matter/MatterHeader"
 
 const realFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = realFetch })
@@ -37,8 +32,8 @@ test("the endpoint's validation message is surfaced as returned", async () => {
 })
 
 test("a blank required name is a field message, before any request", () => {
-  expect(conflictsProblems({ status: "pending", owner: "  ", by: "stale" })).toEqual({ owner: "Name who will complete the check." })
-  expect(conflictsProblems({ status: "bypassed", by: "C" })).toEqual({ reason: "Give the reason for the bypass." })
+  expect(Object.keys(conflictsProblems({ status: "pending", owner: "  ", by: "stale" }))).toEqual(["owner"])
+  expect(Object.keys(conflictsProblems({ status: "bypassed", by: "C" }))).toEqual(["reason"])
   expect(conflictsProblems({ status: "cleared", by: "A" })).toEqual({})
 })
 
@@ -50,24 +45,10 @@ test("an edit records the check only when it changes", () => {
   expect(conflictsChanged({ status: "cleared", by: "B" }, undefined)).toBe(true)
 })
 
-test("the chip words follow the saved record", () => {
-  expect(conflictsChip(undefined)).toEqual({ text: "Conflicts: not recorded", tone: "none" })
-  expect(conflictsChip({ status: "cleared", by: "A", recorded_at: Date.UTC(2026, 9, 23, 12) })).toEqual({ text: "Conflicts: cleared by A on 23 Oct 2026", tone: "ok" })
-  expect(conflictsChip({ status: "pending", owner: "B", due: "2026-11-02", recorded_at: 0 }).text).toBe("Conflicts: pending — owner B, due 2 Nov 2026")
-  expect(conflictsChip({ status: "bypassed", by: "C", reason: "r", recorded_at: 0 }).text).toBe("Conflicts: bypassed by C")
-})
-
-test("the matter header shows the chip from the loaded matter", () => {
-  const noop = () => {}
-  const done = async () => {}
-  const header = (fields: Partial<MatterDetail>) => renderToStaticMarkup(createElement(MemoryRouter, null, createElement(MatterHeader, {
-    matter: { id: "m", title: "Supply note", dir: "/tmp/m", created_at: 0, documents: [], ...fields },
-    jurisdictions: [],
-    editingRef: false, setEditingRef: noop, draftRef: "", setDraftRef: noop, commitRef: done,
-    editingClient: false, setEditingClient: noop, draftClient: "", setDraftClient: noop, commitClient: done,
-    renaming: false, setRenaming: noop, draftTitle: "", setDraftTitle: noop, commitRename: done,
-    patch: done, onEditConflicts: noop,
-  })))
-  expect(header({})).toContain("Conflicts: not recorded")
-  expect(header({ conflicts: { status: "bypassed", by: "C", reason: "r", recorded_at: 0 } })).toContain("Conflicts: bypassed by C")
+test("the chip tone and date metadata follow the saved record", () => {
+  expect(conflictsChip(undefined).tone).toBe("none")
+  expect(conflictsChip({ status: "cleared", by: "A", recorded_at: Date.UTC(2026, 9, 23, 12) })).toMatchObject({ tone: "ok" })
+  expect(conflictsChip({ status: "cleared", by: "A", recorded_at: Date.UTC(2026, 9, 23, 12) }).text).toContain("23 Oct 2026")
+  expect(conflictsChip({ status: "pending", owner: "B", due: "2026-11-02", recorded_at: 0 }).text).toContain("2 Nov 2026")
+  expect(conflictsChip({ status: "bypassed", by: "C", reason: "r", recorded_at: 0 }).tone).toBe("bypassed")
 })

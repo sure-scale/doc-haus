@@ -1,15 +1,26 @@
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
+import { playbookLibraryRoutes } from "./playbook-library"
+import * as matter from "./matter"
 
-const root = mkdtempSync(path.join(tmpdir(), "dochaus-playbook-library-"))
-process.env.WORKSPACE_ROOT = root
-const { playbookLibraryRoutes } = await import("./playbook-library")
-const matter = await import("./matter")
+let root = ""
+let previousWorkspace: string | undefined
 const app = playbookLibraryRoutes()
-afterAll(() => rmSync(root, { recursive: true, force: true }))
+
+beforeAll(() => {
+  root = mkdtempSync(path.join(tmpdir(), "dochaus-playbook-library-"))
+  previousWorkspace = process.env.WORKSPACE_ROOT
+  process.env.WORKSPACE_ROOT = root
+})
+
+afterAll(() => {
+  if (previousWorkspace === undefined) delete process.env.WORKSPACE_ROOT
+  else process.env.WORKSPACE_ROOT = previousWorkspace
+  if (root) rmSync(root, { recursive: true, force: true })
+})
 
 async function upload(name: string, content: BlobPart) {
   const body = new FormData()

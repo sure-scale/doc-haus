@@ -6,7 +6,8 @@ import { RepoUpdater } from "../../../scripts/updater"
 // signal there only confirms that the launcher is still running.
 const signalLauncher = () => { process.kill(Number(process.env.DOCHAUS_LAUNCHER_PID), process.platform === "win32" ? 0 : "SIGUSR1") }
 
-export function updateRoutes(updater: RepoUpdater, busy: () => Promise<boolean>, restart: () => Promise<void>, signal = signalLauncher) {
+export function updateRoutes(updater: RepoUpdater | (() => RepoUpdater), busy: () => Promise<boolean>, restart: () => Promise<void>, signal = signalLauncher) {
+  const resolveUpdater = typeof updater === "function" ? updater : () => updater
   const app = new Hono()
   let updating = false
   let mutations = 0
@@ -19,7 +20,7 @@ export function updateRoutes(updater: RepoUpdater, busy: () => Promise<boolean>,
     }
     await next()
   })
-  app.get("/updates", async c => c.json(await updater.check(c.req.query("refresh") === "1")))
+  app.get("/updates", async c => c.json(await resolveUpdater().check(c.req.query("refresh") === "1")))
   app.post("/updates/apply", async c => {
     // Require a non-simple request and a local browser origin, including when
     // ingest is exposed for other API consumers. CORS alone does not block POSTs.
@@ -28,21 +29,22 @@ export function updateRoutes(updater: RepoUpdater, busy: () => Promise<boolean>,
       return c.json({ error: "Updates must be started from Doc.Haus on this computer." }, 403)
     if (updating) return c.json({ error: "An update is already in progress." }, 409)
     updating = true
+    const current = resolveUpdater()
     try {
       if (mutations || await busy()) throw new Error("Work is still in progress. Wait for uploads, drafts and answers to finish, then try again.")
       const input = await c.req.json()
-      const status = await updater.check()
+      const status = await current.check()
       if (!status.available || input.target !== status.target) throw new Error("The available update changed. Check for updates again.")
-      await updater.requireApplicable(input.target)
+      await current.requireApplicable(input.target)
       // Validate the managed owner before writing a request or signalling it.
       await restart()
-      await Bun.write(path.join(updater.runtime, "update-request.json"), JSON.stringify({ target: input.target }))
-      await updater.writeResult({ phase: "restarting" })
+      await Bun.write(path.join(current.runtime, "update-request.json"), JSON.stringify({ target: input.target }))
+      await current.writeResult({ phase: "restarting" })
       // Return the accepted response before the launcher stops this service.
       setTimeout(() => {
         try { signal() } catch {
           updating = false
-          void updater.writeResult({ phase: "failed", error: "The launcher stopped before updating. Start Doc.Haus again and retry." })
+          void current.writeResult({ phase: "failed", error: "The launcher stopped before updating. Start Doc.Haus again and retry." })
         }
       }, 500)
       return c.json({ phase: "restarting" }, 202)

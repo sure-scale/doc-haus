@@ -6,17 +6,12 @@ import DocumentViewer from "./DocumentViewer"
 import { citationDocument } from "./citation-target"
 import { Exit } from "./useExit"
 
-export default function CitationView({ citations, matterId, documents }: { citations: Citation[]; matterId?: string; documents?: Document[] }) {
-  const [viewing, setViewing] = useState<Citation>()
-  const trigger = useRef<HTMLButtonElement>(null)
-  if (citations.length === 0) return null
+export function distinctCitations(citations: Citation[]): Citation[] {
   // A turn's searches return the same section many times over; the reader needs
   // each distinct source once, not the raw retrieval dump. Keep the best-scoring
-  // hit per document+section and tuck them behind a collapsed "Sources" line so
-  // the answer stays the focus — the compact source list Harvey and Legora show.
-  // A quotation cite verified has no score and outranks any search hit: it is
-  // the exact passage the answer quotes. Each different quotation stays listed,
-  // even when several come from one section.
+  // hit per document+section. A quotation cite verified has no score and outranks
+  // any search hit: it is the exact passage the answer quotes. Each different
+  // quotation stays listed, even when several come from one section.
   const rank = (c: Citation) => c.score ?? Number.POSITIVE_INFINITY
   const place = (c: Citation) => `${c.docPath}§${c.section}`
   const quoted = new Set(citations.filter((c) => c.score === undefined).map(place))
@@ -25,7 +20,14 @@ export default function CitationView({ citations, matterId, documents }: { citat
     if (c.score === undefined) best.set(`${place(c)}§${c.excerpt}`, c)
     else if (!quoted.has(place(c))) best.set(place(c), c)
   }
-  const unique = [...best.values()].sort((a, b) => rank(b) - rank(a) || 0)
+  return [...best.values()].sort((a, b) => rank(b) - rank(a) || 0)
+}
+
+export default function CitationView({ citations, matterId, documents }: { citations: Citation[]; matterId?: string; documents?: Document[] }) {
+  const [viewing, setViewing] = useState<Citation>()
+  const trigger = useRef<HTMLButtonElement>(null)
+  if (citations.length === 0) return null
+  const unique = distinctCitations(citations)
   return (
     <>
     <details className="sources">

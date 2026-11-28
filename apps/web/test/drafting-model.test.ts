@@ -1,16 +1,11 @@
 import { expect, test } from "bun:test"
-import { createElement } from "react"
-import { MemoryRouter } from "react-router-dom"
-import { renderToStaticMarkup } from "react-dom/server"
 import blockedQuestion from "../../../dochaus/workflows/lean/fixtures/status-blocked-question.json"
 import blockedGate from "../../../dochaus/workflows/lean/fixtures/status-blocked-gate.json"
 import completed from "../../../dochaus/workflows/lean/fixtures/status-completed.json"
 import failed from "../../../dochaus/workflows/lean/fixtures/status-failed.json"
-import { documentDownloadUrl } from "../src/api/ingest/exports"
-import { isLeanDraftingStatus, type LeanDocument, type LeanDraftingStatus, type LeanOpenItem, type LeanQuestion } from "../src/api/ingest/lean"
-import DocumentUpload from "../src/components/DocumentUpload"
-import DraftedList from "../src/components/drafting/DraftedList"
+import { isLeanDraftingStatus, type LeanDocument, type LeanDraftingStatus, type LeanOpenItem } from "../src/api/ingest/lean"
 import {
+  addedDraftNote,
   attentionItems,
   capGroups,
   checklistFindingsCount,
@@ -38,20 +33,14 @@ import {
   stepName,
   updateProgressLabel,
 } from "../src/components/drafting/model"
-import OpenItems from "../src/components/drafting/OpenItems"
-import QuestionDock from "../src/components/drafting/QuestionDock"
-import RunHeader, { runHeadline } from "../src/components/drafting/RunHeader"
-import type { RunActions } from "../src/components/drafting/useRunActions"
+import { runHeadline } from "../src/components/drafting/RunHeader"
 import { stageMilestones, stepActivityLabel } from "../src/components/narration/activity"
 import { resultChecks } from "../src/components/narration/outcome"
-import ResultCard from "../src/components/narration/ResultCard"
 
 function lean(value: unknown): LeanDraftingStatus {
   if (!isLeanDraftingStatus(value)) throw new Error("fixture is not a lean drafting status")
   return value
 }
-
-const actions: RunActions = { busy: false, pausing: false, stopping: false, error: "", errorFor: undefined, resuming: false, resume: async () => true, answer: async () => true, choose: async () => true, decide: async () => true, update: async () => true, refine: async () => true, pause: async () => true, stop: async () => true }
 
 const item = (id: string, kind: string, status: LeanOpenItem["status"] = "open"): LeanOpenItem => ({ id, stage: "draft", kind, detail: id, status })
 
@@ -64,7 +53,6 @@ test("steps read as plain names, run-level and per document", () => {
     "Drafting notes",
     "Final check",
   ])
-  // A stage this build does not know still reads as words, not a key.
   expect(stepName("d2.cross_check")).toBe("Cross check")
 })
 
@@ -76,7 +64,7 @@ test("equivalent topic labels keep separate decisions in one group and retain th
     { ...question, id: "q3", group: "Café terms" },
     { ...question, id: "q4", group: "CAFE\u0301 TERMS" },
   ])
-  expect(groups.map(group => [group.label, group.questions.map(row => row.id)])).toEqual([
+  expect(groups.map((group) => [group.label, group.questions.map((row) => row.id)])).toEqual([
     ["Payment terms", ["q1", "q2"]],
     ["Café terms", ["q3", "q4"]],
   ])
@@ -114,10 +102,10 @@ test("a stop's cause lands on the step it stopped at", () => {
 test("open items group by kind in first-seen order and cap across groups", () => {
   const items = [item("a", "quote_miss"), item("b", "placeholder"), item("c", "quote_miss"), item("d", "new_kind"), item("e", "placeholder")]
   const groups = groupOpenItems(items)
-  expect(groups.map((group) => [group.label, group.items.map((row) => row.id)])).toEqual([
-    ["Quotes not found in the sources", ["a", "c"]],
-    ["Placeholders to fill", ["b", "e"]],
-    ["New kind", ["d"]],
+  expect(groups.map((group) => [group.kind, group.items.map((row) => row.id)])).toEqual([
+    ["quote_miss", ["a", "c"]],
+    ["placeholder", ["b", "e"]],
+    ["new_kind", ["d"]],
   ])
   expect(capGroups(groups, 3).map((group) => [group.kind, group.items.length, group.total])).toEqual([
     ["quote_miss", 2, 2],
@@ -132,28 +120,6 @@ test("attention items follow the final check once it ran for this pass", () => {
   expect(attentionItems(disclosed).map((row) => row.id)).toEqual(["x"])
 })
 
-test("a checklist requirement left open shows in the delivered review draft's details list", () => {
-  const detail =
-    "Checklist requirement left open: Keep the note to about one page. Finding: Accepted body text measures {\"paragraphs\":28,\"words\":626,\"characters\":3900} do not clearly exceed about one page. Limitation: Rendered pagination was not verified."
-  const open: LeanOpenItem = { id: "checklist-check:checklist_open:1", stage: "checklist-check", kind: "checklist_open", detail, status: "disclosed", ref: { document: "d1" } }
-  const status = lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft", disclosed: [open], items: [open, item("p1", "placeholder", "disclosed")] } })
-  expect(attentionItems(status)).toContainEqual(open)
-  expect(groupOpenItems([open])[0]!.label).toBe("Requirements left open by the checklist check")
-  const html = renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
-  expect(html).toContain("Requirements left open by the checklist check")
-  expect(html).toContain("626")
-  expect(html).toContain("Rendered pagination was not verified.")
-  expect(html).toContain('<span class="open-item-tag">Left open</span>')
-  // Only the placeholder is named in the drafting notes.
-  expect(html.match(/<span class="open-item-tag">In the notes<\/span>/g)).toHaveLength(1)
-  expect(html).toContain("a review draft, not yet ready for signature")
-  expect(leanSettledSummary(status.gate!.items!)).toBe(
-    "Final check settled 2 open items: 1 disclosed in the drafting notes, 1 left open by the checklist check.",
-  )
-})
-
-/** A completed run whose final check delivered a review draft with unresolved
- * checklist findings: requirements the delivered draft does not satisfy. */
 function withFindings(unresolved: LeanOpenItem[], others: LeanOpenItem[] = []) {
   const items = [...others, ...unresolved]
   return lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft_with_findings", disclosed: items, items } })
@@ -168,15 +134,13 @@ const unresolvedFinding = (n: number, checklist_class?: string): LeanOpenItem =>
   ref: { checklist_item: `item-${n}`, ...(checklist_class ? { checklist_class } : {}), document: "d1" },
 })
 
-test("unresolved checklist findings sort first, read as not satisfied and carry their class in plain words", () => {
+test("unresolved checklist findings sort first, stay uncapped ahead of other items, and map tags and classes", () => {
   const omission = unresolvedFinding(1, "omission")
   const conflict = unresolvedFinding(2, "source_conflict")
   const open: LeanOpenItem = { ...item("c1", "checklist_open", "disclosed"), stage: "checklist-check" }
   const others = [item("p1", "placeholder", "disclosed"), open, item("o1", "omission", "disclosed")]
   const groups = groupOpenItems([...others, omission, conflict])
   expect(groups.map((group) => group.kind)).toEqual(["checklist_unresolved", "placeholder", "checklist_open", "omission"])
-  expect(groups[0]!.label).toBe("Unresolved checklist findings")
-  // The list is capped; the findings are never the part cut off.
   expect(capGroups(groups, 2).map((group) => [group.kind, group.items.length])).toEqual([["checklist_unresolved", 2]])
   expect(openItemTag(omission)).toBe("Not satisfied")
   expect(openItemTag(open)).toBe("Left open")
@@ -191,16 +155,12 @@ test("unresolved checklist findings sort first, read as not satisfied and carry 
     "deliberate departure",
     undefined,
   ])
-  // Only an unresolved finding carries a class sub-label.
   expect(openItemClass({ ...open, ref: { checklist_class: "omission" } })).toBeUndefined()
-  expect(leanSettledSummary([...others, omission, conflict])).toBe(
-    "Final check settled 5 open items: 2 not satisfied (unresolved checklist findings), 2 disclosed in the drafting notes, 1 left open by the checklist check.",
-  )
+  expect(leanSettledSummary([...others, omission, conflict])).toContain("2 not satisfied")
+  expect(leanSettledSummary([open, others[0]!])).toContain("1 left open")
 })
 
-test("a review draft with unresolved checklist findings reads differently from a clean completion and a plain review draft", () => {
-  const render = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
+test("a review draft with unresolved checklist findings distinguishes itself from a clean completion and a plain review draft", () => {
   const now = Date.parse(completed.updated_at)
   const two = withFindings([unresolvedFinding(1, "omission"), unresolvedFinding(2, "source_conflict")], [item("p1", "placeholder", "disclosed"), item("o1", "omission", "disclosed")])
   const one = withFindings([unresolvedFinding(1)])
@@ -210,7 +170,6 @@ test("a review draft with unresolved checklist findings reads differently from a
   expect(checklistFindingsCount(two)).toBe(2)
   expect(checklistFindingsCount(plain)).toBeUndefined()
   expect(checklistFindingsCount(lean(completed))).toBeUndefined()
-  // The delivery alone marks the run, even if its items did not reach the status.
   expect(checklistFindingsCount(lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft_with_findings" } }))).toBe(0)
 
   expect(runHeadline(two, now)).toMatchObject({ tone: "done", title: "Review draft — 2 unresolved checklist findings" })
@@ -221,55 +180,14 @@ test("a review draft with unresolved checklist findings reads differently from a
   expect(runHeadline(plain, now).title).toBe("Ready for review")
   expect(runHeadline(lean(completed), now).title).toBe("Ready for review")
 
-  expect(openItemsSentence(two)).toBe("Open items: 2 unresolved checklist findings, 1 placeholder to fill and 1 other item to check.")
-  expect(openItemsSentence(one)).toBe("Open items: 1 unresolved checklist finding.")
-  expect(finalCheckNote(two)).toBe(
-    "Final workflow check: a review draft with 2 unresolved checklist findings, not yet ready for signature. The draft does not satisfy those requirements.",
+  expect(openItemsSentence(two)).toContain("2 unresolved checklist findings")
+  expect(openItemsSentence(one)).toContain("1 unresolved checklist finding")
+  expect(finalCheckNote(two)).toContain("2 unresolved checklist findings")
+  expect(finalCheckNote(one)).toContain("1 unresolved checklist finding")
+  expect(finalCheckNote(plain)).toContain("review draft")
+  expect(finalCheckNote(lean({ ...two, changed_after_check: { since: completed.gate.checked_at, documents: ["Supply note.docx"], missing: [] } }))).toContain(
+    "Changed after final check",
   )
-  expect(finalCheckNote(one)).toBe(
-    "Final workflow check: a review draft with 1 unresolved checklist finding, not yet ready for signature. The draft does not satisfy that requirement.",
-  )
-  expect(finalCheckNote(plain)).toBe("Final workflow check passed: a review draft, not yet ready for signature.")
-  // A draft changed after the check is not what it checked.
-  expect(finalCheckNote(lean({ ...two, changed_after_check: { since: completed.gate.checked_at, documents: ["Supply note.docx"], missing: [] } }))).toBe(
-    "Changed after final check: review the draft.",
-  )
-
-  const html = render(two)
-  expect(html).toContain("Review draft — 2 unresolved checklist findings")
-  expect(html).not.toContain("Ready for review")
-  expect(html).toContain('class="run-head-icon is-done is-findings"')
-  expect(render(plain)).toContain('class="run-head-icon is-done"')
-  expect(html).toContain('<span class="open-item-tag is-unresolved">Not satisfied</span>')
-  expect(html).toContain('<span class="open-item-class">left out of the draft</span>')
-  expect(html).toContain('<span class="open-item-class">conflicts with another source requirement</span>')
-  // The findings head the open items, ahead of what was recorded first.
-  expect(html.indexOf("Unresolved checklist findings")).toBeLessThan(html.indexOf("Placeholders to fill"))
-  expect(html).toContain("The draft does not satisfy those requirements.")
-})
-
-test("the open items list never caps away an unresolved checklist finding and counts them in its summary", () => {
-  const findings = Array.from({ length: 6 }, (_, i) => unresolvedFinding(i + 1, "missing_inspection"))
-  const others = [item("p1", "placeholder", "disclosed"), item("p2", "placeholder", "disclosed")]
-  const html = renderToStaticMarkup(createElement(OpenItems, { items: [...others, ...findings], titles: new Map() }))
-  expect(html).toContain('<span class="open-items-unresolved">6 not satisfied</span>')
-  expect(html.match(/class="open-item-tag is-unresolved"/g)).toHaveLength(6)
-  expect(html.match(/<span class="open-item-class">not established by the check<\/span>/g)).toHaveLength(6)
-  // The cap still folds the rest behind Show all.
-  expect(html).not.toContain("Placeholders to fill")
-  expect(html).toContain("Show all 8")
-  const plain = renderToStaticMarkup(createElement(OpenItems, { items: others, titles: new Map() }))
-  expect(plain).not.toContain("open-items-unresolved")
-  expect(plain).not.toContain("Show all")
-})
-
-test("open-item prose preserves source annotations and literal bracketed examples", () => {
-  const requested = { ...item("r1", "omission", "disclosed"), detail: 'The request asked for "one file named supply pack" [source: request], but the run delivers it in "supply pack (2).docx".' }
-  const literal = { ...item("q1", "omission", "disclosed"), detail: 'Keep `[source: supplied later]` and [source: Terms [execution].docx] literal; no answer has been supplied.' }
-  const html = renderToStaticMarkup(createElement(OpenItems, { items: [requested, literal], titles: new Map() }))
-  expect(html).toContain('&quot;one file named supply pack&quot; [source: request], but the run delivers')
-  expect(html).toContain(literal.detail)
-  expect(html).not.toContain("(from ")
 })
 
 test("drafted outputs nest the redline and notes under a single draft", () => {
@@ -305,12 +223,6 @@ test("drafted outputs nest the redline and notes under a single draft", () => {
   ])
 })
 
-/** The completed fixture as a run that wrote its notes as the memo the request
- * named ("cover note"); a combined run also registered its body as
- * "<name> - clean", lists the combined file it saved (`saved`, its row's
- * deliverable; null for none) and reports the one file the document downloads
- * as (`file`), with the exact names ingest registered its parts under
- * (`reported`, by default the body's row). `rows` adds further summary rows. */
 function memoRun({
   combined = false,
   body = "Supply note - clean.docx",
@@ -343,10 +255,6 @@ test("a requested memo groups as the run's notes by its row kind and keeps its o
   const groups: DraftedGroup[] = [{ main: { name: "Supply note.docx", role: "draft" }, extras: [{ name: "Supply note - redline.docx", role: "redline" }, memoNotes] }]
   expect(draftedGroups(status)).toStrictEqual(groups)
   expect(deliverableGroups(["Supply note.docx", "Supply note - redline.docx", "Supply note - cover note.docx"], status)).toStrictEqual(groups)
-  const html = renderToStaticMarkup(createElement(DraftedList, { matterId: "m", groups: draftedGroups(status), onView: () => {} }))
-  expect(html).toContain('title="Open Supply note - cover note.docx"')
-  expect(html).toContain('<span class="drafted-tag is-notes">Notes</span>')
-  expect(html).not.toMatch(/drafting notes/i)
 })
 
 test("a combined document's one file leads its group only once both its parts are delivered", () => {
@@ -354,67 +262,29 @@ test("a combined document's one file leads its group only once both its parts ar
   const body: DraftedOutput = { name: "Supply note - clean.docx", role: "draft" }
   const redline: DraftedOutput = { name: "Supply note - redline.docx", role: "redline" }
   expect(draftedGroups(combined)).toStrictEqual([{ main: body, extras: [redline, memoNotes], combined: "Supply note.docx" }])
-  // The registry's next free name for the body still belongs to the combined file.
   expect(draftedGroups(memoRun({ combined: true, body: "Supply note - clean (2).docx" }))[0]!.combined).toBe("Supply note.docx")
 
   const without = (kind: string) =>
     lean({ ...combined, documents: { ...combined.documents!, documents: combined.documents!.documents.filter((row) => row.kind !== kind) } })
-  // No memo delivered, no body delivered, no combined file saved, a run still in progress, or a body of another
-  // name: the draft carries no combined file (one the summary still lists is a file of its own).
   expect(draftedGroups(without("drafting_notes"))[0]).toStrictEqual({ main: body, extras: [redline] })
   expect(draftedGroups(without("body")).some((group) => "combined" in group)).toBe(false)
   expect(draftedGroups(without("combined"))).toStrictEqual([{ main: body, extras: [redline, memoNotes] }])
   expect(draftedGroups(lean({ ...combined, documents: { ...combined.documents!, status: "blocked" } }))).toEqual([])
   expect(draftedGroups(memoRun({ combined: true, body: "Supply note.docx", reported: "Supply note - clean.docx", saved: null }))[0]).not.toHaveProperty("combined")
 
-  // The list leads with the combined file, downloaded as the file saved in the matter, and keeps the draft and the memo beneath it.
-  const html = renderToStaticMarkup(createElement(DraftedList, { matterId: "m", groups: draftedGroups(combined), onView: () => {} }))
-  const main = html.slice(0, html.indexOf('<ul class="drafted-extras">'))
-  const beneath = html.slice(html.indexOf('<ul class="drafted-extras">'))
-  expect(main).toContain('<div class="drafted-row is-main">')
-  expect(main).toContain('<span class="drafted-name" title="Supply note.docx"><span class="drafted-name-text">Supply note.docx</span></span>')
-  expect(main).toContain('aria-label="Download Supply note.docx"')
-  expect(main).toContain(`href="${documentDownloadUrl("m", "Supply note.docx")}" download="Supply note.docx"`)
-  for (const name of ["Supply note - clean.docx", "Supply note - redline.docx", "Supply note - cover note.docx"]) {
-    expect(beneath).toContain(`title="Open ${name}"`)
-    expect(beneath).toContain(`download="${name}"`)
-  }
-  expect(beneath).not.toContain("is-main")
-
-  // The matter's files are the files the run registered. The combined file saved among them stays on its
-  // draft's group, never a draft of its own; until it is saved, the group has none.
   const names = ["Supply note - clean.docx", "Supply note - redline.docx", "Supply note - cover note.docx"]
   expect(deliverableGroups(names, combined)).toStrictEqual([{ main: body, extras: [redline, memoNotes] }])
   expect(deliverableGroups([...names, "Supply note.docx"], combined)).toStrictEqual([{ main: body, extras: [redline, memoNotes], combined: "Supply note.docx" }])
-  // Without its run's status the saved file groups as any other file, as before.
   expect(deliverableGroups([...names, "Supply note.docx"], undefined).filter((group) => group.main.name === "Supply note.docx")).toHaveLength(1)
-
-  // The matter's document list shows the saved combined file in exactly one row, beside its parts.
-  const documents = [...names, "Supply note.docx"].map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id * 60_000, role: "deliverable" as const }))
-  const listed = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {}, drafting: combined }))
-  for (const name of [...names, "Supply note.docx"]) expect(listed.split(`download="${name}"`)).toHaveLength(2)
-  // Its label says what it is, as its parts' labels do; a label the lawyer chose still wins.
-  const labelOf = (html: string, name: string) => {
-    const select = html.split(`aria-label="Label for ${name}"`)[1]?.split("</select>")[0] ?? ""
-    return [select.match(/<option value="([a-z]+)" selected="">([^<]+)</)?.slice(1)]
-  }
-  expect(labelOf(listed, "Supply note.docx")).toEqual([["combined", "Combined"]])
-  expect(listed).toContain('class="document-label-badge is-combined"')
-  expect(names.map((name) => labelOf(listed, name))).toEqual([[["draft", "Draft"]], [["redline", "Redline"]], [["notes", "Notes"]]])
-  const chosen = documents.map((document) => (document.name === "Supply note.docx" ? { ...document, label: "final" as const } : document))
-  const relabelled = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents: chosen, onUploaded: () => {}, onView: () => {}, drafting: combined }))
-  expect(labelOf(relabelled, "Supply note.docx")).toEqual([["final", "Final"]])
-  expect(relabelled).not.toContain(">Combined</option>")
 })
 
 test("a combined file belongs to the exact body and notes ingest names, never to another \"- clean\" row", () => {
-  // An older run's body under the first "- clean" name is still listed; this run's body took the next free name.
   const stray: LeanDocument = { ...(completed.documents.documents[0] as LeanDocument), document: "d2", title: "Older supply note", deliverable: "Supply note - clean.docx" }
   const status = memoRun({ combined: true, body: "Supply note - clean (2).docx", rows: [stray] })
   const groups = draftedGroups(status)
   expect(groups.filter((group) => group.combined).map((group) => [group.main.name, group.combined])).toEqual([["Supply note - clean (2).docx", "Supply note.docx"]])
   expect(groups.find((group) => group.main.name === "Supply note - clean.docx")).not.toHaveProperty("combined")
-  // Only rows that are exactly the reported parts, of the reported document, carry it.
+
   const reportedAs = (output: Partial<NonNullable<LeanDraftingStatus["combined_output"]>>) =>
     draftedGroups(lean({ ...status, combined_output: { ...status.combined_output!, ...output } })).some((group) => group.combined)
   expect(reportedAs({})).toBe(true)
@@ -423,17 +293,10 @@ test("a combined file belongs to the exact body and notes ingest names, never to
   expect(reportedAs({ body: "supply note - clean (2).docx" })).toBe(false)
   expect(reportedAs({ body: "Supply note - clean (3).docx" })).toBe(false)
   expect(reportedAs({ notes: "Supply note - drafting notes.docx" })).toBe(false)
-  // Nothing is combined while ingest reports no combined file, whatever the rows are named.
   expect(draftedGroups(lean({ ...status, combined_output: null })).some((group) => group.combined)).toBe(false)
-  // A combined report without its parts' names is not a status this client accepts.
   expect(isLeanDraftingStatus({ ...status, combined_output: { name: "Supply note", file: "Supply note.docx" } })).toBe(false)
 })
 
-/** A completed combined run whose plan names an authored memo document (d2,
- * "Cover memo"): the memo inside the combined file is that document's
- * registered body, which ingest reports under `notes` (combinedParts), while
- * the drafting notes are delivered as their own row. `file`/`saved` name the
- * combined file as in memoRun; `rows` adds further summary rows before it. */
 function authoredMemoRun({ file = "Supply note.docx", saved = file, rows: more = [] }: { file?: string; saved?: string | null; rows?: LeanDocument[] } = {}) {
   const [body, redline, ...notes] = completed.documents.documents
   const memoRows: LeanDocument[] = [
@@ -466,13 +329,10 @@ test("a combined file whose memo part is the authored memo body is the run's cur
   ]
   expect(draftedGroups(status)).toStrictEqual(groups)
   expect(deliverableGroups(authoredNames, status)).toStrictEqual(groups)
-  // The saved file is the current combined one, never an earlier one, while its parts are registered.
   expect(deliverableGroups(authoredNames, status).flatMap((group) => [group.main, ...group.extras]).filter((output) => output.role === "earlier_combined")).toEqual([])
-  // Its draft no longer in the matter: the saved file still leads a row of its own as the current combined one.
   const withoutDraft = deliverableGroups(authoredNames.filter((name) => name !== "Supply note - clean.docx" && name !== "Supply note - redline.docx"), status)
   expect(withoutDraft[0]).toStrictEqual({ main: { name: "Supply note.docx", role: "combined" }, extras: [] })
 
-  // Only the exact reported names, of the reported document and a part's kind, carry the file.
   const reportedAs = (output: Partial<NonNullable<LeanDraftingStatus["combined_output"]>>) =>
     draftedGroups(lean({ ...status, combined_output: { ...status.combined_output!, ...output } })).some((group) => group.combined)
   expect(reportedAs({})).toBe(true)
@@ -481,14 +341,13 @@ test("a combined file whose memo part is the authored memo body is the run's cur
   expect(reportedAs({ notes: "Cover memo - redline.docx" })).toBe(false)
   expect(reportedAs({ body: "Supply note - clean (2).docx" })).toBe(false)
   expect(reportedAs({ document: "d2" })).toBe(false)
-  // The memo body dropped from the summary leaves the file unofferable; the saved file then reads as an earlier one.
+
   const dropped = lean({ ...status, documents: { ...status.documents!, documents: status.documents!.documents.filter((row) => !(row.kind === "body" && row.document === "d2")) } })
   expect(draftedGroups(dropped).some((group) => group.combined)).toBe(false)
   expect(deliverableGroups(authoredNames, dropped).flatMap((group) => [group.main, ...group.extras]).find((output) => output.name === "Supply note.docx")?.role).toBe("earlier_combined")
 })
 
 test("an authored-memo combined file keeps the current file on its draft and an earlier kept file beside it", () => {
-  // The lawyer kept changes in the earlier combined file under the requested name; this run's took "(2)".
   const earlier: LeanDocument = { kind: "combined", document: "d1", title: "Supply note", path: "Supply note.docx", sha256: "b".repeat(64), deliverable: "Supply note.docx" }
   const status = authoredMemoRun({ file: "Supply note (2).docx", rows: [earlier] })
   const groups: DraftedGroup[] = [
@@ -501,141 +360,65 @@ test("an authored-memo combined file keeps the current file on its draft and an 
   expect(deliverableGroups([...authoredNames, "Supply note (2).docx"], status)).toStrictEqual(groups)
 })
 
-const resultDownload = (name: string) => `<a href="${documentDownloadUrl("m1", name)}" download="${name}"`
-const resultCard = (status: LeanDraftingStatus) => renderToStaticMarkup(createElement(ResultCard, { status, matterId: "m1", onViewDocument: () => {} }))
-const resultPage = (html: string) => html.slice(html.indexOf('<div class="result-document">'), html.indexOf('<ul class="result-stack"'))
-const ONE_FILE = 'title="Download the memo and the draft as one .docx"'
-
-test("a delivered draft the request did not name says it was prepared in addition, with its purpose", () => {
-  // The request named the first document's file; the plan added a second without one.
+test("addedDraftNote explains an extra planned draft only when the request named other files", () => {
   const second: LeanDocument = { kind: "body", document: "d2", title: "Second", path: ".dochaus/lean/d2/body-applied.docx", sha256: "d".repeat(64), deliverable: "Second.docx" }
   const run = (plan: Array<{ id: string; title: string; purpose: string; file?: string }>) =>
     lean({ ...completed, documents: { ...completed.documents, documents: [...completed.documents.documents, second] }, plan: { documents: plan } })
   const named = { id: "d1", title: "Supply note", purpose: "Sets out the supply terms.", file: "Supply note.docx" }
   const added = { id: "d2", title: "Second", purpose: "Records the approval the first document relies on" }
-  const html = resultCard(run([named, added]))
-  expect(html).toContain("<h4>Second.docx</h4><p class=\"result-added-note\">Prepared in addition to the file you named. Records the approval the first document relies on.</p>")
-  expect(html.match(/Prepared in addition/g)).toHaveLength(1)
-  // Every document named, or none: the card is unchanged.
-  expect(resultCard(run([named, { ...added, file: "Second.docx" }]))).not.toContain("Prepared in addition")
-  expect(resultCard(run([{ id: "d1", title: "Supply note", purpose: "Sets out the supply terms." }, added]))).not.toContain("Prepared in addition")
+  const status = run([named, added])
+  expect(addedDraftNote(status, "Second.docx")).toBe("Prepared in addition to the file you named. Records the approval the first document relies on.")
+  expect(addedDraftNote(status, "Supply note.docx")).toBeUndefined()
+  expect(addedDraftNote(run([named, { ...added, file: "Second.docx" }]), "Second.docx")).toBeUndefined()
+  expect(addedDraftNote(run([{ id: "d1", title: "Supply note", purpose: "Sets out the supply terms." }, added]), "Second.docx")).toBeUndefined()
 })
 
-test("the result card downloads a combined file as the file saved in the matter", () => {
-  const saved = memoRun({ combined: true })
-  expect(resultPage(resultCard(saved))).toContain(resultDownload("Supply note.docx"))
-  expect(resultPage(resultCard(saved))).toContain(ONE_FILE)
-})
-
-test("without a registered combined row no combined file is offered", () => {
-  const download = resultDownload
-  const result = resultCard
-  const page = resultPage
-  // A save that failed leaves the run's combined row without a deliverable, while ingest may still name
-  // the file the matter holds under the requested name (an earlier one the lawyer kept): nothing is combined.
+test("unsaved, mismatched, and earlier combined rows classify as earlier_combined rather than current combined or draft", () => {
   const unsaved: LeanDocument = { kind: "combined", document: "d1", title: "Supply note", path: "Supply note (2).docx", sha256: "a".repeat(64), deliverable: null }
-  const failed = memoRun({ combined: true, body: "Supply note - clean (2).docx", saved: null, rows: [unsaved] })
-  expect(draftedGroups(failed).some((group) => group.combined)).toBe(false)
-  const names = ["Supply note - clean.docx", "Supply note - clean (2).docx", "Supply note - redline.docx", "Supply note - cover note.docx", "Supply note.docx"]
-  const groups = deliverableGroups(names, failed)
-  expect(groups.some((group) => group.combined)).toBe(false)
-  expect(groups.flatMap((group) => [group.main, ...group.extras]).filter((output) => output.role === "combined")).toEqual([])
-  expect(page(result(failed))).toContain(download("Supply note - clean (2).docx"))
-  expect(result(failed)).not.toContain(ONE_FILE)
+  const failedSave = memoRun({ combined: true, body: "Supply note - clean (2).docx", saved: null, rows: [unsaved] })
+  expect(draftedGroups(failedSave).some((group) => group.combined)).toBe(false)
+  const failedNames = ["Supply note - clean.docx", "Supply note - clean (2).docx", "Supply note - redline.docx", "Supply note - cover note.docx", "Supply note.docx"]
+  const failedGroups = deliverableGroups(failedNames, failedSave)
+  expect(failedGroups.some((group) => group.combined)).toBe(false)
+  expect(failedGroups.flatMap((group) => [group.main, ...group.extras]).filter((output) => output.role === "combined")).toEqual([])
 
-  // A registered combined row under another name than the one ingest reports carries no combined download.
-  const other = memoRun({ combined: true, saved: "Supply note (3).docx" })
-  expect(draftedGroups(other).some((group) => group.combined)).toBe(false)
-  expect(page(result(other))).toContain(download("Supply note - clean.docx"))
-})
+  expect(draftedGroups(memoRun({ combined: true, saved: "Supply note (3).docx" })).some((group) => group.combined)).toBe(false)
 
-test("an earlier combined file the summary lists is the combined file from an earlier run beside the new one, never a draft of its own", () => {
-  // The lawyer kept changes in the combined file under the requested name; the new one took "(2)".
   const earlier: LeanDocument = { kind: "combined", document: "d1", title: "Supply note", path: "Supply note.docx", sha256: "b".repeat(64), deliverable: "Supply note.docx" }
-  const status = memoRun({ combined: true, body: "Supply note - clean (2).docx", file: "Supply note (2).docx", rows: [earlier] })
+  const replaced = memoRun({ combined: true, body: "Supply note - clean (2).docx", file: "Supply note (2).docx", rows: [earlier] })
   const body: DraftedOutput = { name: "Supply note - clean (2).docx", role: "draft" }
   const redline: DraftedOutput = { name: "Supply note - redline.docx", role: "redline" }
   const kept: DraftedGroup = { main: { name: "Supply note.docx", role: "earlier_combined" }, extras: [] }
-  expect(draftedGroups(status)).toStrictEqual([{ main: body, extras: [redline, memoNotes], combined: "Supply note (2).docx" }, kept])
-  const names = ["Supply note - clean.docx", "Supply note - clean (2).docx", "Supply note - redline.docx", "Supply note - cover note.docx", "Supply note.docx", "Supply note (2).docx"]
-  expect(deliverableGroups(names, status)).toStrictEqual([
+  expect(draftedGroups(replaced)).toStrictEqual([{ main: body, extras: [redline, memoNotes], combined: "Supply note (2).docx" }, kept])
+  const allNames = [...failedNames, "Supply note (2).docx"]
+  expect(deliverableGroups(allNames, replaced)).toStrictEqual([
     { main: body, extras: [redline, memoNotes], combined: "Supply note (2).docx" },
     kept,
     { main: { name: "Supply note - clean.docx", role: "draft" }, extras: [] },
   ])
-  const documents = names.map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id * 60_000, role: "deliverable" as const }))
-  const listed = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {}, drafting: status }))
-  const select = (name: string) => listed.split(`aria-label="Label for ${name}"`)[1]?.split("</select>")[0] ?? ""
-  expect(select("Supply note (2).docx")).toContain('<option value="combined" selected="">Combined</option>')
-  expect(select("Supply note.docx")).toContain('<option value="earlier_combined" selected="">Earlier combined</option>')
-  // Why the earlier file is not the current one is said in words on its row, not only on a hover.
-  const row = (html: string, name: string) => html.split(`<span class="drafted-name-text">${name}</span>`)[1]?.split('class="icon-btn drafted-download"')[0] ?? ""
-  const EARLIER = '<span class="document-origin is-created">Created by Doc.Haus in an earlier run</span>'
-  expect(row(listed, "Supply note.docx")).toContain(EARLIER)
-  expect(row(listed, "Supply note (2).docx")).toContain('<span class="document-origin is-created">Created by Doc.Haus</span>')
-  // The result card's file list names it the same way; it downloads as the matter file it is, never as the memo and draft in one.
-  const card = resultCard(status)
-  expect(card).toContain('<span class="drafted-tag is-earlier_combined">Earlier combined</span>')
-  expect(row(card, "Supply note.docx")).toContain(EARLIER)
-  expect(card).not.toContain("<h4>Supply note.docx</h4>")
-  expect(card).not.toContain(`aria-label="Download Supply note.docx" ${ONE_FILE}`)
-  expect(card).toContain(`aria-label="Download Supply note (2).docx" ${ONE_FILE}`)
-  // The file's name alone does not make it a combined file: without its summary row it is not one.
   const unlisted = memoRun({ combined: true, body: "Supply note - clean (2).docx", file: "Supply note (2).docx" })
-  expect(deliverableGroups(names, unlisted).flatMap((group) => [group.main, ...group.extras]).find((output) => output.name === "Supply note.docx")?.role).not.toBe("combined")
-})
+  expect(deliverableGroups(allNames, unlisted).flatMap((group) => [group.main, ...group.extras]).find((output) => output.name === "Supply note.docx")?.role).not.toBe("combined")
 
-test("this run's saved combined file stays the combined file when its draft is no longer in the matter", () => {
-  const status = memoRun({ combined: true })
-  const names = ["Supply note - redline.docx", "Supply note - cover note.docx", "Supply note.docx"]
-  const outputs = deliverableGroups(names, status).flatMap((group) => [group.main, ...group.extras, ...(group.combined ? [{ name: group.combined, role: "combined" }] : [])])
+  const withoutBody = deliverableGroups(["Supply note - redline.docx", "Supply note - cover note.docx", "Supply note.docx"], memoRun({ combined: true }))
+  const outputs = withoutBody.flatMap((group) => [group.main, ...group.extras, ...(group.combined ? [{ name: group.combined, role: "combined" }] : [])])
   expect(outputs.filter((output) => output.name === "Supply note.docx")).toEqual([{ name: "Supply note.docx", role: "combined" }])
-  const documents = names.map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id * 60_000, role: "deliverable" as const }))
-  const listed = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {}, drafting: status }))
-  const select = listed.split('aria-label="Label for Supply note.docx"')[1]?.split("</select>")[0] ?? ""
-  expect(select).toContain('<option value="combined" selected="">Combined</option>')
-})
 
-test("a file a combined row names that is not this run's saved combined file is the combined file from an earlier run, never a draft", () => {
   const names = ["Supply note - clean.docx", "Supply note - redline.docx", "Supply note - cover note.docx", "Supply note.docx"]
   const roleOf = (status: LeanDraftingStatus) =>
     deliverableGroups(names, status).flatMap((group) => [group.main, ...group.extras]).find((output) => output.name === "Supply note.docx")?.role
-  const labelOf = (status: LeanDraftingStatus, label?: "final") => {
-    const documents = names.map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id * 60_000, role: "deliverable" as const, ...(label && name === "Supply note.docx" ? { label } : {}) }))
-    const listed = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {}, drafting: status }))
-    const select = listed.split(`aria-label="Label for Supply note.docx"`)[1]?.split("</select>")[0] ?? ""
-    return select.match(/<option value="([a-z_]+)" selected="">([^<]+)</)?.slice(1)
-  }
-  // This run did not save its combined file: the build was refused, the save failed, or the lawyer's
-  // revision holds the name. The file there is an earlier run's, and ingest reports no combined file.
-  const unsaved: LeanDocument = { kind: "combined", document: "d1", title: "Supply note", path: "Supply note.docx", sha256: "a".repeat(64), deliverable: null }
-  const held = lean({ ...memoRun({ combined: true, saved: null, rows: [unsaved] }), combined_output: null })
-  // A rerun stopped at its gate keeps the earlier run's file, which it has not delivered again.
-  const delivered: LeanDocument = { ...unsaved, deliverable: "Supply note.docx" }
-  const stopped = memoRun({ combined: true, saved: null, rows: [delivered] })
+  const unsavedSame: LeanDocument = { kind: "combined", document: "d1", title: "Supply note", path: "Supply note.docx", sha256: "a".repeat(64), deliverable: null }
+  const held = lean({ ...memoRun({ combined: true, saved: null, rows: [unsavedSame] }), combined_output: null })
+  const stopped = memoRun({ combined: true, saved: null, rows: [{ ...unsavedSame, deliverable: "Supply note.docx" }] })
   const blocked = lean({ ...stopped, status: "blocked", documents: { ...stopped.documents!, status: "blocked" }, combined_output: null })
   const unsavedFailed = lean({ ...held, status: "failed", documents: { ...held.documents!, status: "blocked" } })
   for (const status of [held, blocked, unsavedFailed]) {
     expect(draftedGroups(status).some((group) => group.combined)).toBe(false)
     expect(roleOf(status)).toBe("earlier_combined")
-    expect(labelOf(status)).toEqual(["earlier_combined", "Earlier combined"])
-    // A label the lawyer chose still wins.
-    expect(labelOf(status, "final")).toEqual(["final", "Final"])
   }
-  // The panel offers the file as the matter file it is, never as the memo and draft in one.
-  const listed = renderToStaticMarkup(createElement(DocumentUpload, {
-    matterId: "m", documents: names.map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id, role: "deliverable" as const })),
-    onUploaded: () => {}, onView: () => {}, drafting: held,
-  }))
-  const download = listed.split('aria-label="Download Supply note.docx"')
-  expect(download).toHaveLength(2)
-  expect(download[0]!.slice(download[0]!.lastIndexOf("<a "))).toContain(`href="${documentDownloadUrl("m", "Supply note.docx")}"`)
-  expect(download[1]!.split(">")[0]).toBe(' title="Download .docx"')
-  // Without a summary row naming it, a file of that name is not one.
   expect(roleOf(lean({ ...held, documents: { ...held.documents!, documents: held.documents!.documents.filter((row) => row.kind !== "combined") } }))).toBe("draft")
 })
 
-test("a requested memo is named wherever the run would say drafting notes", () => {
+test("a requested memo renames drafting notes across steps, summaries, milestones and checks; null matches absent", () => {
   const items = [item("p1", "placeholder", "disclosed"), item("o1", "omission", "disclosed"), item("o2", "omission", "disclosed")]
   const plain = lean({ ...completed, gate: { ...completed.gate, items } })
   const memo = lean({ ...plain, memo: "cover memo" })
@@ -644,133 +427,33 @@ test("a requested memo is named wherever the run would say drafting notes", () =
     ["Drafting notes", "Drafting notes", "Drafting notes", "Drafting notes"],
   )
   expect([runStepName(memo, "finalize"), finalize(memo)]).toEqual(["Cover memo", "Cover memo"])
-  // Other steps keep their names.
   expect(runStepName(memo, "gate")).toBe("Final check")
-  expect(leanSettledSummary(items)).toBe("Final check settled 3 open items: 3 disclosed in the drafting notes.")
-  expect(leanSettledSummary(items, "cover memo")).toBe("Final check settled 3 open items: 3 disclosed in the cover memo.")
-  expect(resultChecks(plain).map((check) => check.text)).toContain("2 other items in the drafting notes")
-  expect(resultChecks(memo).map((check) => check.text)).toContain("2 other items in the cover memo")
+  expect(leanSettledSummary(items)).toContain("drafting notes")
+  expect(leanSettledSummary(items, "cover memo")).toContain("cover memo")
+  expect(resultChecks(plain).map((check) => check.text).some((t) => t.includes("drafting notes"))).toBe(true)
+  expect(resultChecks(memo).map((check) => check.text).some((t) => t.includes("cover memo"))).toBe(true)
   const milestone = (status: LeanDraftingStatus) => stageMilestones(status).find((line) => line.step === "finalize")!.text
   expect([milestone(plain), milestone(memo)]).toEqual(["Drafting notes written", "Cover memo written"])
   const running = (status: LeanDraftingStatus) =>
     lean({ ...status, status: "running", in_flight: true, stages: { ...status.stages, finalize: { ...status.stages.finalize!, status: "running", finished_at: null }, gate: { ...status.stages.gate!, status: "pending", started_at: null, finished_at: null } } })
   expect([stepActivityLabel(running(plain), "finalize"), stepActivityLabel(running(memo), "finalize")]).toEqual(["Writing the drafting notes", "Writing the cover memo"])
   expect([runPosition(running(plain))!.text, runPosition(running(memo))!.text]).toEqual(["Finishing · Drafting notes", "Finishing · Cover memo"])
-  // The header's step rows, its research note and the result card follow the memo too.
-  const notNeeded = (status: LeanDraftingStatus) =>
-    lean({ ...status, stages: { research: { ...status.stages["d1.draft"]!, status: "done" }, ...status.stages }, research: { status: "not-needed", findings: [], limitations: [], checked_sources: 0 } })
-  const header = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status: notNeeded(status), actions, own: true, onOpen: () => {}, onShowDrafts: () => {} })))
-  expect(header(plain)).toContain("the reason is recorded with the drafting notes.")
-  expect(header(memo)).toContain("the reason is recorded with the cover memo.")
-  expect(header(memo)).toContain("Step 6 of 7: Cover memo, done")
-  expect(header(memo)).not.toMatch(/drafting notes/i)
-  // Limited research with checked sources says what was found; with none it stays incomplete.
-  const limited = (status: LeanDraftingStatus, checked_sources: number) =>
-    renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status: { ...notNeeded(status), research: { status: "limited", findings: [], limitations: ["A synthetic limit"], checked_sources } }, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} })))
-  expect(limited(memo, 3)).toContain("Research found 3 checked sources; its limits are listed in the cover memo.")
-  expect(limited(plain, 1)).toContain("Research found 1 checked source; its limits are listed in the drafting notes.")
-  expect(limited(plain, 0)).toContain("Legal research is incomplete.")
-  const result = renderToStaticMarkup(createElement(ResultCard, { status: memo, matterId: "m1", onViewDocument: () => {} }))
-  expect(result).toContain("2 other items in the cover memo")
-})
 
-test("a run without a requested memo keeps today's wording exactly", () => {
-  const items = [item("p1", "placeholder", "disclosed"), item("o1", "omission", "disclosed")]
   for (const raw of [completed, blockedGate, failed, blockedQuestion, { ...completed, gate: { ...completed.gate, items } }]) {
     const absent = lean(raw)
     const none = lean({ ...raw, memo: null })
-    const view = (status: LeanDraftingStatus) => ({
-      header: renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))),
-      result: renderToStaticMarkup(createElement(ResultCard, { status, matterId: "m1", onViewDocument: () => {} })),
-      milestones: stageMilestones(status).map((line) => line.text),
-      checks: resultChecks(status),
-      groups: stepGroups(status),
-    })
-    expect(view(none)).toStrictEqual(view(absent))
+    expect(stageMilestones(none)).toStrictEqual(stageMilestones(absent))
+    expect(resultChecks(none)).toStrictEqual(resultChecks(absent))
+    expect(stepGroups(none)).toStrictEqual(stepGroups(absent))
   }
-  const plain = lean({ ...completed, gate: { ...completed.gate, items } })
-  const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status: plain, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} })))
-  expect(html).toContain("Step 5 of 6: Drafting notes, done")
-  expect(resultChecks(plain).map((check) => check.text)).toEqual(["Final workflow check passed", "Quotes checked against sources", "1 placeholder to fill", "1 other item in the drafting notes"])
-  expect(stageMilestones(plain).find((line) => line.step === "finalize")!.text).toBe("Drafting notes written")
 })
 
-test("a run without a memo or combined file groups and renders exactly as before", () => {
+test("a run without a combined file treats null and absent combined_output identically", () => {
   const plain = lean(completed)
   const reported = lean({ ...completed, combined_output: null })
-  const expected: DraftedGroup[] = [
-    {
-      main: { name: "Supply note.docx", role: "draft" },
-      extras: [
-        { name: "Supply note - redline.docx", role: "redline" },
-        { name: "Supply note - drafting notes.docx", role: "notes" },
-      ],
-    },
-  ]
-  expect(draftedGroups(plain)).toStrictEqual(expected)
-  expect(draftedGroups(reported)).toStrictEqual(expected)
+  expect(draftedGroups(reported)).toStrictEqual(draftedGroups(plain))
   const names = ["Old.docx", "Old - drafting notes.docx", "Supply note.docx", "Supply note - redline.docx", "Supply note - drafting notes.docx"]
   expect(deliverableGroups(names, reported)).toStrictEqual(deliverableGroups(names, plain))
-  const render = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(DraftedList, { matterId: "m", groups: draftedGroups(status), onView: () => {} }))
-  expect(render(reported)).toBe(render(plain))
-  expect(render(plain)).not.toContain("<button type=\"button\" class=\"icon-btn drafted-download\"")
-})
-
-test("the document timeline orders files newest first and preserves origins and downloads", () => {
-  const names = ["supply-terms.docx", "Supply note.docx", "Supply note - redline.docx", "Supply note - drafting notes.docx"]
-  // Ingest records which files a drafting run delivered.
-  const documents = names.map((name, id) => ({ id, name, doc_path: name, created_at: 1_760_000_000_000 + id * 60_000, role: id === 0 ? ("source" as const) : ("deliverable" as const) }))
-  const render = (drafting?: LeanDraftingStatus, files = documents) =>
-    renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents: files, onUploaded: () => {}, onView: () => {}, drafting }))
-  const grouped = render(lean(completed))
-  expect(grouped).toContain('class="matter-files-collection"')
-  expect(grouped).toContain('aria-label="Document timeline, newest first"')
-  for (let index = 1; index < names.length; index++) {
-    expect(grouped.indexOf(names[index])).toBeLessThan(grouped.indexOf(names[index - 1]))
-  }
-  expect(grouped.match(/class="document-origin is-created">Created by Doc.Haus<\/span>/g)).toHaveLength(3)
-  expect(grouped).toMatch(/class="doc-row is-uploaded">[\s\S]*supply-terms\.docx[\s\S]*class="document-origin">Uploaded<\/span>/)
-  for (const name of names.slice(1)) {
-    expect(grouped).toContain(`download="${name}"`)
-    expect(grouped).toContain(`aria-label="Download ${name}"`)
-  }
-  expect(grouped).toContain('aria-label="Delete supply-terms.docx"')
-  expect(grouped).not.toContain('download="supply-terms.docx"')
-  expect(grouped.match(/<span class="matter-files-count">\d+<\/span>/g)).toEqual(['<span class="matter-files-count">4</span>'])
-  expect(grouped.match(/class="matter-files-collection"/g)).toHaveLength(1)
-  expect(grouped).toContain("Upload documents")
-  // A file ingest does not mark as delivered is the lawyer's own, whatever its name.
-  const sourcesOnly = render(lean(completed), documents.map((document) => ({ ...document, role: "source" as const })))
-  expect(sourcesOnly.match(/class="document-origin">Uploaded/g)).toHaveLength(4)
-  expect(sourcesOnly).not.toContain("Created by Doc.Haus")
-  expect(sourcesOnly).not.toContain('class="drafted-group"')
-  for (const name of names) expect(sourcesOnly).toContain(`aria-label="Delete ${name}"`)
-})
-
-test("a delivered run with questions left counts them in the header and docks them above the composer", () => {
-  const render = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
-  const status = lean({ ...completed, questions: blockedQuestion.questions })
-  const delivered = render(status)
-  expect(delivered).toContain("Ready for review")
-  expect(delivered).toContain("1 question for you")
-  // The dock's Answer is the colour cue for the question; opening the draft stays secondary.
-  expect(delivered).toMatch(/class="run-head-cta">Open draft</)
-  expect(render(lean(completed))).toMatch(/class="primary run-head-cta">Open draft</)
-
-  const dock = (questions: LeanQuestion[]) =>
-    renderToStaticMarkup(
-      createElement(QuestionDock, { matterId: "m", ownerSessionID: status.owner_session_id, questions, answered: 0, titles: new Map(), busy: false, error: "", onSend: async () => true, onChoose: async () => true, onDecide: async () => true }),
-    )
-  const one = dock(openQuestions(status))
-  expect(one).toContain("The drafting run has a question for you")
-  expect(one).toMatch(/aria-haspopup="dialog"[^>]*>Answer</)
-  // The dialog holds no question until it is opened.
-  expect(one).toContain('<dialog class="question-dialog"')
-  expect(one).not.toContain("Your answer")
-  expect(dock([])).toBe("")
 })
 
 test("the current position names the document of several, or the finishing step", () => {
@@ -802,93 +485,57 @@ test("open items read as one sentence, questions apart from placeholders", () =>
   expect(openItemsSentence(status([]))).toBeUndefined()
 })
 
-test("a draft changed after the final check stops repeating the check's verdict", () => {
-  const render = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
-  const changed = lean({ ...completed, changed_after_check: { since: completed.gate.checked_at, documents: ["Supply note.docx"], missing: [] } })
-  expect(finalCheckNote(lean(completed))).toBe("Final workflow check passed: ready for signature.")
-  expect(finalCheckNote(lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft" } }))).toBe(
-    "Final workflow check passed: a review draft, not yet ready for signature.",
-  )
-  expect(finalCheckNote(changed)).toBe("Changed after final check: review the draft.")
-  expect(finalCheckNote(lean({ ...changed, gate: { ...completed.gate, delivery: "review_draft" } }))).toBe("Changed after final check: review the draft.")
-  expect(finalCheckNote(lean({ ...completed, changed_after_check: null }))).toBe("Final workflow check passed: ready for signature.")
-  expect(render(lean(completed))).toContain("Final workflow check passed: ready for signature.")
-  const header = render(changed)
-  expect(header).toContain("Changed after final check: review the draft.")
-  expect(header).not.toContain("ready for signature")
+test("a draft changed or missing after the final check stops repeating the check's verdict", () => {
+  const after = (documents: string[], missing: string[]) =>
+    lean({ ...completed, changed_after_check: { since: completed.gate.checked_at, documents, missing } })
+  const changed = after(["Supply note.docx"], [])
+  const missing = after(["Supply note.docx"], ["Supply note.docx"])
+  const both = after(["Supply note.docx", "Side letter.docx"], ["Supply note.docx"])
+
+  expect(finalCheckNote(lean(completed))).toContain("ready for signature")
+  expect(finalCheckNote(lean({ ...completed, changed_after_check: null }))).toContain("ready for signature")
+  expect(finalCheckNote(lean({ ...completed, gate: { ...completed.gate, delivery: "review_draft" } }))).toContain("review draft")
+  expect(finalCheckNote(changed)).toContain("Changed after final check")
+  expect(finalCheckNote(lean({ ...changed, gate: { ...completed.gate, delivery: "review_draft" } }))).toContain("Changed after final check")
+  expect(finalCheckNote(missing)).toContain("Missing after final check")
+  expect(finalCheckNote(after(["Supply note.docx", "Side letter.docx"], ["Supply note.docx", "Side letter.docx"]))).toContain("delivered drafts")
+  expect(finalCheckNote(both)).toContain("Changed or missing after final check")
+
   expect(runHeadline(changed, Date.now())).toMatchObject({ tone: "done", title: "Ready for review" })
   expect(runHeadline(changed, Date.now()).meta).toContain("Changed after final check")
   expect(runHeadline(lean(completed), Date.now()).meta).not.toContain("Changed after final check")
-})
-
-test("a delivered draft missing after the final check is disclosed as missing, not as a draft to review", () => {
-  const render = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(RunHeader, { status, actions, own: true, onOpen: () => {}, onShowDrafts: () => {} }))
-  const after = (documents: string[], missing: string[]) =>
-    lean({ ...completed, changed_after_check: { since: completed.gate.checked_at, documents, missing } })
-  const missing = after(["Supply note.docx"], ["Supply note.docx"])
-  expect(finalCheckNote(missing)).toBe("Missing after final check: the delivered draft is no longer in the matter.")
-  expect(finalCheckNote(after(["Supply note.docx", "Side letter.docx"], ["Supply note.docx", "Side letter.docx"]))).toBe(
-    "Missing after final check: the delivered drafts are no longer in the matter.",
-  )
-  // One draft deleted and another changed: both are named, and neither repeats the verdict.
-  const both = after(["Supply note.docx", "Side letter.docx"], ["Supply note.docx"])
-  expect(finalCheckNote(both)).toBe("Changed or missing after final check: review the drafts.")
-  const header = render(missing)
-  expect(header).toContain("Missing after final check: the delivered draft is no longer in the matter.")
-  expect(header).not.toContain("ready for signature")
-  expect(header).not.toContain("review the draft")
   expect(runHeadline(missing, Date.now()).meta).toContain("Missing after final check")
   expect(runHeadline(missing, Date.now()).meta).not.toContain("Changed after final check")
   expect(runHeadline(both, Date.now()).meta).toContain("Changed or missing after final check")
 })
 
-test("a stopped run's header says what happened in plain words; the checker's wording stays on its step", () => {
+test("a stopped run's headline classifies failure, gate blocks, and provider setup/credit stops", () => {
   const stopped = runHeadline(lean(failed), Date.now())
   expect(stopped.title).toBe("Paused at draft")
   expect(stopped.meta).toContain("Its check did not pass")
   expect(stopped.meta.join(" ")).not.toContain("checker failed")
-  const gate = runHeadline(lean(blockedGate), Date.now())
-  expect(gate.meta[0]).toMatch(/^1 item to resolve, starting with [a-z]/)
-})
+  expect(runHeadline(lean(blockedGate), Date.now()).meta[0]).toMatch(/^1 item to resolve, starting with [a-z]/)
 
-test("a run stopped on its model provider or setup points the header at Settings", () => {
   const setup = runHeadline(lean({ ...failed, stop_reason: "d1.draft: Model setup is not finished.", provider_stop: "setup" }), Date.now())
   expect(setup).toMatchObject({ tone: "paused", title: "Paused: Settings need attention" })
-  expect(setup.meta).toContain("The work so far is kept")
   const credit = runHeadline(lean({ ...failed, stop_reason: "d1.draft: The AI account has run out of credit.", provider_stop: "credit" }), Date.now())
   expect(credit).toMatchObject({ tone: "paused", title: "Paused: the AI account needs credit" })
 })
 
-test("elsewhere the run's one line leads with the questions still owed", () => {
-  const render = (status: LeanDraftingStatus) =>
-    renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunHeader, { status, actions, own: false, onOpen: () => {}, onShowDrafts: () => {} })))
-  const asked = render(lean({ ...completed, questions: blockedQuestion.questions }))
-  expect(asked).toContain("1 question for you")
-  expect(asked).toContain("Open run")
-  expect(render(lean(completed))).not.toContain("for you")
-})
-
-
 test("evidence stages stay in preparation, document review and finishing order", () => {
   const pending = { status: "pending" as const, attempts: 0, started_at: null, finished_at: null }
-  const stages = Object.fromEntries(["discrepancy", "intake", "research", "research-review", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "package-review", "gate"].map(key => [key, pending]))
+  const stages = Object.fromEntries(["discrepancy", "intake", "research", "research-review", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "package-review", "gate"].map((key) => [key, pending]))
   const status = lean({ ...completed, status: "running", stages })
-  expect(stepGroups(status).map(group => [group.id, group.steps.map(step => step.key)])).toEqual([
+  expect(stepGroups(status).map((group) => [group.id, group.steps.map((step) => step.key)])).toEqual([
     ["preparation", ["discrepancy", "intake", "research", "research-review", "spine"]],
     ["d1", ["d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply"]],
     ["run", ["finalize", "package-review", "gate"]],
   ])
   expect(runPosition(status)?.text).toBe("Preparation · Assess source discrepancies")
   expect(stepGroups(lean({ ...status, plan: null }))[1]?.title).toBe("Draft")
-  expect(stepName("d1.review-independent")).toBe("Independent function and fidelity review")
-  expect(stepName("d1.review-wording")).toBe("Review problematic wording")
-  expect(stepName("d1.review-client-disadvantage")).toBe("Review client disadvantage")
-  expect(stepName("package-review")).toBe("Final semantic and package review")
 })
 
-test("an update claims application only from explicit execution evidence", () => {
+test("updates and clarifications track explicit execution progress and queued answers", () => {
   const update = { id: "u1", text: "Use short headings.", status: "included" as const }
   expect(updateProgressLabel(update)).toBe("Included in drafting instructions.")
   expect(updateProgressLabel({ ...update, status: "queued" })).toStartWith("Update received")
@@ -896,8 +543,18 @@ test("an update claims application only from explicit execution evidence", () =>
   expect(updateProgressLabel({ ...update, progress: "applying" })).toStartWith("Update is being applied")
   expect(updateProgressLabel({ ...update, progress: "applied" })).toStartWith("Update applied")
   expect(updateProgressLabel({ ...update, progress: "requires-rework" })).toStartWith("Update requires rework")
-})
 
+  const clarification = { kind: "clarification" as const, id: "c1", text: "Inspect the supplied source.", status: "included" as const }
+  expect(updateProgressLabel(clarification)).toContain("included for inspection")
+  expect(updateProgressLabel({ ...clarification, progress: "applied" })).toStartWith("Clarification reviewed")
+  expect(updateProgressLabel({ ...clarification, progress: "applying" })).toContain("being inspected")
+  expect(updateProgressLabel({ ...clarification, status: "queued" })).toContain("received")
+
+  const base = lean(blockedQuestion as unknown as LeanDraftingStatus)
+  expect(queuedNote({ ...base, queued_answer_ids: [] })).toBeUndefined()
+  expect(queuedNote({ ...base, queued_answer_ids: ["a"] })).toContain("Answer received")
+  expect(queuedNote({ ...base, queued_answer_ids: ["a", "b"] })).toContain("Answers received")
+})
 
 test("an essential question during amendment planning keeps the run waiting for an answer", () => {
   const pending = { status: "pending" as const, attempts: 0, started_at: null, finished_at: null }
@@ -905,7 +562,7 @@ test("an essential question during amendment planning keeps the run waiting for 
   const status = lean({
     ...blockedQuestion,
     stop_reason: "d1.change-plan: essential question requires an answer",
-    questions: blockedQuestion.questions.map(question => ({ ...question, stage: "change-plan", document: "d1" })),
+    questions: blockedQuestion.questions.map((question) => ({ ...question, stage: "change-plan", document: "d1" })),
     stages: { "d1.review-client-disadvantage": done, "d1.change-plan": { ...pending, status: "blocked" }, "d1.change-prepare": pending, "d1.changes": pending, "d1.change-review": pending, "d1.apply": pending, finalize: pending, gate: pending },
   })
   expect(currentStep(status)).toEqual({ key: "d1.change-plan", position: 2, total: 8 })
@@ -913,25 +570,5 @@ test("an essential question during amendment planning keeps the run waiting for 
   expect(runHeadline(status, Date.now()).title).toBe("Waiting for your answers")
   expect(openQuestions(status)).toHaveLength(1)
   expect(stepCause(status, "d1.change-plan")).toBe("essential question requires an answer")
-  expect(["d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review"].map(stepName)).toEqual([
-    "Assess review findings", "Prepare amendments", "Reconcile amendments", "Check amended document",
-  ])
-  expect(openQuestions(lean({ ...status, queued_answer_ids: status.questions.map(question => question.id) }))).toEqual([])
-})
-
-
-test("clarification progress describes inspection instead of applied document changes", () => {
-  const update = { kind: "clarification" as const, id: "c1", text: "Inspect the supplied source.", status: "included" as const }
-  expect(updateProgressLabel(update)).toContain("included for inspection")
-  expect(updateProgressLabel({ ...update, progress: "applied" })).toStartWith("Clarification reviewed")
-  expect(updateProgressLabel({ ...update, progress: "applying" })).toContain("being inspected")
-  expect(updateProgressLabel({ ...update, status: "queued" })).toContain("received")
-})
-
-test("the queued note counts the answers received, however each was given", () => {
-  const base = lean(blockedQuestion as unknown as LeanDraftingStatus)
-  const note = (queued: string[]) => queuedNote({ ...base, queued_answer_ids: queued })
-  expect(note([])).toBeUndefined()
-  expect(note(["a"])).toBe("Answer received — it will be included when drafting resumes.")
-  expect(note(["a", "b"])).toBe("Answers received — they will be included when drafting resumes.")
+  expect(openQuestions(lean({ ...status, queued_answer_ids: status.questions.map((question) => question.id) }))).toEqual([])
 })

@@ -1,33 +1,46 @@
 import { readEngineConfig as awaitConfig } from "./engine-config"
-import { test, expect, afterAll } from "bun:test"
+import { test, expect, beforeAll, afterAll } from "bun:test"
 import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import * as sk from "./skill"
 
-// Set both roots before the dynamic import so skill.ts captures the temp dirs.
-const dochaus = mkdtempSync(path.join(tmpdir(), "dochaus-skill-config-"))
-const workspace = mkdtempSync(path.join(tmpdir(), "dochaus-skill-workspace-"))
-process.env.DOCHAUS_DIR = dochaus
-process.env.DOCHAUS_RUNTIME_DIR = path.join(dochaus, "runtime")
-process.env.WORKSPACE_ROOT = workspace
+let dochaus = ""
+let workspace = ""
+let previous: Record<string, string | undefined> = {}
 
-// Seed a repo-shipped (builtin) skill and a playbook that must stay excluded.
-mkdirSync(path.join(dochaus, "skill", "clause-library"), { recursive: true })
-writeFileSync(
-  path.join(dochaus, "skill", "clause-library", "SKILL.md"),
-  '---\nname: clause-library\ndescription: "Builtin clause refs"\n---\n\nBuiltin body',
-)
-mkdirSync(path.join(dochaus, "skill", "playbook-nda"), { recursive: true })
-writeFileSync(
-  path.join(dochaus, "skill", "playbook-nda", "SKILL.md"),
-  '---\nname: playbook-nda\ndescription: "NDA playbook"\n---\n\nPlaybook body',
-)
+beforeAll(() => {
+  dochaus = mkdtempSync(path.join(tmpdir(), "dochaus-skill-config-"))
+  workspace = mkdtempSync(path.join(tmpdir(), "dochaus-skill-workspace-"))
+  previous = {
+    DOCHAUS_DIR: process.env.DOCHAUS_DIR,
+    DOCHAUS_RUNTIME_DIR: process.env.DOCHAUS_RUNTIME_DIR,
+    WORKSPACE_ROOT: process.env.WORKSPACE_ROOT,
+  }
+  process.env.DOCHAUS_DIR = dochaus
+  process.env.DOCHAUS_RUNTIME_DIR = path.join(dochaus, "runtime")
+  process.env.WORKSPACE_ROOT = workspace
 
-const sk = await import("./skill")
+  // Seed a repo-shipped (builtin) skill and a playbook that must stay excluded.
+  mkdirSync(path.join(dochaus, "skill", "clause-library"), { recursive: true })
+  writeFileSync(
+    path.join(dochaus, "skill", "clause-library", "SKILL.md"),
+    '---\nname: clause-library\ndescription: "Builtin clause refs"\n---\n\nBuiltin body',
+  )
+  mkdirSync(path.join(dochaus, "skill", "playbook-nda"), { recursive: true })
+  writeFileSync(
+    path.join(dochaus, "skill", "playbook-nda", "SKILL.md"),
+    '---\nname: playbook-nda\ndescription: "NDA playbook"\n---\n\nPlaybook body',
+  )
+})
 
 afterAll(() => {
-  rmSync(dochaus, { recursive: true, force: true })
-  rmSync(workspace, { recursive: true, force: true })
+  for (const [k, v] of Object.entries(previous)) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  if (dochaus) rmSync(dochaus, { recursive: true, force: true })
+  if (workspace) rmSync(workspace, { recursive: true, force: true })
 })
 
 test("listSkills: builtins included, playbooks excluded", () => {

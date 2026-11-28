@@ -1,11 +1,13 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Database } from "bun:sqlite"
 import { buildChecklistRefinementContext } from "./checklist-refinement-context"
 import { verifyQuote } from "../../lib/quote-verify"
-const roots: string[] = [], workspace = process.env.WORKSPACE_ROOT
+const roots: string[] = []
+let workspace: string | undefined
+beforeEach(() => { workspace = process.env.WORKSPACE_ROOT })
 afterEach(() => { roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true }));if (workspace === undefined) delete process.env.WORKSPACE_ROOT;else process.env.WORKSPACE_ROOT = workspace })
 function fixture(texts = ["# Custody\n\nKeep records, unless the owner directs otherwise.\n\n", "# Returns\n\nPropose a receipt, subject to confirmation."], name = "guide.txt") {
   const dir = mkdtempSync(path.join(tmpdir(), "refinement-units-"));roots.push(dir)

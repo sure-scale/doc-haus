@@ -52,7 +52,7 @@ test("HTTP bound paragraph proposals refuse unsupported formatting without accep
       } finally { db.close() }
     }
     for (const mode of ["single", "all", "unsupported"] as const) {
-      const name = `${mode}.docx`, form = new FormData(); form.append("file", new File([new Uint8Array(source).buffer], name))
+      const name = `${mode}.docx`, form = new FormData(); form.append("file", new File([new Uint8Array(source).buffer], name)); form.append("existing", "keep-both")
       expect((await request(`${route}/documents`, { method: "POST", body: form })).status).toBe(200)
       const file = resolveMatterDocumentTarget(matter.dir, name).docPath, original = await Bun.file(file).bytes()
       const target = (await paragraphTargets(original))[1]!

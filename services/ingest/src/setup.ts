@@ -56,22 +56,27 @@ export async function engineModelCatalog(directory?: string): Promise<CatalogMod
   }
 }
 
-export function setupRoutes(options: { directory: string; config?: () => { model?: unknown; small_model?: unknown }; models?: () => Promise<CatalogModel[]> }) {
-  const file = path.join(options.directory, "setup.json")
+export function setupRoutes(options: { directory: string | (() => string); config?: () => { model?: unknown; small_model?: unknown }; models?: () => Promise<CatalogModel[]> }) {
+  const rawDirectory = options.directory
+  const directory = typeof rawDirectory === "function" ? rawDirectory : () => rawDirectory
+  const file = () => path.join(directory(), "setup.json")
   const config = options.config ?? readEngineConfig
   const models = options.models ?? (() => engineModelCatalog())
   function write(progress: Progress) {
-    mkdirSync(options.directory, { recursive: true })
-    const temporary = `${file}.${crypto.randomUUID()}.tmp`
-    try { writeFileSync(temporary, JSON.stringify(progress, null, 2) + "\n", { mode: 0o600, flag: "wx" }); renameSync(temporary, file) }
+    const dir = directory()
+    const target = path.join(dir, "setup.json")
+    mkdirSync(dir, { recursive: true })
+    const temporary = `${target}.${crypto.randomUUID()}.tmp`
+    try { writeFileSync(temporary, JSON.stringify(progress, null, 2) + "\n", { mode: 0o600, flag: "wx" }); renameSync(temporary, target) }
     finally { rmSync(temporary, { force: true }) }
   }
   async function read(): Promise<SetupProgress> {
     const ready = validModelPair(config(), await models())
-    const progress: Progress = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {
+    const target = file()
+    const progress: Progress = existsSync(target) ? JSON.parse(readFileSync(target, "utf8")) : {
       version: 1, completed: ready ? ["models"] : [], skipped: ready ? ["research", "details"] : [],
     }
-    if (!existsSync(file)) write(progress)
+    if (!existsSync(target)) write(progress)
     if (progress.version !== 1 || !Array.isArray(progress.completed) || !Array.isArray(progress.skipped))
       throw new Error("Setup progress could not be read. Open Settings to check your configuration.")
     return summary(progress, ready)

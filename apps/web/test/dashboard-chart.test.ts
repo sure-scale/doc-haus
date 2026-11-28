@@ -4,7 +4,9 @@ import type { Chart } from "../../../dochaus/lib/dashboard-plan"
 import type { Matter } from "../src/api/ingest/matters"
 import type { LeanDraftingStatus } from "../src/api/ingest/lean"
 import { chartCaption, chartData } from "../src/components/dashboard/chart-data"
+import { chartProjection } from "../src/components/dashboard/chart-widget"
 import { summarize, type DashboardData, type MatterActivity, type Session } from "../src/components/dashboard/data"
+import { validateComponentData } from "../src/components/dashboard/visual/schema"
 
 const at = (iso: string) => new Date(iso).getTime()
 const now = at("2026-10-29T12:00:00Z")
@@ -126,4 +128,13 @@ test("spend outside any matter joins totals and ranks as one row, but never a ma
   const unread = { ...practice, workspace: { ...workspace, unread: true } }
   expect(chartData(chart({ groupBy: "none", form: "stat" }), unread, "month", now).incomplete).toBe(true)
   expect(chartData(chart({ client: "Birch Studio", groupBy: "none", form: "stat" }), unread, "month", now).incomplete).toBe(false)
+})
+
+test("client labels without usable IDs produce valid chart component data", () => {
+  const clientChart: Chart = { type: "chart", title: "Clients", metric: "matters", groupBy: "client", form: "bars", period: "all" }
+  const rows = [undefined, "A".repeat(160)].map((client, index) => ({ matter: { id: `matter-${index}`, title: "Matter", client, dir: `/synthetic/matter-${index}`, created_at: Date.now() }, sessions: [], costs: [], unread: false, unpriced: 0 } as MatterActivity))
+  const projection = chartProjection(clientChart, { matters: rows } as DashboardData, "all")
+  const checked = validateComponentData("chart", { form: "bars", label: "Clients", format: "count", showShares: true, ...projection })
+  expect(checked.error).toBeUndefined()
+  expect(checked.data?.points.map((point) => point.label)).toEqual(["A".repeat(160), "No client recorded"])
 })

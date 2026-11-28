@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -14,8 +14,9 @@ import { cleanupMatters, matter, SOURCE } from "./test-support"
 // #286: an agreement's text holds its terms; its draft status, approval state
 // and legend are the firm's furniture and the drafting notes. Synthetic text only.
 
-const workspace = process.env.WORKSPACE_ROOT
+let workspace: string | undefined
 const roots: string[] = []
+beforeEach(() => { workspace = process.env.WORKSPACE_ROOT })
 afterEach(() => {
   cleanupMatters()
   roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true }))

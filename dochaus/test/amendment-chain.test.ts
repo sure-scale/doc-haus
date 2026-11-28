@@ -1,12 +1,17 @@
 // End-to-end test of the amendment-chain tool against a synthetic matter.
 // Run from dochaus/: bun test test/amendment-chain.test.ts
 import { Database } from "bun:sqlite"
-import { expect, test } from "bun:test"
-import { mkdtempSync } from "node:fs"
+import { afterEach, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
 const tool = (await import("../tool/amendment-chain")).default
+
+const tempDirs: string[] = []
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
 
 function ctxFor(directory: string) {
   return {
@@ -23,8 +28,9 @@ function ctxFor(directory: string) {
 
 function matter() {
   const dir = mkdtempSync(path.join(tmpdir(), "amend-tool-"))
+  tempDirs.push(dir)
   const dbPath = path.join(dir, ".dochaus", "legal.db")
-  require("node:fs").mkdirSync(path.dirname(dbPath), { recursive: true })
+  mkdirSync(path.dirname(dbPath), { recursive: true })
   const db = new Database(dbPath)
   db.run("PRAGMA journal_mode = WAL")
   for (const sql of [

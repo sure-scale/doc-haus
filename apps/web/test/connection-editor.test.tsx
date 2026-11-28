@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import type { IntegrationInfo } from "@opencode/client"
-import ConnectionEditor, { connectionChoices, type ConnectionDraft } from "../src/components/ai-setup/ConnectionEditor"
+import { defaultProvider, pickForProvider } from "../src/models"
+import { setupProgress } from "../src/components/ai-setup/AISetup"
+import { visibleFields } from "../src/components/ai-setup/connection-fields"
+import ConnectionEditor, { connectionChoices, methodDefaults, type ConnectionDraft } from "../src/components/ai-setup/ConnectionEditor"
 import type { Provider } from "../src/components/settings/types"
 
 const provider: Provider = {
@@ -59,4 +62,38 @@ test("an external sign-in with fields is offered with its fields and stays offer
   ])
   const saved = { ...info, connections: [{ type: "credential" as const, id: "entra", label: "Azure", method: "external" as const }] }
   expect(connectionChoices(azure, saved, []).map(choice => choice.value)).toEqual(["credential:entra", "method:1", "method:2"])
+})
+
+test("model selection asks when several providers or models are available", () => {
+  const a = { value: "one/a", label: "A", providerId: "one", modelId: "a" }
+  const b = { value: "two/b", label: "B", providerId: "two", modelId: "b" }
+  expect(defaultProvider([a, b])).toBe("")
+  expect(defaultProvider([b])).toBe("two")
+  expect(pickForProvider([a, b], "two")).toEqual({ primary: "two/b", fast: "two/b" })
+  expect(pickForProvider([a, { ...a, value: "one/c", modelId: "c" }], "one")).toEqual({ primary: "", fast: "" })
+})
+
+test("connection choices preserve native methods and hide conflicting host credentials", () => {
+  const vertex: Provider = { id: "google-vertex", name: "Vertex", activation: "auto", models: {}, nativeAvailable: false, credentialSources: [], host: { type: "google-adc", sources: ["ADC"], options: {} } }
+  const vertexIntegration: IntegrationInfo = { id: "google-vertex", name: "Vertex", methods: [{ type: "key", label: "New API key", form: [{ type: "string", key: "account", default: "personal" }] }], connections: [{ type: "credential", id: "saved", label: "Saved account", method: "key" }] }
+  const choices = connectionChoices(vertex, vertexIntegration, [])
+  expect(choices.map(choice => choice.value)).toEqual(["credential:saved", "method:0"])
+  expect(methodDefaults(choices[1]?.method)).toEqual({ account: "personal" })
+})
+
+test("native auth fields retain conditional visibility and submit hidden defaults only when active", () => {
+  const fields = [{ key: "kind", type: "string" as const }, { key: "account", type: "string" as const, when: [{ key: "kind", op: "eq" as const, value: "team" }] }, { key: "hidden", type: "string" as const, hidden: true }]
+  expect(visibleFields(fields, {}).map(field => field.key)).toEqual(["kind"])
+  expect(visibleFields(fields, { kind: "team" }).map(field => field.key)).toEqual(["kind", "account"])
+  expect(visibleFields(fields, { kind: "personal" }).map(field => field.key)).toEqual(["kind"])
+  const hiddenConditional = [{ key: "kind", type: "string" as const }, { key: "account", type: "string" as const, hidden: true, when: [{ key: "kind", op: "eq" as const, value: "team" }] }]
+  expect(visibleFields(hiddenConditional, { kind: "team" }, true).map(field => field.key)).toEqual(["kind", "account"])
+  expect(visibleFields(hiddenConditional, { kind: "personal" }, true).map(field => field.key)).toEqual(["kind"])
+})
+
+test("a saved setup keeps its connection step done after the candidate session clears", () => {
+  const base = { provider: true, models: true, test: true, loading: false, busy: false, saving: false }
+  expect(setupProgress({ ...base, configured: true, saved: false }).connection).toBe(true)
+  expect(setupProgress({ ...base, configured: false, saved: true }).connection).toBe(true)
+  expect(setupProgress({ ...base, configured: false, saved: false }).connection).toBe(false)
 })

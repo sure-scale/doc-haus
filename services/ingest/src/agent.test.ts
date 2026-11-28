@@ -1,36 +1,48 @@
 import { readEngineConfig as awaitConfig } from "./engine-config"
-import { test, expect, afterAll } from "bun:test"
+import { test, expect, beforeAll, afterAll } from "bun:test"
 import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import * as ag from "./agent"
+import * as wf from "./workflow"
 
-// Set both roots before the dynamic import so agent.ts (and the workflow registry
-// it consults for delete protection) capture the temp dirs.
-const dochaus = mkdtempSync(path.join(tmpdir(), "dochaus-agent-config-"))
-const workspace = mkdtempSync(path.join(tmpdir(), "dochaus-agent-workspace-"))
-process.env.DOCHAUS_DIR = dochaus
-process.env.DOCHAUS_RUNTIME_DIR = path.join(dochaus, "runtime")
-process.env.WORKSPACE_ROOT = workspace
+let dochaus = ""
+let workspace = ""
+let previous: Record<string, string | undefined> = {}
 
-// Seed a repo-shipped specialist (mode: subagent), a primary agent that must stay
-// out of the list, and a hidden subagent.
-mkdirSync(path.join(dochaus, "agent"), { recursive: true })
-writeFileSync(
-  path.join(dochaus, "agent", "legal-reviewer.md"),
-  '---\ndescription: "Reviews documents"\nmode: subagent\n---\n\nReview things.',
-)
-writeFileSync(path.join(dochaus, "agent", "qa.md"), '---\ndescription: "Q&A"\nmode: primary\n---\n\nAnswer.')
-writeFileSync(
-  path.join(dochaus, "agent", "secret.md"),
-  '---\ndescription: "internal"\nmode: subagent\nhidden: true\n---\n\nShh.',
-)
+beforeAll(() => {
+  dochaus = mkdtempSync(path.join(tmpdir(), "dochaus-agent-config-"))
+  workspace = mkdtempSync(path.join(tmpdir(), "dochaus-agent-workspace-"))
+  previous = {
+    DOCHAUS_DIR: process.env.DOCHAUS_DIR,
+    DOCHAUS_RUNTIME_DIR: process.env.DOCHAUS_RUNTIME_DIR,
+    WORKSPACE_ROOT: process.env.WORKSPACE_ROOT,
+  }
+  process.env.DOCHAUS_DIR = dochaus
+  process.env.DOCHAUS_RUNTIME_DIR = path.join(dochaus, "runtime")
+  process.env.WORKSPACE_ROOT = workspace
 
-const ag = await import("./agent")
-const wf = await import("./workflow")
+  // Seed a repo-shipped specialist (mode: subagent), a primary agent that must stay
+  // out of the list, and a hidden subagent.
+  mkdirSync(path.join(dochaus, "agent"), { recursive: true })
+  writeFileSync(
+    path.join(dochaus, "agent", "legal-reviewer.md"),
+    '---\ndescription: "Reviews documents"\nmode: subagent\n---\n\nReview things.',
+  )
+  writeFileSync(path.join(dochaus, "agent", "qa.md"), '---\ndescription: "Q&A"\nmode: primary\n---\n\nAnswer.')
+  writeFileSync(
+    path.join(dochaus, "agent", "secret.md"),
+    '---\ndescription: "internal"\nmode: subagent\nhidden: true\n---\n\nShh.',
+  )
+})
 
 afterAll(() => {
-  rmSync(dochaus, { recursive: true, force: true })
-  rmSync(workspace, { recursive: true, force: true })
+  for (const [k, v] of Object.entries(previous)) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  if (dochaus) rmSync(dochaus, { recursive: true, force: true })
+  if (workspace) rmSync(workspace, { recursive: true, force: true })
 })
 
 test("listAgents: builtin subagents only, primaries and hidden excluded", () => {

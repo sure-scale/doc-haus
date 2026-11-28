@@ -14,10 +14,9 @@ import { dataPaths } from "../../engine/src/data-paths"
 
 // Resolved per call so a changed WORKSPACE_ROOT is honoured, not pinned by
 // whichever module imported this file first. Every reader of the workspace
-// (matters, preferences, playbooks, skills, agents) goes through this.
-// WORKSPACE_ROOT is the boot value.
+// (matters, preferences, playbooks, skills, agents, templates, workflows) goes
+// through this.
 export const workspaceRoot = () => dataPaths(path.resolve(import.meta.dir, "../../.."), process.env, path.join(process.cwd(), "workspace")).workspace
-export const WORKSPACE_ROOT = workspaceRoot()
 
 // reference is the firm's own client-matter number (e.g. "2026-0042"), shown in
 // the UI. It is display metadata only — the directory id stays the auto slug+uuid.

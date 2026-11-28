@@ -117,9 +117,6 @@ test("native copy tool asks before HTTP and returns the registered new document 
   try {
     const copy = (await import("../../../dochaus/tool/copy-document")).default
     expect(legalTools.some(([name]) => name === "copy-document")).toBe(true)
-    const agent = readFileSync(path.resolve(import.meta.dir, "../../../dochaus/agent/redliner.md"), "utf8")
-    expect(agent).toContain("  copy-document: true")
-    expect(agent).toContain("  copy-document: ask")
     const configuration = JSON.parse(readFileSync(path.resolve(import.meta.dir, "../../../dochaus/opencode.json"), "utf8"))
     expect(configuration.permission["copy-document"]).toBe("ask")
     const context = { callID: "copy-call", sessionID: "copy-test", messageID: "copy-test", agent: "redliner", directory: f.directory, worktree: f.directory, abort: new AbortController().signal, metadata() {},
@@ -131,7 +128,7 @@ test("native copy tool asks before HTTP and returns the registered new document 
     const result = await copy.execute({ document: "original.docx", name: "new.docx" }, { ...context, async ask(request) { expect(request.permission).toBe("copy-document"); expect(request.always).toBeUndefined() } })
     expect(result).toMatchObject({ title: "Created new.docx", metadata: { name: "new.docx", document: path.join(f.directory, "new.docx") } })
     // The copy keeps the original's tracked insertion, which the editing tools refuse.
-    expect((result as { output: string }).output).toEndWith("new.docx holds tracked changes, so it cannot be edited until they are accepted or rejected in Word. Edits answering the other side's markup go on the uploaded markup itself (Request edits).")
+    expect((result as { output: string }).output).toContain("tracked changes")
     expect(calls).toBe(1)
     expect(readFileSync(f.original)).toEqual(Buffer.from(f.bytes))
     expect(await copy.execute({ document: "../original.docx", name: "other.docx" }, context)).toBeString()

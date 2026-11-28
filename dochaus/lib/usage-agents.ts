@@ -48,6 +48,7 @@ const WORK: Record<string, string> = {
   "dashboard-chart": "Build dashboards",
   "playbook-importer": "Playbook import",
   "template-builder": "Template builder",
+  "template-match": "Match template columns",
   "workflow-builder": "Workflow builder",
   "skill-builder": "Skill builder",
   "agent-builder": "Agent builder",

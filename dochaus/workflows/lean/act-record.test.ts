@@ -8,12 +8,14 @@ import {
   type ActHow, type ActRecord, type ActWho, type ListedAct, type RecordedAct,
 } from "./act-record"
 import { jsonBreakNote } from "./checks"
+import { readLeanEvents } from "./events"
 import { evidencePrompt } from "./evidence"
 import { researchHandoff } from "./research"
-import { stageInputSha } from "./runner"
+import { runLean, stageInputSha } from "./runner"
 import { LEAN_MAX_RETRIES, type StageSessionPort } from "./stages"
 import { quoteFound } from "./quotes"
 import { initLeanState, writeLeanText, writeQuestions, type LeanState, type Question } from "./state"
+import { AGENT, actRecordJobs, cleanupMatters, happyPath, listedActs, matter as supplyMatter, scriptedModel } from "./test-support"
 
 // The act record's jobs driven through runActRecordStage with a scripted model,
 // against a synthetic matter invented for these tests: a boatyard licensing a
@@ -44,7 +46,10 @@ type Job = "what" | "verify" | "deliverables" | "who" | "how"
 type Reply = (job: Job, attempt: number, sample: number, prompt?: string) => unknown
 
 const directories: string[] = []
-afterEach(() => directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true })))
+afterEach(() => {
+  directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true }))
+  cleanupMatters()
+})
 
 function matter(request = REQUEST): { directory: string; state: LeanState } {
   const directory = mkdtempSync(path.join(tmpdir(), "act-record-"))
@@ -485,7 +490,7 @@ describe("the spine's act record", () => {
       "Deliverables:",
       `- "a short cover note for the Club", asked for by request: ${JSON.stringify(NOTE.quote)}`,
     ].join("\n"))
-    expect(evidencePrompt(directory, "spine")).toContain(`Verified research:\n${researchHandoff(directory)}\n${block}\nBuild a compact drafting spine`)
+    expect(evidencePrompt(directory, "spine")).toContain(`Verified research:\n${researchHandoff(directory)}\n${block}`)
   })
 
   test("a record listing no act says so; an unchecked or missing record shows no block", async () => {
@@ -505,5 +510,66 @@ describe("the spine's act record", () => {
     expect(stageInputSha(directory, "spine")).toBe(spine)
     recordAs(directory, { ...saved!, acts: saved!.acts.slice(0, 1) })
     expect(stageInputSha(directory, "spine")).not.toBe(spine)
+  })
+})
+
+describe("acts step in the lean runner", () => {
+  const UNLISTED_JOBS = ACT_RECORD_SAMPLES + 1
+  const answered = (answer: string): Question => ({
+    id: "q-scope", stage: "intake", question: "Which goods does the note cover?", context: "The terms do not list the goods.", status: "answered", answer, answered_at: "2026-10-31T09:00:00.000Z",
+  })
+
+  test("the acts step runs once, after research review and before the spine, and records its counts", async () => {
+    const directory = supplyMatter()
+    const model = scriptedModel(happyPath)
+    const state = await runLean(directory, { sessions: model.port })
+
+    expect(state.status).toBe("completed")
+    const agents = model.prompts.map(prompt => prompt.agent)
+    const acts = agents.flatMap((agent, at) => agent === AGENT.acts ? [at] : [])
+    expect(acts).toHaveLength(UNLISTED_JOBS)
+    expect(Math.min(...acts)).toBeGreaterThan(agents.indexOf(AGENT["research-review"]))
+    expect(Math.max(...acts)).toBeLessThan(agents.indexOf(AGENT.spine))
+    expect(state.stages.acts).toMatchObject({ status: "done", outputs: ["acts.json"], calls: UNLISTED_JOBS })
+    expect(readActRecord(directory)?.status).toBe("none")
+    expect(readLeanEvents(directory).filter(event => event.event === "act_record")).toEqual([expect.objectContaining({
+      stage: "acts", outcome: "none",
+      counts: { acts: 0, deliverables: 0, what_samples: ACT_RECORD_SAMPLES, what_passed: ACT_RECORD_SAMPLES, candidates: 0, excluded: 0, merged: 0, conflicts: 0 },
+      jobs: { what: "passed", verify: "not_asked", deliverables: "passed", who: "not_asked", how: "not_asked" },
+    })])
+  })
+
+  test("a listed act is described by WHO and HOW before the spine", async () => {
+    const directory = supplyMatter()
+    const act = { act: "prepare the supply note", source: "request", quote: "Draft a short supply note" }
+    const model = scriptedModel({
+      ...happyPath, [AGENT.acts]: actRecordJobs({ what: () => JSON.stringify({ acts: [act] }) }),
+      [AGENT.coverage]: prompt => JSON.stringify({ placements: listedActs(prompt).map(({ index }) => ({ act: index, document: "d1" })) }),
+    })
+
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    const record = readActRecord(directory)
+    expect(record?.status).toBe("listed")
+    expect(record?.acts).toEqual([expect.objectContaining({ ...act, who: expect.objectContaining({ authorised_by: [] }), how: expect.objectContaining({ instrument: null }) })])
+    expect(model.count(AGENT.acts)).toBe(UNLISTED_JOBS + 3)
+    const spine = model.prompts.find(prompt => prompt.agent === AGENT.spine)!.text
+    expect(spine).toContain(`1. ${JSON.stringify(act.act)}\n   Directed by request: ${JSON.stringify(act.quote)}`)
+  })
+
+  test("a resumed unchanged run does not run the acts step again; a changed answer runs it once more", async () => {
+    const directory = supplyMatter()
+    writeQuestions(directory, [answered("Only the goods in the first order.")])
+    expect((await runLean(directory, { sessions: scriptedModel(happyPath).port })).status).toBe("completed")
+
+    const unchanged = scriptedModel(happyPath)
+    expect((await runLean(directory, { sessions: unchanged.port })).status).toBe("completed")
+    expect(unchanged.count(AGENT.acts)).toBe(0)
+
+    writeQuestions(directory, [answered("Every order placed under the terms.")])
+    const changed = scriptedModel(happyPath)
+    expect((await runLean(directory, { sessions: changed.port })).status).toBe("completed")
+    const asked = changed.prompts.filter(prompt => prompt.agent === AGENT.acts)
+    expect(asked).toHaveLength(UNLISTED_JOBS)
+    for (const prompt of asked) expect(prompt.text).toContain("Every order placed under the terms.")
   })
 })

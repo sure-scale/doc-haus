@@ -55,14 +55,16 @@ test("scan fixture is image-only and cannot pass extraction from a hidden text l
   expect((await extractText(document, { mergePages: true })).text.trim()).toBe("")
 })
 
-test("pdfToText recovers the image-only workshop plan through OCR", async () => {
+const hasOcr = Boolean(Bun.which("pdftoppm") && Bun.which("tesseract"))
+
+test.skipIf(!hasOcr)("pdfToText recovers the image-only workshop plan through OCR", async () => {
   const text = await pdfToText(scannedPdf)
   expect(text).toContain("SYNTHETIC WORKSHOP PLAN")
   expect(text).toContain("The organizer sends a written reminder before changing the workshop time.")
   expect(text).toContain("leave the demonstration desk clear")
 }, 120_000)
 
-test("ocrPdfText reads image-only headings and body text", async () => {
+test.skipIf(!hasOcr)("ocrPdfText reads image-only headings and body text", async () => {
   const text = await ocrPdfText(scannedPdf)
   expect(text).not.toBeNull()
   expect(text).toContain("Closing checklist")

@@ -1,7 +1,14 @@
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
+import type { IntegrationInfo, ProviderInfo } from "@opencode/client"
 import type { Client } from "../src/api/opencode/client"
+import { listReusableSignIns, reuseSignIn } from "../src/api/ingest/credential-reuse"
+import { saveCandidate, SaveUnconfirmedError, testCandidate } from "../src/api/opencode/provider-candidate"
+import { connectedProviderIDs, GATED_PROVIDERS } from "../src/api/opencode/provider-readiness"
 import { listAuthMethods, listIntegrations, listProviders, probeProvider, setProviderKey } from "../src/api/opencode/providers"
 import { setProviderOptions } from "../src/api/opencode/config"
+
+const originalFetch = globalThis.fetch
+afterEach(() => { globalThis.fetch = originalFetch })
 
 test("inactive setup metadata neither connects a provider nor creates model choices; sign-in uses its native integration", async () => {
   const previous = globalThis.fetch
@@ -107,4 +114,108 @@ test("clearing a cloud profile explicitly resets that override without replacing
     await setProviderOptions("amazon-bedrock", { region: "us-east-1", profile: "" })
     expect(patches).toEqual([{ provider: { "amazon-bedrock": { options: { region: "us-east-1", profile: null } } } }])
   } finally { globalThis.fetch = previous }
+})
+
+test("reuse discovery and explicit selection use the cookie-free cross-origin ingest contract", async () => {
+  const requests: Request[] = []
+  const connection = { id: "selected-connection", integrationID: "opencode-go", label: "Go account", authType: "key" as const }
+  const source = { id: "native-source", label: "OpenCode", status: "ready" as const, unavailableCount: 0, connections: [connection] }
+  globalThis.fetch = (async (input, init) => {
+    const request = new Request(input, init)
+    requests.push(request)
+    expect(init?.credentials).toBe("omit")
+    expect(request.headers.has("cookie")).toBe(false)
+    expect(request.headers.has("authorization")).toBe(false)
+    return Response.json(request.method === "POST" ? { connection } : { sources: [source] }, {
+      headers: { "Access-Control-Allow-Origin": "http://localhost:5174" },
+    })
+  }) as typeof fetch
+  const sources = await listReusableSignIns()
+  expect(sources).toEqual([source])
+  expect(requests.map(request => request.method)).toEqual(["GET"])
+  const selected = sources[0]!.connections[0]!
+  expect(await reuseSignIn(sources[0]!.id, selected.id)).toEqual(connection)
+  expect(await requests[1]!.json()).toEqual({ sourceId: "native-source", connectionId: "selected-connection" })
+  expect(requests.map(request => new URL(request.url).pathname)).toEqual(["/auth/reuse", "/auth/reuse"])
+})
+
+test("a lost Save response cannot invite another credential activation", async () => {
+  globalThis.fetch = (async () => { throw new TypeError("Network disconnected") }) as unknown as typeof fetch
+  await expect(saveCandidate("draft", "primary", "fast")).rejects.toBeInstanceOf(SaveUnconfirmedError)
+})
+
+test("a confirmed rollback permits retry; partial state requires inspection", async () => {
+  globalThis.fetch = (async () => Response.json({ error: "Previous connection restored.", code: "connection_save_failed", partialState: false }, { status: 503 })) as unknown as typeof fetch
+  let failure: unknown
+  try { await saveCandidate("draft", "primary", "fast") } catch (error) { failure = error }
+  expect(failure).toBeInstanceOf(Error)
+  expect(failure).not.toBeInstanceOf(SaveUnconfirmedError)
+  globalThis.fetch = (async () => Response.json({ error: "The previous connection could not be restored.", code: "setup_partial_state", partialState: true }, { status: 503 })) as unknown as typeof fetch
+  await expect(saveCandidate("draft", "primary", "fast")).rejects.toBeInstanceOf(SaveUnconfirmedError)
+})
+
+test("successful Save remains successful when candidate cleanup is pending", async () => {
+  globalThis.fetch = (async () => Response.json({ ok: true, sessionClosePending: true })) as unknown as typeof fetch
+  expect(await saveCandidate("draft", "primary", "fast")).toEqual({ ok: true, sessionClosePending: true })
+  globalThis.fetch = (async () => Response.json({})) as unknown as typeof fetch
+  await expect(saveCandidate("draft", "primary", "fast")).rejects.toBeInstanceOf(SaveUnconfirmedError)
+})
+
+test("expected model rejection and interrupted transport remain different recovery outcomes", async () => {
+  const rejected = { ok: false, kind: "model", error: "Choose an available model." } as const
+  globalThis.fetch = (async () => Response.json(rejected, { status: 400 })) as unknown as typeof fetch
+  expect(await testCandidate("draft", "fast")).toEqual(rejected)
+  globalThis.fetch = (async () => { throw new TypeError("Network disconnected") }) as unknown as typeof fetch
+  expect(await testCandidate("draft", "fast")).toMatchObject({ ok: false, kind: "unavailable" })
+})
+
+const readinessProvider: ProviderInfo = {
+  id: "opencode-go", integrationID: "opencode-go", name: "OpenCode Go",
+  activation: "enabled", package: "@opencode/ai/providers/openai-compatible",
+}
+const readinessIntegration: IntegrationInfo = {
+  id: "opencode-go", name: "OpenCode Go", methods: [{ type: "key" }],
+  connections: [{ type: "credential", id: "test-account", label: "Account", method: "key" }],
+}
+
+test("removing a credential makes an explicitly enabled hosted provider connectable again", () => {
+  expect(connectedProviderIDs([readinessProvider], [readinessIntegration])).toEqual(["opencode-go"])
+  expect(connectedProviderIDs([readinessProvider], [{ ...readinessIntegration, connections: [] }])).toEqual([])
+})
+
+test("shared integrations follow integrationID and environment connections need no stored key", () => {
+  const alias = { ...readinessProvider, id: "console-models", integrationID: "console-account" }
+  const account = { ...readinessIntegration, id: "console-account" }
+  expect(connectedProviderIDs([alias], [account])).toEqual(["console-models"])
+  expect(connectedProviderIDs([alias], [{ ...account, connections: [] }])).toEqual([])
+  expect(connectedProviderIDs([readinessProvider], [{ ...readinessIntegration, connections: [{ type: "env", name: "MODEL_API_KEY" }] }])).toEqual(["opencode-go"])
+})
+
+test("disabled providers remain unavailable even with credentials", () => {
+  expect(connectedProviderIDs([{ ...readinessProvider, activation: "disabled" }], [readinessIntegration])).toEqual([])
+})
+
+test("native credential-free local discovery remains usable while the removed public provider stays unavailable", () => {
+  expect(connectedProviderIDs([{ ...readinessProvider, id: "ollama", integrationID: undefined }], [])).toEqual(["ollama"])
+  const publicProvider = { ...readinessProvider, id: "opencode", integrationID: "opencode", settings: { apiKey: "public" } }
+  expect(connectedProviderIDs([publicProvider], [{ ...readinessIntegration, id: "opencode", connections: [] }])).toEqual([])
+  expect(connectedProviderIDs([publicProvider, readinessProvider], [{ ...readinessIntegration, id: "opencode" }, readinessIntegration])).toEqual(["opencode-go"])
+})
+
+test("host credentials still reach the existing live-probe gate", () => {
+  const hosts = [...GATED_PROVIDERS].map((id) => ({ ...readinessProvider, id, integrationID: id }))
+  expect(connectedProviderIDs(hosts, [])).toEqual([...GATED_PROVIDERS])
+  expect(connectedProviderIDs(hosts.map((item) => ({ ...item, activation: "disabled" })), [])).toEqual([])
+})
+
+test("an external sign-in counts as connected only while its active connection reports no needs_auth", () => {
+  const claude = { ...readinessProvider, id: "claude-agent", integrationID: "claude-agent", name: "Claude Agent", activation: "auto" as const }
+  const signedIn: IntegrationInfo = {
+    id: "claude-agent", name: "Claude Agent", methods: [{ id: "claude-login", type: "external", label: "Claude Code login" }],
+    connections: [{ type: "credential", id: "local-sign-in", label: "Claude Agent", method: "external" }],
+  }
+  expect(connectedProviderIDs([claude], [signedIn])).toEqual(["claude-agent"])
+  const needsAuth = { ...signedIn, connections: [{ ...signedIn.connections[0]!, status: { status: "needs_auth" as const, message: "Claude Code is not logged in." } }] }
+  expect(connectedProviderIDs([claude], [needsAuth])).toEqual([])
+  expect(connectedProviderIDs([claude], [{ ...signedIn, connections: [] }])).toEqual([])
 })

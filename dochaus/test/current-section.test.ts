@@ -1,12 +1,17 @@
 // End-to-end tests for the current-section resolver tool.
 // Run from dochaus/: bun test test/current-section.test.ts
 import { Database } from "bun:sqlite"
-import { expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync } from "node:fs"
+import { afterEach, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
 const tool = (await import("../tool/current-section")).default
+
+const tempDirs: string[] = []
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
 
 function ctxFor(directory: string) {
   return {
@@ -23,6 +28,7 @@ function ctxFor(directory: string) {
 
 function matter() {
   const dir = mkdtempSync(path.join(tmpdir(), "current-section-"))
+  tempDirs.push(dir)
   const dbPath = path.join(dir, ".dochaus", "legal.db")
   mkdirSync(path.dirname(dbPath), { recursive: true })
   const db = new Database(dbPath)

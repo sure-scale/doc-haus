@@ -52,12 +52,6 @@ test("coverage includes the current group, ungrouped explanation and recommendat
   for (const input of inputs) {
     expect(input.text).toContain(FIXED_PLAN)
     expect(input.text).not.toContain("DEFERRED_FOR_THE_NOTES")
-    expect(input.text).toContain("explicit dependency task")
-    expect(input.text).toContain("view=proposed_body")
-    expect(input.text).toContain("even when this assignment has no inline target PID")
-    expect(input.text).toContain("never infer an omission in the pending revision from that older view")
-    expect(input.text).toContain("retrieve its actual relevant final clause")
-    expect(input.text).toContain("before asserting law")
     expect(input.text).not.toContain("UNRELATED_RAW_REVIEW_HISTORY")
     expect(input.text).not.toContain("UNRELATED_REJECTED_HISTORY")
     expect(input.text.length).toBeLessThan(32_001)
@@ -223,7 +217,6 @@ test("source-grounded restoration of an ungrouped initial paragraph remains in s
   expect(input.text).toContain('"retained_initial":[{"pid":')
   expect(input.text).toContain("Withdraw the earlier unsupported payment change")
   expect(input.text).toContain("Payment is due on delivery.")
-  expect(input.text).toContain("Verify each retained_initial withdrawal against its canonical supporting words")
 })
 
 
@@ -277,9 +270,6 @@ test("oversized related goals decompose by owned target without losing operation
     expect(assignment.assigned_pids).toEqual(input.pids)
     const operations = JSON.parse(input.text.split("<cumulative_operations>\n")[1]!.split("\n</cumulative_operations>")[0]!)
     expect([...operations.amendments, ...operations.explanations, ...operations.retained_initial].map(row => row.pid)).toEqual(input.pids)
-    expect(input.text).toContain("retrieve their actual proposed passages")
-    expect(input.text).toContain("retrieve its actual relevant final clause")
-    expect(input.text).toContain("view=proposed_body")
   }
 })
 

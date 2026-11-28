@@ -5,14 +5,19 @@
 // Lives in test/, not tool/: the engine's ToolRegistry imports every .ts under
 // {tool,tools}/ as a custom tool, and importing a bun:test file outside the
 // test runner throws ("Cannot use describe outside of the test runner").
-import { describe, expect, test } from "bun:test"
-import { mkdtempSync } from "node:fs"
+import { afterEach, describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { listKeyDates, recordKeyDate } from "../lib/key-dates"
 
 const recordTool = (await import("../tool/record-key-date")).default
 const readTool = (await import("../tool/key-dates")).default
+
+const tempDirs: string[] = []
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
 
 function ctxFor(directory: string) {
   return {
@@ -28,7 +33,9 @@ function ctxFor(directory: string) {
 }
 
 function matter() {
-  return mkdtempSync(path.join(tmpdir(), "key-dates-matter-"))
+  const dir = mkdtempSync(path.join(tmpdir(), "key-dates-matter-"))
+  tempDirs.push(dir)
+  return dir
 }
 
 describe("record-key-date tool", () => {

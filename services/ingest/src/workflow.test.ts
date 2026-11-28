@@ -1,22 +1,35 @@
-import { test, expect, afterAll } from "bun:test"
+import { test, expect, beforeAll, afterAll } from "bun:test"
 import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import * as wf from "./workflow"
 
-// Set DOCHAUS_DIR before the dynamic import so workflow.ts captures the temp dir.
-const dir = mkdtempSync(path.join(tmpdir(), "dochaus-workflow-"))
-process.env.DOCHAUS_DIR = dir
-
-// Seed hand-authored subagents: validate() only accepts step agents that
-// listAgents() reports as enabled, and collision tests need a real existing .md.
+let dir = ""
+let previousDochaus: string | undefined
+let previousRuntime: string | undefined
 const handAuthored = '---\ndescription: "Hand-authored reviewer"\nmode: subagent\n---\n\n# hand-authored'
-mkdirSync(path.join(dir, "agent"), { recursive: true })
-writeFileSync(path.join(dir, "agent", "legal-reviewer.md"), handAuthored)
-writeFileSync(path.join(dir, "agent", "summarizer.md"), '---\ndescription: "Summarizes"\nmode: subagent\n---\n\nSummarize.')
 
-const wf = await import("./workflow")
+beforeAll(() => {
+  dir = mkdtempSync(path.join(tmpdir(), "dochaus-workflow-"))
+  previousDochaus = process.env.DOCHAUS_DIR
+  previousRuntime = process.env.DOCHAUS_RUNTIME_DIR
+  process.env.DOCHAUS_DIR = dir
+  process.env.DOCHAUS_RUNTIME_DIR = path.join(dir, "runtime")
 
-afterAll(() => rmSync(dir, { recursive: true, force: true }))
+  // Seed hand-authored subagents: validate() only accepts step agents that
+  // listAgents() reports as enabled, and collision tests need a real existing .md.
+  mkdirSync(path.join(dir, "agent"), { recursive: true })
+  writeFileSync(path.join(dir, "agent", "legal-reviewer.md"), handAuthored)
+  writeFileSync(path.join(dir, "agent", "summarizer.md"), '---\ndescription: "Summarizes"\nmode: subagent\n---\n\nSummarize.')
+})
+
+afterAll(() => {
+  if (previousDochaus === undefined) delete process.env.DOCHAUS_DIR
+  else process.env.DOCHAUS_DIR = previousDochaus
+  if (previousRuntime === undefined) delete process.env.DOCHAUS_RUNTIME_DIR
+  else process.env.DOCHAUS_RUNTIME_DIR = previousRuntime
+  if (dir) rmSync(dir, { recursive: true, force: true })
+})
 
 // --- renderAgentMarkdown ---
 

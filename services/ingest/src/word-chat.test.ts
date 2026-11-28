@@ -41,7 +41,7 @@ function structuredFixture(raw: string): string {
   } catch { return raw }
 }
 let engineHook: ((session: Session, tail: string, method: string, payload: Record<string, unknown>) => Promise<void>) | undefined
-const oldRuntime = process.env.DOCHAUS_RUNTIME_DIR, oldWorkspace = process.env.WORKSPACE_ROOT
+let oldRuntime: string | undefined, oldWorkspace: string | undefined
 const transport = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(String(input)); const method = init?.method ?? "GET"
   const payload = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : {}
@@ -127,6 +127,7 @@ const newConversation = async () => (await (await post("conversation")).json() a
 
 beforeAll(async () => {
   directory = realpathSync(mkdtempSync(path.join(tmpdir(), "word-chat-scoped-")))
+  oldRuntime = process.env.DOCHAUS_RUNTIME_DIR; oldWorkspace = process.env.WORKSPACE_ROOT
   process.env.DOCHAUS_RUNTIME_DIR = path.join(directory, "runtime"); process.env.WORKSPACE_ROOT = directory
   mkdirSync(path.join(directory, "runtime", "config", "opencode"), { recursive: true })
   writeFileSync(path.join(directory, "runtime", "config", "opencode", "opencode.json"), JSON.stringify({ model: "synthetic/model" }))
@@ -1025,9 +1026,15 @@ test("source version changes invalidate late results and remove access to earlie
   const source = wordChatMaterials(auth).find(material => material.name === "Other.docx")!
   const turn = (await (await send(id, "document", "Explain attached source", crypto.randomUUID(), [source])).json() as { turn: WordChatTurn }).turn
   expect(turn.status).toBe("complete")
-  writeFileSync(path.join(directory, "Other.docx"), "outside replacement")
-  const polled = (await (await post("poll", { conversationId: id, turnId: turn.id })).json() as { turn: WordChatTurn }).turn
-  expect(polled.status).toBe("error"); expect(polled.answer).toBe(""); expect(polled.sources).toEqual([])
+  const otherPath = path.join(directory, "Other.docx")
+  const originalBytes = readFileSync(otherPath)
+  try {
+    writeFileSync(otherPath, "outside replacement")
+    const polled = (await (await post("poll", { conversationId: id, turnId: turn.id })).json() as { turn: WordChatTurn }).turn
+    expect(polled.status).toBe("error"); expect(polled.answer).toBe(""); expect(polled.sources).toEqual([])
+  } finally {
+    writeFileSync(otherPath, originalBytes)
+  }
 })
 test("chunked multipart and JSON payloads are bounded before parsing", async () => {
   for (const [route, length, contentType] of [["send", 2 * 1024 * 1024 + 1, "application/json"], ["upload", 17 * 1024 * 1024 + 1, "multipart/form-data; boundary=synthetic"]] as const) {

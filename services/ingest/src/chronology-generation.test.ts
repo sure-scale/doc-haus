@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -23,8 +23,12 @@ import { writeDraftingPreferences } from "./preferences"
 import { liveText } from "../../../dochaus/lib/extract"
 import type { StageSessionPort } from "../../../dochaus/workflows/lean/stages"
 const dirs: string[] = []
-const previous = process.env.DOCHAUS_RUNTIME_DIR
-const previousWorkspace = process.env.WORKSPACE_ROOT
+let previous: string | undefined
+let previousWorkspace: string | undefined
+beforeEach(() => {
+  previous = process.env.DOCHAUS_RUNTIME_DIR
+  previousWorkspace = process.env.WORKSPACE_ROOT
+})
 afterEach(() => {
   if (previous === undefined) delete process.env.DOCHAUS_RUNTIME_DIR
   else process.env.DOCHAUS_RUNTIME_DIR = previous

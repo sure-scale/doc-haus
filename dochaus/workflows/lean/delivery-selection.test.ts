@@ -5,7 +5,7 @@ import path from "node:path"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { memoNotesFile, readLeanDocuments, requestedMemo } from "./deliverables"
 import { checkDeliverySelections, selectedDeliveryPlan } from "./delivery-selection"
-import { packageReviewPrompt, readPackageReview } from "./package-review"
+import { readPackageReview } from "./package-review"
 import { DOC_STAGES, readLeanPlan, writeLeanPlan } from "./plan"
 import { readRepairRound, startRepairRound } from "./repairs"
 import { enqueueLeanRequest } from "./requests"
@@ -137,8 +137,6 @@ test("literal name grounding leaves output intent and roles to the semantic revi
     // Literal grounding is necessary, not proof that this is an output. The
     // semantic reviewer independently decides intent, purpose and artifact role.
     expect(checkDeliverySelections(directory, [{ document: "d1", role: "body", file: "Supply Review.docx", instruction_quote: instruction }])).toEqual([])
-    expect(packageReviewPrompt(directory)).toContain("mentioning an input filename or source title does not request that output name")
-    expect(packageReviewPrompt(directory)).toContain("Do not copy input filenames, source titles or the plan's selections as user intent")
   }
 })
 

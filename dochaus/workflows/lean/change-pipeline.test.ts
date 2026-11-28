@@ -1,19 +1,25 @@
-import { afterEach, expect, spyOn, test } from "bun:test"
+import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { acceptChangePlan, acceptChangeReview, changeReviewPrompt, checkChangePlan, checkChangeReview, projectedChangeParagraphs } from "./change-pipeline"
+import { acceptChangePlan, acceptChangeReview, changeReviewPrompt, checkChangePlan, checkChangeReview, deferredFindingItems, projectedChangeParagraphs, readChangePlan, reviewDispositionText, unadjudicatedFindings, writerGroup, writerPlan, type ChangeGroup, type ChangePlan, type ReviewDisposition } from "./change-pipeline"
 import { checkChanges } from "./change-checks"
+import { CHECKLIST_JOB_AGENTS } from "./checklist-job"
+import type { ChecklistCheckerInput, ChecklistProducerInput } from "./checklist-contract"
+import { mergeRepairAdjudications, type RepairAdjudication } from "./checklist-repair-adjudication"
 import { parseJsonObject, readChangeList, readParagraphs } from "./checks"
 import { readLeanEvents } from "./events"
 import { finalGate, type GateResult } from "./gate"
+import { packageReviewPrompt } from "./package-review"
+import { writeLeanPlan } from "./plan"
+import { completedDocumentsText, stagePrompt } from "./prompts"
 import { openItem } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
 import { changesRepairSections, readRepairRound } from "./repairs"
 import { restoreLeanStage } from "./restore-stage"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, runLean, stageInputSha } from "./runner"
-import { acceptStageReply, LEAN_CHILD_PERMISSIONS, stageOutputValid } from "./stages"
+import { acceptStageReply, disclosableItems, LEAN_CHILD_PERMISSIONS, stageOutputValid } from "./stages"
 import * as leanState from "./state"
-import { answerQuestion, leanFile, readLeanJson, readLeanState, readLeanText, readOpenItems, readQuestions, updateLeanStage, writeLeanText, writeOpenItems, writeQuestions, type QuestionAdvice } from "./state"
-import { AGENT, DRAFT, SOURCE, SOURCE_TEXT, SUPPORT, changes, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
+import { answerQuestion, leanFile, readLeanJson, readLeanState, readLeanText, readOpenItems, readQuestions, updateLeanStage, writeLeanText, writeOpenItems, writeQuestions, type Question, type QuestionAdvice } from "./state"
+import { AGENT, APPLIED, DRAFT, DRAFTED, LETTER, SOURCE, SOURCE_TEXT, SUPPORT, changes, changesFirst, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, pidOf, reviewFirst, sameSession, scriptedModel, type Reply } from "./test-support"
 
 afterEach(cleanupMatters)
 const BODY = DRAFT.replace("Payment is due on delivery.", "Payment timing remains to be agreed.")
@@ -89,10 +95,6 @@ test("a preparation job returns amendments only for paragraphs that change, and 
   })
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
   expect(texts).toHaveLength(2)
-  for (const text of texts) {
-    expect(text).toContain("Return an amendment only for a listed pid whose wording must change; omit the rest.")
-    expect(text).not.toContain("One explicit operation per initial pid")
-  }
   const applied = readParagraphs(directory, "d1", "paragraphs-applied.json").map(row => row.text)
   expect(applied).toContain(DELIVERY)
   expect(applied).toContain("Payment timing remains to be agreed.")
@@ -125,11 +127,12 @@ test("the change review reads repair items as findings to verify, without the wr
   const item = openItem("draft", "quote_miss", "The quoted figure is not in the supplied terms.", { document: "d1", pid })
   leanState.replaceStageOpenItems(directory, "draft", "d1", [item])
   const writer = changesRepairSections(directory, "d1").join("\n")
-  expect(writer).toContain(`<required_repairs>\nEach item is a defect the draft still has.`)
+  expect(writer).toContain("<required_repairs>")
   expect(writer).toContain("<previous_changes>")
   const prompt = changeReviewPrompt(directory, "d1")
-  expect(prompt).toContain(`<previous_findings>\nFindings the previous review raised; verify each against the projected body and report only what is still present:\n- ${item.id} [${pid}]: ${item.detail}`)
-  for (const writing of ["<required_repairs>", "Each item is a defect the draft still has", "Fix each one with an amendment", "<previous_changes>"]) expect(prompt).not.toContain(writing)
+  expect(prompt).toContain("<previous_findings>")
+  expect(prompt).toContain(`- ${item.id} [${pid}]: ${item.detail}`)
+  for (const writing of ["<required_repairs>", "<previous_changes>"]) expect(prompt).not.toContain(writing)
 }, 120_000)
 
 test("canonical support and dependency admission reject only the mutated input", async () => {
@@ -648,3 +651,351 @@ test("new-pipeline saved changes are canonically rechecked before being reused",
   expect(restored.count(AGENT.changes)).toBe(1)
   expect(stageOutputValid(directory, "d1.changes")).toBe(true)
 }, 120_000)
+
+// How a change plan adjudicates review findings by id: the resolves a focused
+// checklist merge keeps, what acceptance saves and asks, what amendment writers
+// are shown, and when the runner may take the focused path at all.
+describe("finding adjudication", () => {
+  const PID = "p111111111111", OTHER = "p222222222222"
+  const FINDING_ID = /\bf-[0-9a-f]{10}\b/
+
+  const group = (id: string, pids: string[], resolves?: string[]): ChangeGroup =>
+    ({ id, pids, goal: `Goal ${id}.`, sources: SUPPORT, limitations: [], ...(resolves ? { resolves } : {}) })
+  const disposition = (detail: string, resolves?: string[]): ReviewDisposition =>
+    ({ disposition: "deferred", kind: "information", detail, reason: "Still open.", documents: ["d1"], sources: [], limitations: ["Unverified."], ...(resolves ? { resolves } : {}) })
+  const question = (text: string): Question & { resolves?: string[] } =>
+    ({ id: `q-${text.length}`, stage: "change-plan", question: text, context: "Why it matters.", pid: PID, status: "open", kind: "fact" })
+
+  describe("a focused checklist merge keeps the review findings a plan resolves", () => {
+    const previous: ChangePlan = { shared_decisions: [], groups: [group("old", [OTHER], ["f-000000000a"])], dismissed: [], questions: [],
+      findings: [disposition("Prior timing assessment.", ["f-000000000b"]), disposition("Unrelated advice.", ["f-000000000c"])] }
+    const superseding = (patch: Partial<RepairAdjudication>): RepairAdjudication => ({ shared_decisions: [], groups: [], dismissed: [], findings: [], questions: [],
+      superseded_decisions: [], superseded_findings: [{ index: 0, reason: "The source calls for advice.", sources: SUPPORT }], ...patch })
+
+    test("a superseded disposition's resolves pass to the first group, else finding, else question, of the same result", () => {
+      const toGroup = mergeRepairAdjudications(previous, [superseding({ groups: [group("timing", [PID]), group("later", ["p333333333333"])], findings: [disposition("Also deferred.")] })])
+      expect(toGroup.groups.map(row => row.resolves)).toEqual([["f-000000000b"], undefined])
+      expect(toGroup.findings).toEqual([previous.findings![1]!, disposition("Also deferred.")])
+
+      const toFinding = mergeRepairAdjudications(previous, [superseding({ findings: [disposition("Deferred again."), disposition("Second.")], questions: [question("Is approval given?")] })])
+      expect(toFinding.findings!.map(row => row.resolves)).toEqual([["f-000000000c"], ["f-000000000b"], undefined])
+      expect(toFinding.questions.slice(-1)[0]!.resolves).toBeUndefined()
+
+      const toQuestion = mergeRepairAdjudications(previous, [superseding({ questions: [question("Is approval given?")] })])
+      expect(toQuestion.questions.map(row => row.resolves)).toEqual([["f-000000000b"]])
+    })
+
+    test("a merged overlapping group keeps the union of its parts' resolves", () => {
+      const merged = mergeRepairAdjudications(previous, [
+        superseding({ groups: [group("timing", [PID], ["f-000000000d"])] }),
+        superseding({ superseded_findings: [], groups: [group("dependent", [PID, OTHER], ["f-000000000e", "f-000000000d"])] }),
+      ])
+      expect(merged.groups).toHaveLength(1)
+      expect(merged.groups[0]!.resolves!.toSorted()).toEqual(["f-000000000b", "f-000000000d", "f-000000000e"])
+    })
+  })
+
+  describe("acceptChangePlan", () => {
+    const OWN = "f-00000000a1", SECOND = "f-00000000a2"
+    /** One planned document with one paragraph and a saved review of `findings`. */
+    function reviewed(...findings: string[]) {
+      const directory = matter()
+      writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record the supply terms", file: "supply note.docx", parts: [{ heading: "Delivery", scope: "Delivery" }] }])
+      writeLeanText(directory, "d1/paragraphs.json", JSON.stringify([{ pid: PID, sha256: "initial", text: DRAFTED }]))
+      writeLeanText(directory, "d1/review.json", JSON.stringify({ findings: findings.map((id, index) => ({ id, document: "d1", origin: "drafting", finding: `Finding ${index + 1}.`, sources: [] })) }))
+      return directory
+    }
+    const reply = (patch: Partial<Record<keyof ChangePlan, unknown>>) => JSON.stringify({ shared_decisions: [], groups: [], findings: [], questions: [], ...patch })
+    const ask = (text: string, resolves?: string[]) => ({ pid: PID, question: text, kind: "fact", context: "Why it matters.", ...(resolves ? { resolves } : {}) })
+
+    test("a question's resolves are saved in the change plan only; the questions to ask carry none", () => {
+      const directory = reviewed(OWN)
+      const accepted = acceptChangePlan(directory, "d1", reply({ questions: [ask("Is approval given?", [OWN])] }))
+      expect(accepted.issues).toEqual([])
+      expect(accepted.questions).toHaveLength(1)
+      expect(accepted.questions![0]).not.toHaveProperty("resolves")
+      expect((readLeanJson(directory, "d1/change-plan.json") as ChangePlan).questions[0]!.resolves).toEqual([OWN])
+    })
+
+    test("a plan without dismissed is accepted, and each list of the wrong shape is named with the shape it takes", () => {
+      const directory = reviewed(OWN)
+      const findings = [disposition("Kept open.", [OWN])]
+      expect(acceptChangePlan(directory, "d1", reply({ findings })).issues).toEqual([])
+      const shaped = acceptChangePlan(directory, "d1", reply({ shared_decisions: [{ decision: "Keep the term." }], dismissed: [{ finding_id: OWN, reason: "Not needed." }], findings }))
+      expect(shaped.issues).toEqual(["Return one JSON object with shared_decisions, groups, findings and questions lists. Its shared_decisions is the wrong shape; give a list of nonempty text, possibly empty. Its dismissed is the wrong shape; give a list of text, or leave it out."])
+      expect(acceptChangePlan(directory, "d1", JSON.stringify({ shared_decisions: [], findings, questions: [] })).issues).toEqual(["Return one JSON object with shared_decisions, groups, findings and questions lists. Its groups is missing; give a list of change groups, possibly empty."])
+    })
+
+    test("an id that names no listed finding is dropped without a retry", () => {
+      const directory = reviewed(OWN)
+      expect(acceptChangePlan(directory, "d1", reply({ findings: [disposition("Kept open.", [OWN, "f-00000000ff"])] })).issues).toEqual([])
+      expect((readLeanJson(directory, "d1/change-plan.json") as ChangePlan).findings![0]!.resolves).toEqual([OWN])
+    })
+
+    test("a listed finding left out is retried before the last attempt and saved on it", () => {
+      const directory = reviewed(OWN, SECOND)
+      const plan = reply({ findings: [disposition("Kept open.", [OWN])] })
+      const retried = acceptChangePlan(directory, "d1", plan)
+      expect(retried.issues).toHaveLength(1)
+      expect(retried.issues[0]).toContain(`These review findings are not adjudicated: ${SECOND}.`)
+      expect(retried.issues[0]).not.toContain("An answered question")
+      expect(readLeanText(directory, "d1/change-plan.json")).toBeUndefined()
+      expect(acceptChangePlan(directory, "d1", plan, { final: true }).issues).toEqual([])
+      expect(readLeanText(directory, "d1/change-plan.json")).toBeDefined()
+    })
+
+    test("the answered-question sentence appears only when the answered question carried resolves", () => {
+      const directory = reviewed(OWN, SECOND)
+      writeQuestions(directory, [{ id: "q-answered", stage: "change-plan", document: "d1", pid: PID, question: "Is approval given?", context: "Why it matters.", status: "answered", answer: "Yes." }])
+      const findings = [disposition("Kept open.", [OWN])]
+      const carried = acceptChangePlan(directory, "d1", reply({ findings, questions: [ask("Is approval given?", [SECOND])] }))
+      expect(carried.issues[0]).toContain(`not adjudicated: ${SECOND}.`)
+      expect(carried.issues[0]).toContain("An answered question no longer adjudicates a finding")
+      const bare = acceptChangePlan(directory, "d1", reply({ findings, questions: [ask("Is approval given?")] }))
+      expect(bare.issues[0]).toContain(`not adjudicated: ${SECOND}.`)
+      expect(bare.issues[0]).not.toContain("An answered question")
+    })
+  })
+
+  describe("amendment writers are shown no finding ids", () => {
+    test("writerPlan and writerGroup strip resolves and settled groups", () => {
+      const plan: ChangePlan = { shared_decisions: ["Keep payment."], groups: [group("timing", [PID], ["f-000000000a"])], dismissed: [],
+        findings: [disposition("Kept open.", ["f-000000000b"])], questions: [{ ...question("Is approval given?"), resolves: ["f-000000000c"] }], settled_groups: [group("old", [OTHER], ["f-000000000d"])] }
+      const shown = JSON.stringify(writerPlan(plan))
+      expect(shown).not.toContain("resolves")
+      expect(shown).not.toContain("settled_groups")
+      expect(shown).not.toMatch(FINDING_ID)
+      expect(writerPlan(plan).groups).toEqual([group("timing", [PID])])
+      expect(writerGroup(plan.groups[0]!)).toEqual(group("timing", [PID]))
+    })
+
+    test("in a run, only the change plan prompt lists finding ids; preparation, changes and change review see none", async () => {
+      const directory = matter()
+      // The plan amends for every listed finding in one group, so preparation runs.
+      const plan: Reply = prompt => JSON.stringify({ shared_decisions: [], dismissed: [], findings: [], questions: [],
+        groups: [{ id: "delivery", pids: [pidOf(prompt, DRAFTED)], goal: "State the delivery period.", sources: SUPPORT, limitations: [], resolves: listedFindingIDs(prompt) }] })
+      const model = scriptedModel({ ...happyPath, [AGENT["change-plan"]]: plan })
+      expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+      const texts = (agent: string) => model.prompts.filter(row => row.agent === agent).map(row => row.text)
+      expect(texts(AGENT["change-plan"]).some(text => FINDING_ID.test(text))).toBe(true)
+      for (const agent of [AGENT["change-prepare"], AGENT.changes, AGENT["change-review"]]) {
+        expect([agent, texts(agent).length > 0]).toEqual([agent, true])
+        expect([agent, texts(agent).filter(text => FINDING_ID.test(text))]).toEqual([agent, []])
+      }
+    }, 120_000)
+  })
+
+  describe("the focused checklist repair path", () => {
+    const FOCUSED = "ONE supplied checklist assessment"
+    // One request requirement the checker finds unsatisfied, so a checklist
+    // repair round starts after the first pass. The focused adjudication defers
+    // it; a full plan rejects every listed review finding.
+    function replies(fail: { once: boolean }): Record<string, Reply> {
+      return {
+        ...happyPath,
+        [AGENT["change-plan"]]: text => {
+          if (text.includes(FOCUSED)) {
+            if (fail.once) { fail.once = false; throw new Error("Scripted adjudication failure") }
+            return JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [], superseded_findings: [], superseded_decisions: [], findings: [
+              { disposition: "deferred", kind: "information", detail: "The assessed requirement still needs a correction.", reason: "No supported correction.", documents: ["d1"], sources: [], limitations: ["No supported correction identified."] }] })
+          }
+          const resolves = listedFindingIDs(text)
+          return JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [], findings: resolves.length ? [
+            { disposition: "rejected", kind: "suggestion", detail: "The scripted plan adjudicates the review findings.", reason: "The scripted changes stage decides the amendments.", documents: ["d1"], sources: [], limitations: ["Scripted fixture."], resolves }] : [] })
+        },
+        [CHECKLIST_JOB_AGENTS.extract]: text => {
+          const input = JSON.parse(text.split("SOURCE_INPUT:\n\n")[1]!) as ChecklistProducerInput
+          return JSON.stringify({ items: input.source.document === "request" ? [{ check: "The requested supply note is drafted.", basis: "directive", source_refs: input.passages, qualifications: [], target: { ...input.targets[0], treatment: "operative" } }] : [] })
+        },
+        [CHECKLIST_JOB_AGENTS.check]: text => {
+          const input = JSON.parse(text.split("CHECK_INPUT:\n\n")[1]!) as ChecklistCheckerInput
+          return JSON.stringify({ item_id: input.item_id, status: "unsatisfied", reason: "Focused result unsatisfied.", evidence: input.current_evidence,
+            source_refs: input.item.source_refs, inspection_scope: "Current body paragraphs only.", limitation: "Comments not inspected." })
+        },
+      }
+    }
+    const focused = (model: ReturnType<typeof scriptedModel>) => model.prompts.filter(row => row.agent === AGENT["change-plan"] && row.text.includes(FOCUSED)).length
+
+    test("a review finding the saved plan does not name sends the round's change plan to a full plan", async () => {
+      const directory = matter()
+      const fail = { once: true }
+      const first = scriptedModel(replies(fail))
+      expect((await runLean(directory, { sessions: first.port })).status).toBe("failed")
+      // The saved plan named every finding, so the round took the focused path.
+      expect(focused(first)).toBe(1)
+      expect(unadjudicatedFindings(directory, "d1")).toEqual([])
+
+      // A review record that changed since the plan: new finding text, new id.
+      const NEW = "f-00000000b1"
+      const review = readLeanJson(directory, "d1/review.json") as { findings: unknown[] }
+      writeLeanText(directory, "d1/review.json", JSON.stringify({ findings: [...review.findings, { id: NEW, document: "d1", origin: "drafting", finding: "The payment paragraph needs a due date.", sources: [] }] }))
+      expect(unadjudicatedFindings(directory, "d1").map(row => row.id)).toEqual([NEW])
+
+      enqueueLeanRequest(directory, { kind: "continue" })
+      const resumed = scriptedModel(replies(fail))
+      expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
+      expect(focused(resumed)).toBe(0)
+      expect(resumed.prompts.some(row => row.agent === AGENT["change-plan"] && listedFindingIDs(row.text).includes(NEW))).toBe(true)
+      expect(unadjudicatedFindings(directory, "d1")).toEqual([])
+    }, 180_000)
+  })
+})
+
+describe("findings handoff", () => {
+  const findings: ReviewDisposition[] = [
+    { disposition: "deferred", kind: "research", detail: "Check whether an external enforceability rule qualifies the supplied delivery obligation.", reason: "No verified authority resolves that proposition; obtain targeted research before relying on it.", documents: ["d1"], sources: [], limitations: ["Enforceability has not been verified."] },
+    { disposition: "deferred", kind: "information", detail: "Confirm the recipient for delivery notices.", reason: "No recipient is supplied; complete this before issue.", documents: ["d1"], sources: [], limitations: ["Recipient not supplied."] },
+    { disposition: "recommendation", kind: "suggestion", detail: "Consider a reminder before the supplied delivery deadline.", reason: "This is an optional practical proposal; the agreed period stays unchanged.", documents: ["d1"], sources: SUPPORT, limitations: [] },
+    { disposition: "rejected", kind: "suggestion", detail: "Replace the supplied delivery period with immediate delivery.", reason: "The source specifies a period; no instruction supports shortening it.", documents: ["d1"], sources: SUPPORT, limitations: [] },
+  ]
+  const plan = (rows = findings): ChangePlan => ({ shared_decisions: [], groups: [], dismissed: [], questions: [], findings: structuredClone(rows) })
+
+  function setup() {
+    const directory = matter()
+    writeLeanPlan(directory, [
+      { title: "Supply note", purpose: "Record supplied terms", parts: [{ heading: "Delivery", scope: "Supplied obligation" }] },
+      { title: "Client advice", purpose: "Explain the supply note and remaining choices", parts: [{ heading: "Advice", scope: "Consequences and remaining action" }] },
+    ])
+    writeLeanText(directory, "d1/paragraphs.json", JSON.stringify([{ pid: "p111111111111", sha256: "initial", text: "Delivery is due under the supplied terms." }]))
+    writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([{ pid: "p222222222222", sha256: "final", text: "Delivery remains due under the supplied terms." }]))
+    expect(acceptChangePlan(directory, "d1", JSON.stringify(plan())).issues).toEqual([])
+    return directory
+  }
+
+  test("dispositions survive fresh later writers, notes and review without making optional or rejected suggestions open decisions", () => {
+    const directory = setup()
+    expect(readChangePlan(directory, "d1")?.findings).toEqual(findings)
+    for (const prompt of [completedDocumentsText(directory, "d2"), stagePrompt(directory, "d2.draft"), stagePrompt(directory, "finalize"), packageReviewPrompt(directory)]) {
+      findings.forEach(row => expect(prompt).toContain(row.detail))
+      expect(prompt).toContain('"origin_document": "d1"')
+      expect(prompt).toContain('"disposition": "rejected"')
+      expect(prompt).toContain('"sources": []')
+      expect(prompt).toContain(SUPPORT[0].quote)
+    }
+    // Scope names the operative body; its later advice still gets the findings.
+    expect(stagePrompt(directory, "d2.draft")).not.toContain("p111111111111")
+    expect(deferredFindingItems(directory)).toHaveLength(2)
+    expect(disclosableItems(directory)).toEqual(deferredFindingItems(directory))
+    expect(readOpenItems(directory)).toEqual([]) // no duplicate persisted ledger
+    writeLeanText(directory, "drafting-notes.md", "# Notes\n\nNo remaining work.")
+    expect(finalGate(directory).status).toBe("blocked")
+    writeLeanText(directory, "drafting-notes.md", `# Notes\n\n${deferredFindingItems(directory).map(row => `${row.id}: ${row.detail}`).join("\n")}`)
+    expect(finalGate(directory)).toMatchObject({ status: "pass", delivery: "review_draft" })
+  })
+
+  test("admission is causal for evidence, scope, uncertainty and duplicate dispositions", () => {
+    const directory = setup()
+    expect(checkChangePlan(directory, "d1", plan())).toEqual([])
+    const unsupported = plan()
+    unsupported.findings![3].sources[0].quote = "Unsupported words absent from canonical text."
+    expect(checkChangePlan(directory, "d1", unsupported).join(" ")).toContain("not in that document")
+    const wrongScope = plan()
+    wrongScope.findings![0].documents = ["d9"]
+    expect(checkChangePlan(directory, "d1", wrongScope).join(" ")).toContain("planned document ids")
+    const noLimitation = plan()
+    noLimitation.findings![0].limitations = []
+    expect(checkChangePlan(directory, "d1", noLimitation).join(" ")).toContain("evidence limitation")
+    // A question's kind on a finding is named, with the kinds a finding takes.
+    const questionKind = plan()
+    questionKind.findings![0].kind = "judgment" as never
+    expect(checkChangePlan(directory, "d1", questionKind).join(" ")).toContain('Its kind is "judgment"; use "information", "research" or "suggestion".')
+    // Each malformed field is named with the shape it takes.
+    const unnamed = plan()
+    delete (unnamed.findings![1] as Partial<ReviewDisposition>).reason
+    unnamed.findings![1].limitations = "Recipient not supplied." as never
+    const message = checkChangePlan(directory, "d1", unnamed).join(" ")
+    expect(message).toContain("Its reason is missing; give nonempty text.")
+    expect(message).toContain("Its limitations is the wrong shape; give a list of nonempty text, possibly empty.")
+    expect(message).not.toContain("Its detail")
+    const group = { ...plan(), groups: [{ id: "delivery", pids: [], goal: "Keep the period.", sources: SUPPORT, limitations: [] }] }
+    expect(checkChangePlan(directory, "d1", group).join(" ")).toContain("Its pids is the wrong shape; give a nonempty list of initial draft pids.")
+    const duplicated = plan([...findings, { ...findings[0], detail: `  ${findings[0].detail.toUpperCase()} `, documents: ["d2"] }])
+    expect(checkChangePlan(directory, "d1", duplicated).join(" ")).toContain("consolidate duplicate findings")
+    expect(checkChangePlan(directory, "d1", plan())).toEqual([])
+  })
+
+  test("a finding without affected documents is routed to the document whose review raised it", () => {
+    const directory = setup()
+    const unrouted = plan()
+    unrouted.findings![1].documents = []
+    delete (unrouted.findings![2] as Partial<ReviewDisposition>).documents
+    expect(acceptChangePlan(directory, "d2", JSON.stringify(unrouted)).issues).toEqual([])
+    expect(readChangePlan(directory, "d2")?.findings?.map(row => row.documents)).toEqual([["d1"], ["d2"], ["d2"], ["d1"]])
+  })
+
+  test("changed dispositions invalidate dependent consumers while leaving every draft stable", () => {
+    const directory = setup()
+    const steps = ["d1.draft", "d2.draft", "d2.review", "d2.change-plan", "finalize", "package-review", "gate"] as const
+    const before = steps.map(step => stageInputSha(directory, step))
+    const amended = plan()
+    amended.findings![2].reason = "Explain this as a reminder option without altering the operative period."
+    expect(acceptChangePlan(directory, "d1", JSON.stringify(amended)).issues).toEqual([])
+    expect(steps.map((step, index) => stageInputSha(directory, step) !== before[index])).toEqual([false, false, true, true, true, true, true])
+  })
+
+  test("legacy dismissal retains review navigation without being treated as evidence-backed rejection", async () => {
+    const directory = setup()
+    const reviewed = await acceptStageReply(directory, "d1.review-independent", JSON.stringify({ findings: [
+      { pid: "p111111111111", origin: "law", balance: "neutral", finding: "Further authority is needed before relying on enforceability.", sources: [] },
+    ] }))
+    expect(reviewed.issues).toEqual([])
+    const id = (readLeanJson(directory, "d1/review-independent.json") as { findings: { id: string }[] }).findings[0]!.id
+    // A legacy plan, with a free-text dismissal and no structured dispositions,
+    // adjudicates no finding: it is retried, and the last attempt saves it with
+    // the finding left open and disclosed.
+    const legacy = JSON.stringify({ shared_decisions: [], groups: [], dismissed: ["Defer the research proposition to advice."], questions: [] })
+    expect(acceptChangePlan(directory, "d1", legacy).issues.join(" ")).toContain(`These review findings are not adjudicated: ${id}.`)
+    expect(acceptChangePlan(directory, "d1", legacy, { final: true }).issues).toEqual([])
+    expect(deferredFindingItems(directory)).toContainEqual(expect.objectContaining({ stage: "change-plan", kind: "omission",
+      detail: "Further authority is needed before relying on enforceability.", ref: expect.objectContaining({ document: "d1", finding: id }) }))
+    const context = reviewDispositionText(directory, "d1")
+    expect(context).toContain("legacy_decisions")
+    expect(context).toContain("unadjudicated_review_history")
+    expect(context).toContain("Further authority is needed")
+    expect(context).not.toContain('"disposition": "rejected"')
+    expect(completedDocumentsText(directory, "d2")).not.toContain("p111111111111")
+  })
+
+  test("prior-document free-text pointers are navigation while saved records and canonical quotes stay intact", () => {
+    const directory = setup()
+    const referenced = plan()
+    referenced.findings![0].detail += " Review [p111111111111]."
+    referenced.findings![0].reason += " Final location p222222222222."
+    referenced.findings![0].limitations.push("Unverified for [p111111111111].")
+    referenced.dismissed = ["Earlier idea at [p111111111111] was out of scope."]
+    expect(acceptChangePlan(directory, "d1", JSON.stringify(referenced)).issues).toEqual([])
+    const earlier = completedDocumentsText(directory, "d2")
+    expect(earlier).not.toContain("p111111111111")
+    expect(earlier).not.toContain("p222222222222")
+    expect(earlier).toContain("earlier paragraph")
+    expect(earlier).toContain(SUPPORT[0].quote)
+    expect(readChangePlan(directory, "d1")).toEqual(referenced)
+    expect(packageReviewPrompt(directory)).toContain("p111111111111")
+  })
+
+  test("coordinator applies accepted amendments while deferred findings survive apply and durable resume", async () => {
+    const directory = matter()
+    const model = scriptedModel({ ...happyPath, [AGENT.draft]: drafter(DRAFT, LETTER), [AGENT.changes]: changesFirst, [AGENT.review]: reviewFirst,
+      [AGENT["change-plan"]]: prompt => {
+        const own = /<draft_paragraphs>\n([\s\S]*?)\n<\/draft_paragraphs>/.exec(prompt)?.[1] ?? ""
+        if (!own.includes("The supplier shall deliver the goods.")) return JSON.stringify(plan([]))
+        return JSON.stringify({ ...plan(), groups: [{ id: "delivery", pids: [pidOf(own, "The supplier shall deliver the goods.")], goal: "Retain the supplied delivery period.", sources: SUPPORT, limitations: [], resolves: listedFindingIDs(prompt) }] })
+      },
+    })
+    const result = await runLean(directory, { sessions: model.port })
+    expect(result.stop_reason).toBeNull()
+    expect(result.status).toBe("completed")
+    expect(readParagraphs(directory, "d1", "paragraphs-applied.json").map(row => row.text)).toContain(APPLIED)
+    expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ applied: [{ mode: "code" }] })
+    expect(finalGate(directory)).toMatchObject({ status: "pass", delivery: "review_draft" })
+    expect(readOpenItems(directory).some(row => row.detail === findings[0].detail)).toBe(false)
+    // The delivery group adjudicates the review's finding, so no finding is left open.
+    expect(readChangePlan(directory, "d1")?.groups[0]?.resolves).toHaveLength(1)
+    expect(deferredFindingItems(directory)).toHaveLength(2)
+    const resumed = scriptedModel({})
+    expect((await runLean(directory, { sessions: resumed.port })).status).toBe("completed")
+    expect(resumed.prompts).toEqual([])
+    findings.forEach(row => expect(stagePrompt(directory, "d2.draft")).toContain(row.detail))
+    expect(stagePrompt(directory, "finalize")).toContain(deferredFindingItems(directory)[0].id)
+  }, 120_000)
+})

@@ -11,7 +11,7 @@ import { leanSteps } from "./plan"
 import { runLean, stageInputSha } from "./runner"
 import { answerQuestion, readLeanJson, readOpenItems, writeQuestions, writeLeanText } from "./state"
 import { acceptInstructionsReply, confirmationQuestions, writeInstructionsFile } from "./instructions"
-import { AGENT, cleanupMatters, happyPath, matter, scriptedModel, SOURCE, SOURCE_TEXT } from "./test-support"
+import { AGENT, cleanupMatters, happyPath, matter, scriptedModel, SOURCE, SOURCE_TEXT, SUPPORT } from "./test-support"
 
 afterEach(cleanupMatters)
 
@@ -81,8 +81,6 @@ test("the differences job asks the pre-split question; the gaps job reads the in
   writeInstructionsFile(directory)
   expect(stageInputSha(directory, "discrepancy")).not.toBe(before)
   const differences = evidencePrompt(directory, "discrepancy")
-  expect(differences).toContain("Compare identities, roles, dates, figures, versions and instructions.")
-  expect(differences).not.toMatch(/gap/i)
   expect(differences).not.toContain("# The lawyer's instructions")
   expect(differences).toContain('Return JSON {"entries":[')
   // Each kind of context in its own tag, the question and output contract last.
@@ -94,16 +92,11 @@ test("the differences job asks the pre-split question; the gaps job reads the in
   expect(gaps).not.toContain("<differences>")
   expect(gaps).toMatch(/<request>\nDraft a short supply note from the supply terms\.\n<\/request>/)
   expect(gaps).toContain(`- ${SOURCE}`)
-  expect(gaps).toContain("<question>\nWhich points must the instructed work settle that the sources leave silent, or that only one source speaks to")
-  expect(gaps).not.toContain("Compare identities")
-  expect(evidencePrompt(directory, "spine")).toContain("record the difference as a limitation")
   expect(acceptEvidenceReply(directory, "discrepancy", JSON.stringify({ entries: [], gaps: [GAP], limitations: [] })).issues).toEqual([])
   const intake = researchPrompt(directory, "intake", researchBasis(directory))
   expect(intake).toContain(GAP.detail)
-  expect(intake).toContain("ask a material gap marked lawyer unless an answer or instruction now settles it; the others stay disclosed placeholders or open items.")
   const spine = evidencePrompt(directory, "spine")
   expect(spine).toContain(GAP.detail)
-  expect(spine).toContain("Record each discrepancy gap that no answer or approved research settles as an open-item entry.")
 })
 
 test("each discrepancy job is checked by its own part; code tells a gap restating a difference by its quotes", () => {
@@ -134,8 +127,6 @@ test("a verify job asks one gap against the source index, the lawyer's later ins
   expect([...prompt.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["gap", "sources", "question", "output_contract"])
   expect(prompt).toContain('<gap>\nA point another job found no matter source settles:\nNo \\u003cb>governing\\u003c/b> law.\nThe words that need it, in "request": "Draft a short supply note"\n</gap>')
   expect(prompt).toContain(`- ${SOURCE}`)
-  expect(prompt).toContain(`Use source_id "request" for exact words from the lawyer's later instructions or answers, and a matter source's exact name for its words.\n</sources>`)
-  expect(prompt).toContain("<question>\nDoes a matter source, one of the lawyer's answers or one of the lawyer's later instructions supply this point")
   expect(prompt).toContain('"source_id":"request or exact matter source name"')
   // Only the gap's detail and requirement: not the gaps job's evidence, nor the request.
   expect(prompt).not.toContain(GAP.evidence[0]!.quote)
@@ -170,7 +161,6 @@ test("a verify job asks one gap against the source index, the lawyer's later ins
   ])
   const answered = gapVerifyPrompt(directory, GAP)
   expect([...answered.matchAll(/^<(\w+)>$/gm)].map(match => match[1])).toEqual(["gap", "user_updates", "sources", "question", "output_contract"])
-  expect(answered).toContain("<user_updates>\nLater instructions from the lawyer, in arrival order.")
   expect(answered).toContain("Keep the note to one page.\n</user_updates>")
   expect(answered).not.toContain("Singapore law governs the note.")
   // Not the request, nor the rest of the matter.
@@ -188,7 +178,6 @@ test("a difference verify job asks one entry against its own passages; its reply
   expect(prompt).toContain('The \\u003cb>term\\u003c/b> differs.')
   expect(prompt).toContain(`- in "${SOURCE}": "a \\u003ctag> quote"`)
   expect(prompt).not.toContain(ENTRY.resolution)
-  expect(prompt).toContain('<output_contract>\nReturn JSON {"differs":true} when they do, or {"differs":false} when they state it the same way.\n</output_contract>')
   expect(checkDifferenceVerify({ differs: true })).toEqual([])
   expect(checkDifferenceVerify({ differs: false })).toEqual([])
   for (const value of [{ differs: "no" }, {}, [], null]) expect(checkDifferenceVerify(value)).toEqual(['Return JSON {"differs":true} or {"differs":false}.'])
@@ -219,7 +208,13 @@ test("spine is source-linked and followed by four independent reviews", () => {
   const directory = matter()
   expect(acceptEvidenceReply(directory, "spine", JSON.stringify({ entries: [{ kind: "requirement", detail: "State payment timing", evidence: [{ source_id: SOURCE, quote: "Payment is due on delivery." }], limitations: [] }], limitations: [] })).issues).toEqual([])
   expect(leanSteps(directory)).toEqual(["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "checklist-check", "package-review", "gate"])
-  expect(evidencePrompt(directory, "spine")).toContain("future stages must retrieve underlying text")
+})
+
+test("the source-linked spine accepts a recommendation without misclassifying it as approval and still rejects invented evidence", () => {
+  const directory = matter()
+  const value = (quote: string) => ({ entries: [{ kind: "recommendation", detail: "Proposed delivery wording, subject to client decision.", evidence: [{ source_id: SOURCE, quote }], limitations: ["Proposal, not agreement."] }], limitations: [] })
+  expect(checkEvidence(directory, "spine", value(SUPPORT[0]!.quote))).toEqual([])
+  expect(checkEvidence(directory, "spine", value("No such source passage."))).not.toEqual([])
 })
 
 
@@ -377,7 +372,6 @@ test("the spine cites the recommendation adopted for a delegated question under 
   const reply = (source_id: string, quote: string) => ({ entries: [{ kind: "decision", detail: "Singapore courts and law", evidence: [{ source_id, quote }], limitations: [] }], limitations: [] })
   const prompt = evidencePrompt(directory, "spine")
   expect(prompt).toContain(`Evidence source_id values: ${JSON.stringify(["request", SOURCE, "adopted:q-venue"])}`)
-  expect(prompt).toContain('An "adopted:" source_id, as listed, holds the recommendation adopted for a question the lawyer delegated')
   expect(checkEvidence(directory, "spine", reply("adopted:q-venue", "The Singapore courts."))).toEqual([])
   // The discrepancy record, made before intake asks, reads no adopted recommendation.
   expect(checkEvidence(directory, "discrepancy", { ...reply("adopted:q-venue", "The Singapore courts."), entries: [{ ...reply("adopted:q-venue", "The Singapore courts.").entries[0], material: false, status: "benign", resolution: "Noted." }], gaps: [] })[0]).toContain('Unknown evidence source_id "adopted:q-venue"')

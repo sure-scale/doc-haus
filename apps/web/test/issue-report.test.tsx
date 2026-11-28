@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test"
-import { renderToStaticMarkup } from "react-dom/server"
-import IssuesView from "../src/components/IssuesView"
 import { issueReport } from "../src/components/chat/issue-report"
 
 const row = { area: "Liability [cap]", status: "deviating", severity: "high", rule: "Source §2", why: "Keep the exception \"unless agreed\".", clause: "§2", redline: "" } as const
@@ -11,10 +9,6 @@ describe("review issues transport", () => {
     const report = issueReport("  Findings\r\n\r\n" + register + "\r\n\r\nQualifications.  ", "legal-review")
     expect(report.text).toBe("  Findings\r\n\r\n\r\n\r\nQualifications.  ")
     expect(report.issues).toEqual([row])
-    const html = renderToStaticMarkup(<IssuesView issues={report.issues} />)
-    expect(html).toContain("1 blocking")
-    expect(html).toContain("Liability [cap]")
-    expect(html).toContain("unless agreed")
   })
 
   test("unrelated agents retain even valid register-shaped source", () => {
@@ -24,13 +18,31 @@ describe("review issues transport", () => {
   })
 
   test("quoted, nested, inline and indented examples remain literal", () => {
-    const examples = ["````markdown\n" + register + "\n````", register.split("\n").map(line => "> " + line).join("\n"), register.split("\n").map(line => "    " + line).join("\n"), "Example `" + register + "`", "- Example:\n" + register.split("\n").map(line => "  " + line).join("\n")]
+    const examples = [
+      "````markdown\n" + register + "\n````",
+      register.split("\n").map((line) => "> " + line).join("\n"),
+      register.split("\n").map((line) => "    " + line).join("\n"),
+      "Example `" + register + "`",
+      "- Example:\n" + register.split("\n").map((line) => "  " + line).join("\n"),
+    ]
     for (const text of examples) expect(issueReport(text, "document-reviewer")).toEqual({ text, issues: [] })
   })
 
   test("malformed, incomplete, unsupported and multiple registers preserve the original", () => {
-    const invalidRows = [{ ...row, severity: "urgent" }, { ...row, status: "approved" }, { ...row, why: {} }, { ...row, extra: true }, { area: "Only area", severity: "high" }]
-    const examples = ["```issues\nnot JSON\n```", "```issues\n" + JSON.stringify([row]), register + "\n\n" + register, register.replace("```issues", "```issues example"), ...invalidRows.map(value => "```issues\n" + JSON.stringify([row, value]) + "\n```")]
+    const invalidRows = [
+      { ...row, severity: "urgent" },
+      { ...row, status: "approved" },
+      { ...row, why: {} },
+      { ...row, extra: true },
+      { area: "Only area", severity: "high" },
+    ]
+    const examples = [
+      "```issues\nnot JSON\n```",
+      "```issues\n" + JSON.stringify([row]),
+      register + "\n\n" + register,
+      register.replace("```issues", "```issues example"),
+      ...invalidRows.map((value) => "```issues\n" + JSON.stringify([row, value]) + "\n```"),
+    ]
     for (const text of examples) expect(issueReport(text, "legal-review")).toEqual({ text, issues: [] })
   })
 

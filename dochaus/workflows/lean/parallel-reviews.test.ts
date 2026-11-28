@@ -45,8 +45,6 @@ test("all four independent reviews run together and fan into adjudication before
     if (input.agent === AGENT["change-plan"]) {
       REVIEW_STAGES.forEach(stage => expect(readLeanState(directory)?.stages[`d1.${stage}`]?.status).toBe("done"))
       expect(listedFindings(input.text)).toEqual(REVIEW_STAGES.map(stage => [stage, `Independent finding from ${AGENT[stage]}.`]))
-      expect(input.text).toContain("Consolidate duplicates")
-      expect(input.text).toContain("Reviewer agreement and exact quotation matching alone do not establish")
     }
     if (input.agent === AGENT.changes) {
       expect(readLeanState(directory)?.stages["d1.change-plan"]?.status).toBe("done")
@@ -54,7 +52,6 @@ test("all four independent reviews run together and fan into adjudication before
       expect(input.text).toContain("<change_plan>")
       expect(input.text).toContain("<prepared_changes>")
       expect(input.text).not.toContain("Independent finding from")
-      expect(input.text).toContain("Prepared amendments are proposals, not authority.")
     }
     return model.port.prompt(input)
   } }

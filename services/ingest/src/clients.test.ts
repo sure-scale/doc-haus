@@ -1,14 +1,25 @@
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { clientRoutes } from "./clients"
+import { createMatter, getMatter, listMatters } from "./matter"
 
-const root = mkdtempSync(path.join(tmpdir(), "dochaus-clients-"))
-process.env.WORKSPACE_ROOT = root
-const { clientRoutes } = await import("./clients")
-const { createMatter, getMatter, listMatters } = await import("./matter")
+let root = ""
+let previousWorkspace: string | undefined
 const app = clientRoutes()
-afterAll(() => rmSync(root, { recursive: true, force: true }))
+
+beforeAll(() => {
+  root = mkdtempSync(path.join(tmpdir(), "dochaus-clients-"))
+  previousWorkspace = process.env.WORKSPACE_ROOT
+  process.env.WORKSPACE_ROOT = root
+})
+
+afterAll(() => {
+  if (previousWorkspace === undefined) delete process.env.WORKSPACE_ROOT
+  else process.env.WORKSPACE_ROOT = previousWorkspace
+  if (root) rmSync(root, { recursive: true, force: true })
+})
 
 const post = (body: unknown) =>
   app.request("/clients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })

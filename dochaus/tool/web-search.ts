@@ -13,6 +13,7 @@ import { readSearchKey } from "../lib/research"
 
 const EXA_URL = "https://mcp.exa.ai/mcp"
 const MAX_RESPONSE_BYTES = 256 * 1024
+export const EXA_TIMEOUT_MS = 25_000
 
 export default tool({
   description:
@@ -59,9 +60,9 @@ export default tool({
   },
 })
 
-async function callExa(apiKey: string | undefined, exaArgs: Record<string, unknown>) {
+export async function callExa(apiKey: string | undefined, exaArgs: Record<string, unknown>, timeoutMs = EXA_TIMEOUT_MS) {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 25_000)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   const url = new URL(EXA_URL)
   if (apiKey) url.searchParams.set("exaApiKey", apiKey)
   try {

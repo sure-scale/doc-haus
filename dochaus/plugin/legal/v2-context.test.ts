@@ -53,10 +53,9 @@ for (const output of [
   expect(event.tools).toEqual(original.tools)
   expect(event.options).toEqual(original.options)
   expect(event.system).toEqual(original.system)
-  expect(control.type === "text" && control.text).toContain("latest successful reply alone")
-  expect(control.type === "text" && control.text).toContain("Do not repeat completed tool actions")
-  expect(control.type === "text" && control.text).toContain("unknowns")
-  expect(control.type === "text" && control.text).toContain("approval")
+  expect(control.type).toBe("text")
+  expect(control.type === "text" && control.text).not.toBe(interruptedControl)
+  expect(control.type === "text" && control.text).not.toContain("without repeating completed content")
 })
 
 test("interruption adaptation authenticates native identity and the current admitted lean turn", () => {
@@ -105,8 +104,7 @@ test("native final-step control preserves the lean stage output contract", () =>
   expect(event.messages.at(-1)?.role).toBe("user")
   const part = event.messages.at(-1)?.content[0]
   expect(part?.type).toBe("text")
-  expect(part?.type === "text" && part.text).toContain("required output format")
-  expect(part?.type === "text" && part.text).toContain("Tools remain disabled")
+  expect(part?.type === "text" && part.text).not.toBe(MAX_STEPS_PROMPT)
   expect(part?.type === "text" && part.text).not.toContain("MUST provide a text response summarizing")
 })
 

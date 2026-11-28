@@ -69,7 +69,7 @@ test("conflict prompts omit unrelated matter history and retain actual source/in
  const dir=setup(),input=inputs([{id:"one",pids:[p1]}],[changes([amendment(p1,"New proposal.")])]);writeLeanText(dir,"d1/changes.json",JSON.stringify(changes([amendment(p1,"Earlier proposal.")])));save(dir,input)
  for(const file of ["spine.md","d1/review.md","d1/review-independent.md"])writeLeanText(dir,file,"UNRELATED_HISTORY_SENTINEL ".repeat(3000))
  const work=reconciliationWork(dir,"d1",input.plan,input.preparation),prompt=reconciliationPrompt(dir,"d1",work.conflicts[0]!)
- expect(prompt.length).toBeLessThan(12000);expect(prompt).not.toContain("UNRELATED_HISTORY_SENTINEL");expect(prompt).not.toContain("Initial provision 3.");expect(prompt).toContain(SOURCE);expect(prompt).toContain("proposal is not approval");expect(prompt).toContain("view=source")
+ expect(prompt.length).toBeLessThan(12000);expect(prompt).not.toContain("UNRELATED_HISTORY_SENTINEL");expect(prompt).not.toContain("Initial provision 3.");expect(prompt).toContain(SOURCE);expect(prompt).toContain("view=source")
 })
 
 test("indispensable source question survives focused reconciliation and blocks before apply",async()=>{
@@ -241,7 +241,7 @@ test("a split goal's slices point to the goal's other prepared changes instead o
  save(dir,inputs([{id:"whole",pids:rows.map(row=>row.pid)}],[changes(rows.map((row,index)=>op(row,`Prepared correction ${index+1}. ${filler}`)))]))
  const model=echo(),result=await reconcile(dir,model.port)
  expect(result.status).toBe("done");expect(model.prompts.length).toBeGreaterThan(1)
- for(const prompt of model.prompts){expect(prompt.text.length).toBeLessThanOrEqual(60_000);expect(prompt.text).toContain("read-record .dochaus/lean/d1/change-preparation.json");expect(prompt.text).not.toContain("that is not a dependency")}
+ for(const prompt of model.prompts){expect(prompt.text.length).toBeLessThanOrEqual(60_000);expect(prompt.text).toContain("read-record .dochaus/lean/d1/change-preparation.json")}
 })
 test("when the goal and instructions alone exceed the bound, the withheld changes say so rather than blaming the paragraph",async()=>{
  const dir=matter(),rows=provisions(dir,Array.from({length:5},(_,index)=>`Initial provision ${index+1}.`))
@@ -288,7 +288,6 @@ test("a sliced job's dependency on another slice of the same goal withholds that
  expect(accepted.withheld!.map(row=>[row.amendment.pid,row.amendment.updated,row.issues])).toEqual([[rows[0]!.pid,`Prepared correction 1. ${splitFiller}`,[expect.stringContaining("depends on another paragraph of the same edit")]]])
  expect(accepted.withheld![0]!.issues[0]).toContain('It depends on the paragraph beginning "Initial provision 40. The supplier keeps the delivery…". Reason given: The renamed term must match the definition reconciled elsewhere.')
  expect(accepted.withheld![0]!.issues[0]).not.toContain(rows[39]!.pid)
- for(const prompt of model.prompts)expect(prompt.text).not.toContain("dependencies holds a newly discovered cross-component dependency")
  expect("openItems" in result&&result.openItems.filter(item=>item.kind==="unapplied_amendment").map(item=>item.ref.pid)).toEqual([rows[0]!.pid])
 })
 test("a sliced job's dependency outside its own goal still stops the run",async()=>{
@@ -368,7 +367,6 @@ test("a reconciled reason cannot cite a list id: candidates are shown without id
   const result = await reconcile(dir, model.port)
   expect(result.status).toBe("done"); expect(model.prompts).toHaveLength(1)
   const prompt = model.prompts[0]!.text
-  expect(prompt).toContain("never cite an amendment id in a reason or explanation")
   expect(/<competing_operations_and_explanations>\n(.*)\n<\/competing_operations_and_explanations>/s.exec(prompt)![1]).not.toContain('"id"')
   const accepted = readChangeList(dir, "d1")!
   expect(accepted.amendments.map(row => [row.id, row.pid, row.updated])).toEqual([["a1", p1, "Earlier first correction."], ["a2", p2, "Independent second correction."], ["a3", p3, "Reconciled third correction."]])

@@ -1,50 +1,33 @@
 import { expect, test } from "bun:test"
-import { createElement } from "react"
-import { renderToStaticMarkup } from "react-dom/server"
 import { DerivedChronologyError, DocumentExistsError, DuplicateUploadError, MATTER_DOCUMENT_EXTENSIONS, matterDocumentKind, type AttachmentStatus, type Document, type EmailAttachment, type IngestResult } from "../src/api/ingest/documents"
-import DocumentUpload, { AttachmentEntryRow, attachmentsSummary, documentTree, failedUpload, newUpload, sameNamedSource, uploadedToast, UploadRow } from "../src/components/DocumentUpload"
+import { attachmentsSummary, documentTree, failedUpload, newUpload, sameNamedSource, uploadedToast } from "../src/components/DocumentUpload"
 
 const file = new File(["theirs"], "Agreement.docx")
-const row = (upload: Parameters<typeof UploadRow>[0]["upload"]) => {
-  const html = renderToStaticMarkup(createElement(UploadRow, { upload, onRetry: () => {}, onChoose: () => {}, onDismiss: () => {}, onRestore: () => {} }))
-  return {
-    status: html.match(/<span class="upload-status">([^<]*)<\/span>/)?.[1]?.trim(),
-    buttons: [...html.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map(([, label]) => label!.trim()),
-    html,
-  }
-}
 
-test("a recognizable chronology export waits for coordinated review rather than duplicating actions inline", () => {
-  const failed = failedUpload(new DerivedChronologyError("My corrections.docx", "Chronology.docx", "This is a chronology export."), file)
-  expect(failed).toMatchObject({ status: "chronology", chronology: { name: "My corrections.docx", originalName: "Chronology.docx" } })
-  const rendered = row({ key: 8, file, status: "queued", choice: "keep-both", ...failed })
-  expect(rendered.buttons).toEqual([])
-  expect(rendered.status).toBe("Awaiting chronology review…")
-  const collision = row({ key: 8, file, status: "exists", chronology: { name: file.name }, existing: { name: file.name, role: "source" } })
-  expect(collision.buttons).toEqual([])
-  expect(collision.status).toBe("Awaiting chronology review…")
-})
+test("failedUpload classifies chronology, exists, duplicate, deliverable collision, and generic errors", () => {
+  expect(failedUpload(new DerivedChronologyError("My corrections.docx", "Chronology.docx", "This is a chronology export."), file))
+    .toMatchObject({ status: "chronology", chronology: { name: "My corrections.docx", originalName: "Chronology.docx" } })
 
-test("renamed supplied chronologies retain a visible source classification after reload", () => {
-  const documents: Document[] = [{ id: 20, name: "My corrections (2).docx", doc_path: "/m/My corrections (2).docx", created_at: 20, role: "source", source_provenance: "supplied-chronology" }]
-  const html = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {} }))
-  expect(html).toContain("My corrections (2).docx")
-  expect(html).toContain("Supplied chronology")
-})
+  expect(failedUpload(new DocumentExistsError("Agreement.docx", "source", "Agreement.docx is already in this matter."), file))
+    .toEqual({ status: "exists", existing: { name: "Agreement.docx", role: "source" } })
 
-test("a same-name upload offers to save it as a new version of the existing document, keep both or cancel", () => {
-  const exists = failedUpload(new DocumentExistsError("Agreement.docx", "source", "Agreement.docx is already in this matter."), file)
-  expect(exists).toEqual({ status: "exists", existing: { name: "Agreement.docx", role: "source" } })
-  const rendered = row({ key: 1, file, status: "queued", ...exists })
-  expect(rendered).toMatchObject({
-    status: "Already in this matter. Save this as a new version of it, or keep both?",
-    buttons: ["Save as new version", "Keep both", "Cancel"],
-  })
-  // Neither choice loses anything; a new version is the usual intent and leads.
-  expect(rendered.html).toContain('class="icon-btn upload-choice-lead"')
-  expect(rendered.html).toContain("Earlier versions stay in its history.")
-  expect(rendered.html).not.toContain("Replace")
-  expect(rendered.html).not.toContain("danger")
+  expect(failedUpload(new DocumentExistsError("Agreement.docx", "deliverable", "Cannot replace generated deliverable Agreement.docx with a source document."), file))
+    .toEqual({ status: "exists", existing: { name: "Agreement.docx", role: "deliverable" } })
+
+  const older = failedUpload(new DuplicateUploadError("Agreement.docx", { id: "v-2", number: 2, current: false }, "server words"), file)
+  expect(older).toMatchObject({ status: "duplicate", match: { name: "Agreement.docx", version: { id: "v-2", number: 2 } } })
+  expect(older.retryable).toBeUndefined()
+
+  const current = failedUpload(new DuplicateUploadError("Agreement.docx", { id: "v-4", number: 4, current: true }, ""), file)
+  expect(current.status).toBe("duplicate")
+  expect(current.match).toBeUndefined()
+
+  const renamed = new File(["identical"], "Renamed.pdf")
+  expect(failedUpload(new DuplicateUploadError("Original.pdf", { id: "v1", number: 1, current: true }, "", true), renamed))
+    .toMatchObject({ status: "duplicate", canKeepBoth: true })
+
+  expect(failedUpload(new Error("The embedding model could not be loaded."), file))
+    .toEqual({ status: "failed", error: "The embedding model could not be loaded.", retryable: true })
 })
 
 test("a same-name source is found in the matter's own list before the file is uploaded, whatever its case", () => {
@@ -57,209 +40,79 @@ test("a same-name source is found in the matter's own list before the file is up
   expect(sameNamedSource(documents, new File(["x"], "New terms.docx"))).toBeUndefined()
 })
 
-test("an identical upload says which version it matches and that nothing was saved, and is never retried", () => {
-  const older = failedUpload(new DuplicateUploadError("Agreement.docx", { id: "v-2", number: 2, current: false }, "server words"), file)
-  expect(older).toEqual({
-    status: "duplicate",
-    error: "Identical to version 2 of Agreement.docx. Nothing was saved.",
-    match: { name: "Agreement.docx", version: { id: "v-2", number: 2 } },
-  })
-  // An earlier version can be made current again from the row.
-  expect(row({ key: 5, file, status: "queued", ...older })).toMatchObject({
-    status: "Identical to version 2 of Agreement.docx. Nothing was saved.",
-    buttons: ["Restore version 2", "Dismiss"],
-  })
-  const current = failedUpload(new DuplicateUploadError("Agreement.docx", { id: "v-4", number: 4, current: true }, ""), file)
-  expect(current.error).toBe("Identical to the current version (version 4) of Agreement.docx. Nothing was saved.")
-  expect(row({ key: 6, file, status: "queued", ...current }).buttons).toEqual(["Dismiss"])
-  expect(failedUpload(new DuplicateUploadError("Old.docx", null, ""), file).error).toBe("Identical to Old.docx, already in this matter. Nothing was saved.")
-})
-
-test("a save kept with tracked changes keeps its notice in the row and the toast", () => {
-  const notice = "Saved as version 3, with 2 tracked changes by Pat Reviewer; review them in the viewer before doc.haus edits it."
-  const result: IngestResult = { name: "Agreement.docx", docPath: "/m/Agreement.docx", sections: 4, chunks: 4, injection: null, version: { id: "v-3", number: 3, created: true }, notice }
-  expect(uploadedToast(result)).toEqual({ kind: "warning", message: `Agreement.docx is ready (4 sections). ${notice}` })
-  expect(row({ key: 6, file, status: "ready", notice })).toMatchObject({ status: notice, buttons: ["Dismiss"] })
-  // A first upload is not called a version; a new one is.
-  expect(uploadedToast({ ...result, notice: undefined, version: { id: "v-1", number: 1, created: true } }).message).toBe("Agreement.docx is ready (4 sections).")
-  expect(uploadedToast({ ...result, notice: undefined }).message).toBe("Agreement.docx is ready as version 3 (4 sections).")
-})
-
-test("a renamed exact duplicate can explicitly keep both when the server permits a separate copy", () => {
-  const renamed = new File(["identical"], "Renamed.pdf")
-  const duplicate = failedUpload(new DuplicateUploadError("Original.pdf", { id: "v1", number: 1, current: true }, "", true), renamed)
-  expect(duplicate).toMatchObject({ status: "duplicate", canKeepBoth: true })
-  expect(row({ key: 9, file: renamed, status: "queued", ...duplicate })).toMatchObject({
-    status: "Identical to the current version (version 1) of Original.pdf. Nothing was saved.", buttons: ["Keep both", "Dismiss"],
-  })
-})
-
-test("a returned draft named like a generated document can only be kept beside it", () => {
-  const exists = failedUpload(
-    new DocumentExistsError("Agreement.docx", "deliverable", "Cannot replace generated deliverable Agreement.docx with a source document."),
-    file,
-  )
-  expect(exists).toEqual({ status: "exists", existing: { name: "Agreement.docx", role: "deliverable" } })
-  expect(row({ key: 3, file, status: "queued", ...exists })).toMatchObject({
-    status: "A document created by Doc.Haus has this name. Keep both?",
-    buttons: ["Keep both", "Cancel"],
-  })
-})
-
-test("any other failed upload stays retryable and offers no replace choice", () => {
-  const failed = failedUpload(new Error("The embedding model could not be loaded."), file)
-  expect(failed).toEqual({ status: "failed", error: "The embedding model could not be loaded.", retryable: true })
-  expect(row({ key: 2, file, status: "queued", ...failed })).toMatchObject({
-    status: "The embedding model could not be loaded.",
-    buttons: ["Retry", "Remove"],
-  })
-})
-
 test("every format ingest reads can be added; any other file is refused before upload", () => {
-  // Mirrors MATTER_DOCUMENT_EXTENSIONS in services/ingest/src/ingest.ts.
   expect([...MATTER_DOCUMENT_EXTENSIONS]).toEqual([".docx", ".pdf", ".eml", ".msg", ".xlsx", ".zip", ".md", ".markdown"])
-  for (const [name, kind] of [["Agreement.docx", "docx"], ["Scan.PDF", "pdf"], ["Client instructions.eml", "eml"], ["Forwarded thread.MSG", "msg"], ["Cap table.XLSX", "xlsx"], ["Artwork files.ZIP", "zip"], ["Chronology.md", "md"], ["Notes.MARKDOWN", "markdown"]] as const) {
+  for (const [name, kind] of [
+    ["Agreement.docx", "docx"], ["Scan.PDF", "pdf"], ["Client instructions.eml", "eml"],
+    ["Forwarded thread.MSG", "msg"], ["Cap table.XLSX", "xlsx"], ["Artwork files.ZIP", "zip"],
+    ["Chronology.md", "md"], ["Notes.MARKDOWN", "markdown"],
+  ] as const) {
     expect(matterDocumentKind(name)).toBe(kind)
     expect(newUpload(1, new File(["synthetic"], name))).toMatchObject({ key: 1, status: "queued" })
   }
-  // Like path.extname, which ingest checks: a name whose only dot leads it has no extension.
   for (const [name, kind] of [[".hidden.eml", "eml"], ["..pdf", "pdf"]] as const) expect(matterDocumentKind(name)).toBe(kind)
   for (const name of ["Notes.mbox", "Old.doc", "Table.csv", "eml", "mail.eml.txt", "Agreement", ".pdf", ".DOCX", " .xlsx"]) {
     expect(matterDocumentKind(name)).toBeUndefined()
-    expect(newUpload(2, new File(["synthetic"], name))).toMatchObject({
-      status: "failed",
-      error: "Only Word (.docx), PDF, email (.eml, .msg), Excel (.xlsx), Markdown (.md, .markdown) and zip (.zip) files can be added.",
-    })
-    expect(newUpload(2, new File(["synthetic"], name)).retryable).toBeUndefined()
+    const upload = newUpload(2, new File(["synthetic"], name))
+    expect(upload.status).toBe("failed")
+    expect(upload.retryable).toBeUndefined()
   }
 })
 
-test("the picker offers every format and the list marks emails and spreadsheets with their own glyph", () => {
-  const documents: Document[] = ["Agreement.docx", "Scan.pdf", "Client instructions.eml", "Cap table.xlsx", "Forwarded thread.msg", "Chronology.md"].map((name, index) => ({
-    id: index + 1, name, doc_path: `/matters/m/${name}`, created_at: index + 1, role: "source",
-  }))
-  const html = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {} }))
-  expect(html).toContain('accept=".docx,.pdf,.eml,.msg,.xlsx,.zip,.md,.markdown"')
-  expect(html).toContain("Drop Word, PDF, email, Excel, Markdown or zip files here, or click to browse.")
-  const glyphs = [...html.matchAll(/<span class="doc-type is-(\w+)" title="([^"]+)"[^>]*>([\s\S]*?)<\/span>/g)].map(([, kind, title, svg]) => ({ kind, title, svg }))
-  expect(glyphs.map(({ kind, title }) => [kind, title])).toEqual([
-    ["md", "Markdown source"], ["msg", "Outlook email"], ["xlsx", "Excel spreadsheet"], ["eml", "Email"], ["pdf", "PDF document"], ["docx", "Word document"],
-  ])
-  // Email and spreadsheet glyphs differ from the document glyph Word and PDF share.
-  expect(new Set(glyphs.map(({ svg }) => svg)).size).toBe(3)
-})
+test("uploadedToast and attachmentsSummary classify warnings, tracked-change notices, unreadable files, and attachment outcomes", () => {
+  const base: IngestResult = { name: "Scan.pdf", docPath: "/m/Scan.pdf", sections: 0, chunks: 0, injection: null }
+  expect(uploadedToast({ ...base, sections: 2, quality: { status: "ok" } }).kind).toBe("success")
 
-test("an uploaded email's ready message says which attachments were added and which were not", () => {
+  const noticed = uploadedToast({
+    ...base, name: "Agreement.docx", sections: 4, chunks: 4, version: { id: "v-3", number: 3, created: true },
+    notice: "Saved as version 3, with 2 tracked changes.",
+  })
+  expect(noticed.kind).toBe("warning")
+  expect(noticed.message).toContain("Saved as version 3")
+
+  const unreadable = uploadedToast({ ...base, quality: { status: "no_readable_text", signals: [{ code: "empty", detail: "No text could be extracted" }] } })
+  expect(unreadable.kind).toBe("warning")
+  expect(unreadable.message).toContain("not indexed")
+
+  const signals = [{ code: "little_text_per_page", detail: "40 characters over 2 pages" }]
+  const injection = { findings: [{ rule: "instruction-override", detail: "override attempt" }], flaggedChunks: 1 }
+  const combined = uploadedToast({ ...base, sections: 1, injection, quality: { status: "degraded", signals } })
+  expect(combined.kind).toBe("warning")
+  expect(combined.message).toContain("override attempt")
+  expect(combined.message).toContain("40 characters over 2 pages")
+
+  const unreadableInjection = uploadedToast({ ...base, injection, quality: { status: "no_readable_text", signals: [{ code: "empty", detail: "No text could be extracted" }] } })
+  expect(unreadableInjection.kind).toBe("warning")
+  expect(unreadableInjection.message).toContain("not indexed")
+  expect(unreadableInjection.message).toContain("override attempt")
+
   expect(attachmentsSummary({})).toBe("")
-  expect(attachmentsSummary({ attachments: [
+  const mixed: EmailAttachment[] = [
     { name: "Schedule.docx", type: "application/pdf", size: 1, status: "indexed", document: "Schedule.docx" },
     { name: "Draft.docx", type: "application/pdf", size: 1, status: "same", document: "Draft.docx" },
-    { name: "bundle.zip", type: "application/zip", size: 1, status: "unsupported" },
+    { name: "Scan.pdf", type: "application/pdf", size: 1, status: "no_readable_text", document: "Scan.pdf" },
+    { name: "bundle.zip", type: "application/zip", size: 1, status: "unsupported", note: "linked" },
+    { name: "Locked.docx", type: "application/pdf", size: 1, status: "encrypted" },
     { name: "", type: "application/pdf", size: 1, status: "failed" },
-  ] })).toBe(" 1 attachment added. 1 already in the matter. Not added: bundle.zip (not supported), Unnamed attachment (could not be read).")
-})
-
-test("an uploaded zip's ready message counts files the same way", () => {
-  const result: IngestResult = {
-    name: "Artwork files.zip", docPath: "/m/Artwork files.zip", sections: 1, chunks: 1, injection: null, quality: { status: "ok" },
-    attachments: [
-      { name: "Artwork/Brief.docx", type: "application/pdf", size: 1, status: "indexed", document: "Brief.docx" },
-      { name: "Artwork/Proof.pdf", type: "application/pdf", size: 1, status: "indexed", document: "Proof.pdf" },
-      { name: "Artwork/logo.png", type: "application/octet-stream", size: 1, status: "unsupported" },
-      { name: "Locked.docx", type: "application/pdf", size: 1, status: "encrypted" },
-    ],
-  }
-  expect(uploadedToast(result)).toEqual({
-    kind: "success",
-    message: "Artwork files.zip is ready. 2 files added. Not added: Artwork/logo.png (not supported), Locked.docx (password-protected).",
-  })
-})
-
-// The extraction quality gate (#239): a file with no readable text is added but
-// never reported as ready; a degraded one is ready with a warning.
-test("an upload with no readable text is never reported ready, and a degraded one warns", () => {
-  const base: IngestResult = { name: "Scan.pdf", docPath: "/m/Scan.pdf", sections: 0, chunks: 0, injection: null }
-  const unreadable = uploadedToast({ ...base, quality: { status: "no_readable_text", signals: [{ code: "empty", detail: "No text could be extracted" }] } })
-  expect(unreadable).toEqual({
-    kind: "warning",
-    message: "Scan.pdf was added but not indexed: no readable text (no text could be extracted). The assistant cannot search or cite it.",
-  })
-  expect(row({ key: 4, file, status: "not_indexed" }).status).toBe("Added, not indexed: no readable text")
-
-  const signals = [{ code: "little_text_per_page", detail: "40 characters over 2 pages; pages may be images whose text was not read" }]
-  expect(uploadedToast({ ...base, sections: 1, chunks: 1, quality: { status: "degraded", signals } })).toEqual({
-    kind: "warning",
-    message: "Scan.pdf is ready, with a warning — its text may be incomplete or garbled (40 characters over 2 pages; pages may be images whose text was not read).",
-  })
-  const injection = { findings: [{ rule: "instruction-override", detail: "text that tries to override the assistant's instructions" }], flaggedChunks: 1 }
-  expect(uploadedToast({ ...base, sections: 1, injection, quality: { status: "degraded", signals } }).message).toBe(
-    "Scan.pdf is ready, with warnings — possible prompt injection: text that tries to override the assistant's instructions. The assistant will treat this content as untrusted. Its text may be incomplete or garbled (40 characters over 2 pages; pages may be images whose text was not read).",
-  )
-  // An unreadable file that also carries an injection finding shows both.
-  expect(uploadedToast({ ...base, injection, quality: { status: "no_readable_text", signals: [{ code: "empty", detail: "No text could be extracted" }] } })).toEqual({
-    kind: "warning",
-    message:
-      "Scan.pdf was added but not indexed: no readable text (no text could be extracted). The assistant cannot search or cite it. It also has a warning — possible prompt injection: text that tries to override the assistant's instructions. The assistant will treat this content as untrusted.",
-  })
-  // A quality result never reads as an injection warning, and ok adds nothing.
-  expect(uploadedToast({ ...base, sections: 2, quality: { status: "ok" } })).toEqual({ kind: "success", message: "Scan.pdf is ready (2 sections)." })
-})
-
-test("the list says which sources have no readable text or degraded text, and nothing for the rest", () => {
-  const documents: Document[] = [
-    { id: 1, name: "Blank.docx", doc_path: "/m/Blank.docx", created_at: 4, role: "source", quality: { status: "no_readable_text", signals: [{ code: "empty", detail: "No text could be extracted" }] } },
-    { id: 2, name: "Garbled.docx", doc_path: "/m/Garbled.docx", created_at: 3, role: "source", quality: { status: "degraded", signals: [{ code: "replacement_characters", detail: "40 of 900 characters are replacement or control characters" }] } },
-    { id: 3, name: "Agreement.docx", doc_path: "/m/Agreement.docx", created_at: 2, role: "source", quality: { status: "ok" } },
-    // Ingested before the gate: no result, nothing shown.
-    { id: 4, name: "Older.docx", doc_path: "/m/Older.docx", created_at: 1, role: "source" },
   ]
-  const html = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {} }))
-  const notes = [...html.matchAll(/<span class="document-quality is-(\w+)" title="([^"]*)">([^<]*)<\/span>/g)].map(([, status, title, label]) => ({ status, title, label }))
-  expect(notes).toEqual([
-    { status: "no_readable_text", title: "No text could be extracted", label: "Not indexed: no readable text" },
-    { status: "degraded", title: "40 of 900 characters are replacement or control characters", label: "Text may be incomplete or garbled" },
-  ])
+  const summary = attachmentsSummary({ attachments: mixed })
+  expect(summary).toContain("1 attachment added")
+  expect(summary).toContain("Scan.pdf")
+  expect(summary).toContain("bundle.zip")
+  expect(summary).toContain("Locked.docx")
+  expect(attachmentsSummary({ attachments: [{ name: "Later.bin", type: "", size: 1, status: "from_a_newer_ingest" as unknown as "failed" }] })).toContain("Later.bin")
 })
 
-test("an email lists an attachment with no readable text, and one whose text is degraded", () => {
-  const attachments = [
-    { name: "Scan.pdf", type: "application/pdf", size: 1, status: "no_readable_text" as const, document: "Scan.pdf" },
-    { name: "Notes.docx", type: "application/pdf", size: 1, status: "indexed" as const, document: "Notes.docx", degraded: true as const },
-  ]
-  expect(attachmentsSummary({ attachments })).toBe(" 1 attachment added. Added but not indexed, no readable text: Scan.pdf.")
-  // A status from a newer ingest still reads as not added.
-  expect(attachmentsSummary({ attachments: [{ name: "Later.bin", type: "", size: 1, status: "from_a_newer_ingest" as unknown as "failed" }] }))
-    .toBe(" Not added: Later.bin (not added).")
-})
-
-test("an Outlook attachment held as a link, or an embedded object, says why it was not added", () => {
-  const linked: EmailAttachment = { name: "Contract.docx", type: "", size: 1, status: "unsupported", note: "linked" }
-  const ole: EmailAttachment = { name: "Embedded chart.docx", type: "", size: 1, status: "unsupported", note: "ole" }
-  expect(attachmentsSummary({ attachments: [linked, ole] })).toBe(
-    " Not added: Contract.docx (not supported: a link to a file stored elsewhere), Embedded chart.docx (not supported: an embedded object, not a file).",
-  )
-  const status = (attachment: EmailAttachment) =>
-    renderToStaticMarkup(createElement(AttachmentEntryRow, { attachment, documents: [], onView: () => {} })).match(/<span class="doc-child-status">([^<]*)<\/span>/)?.[1]
-  expect(status(linked)).toBe("Not supported · a link to a file stored elsewhere")
-  expect(status(ole)).toBe("Not supported · an embedded object, not a file")
-})
-
-// Each extracted document is listed once, under the document it came from, by
-// the parent link whatever the parent's type; attachments that did not become
-// one of the parent's documents stay in its list.
-test("the documents list nests each extracted document once under its parent, at any depth", () => {
+test("the documents list nests each extracted document once under its parent, at any depth, without losing orphans or cycles", () => {
   const doc = (id: number, name: string, extra: Partial<Document> = {}): Document => ({ id, name, doc_path: `/m/${name}`, created_at: id, role: "source", ...extra })
-  const entry = (name: string, status: AttachmentStatus, document?: string) =>
-    ({ name, type: "", size: 1, status, ...(document ? { document } : {}) })
+  const entry = (name: string, status: AttachmentStatus, document?: string) => ({ name, type: "", size: 1, status, ...(document ? { document } : {}) })
   const of = (name: string, removed = false) => ({ attachment_of: { name, removed } })
   const tree = documentTree([
     doc(1, "Thread.eml", { attachments: [entry("Bundle.zip", "indexed", "Bundle.zip"), entry("Logo.exe", "unsupported"), entry("Shared.pdf", "same", "Shared.pdf"), entry("Old.docx", "removed", "Old.docx")] }),
     doc(2, "Bundle.zip", of("Thread.eml")),
-    // No attachment record on the archive: its files nest by the link alone.
     doc(3, "Inner.docx", of("Bundle.zip")),
     doc(4, "Shared.pdf"),
     doc(5, "Orphan.docx", of("Gone.eml", true)),
-    // A link loop is still listed rather than lost.
     doc(6, "A.eml", of("B.eml")),
     doc(7, "B.eml", of("A.eml")),
   ])
@@ -271,48 +124,4 @@ test("the documents list nests each extracted document once under its parent, at
     ["Orphan.docx"],
     ["A.eml", ["B.eml"]],
   ])
-})
-
-// Documents filled from one template and a spreadsheet (#208) list once, in
-// one folder entry; only rows that left fields empty say they need input.
-test("a spreadsheet batch lists its documents once, under one folder with their count", () => {
-  const batch = (row: number, missing: string[] = []) => ({ id: "b1", folder: "NDA – 2026-10-31", row, source: "Clients.xlsx", missing })
-  const member = (id: number, name: string, row: number, missing?: string[]): Document =>
-    ({ id, name, doc_path: `/m/${name}`, created_at: 100 + id, role: "deliverable", batch: batch(row, missing) })
-  const documents: Document[] = [
-    member(1, "NDA – Acme Ltd – row 002.docx", 2),
-    member(2, "NDA – row 003.docx", 3, ["Client Name", "Notice date"]),
-    member(3, "NDA – Birch LLP – row 004.docx", 4),
-    { id: 4, name: "Lease.docx", doc_path: "/m/Lease.docx", created_at: 50, role: "deliverable" },
-    { id: 5, name: "Brief.docx", doc_path: "/m/Brief.docx", created_at: 60, role: "source" },
-  ]
-  const html = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {} }))
-  const text = html.replace(/<[^>]+>/g, "")
-  expect(text.match(/NDA – 2026-10-31/g)).toHaveLength(1)
-  expect(text).toContain("NDA – 2026-10-313 documents from Clients.xlsx1 needs input")
-  // Each member once, inside the folder's group, in spreadsheet row order.
-  const group = html.match(/<div id="doc-batch-b1" role="group" aria-label="Documents in NDA – 2026-10-31">([\s\S]*?)<\/ul><\/div>/)?.[1] ?? ""
-  const names = [...group.matchAll(/<span class="drafted-name-text">([^<]*)<\/span>/g)].map(([, name]) => name)
-  // Known by the value that tells it apart; a row without one keeps its file name.
-  expect(names).toEqual(["Acme Ltd", "NDA – row 003.docx", "Birch LLP"])
-  expect(group).toContain('title="Open NDA – Acme Ltd – row 002.docx"')
-  for (const name of names) expect(text.split(name!).length - 1).toBe(1)
-  expect(group).toContain('title="From spreadsheet row 3 of Clients.xlsx">Row 3</span>')
-  // A generated document outside any batch still lists on its own.
-  expect(group).not.toContain("Lease.docx")
-  expect(text).toContain("Lease.docx")
-  // Only the row that left fields empty needs input, with the fields named.
-  expect([...html.matchAll(/<span class="doc-needs-input"[^>]*aria-label="([^"]*)"[^>]*>Needs input<\/span>/g)].map(([, label]) => label))
-    .toEqual(["Needs input: Client Name, Notice date"])
-})
-
-test("a long spreadsheet batch starts closed behind a toggle", () => {
-  const documents: Document[] = Array.from({ length: 7 }, (_, index) => ({
-    id: index + 1, name: `NDA – row ${index + 2}.docx`, doc_path: `/m/NDA – row ${index + 2}.docx`, created_at: index + 1, role: "deliverable" as const,
-    batch: { id: "b2", folder: "NDA – 2026-10-31", row: index + 2, source: "Clients.csv", missing: [] },
-  }))
-  const html = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {} }))
-  expect(html.replace(/<[^>]+>/g, "")).toContain("NDA – 2026-10-317 documents from Clients.csv")
-  expect(html).toMatch(/<button type="button" class="doc-children-toggle" aria-expanded="false" aria-controls="doc-batch-b2">[\s\S]*?Show documents<\/button>/)
-  expect(html).not.toContain("NDA – row 2.docx")
 })

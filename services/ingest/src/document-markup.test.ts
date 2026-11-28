@@ -89,6 +89,7 @@ const query = (name: string, extra: Record<string, string> = {}) => new URLSearc
 const upload = async (name: string, bytes = counterpartyMarkupDocx()) => {
   const body = new FormData()
   body.append("file", new File([new Uint8Array(bytes)], name))
+  body.append("existing", "keep-both")
   const response = await matterRoute("/documents", { method: "POST", body })
   expect(response.status).toBe(200)
   return await response.json() as { injection: { findings: Finding[] } | null; notice?: string; tracked_changes?: { count: number; authors: string[] } }

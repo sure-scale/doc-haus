@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite"
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { elidedParts, elisionGap, locateElidedQuote, nearSpan, normalizeWithMap, sourceReadings, verifyQuote, type QuoteChunk } from "./quote-verify"
+import { elidedParts, elisionGap, locateElidedQuote, nearSpan, normalize, normalizeWithMap, sourceReadings, verifyQuote, type QuoteChunk } from "./quote-verify"
 
 const directories: string[] = []
 afterEach(() => directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true })))
@@ -291,4 +291,13 @@ test("a near-miss quotation is shown the cited document's own words, and only a 
   expect(near("the seller shall pay within thirty days")).toBeUndefined()
   expect(near("the seller shall pay within thirty days", "other.docx")).toBe("The Seller shall pay within thirty days")
   expect(near("the buyer shall pay within 105 days", "other.docx")).toBeUndefined()
+})
+
+test("normalize collapses whitespace/curly quotes and normalizeWithMap maps offsets back to raw", () => {
+  expect(normalize("foo  “bar”\n\tbaz")).toBe('foo "bar" baz')
+  const raw = "foo  bar"
+  const { text, map } = normalizeWithMap(raw)
+  expect(text).toBe("foo bar")
+  expect(map.length).toBe(text.length)
+  expect(map[4]).toBe(raw.lastIndexOf("bar"))
 })

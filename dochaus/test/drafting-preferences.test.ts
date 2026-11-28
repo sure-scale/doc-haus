@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite"
-import { afterAll, beforeEach, expect, test } from "bun:test"
+import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -7,14 +7,21 @@ import { LegalPlugin } from "../plugin/legal/policy"
 import { recordSessionAgent } from "../plugin/legal/session"
 import { DEFAULT_DRAFTING, LEGEND_MAX_LENGTH, draftingAutoModeEnabled, normalizeLegend, normalizePreferences, readFirmDraftingPreferences, renderInstructions } from "../lib/drafting-preferences"
 import { writeLeanPlan } from "../workflows/lean/plan"
+import { stageDraftingPreferences } from "../workflows/lean/stages"
 
-const previous = process.env.WORKSPACE_ROOT
-const workspace = mkdtempSync(path.join(tmpdir(), "drafting-preferences-"))
-const directory = path.join(workspace, "matter")
-const preferences = path.join(workspace, ".preferences")
-mkdirSync(directory)
-process.env.WORKSPACE_ROOT = workspace
+let previous: string | undefined
+let workspace = ""
+let directory = ""
+let preferences = ""
 
+beforeAll(() => {
+  previous = process.env.WORKSPACE_ROOT
+  workspace = mkdtempSync(path.join(tmpdir(), "drafting-preferences-"))
+  directory = path.join(workspace, "matter")
+  preferences = path.join(workspace, ".preferences")
+  mkdirSync(directory)
+  process.env.WORKSPACE_ROOT = workspace
+})
 beforeEach(() => rmSync(preferences, { recursive: true, force: true }))
 afterAll(() => {
   if (previous === undefined) delete process.env.WORKSPACE_ROOT
@@ -22,8 +29,8 @@ afterAll(() => {
   rmSync(workspace, { recursive: true, force: true })
 })
 
-async function systemFor(agent = "lean-body") {
-  const hooks = await LegalPlugin({ directory } as Parameters<typeof LegalPlugin>[0])
+async function systemFor(agent = "lean-body", targetDirectory = directory) {
+  const hooks = await LegalPlugin({ directory: targetDirectory } as Parameters<typeof LegalPlugin>[0])
   const sessionID = `drafting-preferences-${agent}`
   recordSessionAgent(sessionID, agent)
   const output = { system: [] as string[] }
@@ -269,4 +276,65 @@ test("drafting Auto mode defaults off, takes only an explicit true, and never re
   expect(readFirmDraftingPreferences()).toBe(renderInstructions(on))
   writeFileSync(path.join(preferences, "preferences.json"), JSON.stringify({ draftingAutoMode: "yes" }))
   expect(draftingAutoModeEnabled()).toBe(false)
+})
+
+test("narration receives current presentation preferences without drafting authority or plan phases", async () => {
+  const initial = { attorney: "A. Counsel", firm: "Counsel Practice", posture: "conservative", formality: "formal", detail: "detailed", dateFormat: "iso", numberStyle: "numerals", houseStyle: "Use active voice. Draft an action plan before revising documents.", process: "plan-first" }
+  save(initial)
+  const narrator = await systemFor("narrator", workspace)
+  expect(narrator).toContain("Use formal legal drafting style")
+  expect(narrator).toContain("Explain your reasoning in detail")
+  expect(narrator).toContain("2026-06-11")
+  expect(narrator).toContain("plain numerals")
+  expect(narrator).toContain("Use active voice")
+  expect(narrator).toContain("presentation only")
+  expect(narrator).not.toContain("Documents are prepared by")
+  expect(narrator).not.toContain("Draft conservatively")
+  expect(narrator).not.toContain("<plan_first_drafting>")
+  expect(narrator).not.toContain("Inventory. Review")
+
+  const draft = await systemFor("lean-drafting-notes", workspace)
+  expect(draft).toContain("Documents are prepared by A. Counsel of Counsel Practice")
+  expect(draft).toContain("Draft conservatively")
+  expect(draft).toContain("Use active voice")
+  for (const agent of ["draft", "router"]) {
+    const system = await systemFor(agent, workspace)
+    expect(system).not.toContain("<drafting_preferences>")
+    expect(system).not.toContain("Use active voice")
+  }
+
+  save({ ...initial, formality: "plain", detail: "concise", houseStyle: "Use descriptive labels." })
+  const next = await systemFor("narrator", workspace)
+  expect(next).toContain("Prefer plain-language drafting")
+  expect(next).toContain("Keep explanations concise")
+  expect(next).toContain("Use descriptive labels")
+  expect(next).not.toContain("Explain your reasoning in detail")
+  expect(next).not.toContain("Use active voice")
+})
+
+test("firm practice areas reach substantive and library agents and update lean inputs", async () => {
+  const library = path.join(workspace, "library")
+  mkdirSync(library, { recursive: true })
+  save({ practiceAreas: ["Employment", "Corporate"] })
+  for (const agent of ["lean-review", "legal-review"]) {
+    const context = await systemFor(agent)
+    expect(context).toContain('["Employment","Corporate"]')
+    expect(context).toContain("Do not assume any area is the subject of this matter")
+  }
+  for (const builder of ["playbook-importer", "template-builder", "skill-builder", "agent-builder", "workflow-builder"]) {
+    expect(await systemFor(builder, library)).toContain('["Employment","Corporate"]')
+    expect(await systemFor(builder)).toContain('["Employment","Corporate"]')
+  }
+  expect(await systemFor("router")).not.toContain("<practice_areas>")
+  for (const agent of ["lean-checklist-extract", "lean-checklist-check"]) {
+    expect(await systemFor(agent)).not.toContain("<practice_areas>")
+  }
+  // Their JSON replies are read by code: no firm, matter or legal context at all.
+  for (const agent of ["review-compare", "review-suggest"]) expect(await systemFor(agent)).toBe("")
+  const before = stageDraftingPreferences(directory)
+  save({ practiceAreas: ["Corporate"] })
+  expect(stageDraftingPreferences(directory)).not.toBe(before)
+  expect(await systemFor("lean-review")).toContain('["Corporate"]')
+  save({ practiceAreas: [] })
+  expect(await systemFor("legal-review")).not.toContain("<practice_areas>")
 })

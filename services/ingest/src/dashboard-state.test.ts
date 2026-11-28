@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -7,8 +7,11 @@ import { chartKey, TEMPLATES, type Chart } from "../../../dochaus/lib/dashboard-
 import { dashboardRoutes } from "./dashboard"
 import { DASHBOARD_STATE_MAX_BYTES } from "./dashboard-state"
 
-const previous = process.env.WORKSPACE_ROOT
+let previous: string | undefined
 const directories: string[] = []
+beforeEach(() => {
+  previous = process.env.WORKSPACE_ROOT
+})
 afterEach(() => {
   if (previous === undefined) delete process.env.WORKSPACE_ROOT
   else process.env.WORKSPACE_ROOT = previous
@@ -164,4 +167,14 @@ test("legacy chart keys migrate from exact checked settings without rewriting on
     expect((await put(app, invalid, 2)).status).toBe(400)
   }
   expect(await (await app.request("/dashboard/tabs")).json()).toEqual({ state: next, revision: 2 })
+})
+
+test("dashboard sessions use the current workspace's own non-matter directory", async () => {
+  const root = workspace()
+  const app = dashboardRoutes()
+  const res = await app.request("/dashboard/directory")
+  expect(res.status).toBe(200)
+  expect(await res.json()).toEqual({ dir: path.join(root, ".dashboard") })
+  expect(existsSync(path.join(root, ".dashboard"))).toBe(true)
+  expect(existsSync(path.join(root, ".dashboard", "matter.json"))).toBe(false)
 })

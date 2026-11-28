@@ -7,7 +7,7 @@
 // test runner throws ("Cannot use describe outside of the test runner").
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { createHash } from "node:crypto"
@@ -25,10 +25,7 @@ import { openDb } from "../../services/ingest/src/db"
 import { readCurrentVersion } from "../../services/ingest/src/document-versions"
 import { registerLeanDeliverable } from "../../services/ingest/src/lean-deliverables"
 
-// The tool reads INGEST_URL at import time; point it at a dead port so a live
-// dev ingest server never receives test uploads.
-process.env.INGEST_URL = "http://127.0.0.1:1"
-const redact = (await import("../tool/redact")).default
+import redact from "../tool/redact"
 
 const SSN = "123-45-6789"
 // Authored test content; the renderer supplies the shipped, source-built DOCX seed.
@@ -88,9 +85,22 @@ async function publish(input: string | URL | Request, init?: RequestInit) {
   await Bun.write(file, await upload.arrayBuffer())
   return Response.json({ ok: true })
 }
+const extraCleanupPaths: string[] = []
+let savedIngestUrl: string | undefined
 let transport: ReturnType<typeof spyOn>
-beforeEach(() => { transport = spyOn(globalThis, "fetch").mockImplementation(publish as typeof fetch) })
-afterEach(() => transport.mockRestore())
+beforeEach(() => {
+  savedIngestUrl = process.env.INGEST_URL
+  process.env.INGEST_URL = "http://127.0.0.1:1"
+  transport = spyOn(globalThis, "fetch").mockImplementation(publish as typeof fetch)
+})
+afterEach(() => {
+  transport.mockRestore()
+  if (savedIngestUrl === undefined) delete process.env.INGEST_URL
+  else process.env.INGEST_URL = savedIngestUrl
+  for (const dir of testMatters.values()) rmSync(dir, { recursive: true, force: true })
+  testMatters.clear()
+  for (const target of extraCleanupPaths.splice(0)) rmSync(target, { recursive: true, force: true })
+})
 
 async function matterWith(bytes: Uint8Array) {
   const dir = mkdtempSync(path.join(tmpdir(), "redact-matter-"))
@@ -424,6 +434,7 @@ describe("redact tool", () => {
     symlinkSync(kept, path.join(dir, "alias.docx"))
     const spelled = `${dir}-spelled`
     symlinkSync(dir, spelled)
+    extraCleanupPaths.push(spelled)
     const documents = [
       kept, ".dochaus/revisions/document/kept.docx", ".DOCHAUS/revisions/document/kept.docx", ".dochau\u017f/revisions/document/kept.docx",
       path.join(realpathSync(dir), ".dochaus", "revisions", "document", "kept.docx"), "records/revisions/document/kept.docx", "alias.docx",

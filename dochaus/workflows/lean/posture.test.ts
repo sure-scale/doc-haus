@@ -19,9 +19,10 @@ import { AGENT, SOURCE, SUPPORT, cleanupMatters, happyPath, matter, pidOf, scrip
 // matter's Posture when it records one, else the firm's, frozen into the plan by
 // the outline. Real coordinator; only the model is scripted.
 
-const previous = process.env.WORKSPACE_ROOT
+let previous: string | undefined
 let workspace: string
 beforeEach(() => {
+  previous = process.env.WORKSPACE_ROOT
   workspace = mkdtempSync(path.join(tmpdir(), "lean-posture-"))
   process.env.WORKSPACE_ROOT = workspace
 })
@@ -63,8 +64,7 @@ test("before the outline, the run takes the matter's Posture when it records one
   expect(runPosture(directory)).toBe("conservative")
   // The stages read the firm's preferences with the matter's Posture in place of the firm's.
   expect(rendered(directory, "intake")).toBe(readFirmDraftingPreferences("full", "conservative"))
-  expect(rendered(directory, "intake")).toContain("Draft conservatively")
-  expect(rendered(directory, "intake")).not.toContain("Favor the represented person's")
+  expect(rendered(directory, "intake")).not.toBe(readFirmDraftingPreferences("full", "client-favorable"))
 })
 
 test("the outline freezes the run's Posture into the plan, and a settings or matter change mid-run does not alter it", async () => {

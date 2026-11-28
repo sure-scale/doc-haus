@@ -1,10 +1,13 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { engineConfigFile, patchEngineConfig, readEngineConfig, readEngineSettings, setAgentDisabled, setSkillDisabled, writeEngineOverrides } from "./engine-config"
-const previous = { ...process.env }
+let previous: Record<string, string | undefined> = {}
 const directories: string[] = []
+beforeEach(() => {
+  previous = { DOCHAUS_DIR: process.env.DOCHAUS_DIR, DOCHAUS_RUNTIME_DIR: process.env.DOCHAUS_RUNTIME_DIR }
+})
 afterEach(() => {
   for (const key of ["DOCHAUS_DIR", "DOCHAUS_RUNTIME_DIR"]) if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]
   directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true }))

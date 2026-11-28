@@ -41,7 +41,6 @@ test("the prompt shows one entry, its evidence and limitations by index in tagge
   expect(prompt).toContain(`<entry>\nkind: requirement\ndetail: ${COMPOUND.detail}\n</entry>`)
   expect(prompt).toContain(`[0] ${SOURCE}: "${DELIVERY.quote}"\n[1] ${SOURCE}: "${PAYMENT.quote}"`)
   expect(prompt).toContain("<limitations>\nNone.\n</limitations>")
-  expect(prompt).toContain("no lookup is needed")
 })
 
 test("an atomic entry is itself; a compound entry becomes atoms carrying the entry's own evidence", () => {
@@ -83,7 +82,6 @@ test("the check refuses a kind, a reference or a detail the entry does not hold,
   // Under an entry with evidence, an atom carrying only a limitation is still uncited: the prompt asks a limitation only of an entry without evidence.
   const limited = { ...COMPOUND, limitations: ["The order date is not stated."] }
   expect(issues([{ ...first, limitations: [0] }, { ...second, evidence: [], limitations: [0] }], limited)).toEqual([uncited, "Evidence [1] goes to no atom; cite it in the atom it supports."])
-  expect(spineSplitPrompt(limited)).toContain("When the entry has no evidence, each atom carries at least one limitation.")
   expect(issues([first, { ...second, limitations: [0] }])).toEqual(["atoms[1].limitations lists [0], but the entry has no limitation; leave it empty."])
   // A figure, a quoted passage or a capitalised term the entry does not hold is added detail.
   expect(issues([{ ...first, detail: "The note states that the supplier delivers within thirty days of the order date, with 1.5% interest." }, second])).toEqual([

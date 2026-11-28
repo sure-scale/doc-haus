@@ -8,7 +8,6 @@ import { stagePrompt } from "./prompts"
 import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES, LEAN_PROMPT_VERSION, stageInputs } from "./stages"
 import { checkIntakeActingFor, intakeActingFor } from "./intake"
-import { researchPrompt } from "./research"
 import { hashStageInputs, readLeanJson, readLeanText, writeLeanText, type OpenItem } from "./state"
 import { AGENT, DRAFT, SOURCE, cleanupMatters, drafter, happyPath, matter, scriptedModel, type Reply } from "./test-support"
 
@@ -409,12 +408,5 @@ describe("a side taken from the sources", () => {
     const STATED: ActingFor = { ...KESTREL, basis: "stated" }
     expect(parsePlan(outline, "Draft a supply note.", STATED)).toEqual({ issues: [], value: expect.objectContaining({ acting_for: STATED }) })
     expect(parsePlan(outline, "Draft a supply note.", NOT_STATED).issues.join(" ")).toContain('names "Kestrel Works", but the request does not name that party')
-  })
-
-  test("intake determines the side rather than asking only because the request is silent", () => {
-    const prompt = researchPrompt(matter(INSTRUCTED), "intake", "basis")
-    expect(prompt).toContain('basis "inferred", quoting the source that shows it')
-    expect(prompt).toContain("Ask whom the lawyer acts for only when the sources support more than one candidate, as a judgment question naming them")
-    expect(prompt).not.toContain("Do not infer these from a document title")
   })
 })

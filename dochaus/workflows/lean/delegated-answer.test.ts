@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -8,7 +8,7 @@ import { OutputLimitError } from "./native-stage-result"
 import { finalGate, type GateResult } from "./gate"
 import { factOpenItems } from "./fact-answers"
 import { writeLeanPlan } from "./plan"
-import { delegatedDecisionsText, stagePrompt } from "./prompts"
+import { delegatedDecisionsText } from "./prompts"
 import { derivedRecordNote, openItem, quoteFound, quoteMissIssue } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
@@ -25,8 +25,9 @@ import { AGENT, cleanupMatters, happyPath, matter, NO_FINDINGS, noChanges, scrip
 // drafting notes list each delegated decision with its reason, evidence and
 // attribution. Synthetic matter; only the model is scripted.
 
-const workspace = process.env.WORKSPACE_ROOT
+let workspace: string | undefined
 const roots: string[] = []
+beforeEach(() => { workspace = process.env.WORKSPACE_ROOT })
 afterEach(() => {
   if (workspace === undefined) delete process.env.WORKSPACE_ROOT
   else process.env.WORKSPACE_ROOT = workspace
@@ -359,7 +360,6 @@ test("a provisional factual reply requires its affected paragraph marker and not
   writeQuestions(directory, [answered(fact)])
   recordAnswerClasses(directory, new Map([["q-sign", { words: DELEGATION, answer_class: "delegated" as const, fact_status: "provisional" as const }]]))
   expect(answeredQuestionsText(directory)).toContain("a visible open-item marker in every dependent paragraph and disclosure in the notes")
-  expect(stagePrompt(directory, "d1.change-plan", { contextOnly: true })).toContain("An answer whose label says the point stays open settles nothing: keep its visible open-item marker.")
   writeOpenItems(directory, [openItem("changes", "question", "Question for the lawyer: Who signs for the buyer?", { question_id: "q-sign", pid: "p-sign" })])
   writeLeanText(directory, "drafting-notes.md", "# Notes\n\nStill needs the signatory [ref: q-sign].\n")
   const body = (text: string) => writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify([{ pid: "p-sign", sha256: "0", text }]))

@@ -6,7 +6,7 @@ import checkCitationsTool from "../tool/check-citations"
 
 // Tool wrapper test: execute return shape and JSON report output.
 // Behavior of the underlying citation-check library is covered by
-// test/citation-check.test.ts.
+// lib/citation-check.test.ts.
 
 const dirs: string[] = []
 afterEach(() => {

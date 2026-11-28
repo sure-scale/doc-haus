@@ -2,10 +2,14 @@ process.env.TZ = "Europe/London"
 import { expect, test } from "bun:test"
 import type { Matter } from "../src/api/ingest/matters"
 import type { LeanDraftingStatus } from "../src/api/ingest/lean"
+import type { DraftingPreferences } from "../src/api/ingest/preferences"
+import type { SetupProgress } from "../src/api/ingest/setup"
+import type { WordSetupStatus } from "../src/api/ingest/word"
 import {
-  attention, chartStart, costByMatter, costEntries, dailyConversations, dailySpend, drafts, lastDays, periodRange, previousRange, progress, spendCsv, summarize,
-  isConversation, type CostEntry, type MatterActivity, type Session,
+  attention, chartStart, costByMatter, costEntries, dailyConversations, dailySpend, dashboardRefreshController, drafts, lastDays, loadDashboard, periodRange, previousRange, progress, spendCsv, summarize,
+  isConversation, type CostEntry, type DashboardData, type MatterActivity, type Session,
 } from "../src/components/dashboard/data"
+import { setupTabProgress } from "../src/components/dashboard/SetupTab"
 
 const matter = { id: "m1", title: "Alder House · Services agreement", dir: "/fixture/alder", created_at: Date.UTC(2026, 0, 5) } as Matter
 const at = (iso: string) => new Date(iso).getTime()
@@ -173,4 +177,153 @@ test("conversation titles never classify user content as runtime ownership", () 
     expect(isConversation(session("human", "2026-10-28T09:00:00Z", { title }))).toBe(true)
     expect(isConversation(session("system", "2026-10-28T09:00:00Z", { title, metadata: { dochaus_role: "review-grid" } }))).toBe(false)
   }
+})
+
+test("spend comes from ingest's ledger; a failed read is partial, never zero", async () => {
+  const original = globalThis.fetch
+  const created = Date.parse("2026-09-30T12:00:00Z")
+  const later = Date.parse("2026-10-01T12:00:00Z")
+  let usage: "ok" | "failing" | "missing" = "ok"
+  const usageBodies: unknown[] = []
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    const path = url.pathname
+    const json = (value: unknown, status = 200) => Response.json(value, { status })
+    if (path === "/matters") return json([{ id: "m1", title: "Matter", dir: "/fixture", created_at: created }])
+    if (path === "/matters/m1") return json({ documents: [] })
+    if (path === "/matters/m1/drafting-status") return json(null)
+    if (path === "/preferences") return json({})
+    if (path === "/word/setup") return json({ status: "unsupported" })
+    if (path === "/templates") return json({ templates: [] })
+    if (path === "/playbooks/library") return json({ playbooks: [] })
+    if (path === "/clients" || path === "/jurisdictions") return json([])
+    if (path === "/api/session") return json({ data: [{ id: "long", time: { created, updated: later }, cost: 3, tokens: {} }], cursor: { next: null } })
+    if (path === "/dashboard/discovery") {
+      usageBodies.push(JSON.parse(String(init?.body)))
+      if (usage === "failing") return json({ error: "Could not inspect dashboard data." }, 503)
+      const matters = usage === "missing" ? {} : { m1: { costs: [{ time: created, cost: 1, agent: "qa" }, { time: later, cost: 2, agent: "qa" }, { time: later, cost: 0.5, agent: "prepare-changes" }], unread: false, unpriced: 0 } }
+      return json({ updatedAt: later, matters, workspace: { costs: [{ time: later, cost: 0.25, agent: "dashboard" }], unread: false, unpriced: 0 } })
+    }
+    throw new Error(`Unexpected loader request: ${path}`)
+  }) as typeof fetch
+  try {
+    const good = await loadDashboard()
+    expect(good.matters[0]!.unread).toBe(false)
+    expect(good.matters[0]!.costs.map(({ time, cost }) => [time, cost])).toEqual([[created, 1], [later, 2], [later, 0.5]])
+    expect(good.workspace).toEqual({ costs: [{ time: later, cost: 0.25, agent: "dashboard" }], unread: false, unpriced: 0 })
+    expect(good.matters).toHaveLength(1)
+    usage = "failing"
+    const partial = await loadDashboard()
+    expect(partial.matters[0]!.unread).toBe(true)
+    expect(partial.matters[0]!.costs).toEqual([])
+    expect(partial.matters[0]!.sessions).toHaveLength(1)
+    expect(partial.workspace?.unread).toBe(true)
+    usage = "missing"
+    expect((await loadDashboard()).matters[0]!.unread).toBe(true)
+    usage = "ok"
+    expect(await loadDashboard()).toMatchObject({ matters: [{ unread: false, costs: good.matters[0]!.costs }] })
+    expect(usageBodies).toEqual(Array(4).fill({ action: "usage" }))
+  } finally { globalThis.fetch = original }
+})
+
+const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+test("invalidations coalesce, do not overlap, and discard superseded results", async () => {
+  const pending: Array<(value: number) => void> = []
+  const values: number[] = []
+  let reads = 0
+  const reader = dashboardRefreshController({
+    load: () => { reads++; return new Promise<number>((resolve) => pending.push(resolve)) },
+    pending: () => {}, publish: (value) => values.push(value), visible: () => true,
+  })
+  reader.request()
+  reader.request()
+  reader.request()
+  expect(reads).toBe(1)
+  pending.shift()!(1)
+  await tick()
+  expect(values).toEqual([])
+  expect(reads).toBe(2)
+  pending.shift()!(2)
+  await tick()
+  expect(values).toEqual([2])
+  reader.request()
+  expect(reads).toBe(3)
+  reader.stop()
+  pending.shift()!(3)
+  await tick()
+  expect(values).toEqual([2])
+})
+
+test("polling pauses when hidden, resumes immediately when visible, and stops cleanly", async () => {
+  let visible = true
+  let reads = 0
+  const reader = dashboardRefreshController({
+    load: async () => ++reads, pending: () => {}, publish: () => {},
+    visible: () => visible, intervalMs: 15,
+  })
+  reader.request()
+  await tick()
+  visible = false
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  expect(reads).toBe(1)
+  reader.onVisible()
+  expect(reads).toBe(1)
+  visible = true
+  reader.onVisible()
+  await tick()
+  expect(reads).toBe(2)
+  reader.stop()
+  reader.onVisible()
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  expect(reads).toBe(2)
+})
+
+const setupFixture: SetupProgress = { version: 1, completed: [], skipped: ["details", "research"], next: "done", ready: true }
+const setupPreferences = { attorney: "Alex Reed", firm: "Example Practice", practiceAreas: ["Commercial"], searchApiKey: "", houseStyle: "" } as DraftingPreferences
+const setupData = (patch: Partial<DashboardData> = {}): DashboardData => ({ matters: [], ...patch })
+const wordSetup = (status: WordSetupStatus["status"], available = false) => ({ status, available }) as WordSetupStatus
+
+test("an unavailable or skipped step is not completed merely by onboarding bookkeeping", () => {
+  expect(setupTabProgress(setupData(), null, []).done).toBe(0)
+  expect(setupTabProgress(setupData(), setupFixture, []).done).toBe(1)
+  expect(setupTabProgress(setupData(), { ...setupFixture, ready: false, completed: ["models", "details", "research"] }, []).done).toBe(0)
+})
+
+test("practice completion requires saved identity and law while practice areas are optional", () => {
+  const practice = setupData({ preferences: setupPreferences })
+  expect(setupTabProgress(practice, setupFixture, ["england-wales"])).toEqual({ done: 2, total: 5 })
+  expect(setupTabProgress(practice, setupFixture, []).done).toBe(1)
+  expect(setupTabProgress(practice, setupFixture, ["  "]).done).toBe(1)
+  expect(setupTabProgress(setupData({ preferences: { ...setupPreferences, practiceAreas: [] } }), setupFixture, ["england-wales"]).done).toBe(2)
+  expect(setupTabProgress(setupData({ preferences: { ...setupPreferences, firm: " " } }), setupFixture, ["england-wales"]).done).toBe(1)
+})
+
+test("research completion reflects a saved key, not a skipped research gate", () => {
+  expect(setupTabProgress(setupData({ preferences: setupPreferences }), null, []).done).toBe(0)
+  expect(setupTabProgress(setupData({ preferences: { ...setupPreferences, searchApiKey: "synthetic-key" } }), null, []).done).toBe(1)
+  expect(setupTabProgress(setupData({ preferences: { ...setupPreferences, searchApiKey: "  " } }), null, []).done).toBe(0)
+})
+
+test("Word requires ready setup or an available administrator-managed connection", () => {
+  for (const status of ["unsupported", "not_configured", "needs_repair", "word_missing", "external"] as const) {
+    expect(setupTabProgress(setupData({ word: wordSetup(status) }), null, []).done).toBe(0)
+  }
+  expect(setupTabProgress(setupData({ word: wordSetup("ready", true) }), null, []).done).toBe(1)
+  expect(setupTabProgress(setupData({ word: wordSetup("external", true) }), null, []).done).toBe(1)
+})
+
+test("drafting completes after an explicit save without requiring house style or templates", () => {
+  const styled = { ...setupPreferences, houseStyle: "Use plain English." }
+  expect(setupTabProgress(setupData({ preferences: styled }), null, []).done).toBe(0)
+  expect(setupTabProgress(setupData({ preferences: styled, templates: 0 }), null, []).done).toBe(0)
+  expect(setupTabProgress(setupData({ preferences: setupPreferences, templates: 1 }), null, []).done).toBe(0)
+  expect(setupTabProgress(setupData({ preferences: styled, templates: 1 }), null, []).done).toBe(0)
+  expect(setupTabProgress(setupData({ preferences: { ...setupPreferences, draftingConfigured: true } }), null, []).done).toBe(1)
+})
+
+test("complete saved configuration yields five, and deleting a prerequisite reduces progress", () => {
+  const complete = setupData({ preferences: { ...setupPreferences, draftingConfigured: true, searchApiKey: "synthetic-key" }, word: wordSetup("ready", true), templates: 0 })
+  expect(setupTabProgress(complete, setupFixture, ["england-wales"])).toEqual({ done: 5, total: 5 })
+  expect(setupTabProgress(complete, setupFixture, [])).toEqual({ done: 4, total: 5 })
 })

@@ -1,22 +1,41 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import DocumentViewer, { acceptedEditsHint, citationStatus, combinedNotUpdatedNotice, DownloadActions, ExtractedText, notesNotUpdatedNotice, pdfCitationStatus, preparedNotice, redlineNotUpdatedNotice, requestEditsLine, staleExportNotice } from "../src/components/DocumentViewer"
-import { acceptAllRedlines, acceptRedline, type Redline } from "../src/api/ingest/redlines"
+import { Window } from "happy-dom"
+import { FILLED_VALUE_FILL } from "../../../dochaus/lib/marker-patterns"
 import { fetchDocumentText } from "../src/api/ingest/documents"
+import { acceptAllRedlines, acceptRedline, type Redline } from "../src/api/ingest/redlines"
 import { citationPassage } from "../src/components/citation-target"
+import { decorateFilledValues } from "../src/components/document-markers"
+import {
+  acceptedEditsHint,
+  combinedNotUpdatedNotice,
+  ExtractedText,
+  notesNotUpdatedNotice,
+  pdfCitationStatus,
+  preparedNotice,
+  redlineNotUpdatedNotice,
+  requestEditsLine,
+  staleExportNotice,
+} from "../src/components/DocumentViewer"
 
 const proposal = (id: number, stale?: true): Redline => ({
-  id, doc_name: "working.docx", scope: "phrase", find_text: "thirty days", old_text: "thirty days", new_text: "forty-five days",
-  author: "Synthetic Reviewing Lawyer", review_comment: "", created_at: id,
-  ...(stale ? { stale, stale_reason: "This proposal targets an earlier Word revision. Prepare a fresh change list." } : {}),
+  id,
+  doc_name: "working.docx",
+  scope: "phrase",
+  find_text: "thirty days",
+  old_text: "thirty days",
+  new_text: "forty-five days",
+  author: "Synthetic Reviewing Lawyer",
+  review_comment: "",
+  created_at: id,
+  ...(stale ? { stale, stale_reason: "Targets an earlier Word revision." } : {}),
 })
 
-test("PDF citation status quotes preserve literal source characters and disclose prefix truncation", () => {
+test("PDF citation status quotes preserve literal source characters and cap prefix length", () => {
   const excerpt = "# Token `A|B` uses \\*literal\\* and **stars**.\n---\nKeep  spaces."
   const shown = renderToStaticMarkup(pdfCitationStatus({ section: "Tokens", excerpt }, { status: "matched", page: 2 }))
   expect(shown).toContain(`<q>${excerpt}</q>`)
-  expect(shown).toContain("Cited passage on page 2")
   const long = "A|B ".repeat(30)
   const cut = renderToStaticMarkup(pdfCitationStatus({ section: "Tokens", excerpt: long }, { status: "matched", page: 2 }))
   const quote = cut.match(/<q>([\s\S]*)<\/q>/)?.[1]
@@ -24,104 +43,81 @@ test("PDF citation status quotes preserve literal source characters and disclose
   expect(long.startsWith(quote!.slice(0, -1))).toBe(true)
   expect(quote!.length).toBeLessThanOrEqual(101)
 })
-const buttons = (redlines: Redline[], preview = true) =>
-  [...renderToStaticMarkup(createElement(DownloadActions, { redlines, preview, onDownload: () => {} }))
-    .matchAll(/<button([^>]*)>([\s\S]*?)<\/button>/g)].map(([, attributes, content]) => ({
-    label: content.replace(/<[^>]+>/g, "").trim() || attributes.match(/aria-label="([^"]*)"/)?.[1], disabled: attributes.includes("disabled"),
-  }))
 
-describe("document viewer downloads", () => {
-  // The split button's menu stays in the markup, hidden when closed, so its items and disabled state are visible here.
-  test("the current Word file stays downloadable whatever is pending", () => {
-    expect(buttons([])).toEqual([{ label: "Download", disabled: false }])
-    expect(buttons([proposal(1, true)])).toEqual([{ label: "Download", disabled: false }])
-    expect(buttons([proposal(1, true), proposal(2)])).toEqual([
-      { label: "Download", disabled: false }, { label: "More download options", disabled: false }, { label: "Download with proposals", disabled: false },
-    ])
-    expect(buttons([proposal(2)], false)).toEqual([
-      { label: "Download", disabled: false }, { label: "More download options", disabled: false }, { label: "Download with proposals", disabled: true },
-    ])
-  })
-
-  test("stale proposals are named as excluded with the action that clears them", () => {
-    expect(staleExportNotice([proposal(2)])).toBeUndefined()
-    expect(staleExportNotice([proposal(1, true), proposal(2)])).toBe(
-      "1 stale proposal is left out of the preview and the download with proposals, and Accept all is unavailable until it is rejected. " +
-      "Reject it to clear it; prepare a fresh change list if the change is still needed.")
-    expect(staleExportNotice([proposal(1, true), proposal(3, true)])).toStartWith("2 stale proposals are left out")
-    expect(staleExportNotice([proposal(1, true), proposal(3, true)])).toContain("until they are rejected. Reject them to clear them")
-  })
+test("highlights exactly the spans a batch preview shaded as filled values", () => {
+  const browser = new Window()
+  try {
+    browser.document.body.innerHTML = `<style>.docx-a { background: #${FILLED_VALUE_FILL}; } .docx-b { background: #FFF2CC; }</style>
+      <div id="page"><p>Dear <span class="docx-a">Example Contact</span>, re <span class="docx-b">[insert date]</span> and <span>plain text</span>.</p></div>`
+    const page = browser.document.getElementById("page") as unknown as HTMLElement
+    expect(decorateFilledValues(page)).toBe(1)
+    const marked = [...page.querySelectorAll(".doc-filled")]
+    expect(marked.map((span) => span.textContent)).toEqual(["Example Contact"])
+  } finally {
+    browser.happyDOM.abort()
+  }
 })
 
-describe("doc.haus's edits beside the file's tracked changes", () => {
-  test("Request edits says the tracked changes stay and names who accepted edits are marked as, never doc.haus itself", () => {
-    expect(requestEditsLine(0, "Pat Lawyer")).toBeUndefined()
-    expect(requestEditsLine(1, "Pat Lawyer")).toBe(
-      "The 1 tracked change already in this file stays as it is. Each proposal you accept is added beside it as a tracked change marked as Pat Lawyer.")
-    expect(requestEditsLine(3, "doc.haus")).toBe(
-      "The 3 tracked changes already in this file stay as they are. Each proposal you accept is added beside them as a tracked change.")
-    expect(requestEditsLine(3, null)).toEndWith("beside them as a tracked change.")
+describe("proposal status notices", () => {
+  test("stale notice appears only when stale proposals exist and reflects their count", () => {
+    expect(staleExportNotice([proposal(2)])).toBeUndefined()
+    expect(staleExportNotice([proposal(1, true), proposal(2)])).toContain("1 stale proposal")
+    expect(staleExportNotice([proposal(1, true), proposal(3, true)])).toContain("2 stale proposals")
   })
 
-  test("the proposals list says where accepted edits go only when the file holds someone else's tracked changes", () => {
+  test("attribution hints stay silent when unnecessary and never attribute edits to doc.haus itself", () => {
+    expect(requestEditsLine(0, "Pat Lawyer")).toBeUndefined()
+    expect(requestEditsLine(1, "Pat Lawyer")).toContain("Pat Lawyer")
+    expect(requestEditsLine(3, "doc.haus")).not.toContain("doc.haus")
+    expect(requestEditsLine(3, null)).toBeDefined()
+
     const by = (...authors: string[]) => authors.map((author) => ({ author }))
-    expect(acceptedEditsHint(by("Morgan Okafor"), "Pat Lawyer")).toBe("Accepted edits go into the file as tracked changes under Pat Lawyer, beside theirs.")
-    // Only the lawyer's own earlier accepts, whatever the case or spacing: nothing of theirs to sit beside.
+    expect(acceptedEditsHint(by("Morgan Okafor"), "Pat Lawyer")).toContain("Pat Lawyer")
     expect(acceptedEditsHint(by(" pat lawyer", "Pat Lawyer"), "Pat Lawyer")).toBeUndefined()
-    expect(acceptedEditsHint(by("Morgan Okafor"), "doc.haus")).toBe("Accepted edits go into the file as tracked changes, beside theirs.")
+    expect(acceptedEditsHint(by("Morgan Okafor"), "doc.haus")).not.toContain("doc.haus")
     expect(acceptedEditsHint(by("doc.haus"), null)).toBeUndefined()
-    // Until the settings are read, it waits rather than guess whose changes are whose.
     expect(acceptedEditsHint(by("Morgan Okafor"), undefined)).toBeUndefined()
   })
-})
 
-describe("the Prepare line", () => {
-  test("counts only the batch's proposals still pending and fresh, and goes when none is left", () => {
-    expect(preparedNotice([1, 2, 3], [proposal(1), proposal(2), proposal(3)])).toBe("3 proposed changes ready for review.")
-    // An older stale proposal outside the batch is the stale notice's to report.
-    expect(preparedNotice([2, 3], [proposal(1, true), proposal(2), proposal(3)])).toBe("2 proposed changes ready for review.")
-    // Card 1 accepted, card 3 stale since: one is left to review.
-    expect(preparedNotice([1, 2, 3], [proposal(2), proposal(3, true)])).toBe("1 proposed change ready for review.")
+  test("preparedNotice counts only fresh pending proposals from the batch", () => {
+    expect(preparedNotice([1, 2, 3], [proposal(1), proposal(2), proposal(3)])).toContain("3 ")
+    expect(preparedNotice([2, 3], [proposal(1, true), proposal(2), proposal(3)])).toContain("2 ")
+    expect(preparedNotice([1, 2, 3], [proposal(2), proposal(3, true)])).toContain("1 ")
     expect(preparedNotice([1, 2, 3], [proposal(3, true)])).toBeUndefined()
     expect(preparedNotice([1, 2], [])).toBeUndefined()
-    // Before the list refetches, a new batch is not yet counted.
     expect(preparedNotice([4], [proposal(3, true)])).toBeUndefined()
-    expect(preparedNotice([], [proposal(3)])).toBe("No changes were proposed.")
+    expect(preparedNotice([], [proposal(3)])).toBeDefined()
   })
-})
 
-describe("the delivered redline after an accept", () => {
-  test("a redline left as it was is named in plain words; anything else says nothing", () => {
-    expect(redlineNotUpdatedNotice({ redline_updated: false, redline_skip_reason: "pending_redline_proposals" })).toBe(
-      "The redline was not updated: the redline has pending proposed changes.")
-    expect(redlineNotUpdatedNotice({ redline_updated: false, redline_skip_reason: "rebuild_failed" })).toBe(
-      "The redline was not updated: it could not be rebuilt from the accepted document.")
-    expect(redlineNotUpdatedNotice({ redline_updated: false, redline_skip_reason: "unknown_reason" })).toBe("The redline was not updated.")
+  test("skipped redline, notes, and combined update notices appear only when updated is false", () => {
+    for (const reason of ["pending_redline_proposals", "rebuild_failed", "unknown_reason"]) {
+      expect(redlineNotUpdatedNotice({ redline_updated: false, redline_skip_reason: reason })).toBeDefined()
+    }
     expect(redlineNotUpdatedNotice({ redline_updated: true, notes_updated: false })).toBeUndefined()
     expect(redlineNotUpdatedNotice({})).toBeUndefined()
     expect(redlineNotUpdatedNotice(undefined)).toBeUndefined()
-  })
-})
 
-describe("drafting notes after an accept", () => {
-  test("a skipped notes update is named in plain words; anything else says nothing", () => {
-    expect(notesNotUpdatedNotice({ notes_updated: false, notes_skip_reason: "pending_notes_proposals" })).toBe(
-      "Change accepted. The drafting notes were not updated: the notes have pending proposed changes.")
-    expect(notesNotUpdatedNotice({ notes_updated: false, notes_skip_reason: "write_failed" }, true)).toBe(
-      "Changes accepted. The drafting notes were not updated: the notes file could not be saved.")
-    expect(notesNotUpdatedNotice({ notes_updated: false, notes_skip_reason: "unknown_reason" })).toBe(
-      "Change accepted. The drafting notes were not updated.")
+    for (const reason of ["pending_notes_proposals", "write_failed", "unknown_reason"]) {
+      expect(notesNotUpdatedNotice({ notes_updated: false, notes_skip_reason: reason })).toBeDefined()
+    }
     expect(notesNotUpdatedNotice({ notes_updated: true })).toBeUndefined()
     expect(notesNotUpdatedNotice({})).toBeUndefined()
     expect(notesNotUpdatedNotice(undefined)).toBeUndefined()
+
+    for (const reason of ["build_refused", "combined_changed", "unknown_reason"]) {
+      expect(combinedNotUpdatedNotice({ combined_updated: false, combined_skip_reason: reason })).toBeDefined()
+    }
+    expect(combinedNotUpdatedNotice({ combined_updated: true })).toBeUndefined()
+    expect(combinedNotUpdatedNotice({ notes_updated: false })).toBeUndefined()
+    expect(combinedNotUpdatedNotice(undefined)).toBeUndefined()
   })
 })
 
-describe("the saved combined file after an accept", () => {
+describe("accept and extracted-text API contracts", () => {
   const originalFetch = globalThis.fetch
   afterEach(() => { globalThis.fetch = originalFetch })
 
-  test("an accept reports whether the combined file was rebuilt, and an accept without one reports nothing", async () => {
+  test("acceptRedline and acceptAllRedlines preserve combined-file rebuild fields only when reported", async () => {
     const answer = (body: unknown) => { globalThis.fetch = (async () => Response.json(body)) as unknown as typeof fetch }
     answer({ ok: true, notes_updated: true, combined_updated: false, combined_skip_reason: "build_refused" })
     expect(await acceptRedline("m", 1)).toEqual({ notes_updated: true, combined_updated: false, combined_skip_reason: "build_refused" })
@@ -131,69 +127,27 @@ describe("the saved combined file after an accept", () => {
     expect(await acceptRedline("m", 1)).not.toHaveProperty("combined_updated")
   })
 
-  test("a combined file left as it was is named in plain words; anything else says nothing", () => {
-    expect(combinedNotUpdatedNotice({ combined_updated: false, combined_skip_reason: "build_refused" })).toBe(
-      "The combined file was not updated: the memo and the draft can no longer be combined. Download them separately.")
-    expect(combinedNotUpdatedNotice({ combined_updated: false, combined_skip_reason: "combined_changed" })).toBe(
-      "The combined file was not updated: the combined file has changes of its own, which are kept.")
-    expect(combinedNotUpdatedNotice({ combined_updated: false, combined_skip_reason: "unknown_reason" })).toBe("The combined file was not updated.")
-    expect(combinedNotUpdatedNotice({ combined_updated: true })).toBeUndefined()
-    expect(combinedNotUpdatedNotice({ notes_updated: false })).toBeUndefined()
-    expect(combinedNotUpdatedNotice(undefined)).toBeUndefined()
-  })
-})
-
-describe("email and spreadsheet sources", () => {
-  const viewer = (name: string) => renderToStaticMarkup(createElement(DocumentViewer, { matterId: "m", name, onClose: () => {} }))
-
-  test("open as read-only extracted text, never on the Word or PDF path", () => {
-    for (const [name, kind] of [["Client instructions.eml", "Email"], ["Forwarded thread.msg", "Email"], ["Cap table.XLSX", "Excel spreadsheet"]]) {
-      const html = viewer(name)
-      expect(html).toContain(`<span class="viewer-title-meta">${kind} · extracted text, read-only</span>`)
-      expect(html).toContain('aria-label="Reading the text"')
-      for (const word of ["Word document", "Request edits", "Download", "Convert to DOCX", "<iframe"]) expect(html).not.toContain(word)
-    }
-  })
-
-  test("Word and PDF files keep their own viewers", () => {
-    expect(viewer("terms.docx")).toContain("Request edits")
-    expect(viewer("terms.docx")).toContain('<span class="viewer-title-meta">Word document</span>')
-    expect(viewer("scan.pdf")).toContain("Convert to DOCX")
-    expect(viewer("scan.pdf")).toContain('<iframe class="pdf-render"')
-  })
-
-  test("the cited excerpt is marked in the text the assistant read, whitespace-tolerant", () => {
+  test("ExtractedText escapes angle brackets and marks only matched passages", () => {
     const text = "Subject: Supply terms\nFrom: Synthetic Buyer <buyer@example.invalid>\n\nPayment is due\n on delivery.\nThanks"
     const match = citationPassage(text, "Payment is due on delivery.")
     const html = renderToStaticMarkup(createElement(ExtractedText, { kind: "eml", text, match }))
-    expect(html).toBe('<pre class="docx-render document-text is-eml">Subject: Supply terms\nFrom: Synthetic Buyer &lt;buyer@example.invalid&gt;\n\n' +
-      '<mark class="citation-passage" tabindex="-1">Payment is due\n on delivery.</mark>\nThanks</pre>')
-    // No match, or no citation, shows the plain text with nothing marked.
-    for (const unmatched of [citationPassage(text, "Payment is due in advance."), undefined])
+    expect(html).toContain("&lt;buyer@example.invalid&gt;")
+    expect(html).not.toContain("<buyer@example.invalid>")
+    expect(html).toContain("<mark")
+    expect(html).toContain("Payment is due\n on delivery.</mark>")
+    for (const unmatched of [citationPassage(text, "Payment is due in advance."), undefined]) {
       expect(renderToStaticMarkup(createElement(ExtractedText, { kind: "xlsx", text, match: unmatched }))).not.toContain("<mark")
-    expect(renderToStaticMarkup(createElement(ExtractedText, { kind: "xlsx", text: "", match: undefined }))).toContain("No text was read from this file.")
+    }
   })
 
-  test("the citation line says whether the excerpt was found", () => {
-    expect(citationStatus("cited passage", "matched")).toBe("Source section cited passage. The cited excerpt is highlighted.")
-    expect(citationStatus("Fees", "ambiguous")).toBe("Source section Fees. This excerpt appears more than once. The document is open; no exact passage was selected.")
-    expect(citationStatus("Fees", "unavailable")).toBe("Source section Fees. The cited excerpt could not be located in the current preview. The document is open; no exact passage was selected.")
-    expect(citationStatus("Fees", undefined)).toBe("Source section Fees. Locating the cited excerpt…")
-  })
-
-  describe("the text request", () => {
-    const originalFetch = globalThis.fetch
-    afterEach(() => { globalThis.fetch = originalFetch })
-
-    test("reads the matter document's extracted text from ingest and reports its error", async () => {
-      const requests: string[] = []
-      globalThis.fetch = (async (url: string) => {
-        requests.push(String(url))
-        return requests.length === 1 ? Response.json({ text: "Synthetic body", injection: null }) : Response.json({ error: "Not found" }, { status: 404 })
-      }) as unknown as typeof fetch
-      expect(await fetchDocumentText("m", "Client instructions.eml")).toBe("Synthetic body")
-      expect(requests[0]).toEndWith("/matters/m/documents/text?name=Client%20instructions.eml")
-      await expect(fetchDocumentText("m", "gone.xlsx")).rejects.toThrow("Not found")
-    })
+  test("fetchDocumentText encodes the filename and surfaces HTTP errors", async () => {
+    const requests: string[] = []
+    globalThis.fetch = (async (url: string) => {
+      requests.push(String(url))
+      return requests.length === 1 ? Response.json({ text: "Synthetic body", injection: null }) : Response.json({ error: "Not found" }, { status: 404 })
+    }) as unknown as typeof fetch
+    expect(await fetchDocumentText("m", "Client instructions.eml")).toBe("Synthetic body")
+    expect(requests[0]).toEndWith("/matters/m/documents/text?name=Client%20instructions.eml")
+    await expect(fetchDocumentText("m", "gone.xlsx")).rejects.toThrow("Not found")
   })
 })

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, copyFileSync, readFileSync, writeFi
 import { fileURLToPath } from "node:url"
 import path from "node:path"
 import { docxodus } from "./docxodus"
-import { WORKSPACE_ROOT } from "./matter"
+import { workspaceRoot } from "./matter"
 
 // The global, user-managed template library: drafting templates the firm can
 // add, remove, and create, shared across every matter. It lives at
@@ -11,19 +11,21 @@ import { WORKSPACE_ROOT } from "./matter"
 // with a matter directory. Ingest is the single writer over WORKSPACE_ROOT, so
 // the library is owned here; the dochaus tools reach it over HTTP.
 
-export const TEMPLATES_DIR = path.join(WORKSPACE_ROOT, ".templates")
+// Read lazily via workspaceRoot() so tests that set WORKSPACE_ROOT in hooks
+// stay isolated within one bun test process.
+export const TEMPLATES_DIR = () => path.join(workspaceRoot(), ".templates")
 
 // One-line descriptions of what each template is for, keyed by file name. Kept in
 // an ingest-owned manifest beside the .docx files rather than inside them, so a
 // description can be edited without touching the document bytes and so listing
 // stays a cheap file read alongside the placeholder scan.
-const MANIFEST = path.join(TEMPLATES_DIR, "manifest.json")
+const MANIFEST = () => path.join(TEMPLATES_DIR(), "manifest.json")
 
 // A template name arrives from a URL query or multipart field. basename() is the
 // single containment guard keeping the lookup inside the library directory,
 // matching the document routes' guard.
 export function templatePath(name: string) {
-  return path.join(TEMPLATES_DIR, path.basename(name))
+  return path.join(TEMPLATES_DIR(), path.basename(name))
 }
 
 // Seed the library from repo demo/templates when the sample matter is added. Only
@@ -34,8 +36,9 @@ export function templatePath(name: string) {
 // under dochaus/templates — it is the from-scratch drafting seed, never a
 // user-visible template.
 export function seedTemplates() {
-  if (existsSync(TEMPLATES_DIR)) return
-  mkdirSync(TEMPLATES_DIR, { recursive: true })
+  const dir = TEMPLATES_DIR()
+  if (existsSync(dir)) return
+  mkdirSync(dir, { recursive: true })
   const demoTemplates = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "demo", "templates")
   // Curated optional demo templates may be absent from a source distribution.
   if (!existsSync(demoTemplates)) return
@@ -45,8 +48,9 @@ export function seedTemplates() {
 }
 
 export async function listTemplates() {
-  mkdirSync(TEMPLATES_DIR, { recursive: true })
-  const names = readdirSync(TEMPLATES_DIR).filter((n) => n.endsWith(".docx"))
+  const dir = TEMPLATES_DIR()
+  mkdirSync(dir, { recursive: true })
+  const names = readdirSync(dir).filter((n) => n.endsWith(".docx"))
   const manifest = readManifest()
   const dx = await docxodus()
   return Promise.all(
@@ -72,11 +76,12 @@ export function removeTemplateDescription(name: string) {
 }
 
 function readManifest(): Record<string, string> {
-  if (!existsSync(MANIFEST)) return {}
-  return JSON.parse(readFileSync(MANIFEST, "utf8"))
+  const file = MANIFEST()
+  if (!existsSync(file)) return {}
+  return JSON.parse(readFileSync(file, "utf8"))
 }
 
 function writeManifest(manifest: Record<string, string>) {
-  mkdirSync(TEMPLATES_DIR, { recursive: true })
-  writeFileSync(MANIFEST, JSON.stringify(manifest, null, 2))
+  mkdirSync(TEMPLATES_DIR(), { recursive: true })
+  writeFileSync(MANIFEST(), JSON.stringify(manifest, null, 2))
 }

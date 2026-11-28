@@ -4,6 +4,10 @@ import { mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { clearUsageCache, readDetailPayload, readLeanPayload, readStoragePayload } from "./telemetry"
+import { DOCUMENT_AMENDMENT_LEGAL_OUTPUT } from "../../../dochaus/lib/document-amendment-legal-contract"
+import { openTelemetryDb, recordGeneration } from "../../../dochaus/lib/telemetry"
+import { generateFor } from "./engine-generate"
+import { generationUsage } from "./matter-usage"
 
 const tempDirs: string[] = []
 const originalFetch = globalThis.fetch
@@ -295,6 +299,31 @@ test("invalid or garbage telemetry databases leave native usage readable", async
     expect((await readDetailPayload(dir, signal())).by_tool).toEqual([])
     expect(readStoragePayload([dir])).toMatchObject({ matter_count: 1, oldest_ts: null })
   }
+})
+
+test("a lost structured response retains unknown billing instead of becoming an unrecorded free request", async () => {
+  const directory = tempMatter()
+  globalThis.fetch = Object.assign(async () => { throw new Error("Synthetic lost local response") }, { preconnect: originalFetch.preconnect }) as typeof fetch
+  await expect(generateFor("prepare-changes", directory, "Synthetic legal job", undefined, DOCUMENT_AMENDMENT_LEGAL_OUTPUT)).rejects.toThrow("Synthetic lost local response")
+  const db = new Database(path.join(directory, ".dochaus", "telemetry.db"), { readonly: true })
+  try { expect(db.query("SELECT count(*) AS rows, cost_usd FROM generations").get()).toEqual({ rows: 1, cost_usd: null }) }
+  finally { db.close() }
+})
+
+test("stored usage of a still-live session is skipped; deleted sessions and stateless jobs count", () => {
+  const matter = tempMatter()
+  const tokens = { input: 3, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }
+  const db = openTelemetryDb(matter)
+  try {
+    recordGeneration(db, { agent: "prepare-changes", model: "fixture/note", tokens, cost: 0.01, ts: 1 })
+    recordGeneration(db, { agent: "qa", model: "fixture/note", tokens, cost: 0.02, ts: 2, session: "ses_deleted" })
+    recordGeneration(db, { agent: "review-compare", tokens, cost: 0.03, ts: 3, session: "ses_live" })
+  } finally { db.close() }
+  expect(generationUsage(matter, [{ id: "ses_live" }])).toEqual([
+    { time: 1, cost: 0.01, agent: "prepare-changes", model: "fixture/note", tokens },
+    { time: 2, cost: 0.02, session: "ses_deleted", agent: "qa", model: "fixture/note", tokens },
+  ])
+  expect(generationUsage(matter).map(entry => entry.cost)).toEqual([0.01, 0.02, 0.03])
 })
 
 function tempMatter() {

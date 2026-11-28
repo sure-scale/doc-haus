@@ -55,7 +55,7 @@ class BatchRequestError extends Error {
   constructor(message: string, readonly status: 400 | 404 = 400) { super(message) }
 }
 
-const mappingsFile = () => path.join(TEMPLATES_DIR, "batch-mappings.json")
+const mappingsFile = () => path.join(TEMPLATES_DIR(), "batch-mappings.json")
 const recordsDir = (matterDir: string) => path.join(matterDir, ".dochaus", "template-batches")
 const stem = (name: string) => name.replace(/\.docx$/i, "")
 
@@ -162,7 +162,7 @@ export function templateBatchRoutes() {
     mkdirSync(recordsDir(matter.dir), { recursive: true })
     writeDurableJson(path.join(recordsDir(matter.dir), `${record.id}.json`), record)
     const used = Object.fromEntries(Object.entries(mapping).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
-    mkdirSync(TEMPLATES_DIR, { recursive: true })
+    mkdirSync(TEMPLATES_DIR(), { recursive: true })
     writeDurableJson(mappingsFile(), { ...readMappings(), [template.name]: used })
     return c.json({ id: record.id, folder: record.folder, documents: documents.map(({ name, row, missing }) => ({ name, row, missing })), skipped: record.skipped, failed })
   })

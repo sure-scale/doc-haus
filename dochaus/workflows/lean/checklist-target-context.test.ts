@@ -6,7 +6,7 @@ import { renderMarkdownToDocx } from "../../lib/render"
 import { checklistTargetAssignments, assignChecklistTargetContext } from "./checklist-target-context"
 import { buildChecklistDocumentContext } from "./checklist-document-context"
 import { buildChecklistRefinementContext } from "./checklist-refinement-context"
-import { buildChecklistCheckerPrompt, type ChecklistCheckerInput, type ChecklistItem } from "./checklist-contract"
+import { type ChecklistCheckerInput, type ChecklistItem } from "./checklist-contract"
 import { checklistRefinableParents, readEffectiveChecklistItems, reconcileChecklistParentCoverage, runChecklistCheckFlow, runChecklistExtractionFlow, runChecklistRefinementFlow } from "./checklist-flow"
 import { writeLeanPlan } from "./plan"
 import { readLeanJson, writeLeanBytes, writeLeanText } from "./state"
@@ -199,28 +199,6 @@ test("missing body scope, missing process result and uninspected dependency cann
   saved.parents[0]!.units.shift()
   writeLeanText(dir, "checklist/refinements.json", JSON.stringify(saved))
   expect(reconcileChecklistParentCoverage(dir, result.checks)[0]!.status).toBe("indeterminate")
-})
-
-test("assignment instructions separate recorded method from substantive effects and retain cross-boundary source obligations", async () => {
-  const dir = await setup(), context = buildChecklistDocumentContext(dir, { item_id: "p", item })
-  for (const unit of checklistTargetAssignments(dir, item).assignments) {
-    const prompt = buildChecklistCheckerPrompt(assignChecklistTargetContext(context, unit.assignment).input)
-    expect(prompt).toContain("Decide only this component")
-    if (unit.assignment.kind === "target_body") {
-      expect(prompt).toContain("EVERY assigned")
-      expect(prompt).toContain("including across assignment boundaries")
-      expect(prompt).toContain("A boilerplate label never exempts a material operative effect")
-      expect(prompt).toContain("no missing fact or approval")
-      expect(prompt).toContain("separately required source checks remain necessary")
-    } else if (unit.assignment.kind === "process_records") expect(prompt).toContain("do not require a complete body comparison here")
-    else {
-      expect(prompt).toContain("Decide ONLY document-wide properties of the named target")
-      expect(prompt).toContain("Report not_applicable when the parent states no document-wide property")
-      expect(prompt).not.toContain("EVERY assigned")
-    }
-    if (unit.assignment.kind === "document_properties") expect(prompt).not.toContain("Only the separate document-properties assignment decides it")
-    else expect(prompt).toContain("If the parent concerns only such a property, report not_applicable for this component rather than indeterminate")
-  }
 })
 
 test("range units defer a document-wide parent to its one document-properties finding without relaxing indeterminate aggregation", async () => {

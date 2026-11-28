@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, symlinkSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -14,31 +14,41 @@ import { LegalPlugin } from "../../../dochaus/plugin/legal/policy"
 import { tool } from "../../../dochaus/tool/legacy-definition"
 import type { Chronology, ChronologyEvent } from "../../../dochaus/lib/chronology"
 
-const root = mkdtempSync(path.join(os.tmpdir(), "chronology-tools-"))
-const directory = path.join(root, "elm-works")
-mkdirSync(directory)
-writeFileSync(path.join(directory, "matter.json"), JSON.stringify({ id: "elm-works", title: "Elm Works record" }))
-writeFileSync(path.join(directory, "Note.md"), "# Delivery record\n\nThe cartons were collected on 6 March 2025.\n")
-const db = openDb(directory)
-db.run("INSERT INTO documents(doc_path,name,created_at,role) VALUES(?,?,?,'source')", [
-  path.join(directory, "Note.md"),
-  "Note.md",
-  1,
-])
-db.close()
-const app = new Hono().route(
-  "/",
-  chronologyRoutes((id) => path.join(root, id)),
-)
-const server = Bun.serve({ port: 0, fetch: app.fetch })
-const previous = process.env.INGEST_URL
-process.env.INGEST_URL = server.url.toString().replace(/\/$/, "")
-const ctx = { directory, abort: new AbortController().signal } as never
+let root = ""
+let directory = ""
+let app: Hono
+let server: ReturnType<typeof Bun.serve>
+let previous: string | undefined
+let ctx: never
+
+beforeAll(() => {
+  root = mkdtempSync(path.join(os.tmpdir(), "chronology-tools-"))
+  directory = path.join(root, "elm-works")
+  mkdirSync(directory)
+  writeFileSync(path.join(directory, "matter.json"), JSON.stringify({ id: "elm-works", title: "Elm Works record" }))
+  writeFileSync(path.join(directory, "Note.md"), "# Delivery record\n\nThe cartons were collected on 6 March 2025.\n")
+  const db = openDb(directory)
+  db.run("INSERT INTO documents(doc_path,name,created_at,role) VALUES(?,?,?,'source')", [
+    path.join(directory, "Note.md"),
+    "Note.md",
+    1,
+  ])
+  db.close()
+  app = new Hono().route(
+    "/",
+    chronologyRoutes((id) => path.join(root, id)),
+  )
+  server = Bun.serve({ port: 0, fetch: app.fetch })
+  previous = process.env.INGEST_URL
+  process.env.INGEST_URL = server.url.toString().replace(/\/$/, "")
+  ctx = { directory, abort: new AbortController().signal } as never
+})
+
 afterAll(() => {
-  server.stop(true)
+  server?.stop(true)
   if (previous === undefined) delete process.env.INGEST_URL
   else process.env.INGEST_URL = previous
-  rmSync(root, { recursive: true, force: true })
+  if (root) rmSync(root, { recursive: true, force: true })
 })
 
 test("chat stages exact verified proposals but cannot apply them or manufacture review", async () => {

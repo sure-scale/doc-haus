@@ -3,14 +3,15 @@ import { readFileSync, rmSync } from "node:fs"
 import { ACT_RECORD_SAMPLES } from "./act-record"
 import { readParagraphs } from "./checks"
 import { readLeanDocuments } from "./deliverables"
+import { readLeanEvents } from "./events"
 import type { GateResult } from "./gate"
-import { NO_NEW_DOCUMENT, coverageItems, coveragePlanHash, readLeanCoverage } from "./package-coverage"
-import { readLeanPlan, type LeanPlan } from "./plan"
+import { NO_NEW_DOCUMENT, coverageItems, coveragePlanHash, readLeanCoverage, type CoverageAct } from "./package-coverage"
+import { leanSteps, readLeanPlan, type LeanPlan } from "./plan"
 import { openItem } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES } from "./stages"
-import { leanFile, readLeanJson, readLeanText, readOpenItems, readQuestions, writeLeanText, writeOpenItems } from "./state"
+import { leanFile, readLeanJson, readLeanText, readOpenItems, readQuestions, writeLeanText, writeOpenItems, writeQuestions, type Question } from "./state"
 import { AGENT, NO_FINDINGS, actRecordJob, actRecordOf, cleanupMatters, draftingNotes, labelledPart, listedActs, matter, noChanges, registering, scriptedModel, type Reply } from "./test-support"
 
 // Plan coverage through the whole run (runLean): the outline's placement job,
@@ -412,6 +413,42 @@ describe("plan coverage through the run", () => {
     expect((await runLean(directory, { sessions: followed.port })).status).toBe("completed")
     expect([followed.count(AGENT.coverage), followed.count(AGENT.draft)]).toEqual([0, 0])
     expect(coverageItems(directory)).toEqual([])
+  }, 120_000)
+
+  test("an act an answer moves to a separate document sends the plan back for that document, which the run plans and drafts", async () => {
+    const answered: Question = {
+      id: "q-papers", stage: "intake", question: "Which acts should the release letter carry?", context: "Needed to plan the package.", status: "answered",
+      answer: "Limit the release letter to the release of the deposit. Move the committee's approval to a separate later document.", answer_kind: "adopted",
+    }
+    const released: CoverageAct = { act: release.act, source: "request", quote: RELEASE, parties: ["Kestrel Works"], document: "d1" }
+    const approved: CoverageAct = { act: approval.act, source: "request", quote: APPROVE, parties: ["the Orchard Committee"], document: null }
+    const placement: Reply = text => {
+      const planned = plannedIn(text)
+      const committee = planned.find(document => document.executed_by?.includes("the Orchard Committee"))
+      return JSON.stringify({ placements: listedActs(text).map(row => ({ act: row.index, document: row.act === released.act ? released.document : committee?.id ?? null })) })
+    }
+    const directory = prepared()
+    writeQuestions(directory, [answered])
+    const model = scriptedModel(replies({
+      [AGENT.acts]: actRecordOf([released, approved]),
+      [AGENT.draft]: outliner(outline(RELEASE_LETTER), outline(RELEASE_LETTER, RESOLUTION)),
+      [AGENT.coverage]: placement,
+    }))
+    const state = await runLean(directory, { sessions: model.port })
+    expect(state.status).toBe("completed")
+
+    const revisionEvents = readLeanEvents(directory).filter(event => event.stage === "draft" && event.step?.startsWith("outline revision") && event.event === "model_call")
+    expect(revisionEvents).toEqual([expect.objectContaining({ issues: [`The instructions direct "approve the revised schedule" ("${APPROVE}" [source: request]), but no planned document carries it. ` +
+      'Plan it in a planned document executed by "the Orchard Committee". ' + NO_NEW_DOCUMENT] })])
+    expect(readLeanPlan(directory)!.documents.map(row => [row.id, row.title, row.executed_by])).toEqual([
+      ["d1", "Release letter", ["Kestrel Works"]], ["d2", "Committee resolution", ["the Orchard Committee"]],
+    ])
+    expect(readLeanCoverage(directory)).toMatchObject({ status: "covered", acts: [released, { ...approved, document: "d2" }], issues: [] })
+    expect(model.count(AGENT.coverage)).toBe(2)
+    expect(leanSteps(directory)).toContain("d2.draft")
+    expect(state.stages["d2.draft"]?.status).toBe("done")
+    expect(model.prompts.filter(prompt => /^Draft part \d+ of \d+ of "([^"]*)"/m.exec(prompt.text)?.[1] === "Committee resolution")).toHaveLength(1)
+    expect(readQuestions(directory)).toEqual([expect.objectContaining({ id: answered.id, status: "answered" })])
   }, 120_000)
 })
 

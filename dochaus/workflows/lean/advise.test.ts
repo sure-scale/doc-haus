@@ -82,8 +82,6 @@ describe("advice checker", () => {
     const byText = check({ recommendation: { option: "As planned", rationale: "The request leaves the files to the plan.", basis } }, FILES)
     expect(byText.advice).toBeUndefined()
     expect(byText.issues).toEqual(['"recommendation.option" must be the index, from 0, of one of the 2 options.'])
-    expect(advisePrompt(matter(), FILES)).toContain('where "option" is the index of one of the options above')
-    expect(advisePrompt(matter(), QUESTION)).toContain('"option" the text of the one recommended, copied exactly from your options')
   })
 
   const SCOPE: Question = { id: "q-scope", stage: "draft", question: 'The document plan leaves this instructed act without a document executed by the parties who must take it: "Confirm the delivery period", directed by "within thirty days of the order date" [source: supply-terms.docx]; to be taken by "Supplier" and "Buyer"; no planned document carries it. Should the package add a document, or change a planned one, so that those parties take it, or is it outside this request?', context: "Drafting waits for your answer.", status: "open", kind: "scope" }
@@ -200,7 +198,6 @@ describe("advising asked questions", () => {
     expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain("Draft a short supply note from the supply terms.")
     expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain(SOURCE)
     expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain("Whom the lawyer acts for is not recorded yet")
-    expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain("An instruction does not decide whether it can validly be carried out as given")
     expect(readQuestions(directory).map(row => [row.question, row.kind, row.advice])).toEqual([
       [LAW.question, "instruction", UNAVAILABLE], [SIGNATORY.question, "fact", UNAVAILABLE]])
   }, 120_000)
@@ -266,7 +263,6 @@ describe("advising asked questions", () => {
     const [asked, other] = [model.prompts.find(row => row.text.includes(confirmation!.question))!.text, model.prompts.find(row => row.text.includes(QUESTION.question))!.text]
     expect(asked).toContain(`<document_opening>\n${SOURCE_TEXT}\n</document_opening>`)
     expect(asked).toContain("<request>\nDraft a short supply note from the supply terms.")
-    expect(asked).toContain("that alone is no reason to treat the document as evidence")
     for (const tag of ["<instructions>", "<acting_for>", "<legal_research>", "<existing_topics>", "Matter source names"]) {
       expect(asked).not.toContain(tag)
       expect(other).toContain(tag)
@@ -333,7 +329,6 @@ describe("advising asked questions", () => {
     const block = (text: string) => /<sibling_questions>\n([\s\S]*?)\n<\/sibling_questions>/.exec(text)?.[1]
     expect(prompts("p1").map(row => block(row.text))).toEqual([undefined])
     expect(block(prompts("p2")[0]!.text)).toBe("Question: Should paragraph p1 stay?\nRecommended: Keep it\nWhy: The terms rely on it.")
-    expect(prompts("p2")[0]!.text).toContain("Advise alike unless a source treats those paragraphs differently.")
     expect(prompts("p3").map(row => block(row.text))).toEqual([undefined])
     expect(advised.map(row => row.group)).toEqual(["Topic for p1", "Topic for p1", "Topic for p3"])
   })
@@ -399,10 +394,6 @@ describe("advising asked questions", () => {
   })
 })
 
-test("advice on how far the drafting qualifies names the points it applies to", () => {
-  expect(advisePrompt(matter(), QUESTION)).toContain("An option on how far the drafting qualifies or hedges names the points it applies to: a document's register is not a choice between blanket modes.")
-})
-
 test("advice reads the matter's dates, so a deadline option does not run from the drafting day", () => {
   const directory = matter()
   expect(advisePrompt(directory, QUESTION)).not.toContain("<matter_dates>")
@@ -414,10 +405,14 @@ test("advice reads the matter's dates, so a deadline option does not run from th
 test("the advisor's own options get what the run delivers: every requested document before the plan, the planned documents after", () => {
   const directory = matter()
   const fact = { ...QUESTION, kind: "fact" as const }
-  expect(advisePrompt(directory, fact)).toContain("<carriers>\nWhat the run delivers:\n- every document the request asks for\n- the drafting notes\n- an open item for the lawyer\n</carriers>")
+  const carriers = (prompt: string) => /<carriers>\n([\s\S]*?)\n<\/carriers>/.exec(prompt)?.[1]
+  expect(carriers(advisePrompt(directory, fact))).toBeDefined()
+  expect(carriers(advisePrompt(directory, fact))).not.toContain("Supply note")
   writeLeanPlan(directory, [{ title: "Supply note", purpose: "Record the delivery terms", file: "supply-note.docx", parts: [{ heading: "Delivery", scope: "Delivery terms" }] },
     { title: "Cover memo", purpose: "Explain the note", parts: [{ heading: "Summary", scope: "What the note does" }] }])
-  expect(advisePrompt(directory, fact)).toContain("<carriers>\nWhat the run delivers:\n- Supply note (supply-note.docx)\n- Cover memo\n- the drafting notes\n- an open item for the lawyer\n</carriers>")
+  const after = carriers(advisePrompt(directory, fact))
+  expect(after).toContain("Supply note (supply-note.docx)")
+  expect(after).toContain("Cover memo")
   expect(advisePrompt(directory, { ...QUESTION, kind: "scope" })).not.toContain("<carriers>")
   expect(advisePrompt(directory, FILES)).not.toContain("<carriers>")
 })

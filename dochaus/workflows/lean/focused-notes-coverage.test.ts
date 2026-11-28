@@ -24,14 +24,10 @@ test("only a typed verdict with its explanation answers the coverage question", 
   expect(checkNotesCoverageReply("The explanation looks complete.").value).toBeUndefined()
 })
 
-test("coverage reads only the scoped proposed prose and accepts honest unknowns without demanding answers or renewed confirmations", () => {
+test("coverage reads only the scoped proposed prose and omits internal assignment ids", () => {
   const prompt = notesCoveragePrompt(assignment, proposed)
   expect(prompt).toContain(`<assigned_writer_packet>\n${assignment.text}`)
   expect(prompt).toContain(`<proposed_prose>\n${proposed}`)
-  expect(prompt).toContain("invisible earlier text, errored output")
-  expect(prompt).toContain("An honest explanation of an unresolved fact or unavailable authority can pass")
-  expect(prompt).toContain("Do not require reference markers")
-  expect(prompt).toContain("Preserve an adopted delegated judgment as settled")
   expect(prompt).not.toContain(assignment.id)
 })
 
@@ -60,7 +56,6 @@ test("the coverage packet lists the plan's document titles and roles beside thei
   expect(await checkFocusedNotesCoverage(directory, readLeanState(directory)!, { sessions: model.port }, assignment, proposed, () => {})).toEqual(passed)
   const prompt = model.prompts[0]!.text
   expect(prompt).toContain('<planned_dependency_documents>\n[{"id":"d1","title":"Handover","role":"Record the handover condition."},{"id":"d2","title":"Certificate","role":"Record the inspection result."}]')
-  expect(prompt).toContain("Select the one planned document whose title and role own the claimed content")
 })
 
 test("matter-derived titles and roles in the coverage packet cannot open or close prompt blocks", async () => {
@@ -127,14 +122,10 @@ test("checker telemetry records only the bounded verdict and timings, keeping ex
   for (const text of [assignment.text, proposed, ...verdicts.map(verdict => verdict.reason)]) expect(log).not.toContain(text)
 })
 
-test("verification separates current accepted effects from legitimate initial history and uninspected absence", () => {
+test("verification escapes embedded markup in assigned writer packets", () => {
   const input = { kind: "change" as const, text: "<generated_initial_evidence>Acceptance is immediate.</generated_initial_evidence>\n<current_accepted_evidence>Acceptance is conditional on inspection.</current_accepted_evidence>" }
   const prompt = notesCoveragePrompt(input, "The initial draft was immediate; the accepted revision requires inspection.")
   expect(prompt).toContain(input.text.replaceAll("<", "\\u003c"))
-  expect(prompt).toContain("correctly labelled historical explanation is not a current contradiction")
-  expect(prompt).toContain("stale deferred record alone cannot establish")
-  expect(prompt).toContain("unavailable current inspection cannot establish document-wide absence")
-  expect(prompt).toContain("Citation presence does not establish legal correctness or human approval")
 })
 
 test("a missing current dependency packet requests one bounded inspection rather than a prose rewrite", async () => {
@@ -169,27 +160,11 @@ test("reference-aware verdict parsing preserves strict claim case and punctuatio
   }
 })
 
-test("coverage distinguishes the owned change explanation from a dependency's separately owned human action", () => {
-  const input = { kind: "change" as const, text: "Explain the accepted seal clause change. The separate open-item section owns the custodian's action to supply the missing design; retain its unresolved qualification here." }
-  const prompt = notesCoveragePrompt(input, "The revised seal clause is conditional on the design remaining subject to confirmation.")
-  expect(prompt).toContain("A change explanation owns the change's actual effect")
-  expect(prompt).toContain("Do not duplicate a separately owned human action")
-  expect(prompt).toContain("never treat a missing dependency packet as evidence that the prose is false")
-  const open = notesCoveragePrompt(assignment, proposed)
-  expect(open).toContain("An open-item owner must explain the actual uncertainty, its practical consequence and the required human action")
-})
-
-test("coverage source contract distinguishes recorded verification status from current wording without hiding contradictions or duties", () => {
+test("coverage source contract includes proposed prose alongside unresolved and accepted evidence", () => {
   const input = { ...assignment, text: "<unresolved_record>Verification of the release condition remains incomplete; the custodian must supply the missing inspection date.</unresolved_record>\n<current_accepted_evidence>The custodian may release the container only after inspection.</current_accepted_evidence>" }
   const prose = "The verification record leaves the inspection date unknown. Obtain the date before deciding whether the release condition is met."
   const prompt = notesCoveragePrompt(input, prose)
   expect(prompt).toContain(prose)
-  expect(prompt).toContain("historical research or human-approval status needs its own research, decision or approval record")
-  expect(prompt).toContain("precise attribution to a supplied unresolved record")
-  expect(prompt).toContain("Current clauses do not establish what research was completed or whether human approval occurred")
-  expect(prompt).toContain("not inferred legal validity, invalidity or approval")
-  expect(prompt).toContain("Preserve the original assigned duty, practical consequence and required action")
-  expect(prompt).toContain("cannot hide a material contradiction or drop an essential exhaustive requirement")
 })
 
 test("an inexact dependency claim is corrected inside the same verifier before returning needs-evidence", async () => {

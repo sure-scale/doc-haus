@@ -1,18 +1,26 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
+import { DOMParser } from "@xmldom/xmldom"
+import { strFromU8, unzipSync } from "fflate"
+import { paragraphSha256 } from "../../lib/drafting-amendment"
 import { runApply } from "./apply-stage"
 import { stagePrompt } from "./prompts"
 import { checkChanges } from "./change-checks"
-import { readParagraphs } from "./checks"
+import { finalBodyParagraphs, readParagraphs } from "./checks"
 import type { GateResult } from "./gate"
 import { readLeanEvents } from "./events"
+import { packageReviewPrompt } from "./package-review"
 import { packageScopeQuestionID } from "./package-scope"
+import { writeLeanPlan } from "./plan"
 import { enqueueLeanRequest } from "./requests"
 import type { RepairRound } from "./repairs"
-import { runLean } from "./runner"
+import { appliedChangeEvidence } from "./review-evidence"
+import { runLean, stageInputSha } from "./runner"
 import { acceptStageReply, LEAN_CHILD_PERMISSIONS } from "./stages"
 import { REVIEW_STAGES, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
-import { AGENT, DRAFT, NO_FINDINGS, SOURCE, SUPPORT, changes, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, noChanges, pidOf, registering, sameSession, scriptedModel, type Reply } from "./test-support"
+import { AGENT, DRAFT, LETTER, NO_FINDINGS, QUESTION, SOURCE, SUPPORT, changes, changesFirst, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, noChanges, pidOf, registering, reviewFirst, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // Real coordinator, checkers, renderer, pointer applier and comparison. Only the
 // model is scripted: each agent's reply is a function of the prompt it received.
@@ -421,4 +429,179 @@ describe("lean drafting runner", () => {
     expect(answered.count(AGENT.review)).toBe(1)
     expect(readQuestions(directory)).toContainEqual(expect.objectContaining({ id: question.id, status: "answered", answer: "Outside this request." }))
   }, 120_000)
+
+  test("lean body, notes, native revisions and review comments use saved identity", async () => {
+    const previous = process.env.WORKSPACE_ROOT
+    const workspace = mkdtempSync(path.join(tmpdir(), "dh-lean-attribution-"))
+    try {
+      process.env.WORKSPACE_ROOT = workspace
+      mkdirSync(path.join(workspace, ".preferences"))
+      writeFileSync(path.join(workspace, ".preferences/preferences.json"), JSON.stringify({ attorney: "Reviewing Lawyer", firm: "Reviewing Firm" }))
+      const directory = matter()
+      const state = await runLean(directory, { sessions: scriptedModel(happyPath).port })
+      expect(state.status).toBe("completed")
+      const parse = (bytes: Uint8Array) => new DOMParser().parseFromString(strFromU8(bytes), "application/xml")
+      for (const name of ["d1/body.docx", "d1/body-applied.docx", "d1/redline.docx", "drafting-notes.docx"]) {
+        const parts = unzipSync(readFileSync(leanFile(directory, name)))
+        expect(parse(parts["docProps/core.xml"]).getElementsByTagNameNS("http://purl.org/dc/elements/1.1/", "creator")[0]?.textContent).toBe("Reviewing Lawyer")
+        expect(parse(parts["docProps/app.xml"]).getElementsByTagNameNS("http://schemas.openxmlformats.org/officeDocument/2006/extended-properties", "Company")[0]?.textContent).toBe("Reviewing Firm")
+      }
+      const redline = unzipSync(readFileSync(leanFile(directory, "d1/redline.docx")))
+      const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+      const revisions = ["ins", "del"].flatMap(name => Array.from(parse(redline["word/document.xml"]).getElementsByTagNameNS(W, name)))
+      expect(revisions.length).toBeGreaterThan(0)
+      expect(new Set(revisions.map(node => node.getAttributeNS(W, "author")))).toEqual(new Set(["Reviewing Lawyer"]))
+      const comments = Array.from(parse(redline["word/comments.xml"]).getElementsByTagNameNS(W, "comment"))
+      expect(comments.length).toBeGreaterThan(0)
+      expect(new Set(comments.map(node => node.getAttributeNS(W, "author")))).toEqual(new Set(["Reviewing Lawyer"]))
+      expect(readLeanJson(directory, "d1/apply.json")).toMatchObject({ comments: { author: "Reviewing Lawyer" } })
+    } finally {
+      if (previous === undefined) delete process.env.WORKSPACE_ROOT
+      else process.env.WORKSPACE_ROOT = previous
+      rmSync(workspace, { recursive: true, force: true })
+    }
+  }, 120_000)
+})
+
+describe("an accepted draft is final", () => {
+  const twoDocReplies = { ...happyPath, [AGENT.draft]: drafter(DRAFT, LETTER), [AGENT.review]: reviewFirst, [AGENT.changes]: changesFirst }
+  const PASS = JSON.stringify({ status: "pass", findings: [], limitations: [], delivery: [] })
+
+  function accepted(directory: string) {
+    const state = readLeanState(directory)!
+    return (["d1", "d2"] as const).map(document => ({ body: readFileSync(leanFile(directory, `${document}/body.docx`)), step: state.stages[`${document}.draft`] }))
+  }
+
+  function stagePrompts(model: ReturnType<typeof scriptedModel>, title: string, stage: string) {
+    const sessions = new Set(model.sessions.flatMap((session, index) => session.title === `Lean drafting: ${title}: ${stage}` ? [`ses_child${index + 1}`] : []))
+    return model.prompts.filter(prompt => sessions.has(prompt.sessionID))
+  }
+
+  const later: [string, (directory: string) => void][] = [
+    ["a queued answer", directory => {
+      writeQuestions(directory, [{ id: "q-late", stage: "change-plan", document: "d1", pid: readParagraphs(directory, "d1")[0]!.pid, question: QUESTION, context: "The terms are silent.", status: "open" }])
+      enqueueLeanRequest(directory, { kind: "answer", question_id: "q-late", answer: "No remedy." })
+    }],
+    ["a lawyer's update", directory => { enqueueLeanRequest(directory, { kind: "update", text: "Use plain English throughout." }) }],
+    ["a research change", directory => {
+      const research = readLeanJson(directory, "research.json") as { limitations: string[] }
+      writeLeanText(directory, "research.json", `${JSON.stringify({ ...research, limitations: [...research.limitations, "Local practice on delivery periods was not researched."] }, null, 2)}\n`)
+    }],
+  ]
+
+  for (const [name, change] of later)
+    test(`after both documents apply, ${name} re-runs the change plans and leaves each accepted draft as it is`, async () => {
+      const directory = matter()
+      expect((await runLean(directory, { sessions: scriptedModel(twoDocReplies).port })).status).toBe("completed")
+      const before = accepted(directory)
+      change(directory)
+
+      const model = scriptedModel(twoDocReplies)
+      expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+      expect(model.count(AGENT.draft)).toBe(0)
+      expect(accepted(directory)).toEqual(before)
+      expect(stagePrompts(model, "Supply note", "change-plan").length).toBeGreaterThan(0)
+      expect(stagePrompts(model, "Covering letter", "change-plan").length).toBeGreaterThan(0)
+    }, 180_000)
+
+  test("a pause just after a draft is accepted keeps it on Continue with the open items its text gives", async () => {
+    const directory = matter()
+    const dated = { ...happyPath, [AGENT.draft]: drafter(DRAFT.replace("Payment is due on delivery.", "Payment is due on [insert payment date].")) }
+    const pause = { get aborted() { return existsSync(leanFile(directory, "d1/paragraphs.json")) }, addEventListener() {}, removeEventListener() {} } as unknown as AbortSignal
+    expect((await runLean(directory, { sessions: scriptedModel(dated).port, pause })).status).toBe("blocked")
+    expect(readLeanState(directory)!.stages["d1.draft"]).toMatchObject({ status: "pending" })
+    const body = readFileSync(leanFile(directory, "d1/body.docx"))
+
+    const model = scriptedModel(dated)
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+    expect(model.count(AGENT.draft)).toBe(0)
+    expect(readFileSync(leanFile(directory, "d1/body.docx"))).toEqual(body)
+    expect(readOpenItems(directory).filter(item => item.stage === "draft").map(item => [item.kind, item.ref.document, item.detail]))
+      .toEqual([["placeholder", "d1", "The body contains the placeholder [insert payment date]."]])
+  }, 180_000)
+
+  test("after both documents apply, an amendment to the first reaches the second as its change-plan input, not a redraft", async () => {
+    const directory = matter()
+    const DETAIL = "State expressly in the supply note that the buyer pays on delivery."
+    const amended = "The buyer shall pay on delivery."
+    let before: ReturnType<typeof accepted> | undefined
+    const model = scriptedModel({ ...twoDocReplies,
+      [AGENT["package-review"]]: () => {
+        if (before) return PASS
+        before = accepted(directory)
+        return JSON.stringify({ status: "changes-required", findings: [{ target: "body", document: "d1", detail: DETAIL }], limitations: [], delivery: [] })
+      },
+      [AGENT.changes]: (prompt, index) => {
+        const first = JSON.parse(changesFirst(prompt, index))
+        if (!prompt.includes(DETAIL)) return JSON.stringify(first)
+        return JSON.stringify({ ...first, amendments: [...first.amendments, { pid: pidOf(prompt, "Payment is due on delivery."), updated: amended,
+          reason: "Expressly identifies the supplied payment timing.", sources: [{ source_id: SOURCE, quote: "Payment is due on delivery." }] }] })
+      },
+    })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    expect(before).toBeDefined()
+    expect(finalBodyParagraphs(directory, "d1").map(row => row.text)).toContain(amended)
+    expect(accepted(directory)).toEqual(before!)
+    expect(model.sessions.filter(session => session.agent === AGENT.draft)).toHaveLength(2)
+    expect(stagePrompts(model, "Covering letter", "draft")).toHaveLength(2)
+    expect(stagePrompts(model, "Covering letter", "change-plan")).toHaveLength(2)
+  }, 180_000)
+})
+
+describe("stageInputSha original deletion inputs", () => {
+  function deletionRecords() {
+    const directory = matter()
+    const plan = writeLeanPlan(directory, [
+      { title: "Access note", purpose: "Record access instructions.", parts: [{ heading: "Access", scope: "Record access instructions." }] },
+      { title: "Storage note", purpose: "Record storage instructions.", parts: [{ heading: "Storage", scope: "Record storage instructions." }] },
+    ])
+    for (const document of plan.documents) {
+      const text = `Original ${document.title} wording, subject to the stated qualification.`
+      writeLeanText(directory, `${document.id}/paragraphs.json`, JSON.stringify([{ pid: "p111111111111", sha256: paragraphSha256(text), text }]))
+      writeLeanText(directory, `${document.id}/paragraphs-applied.json`, JSON.stringify([]))
+      writeLeanText(directory, `${document.id}/changes.json`, JSON.stringify({
+        amendments: [{ id: "deletion", pid: "p111111111111", existing_sha256: paragraphSha256(text), operation: "delete", updated: "", reason: "Remove this paragraph while retaining its explanation.", sources: [] }],
+        questions: [],
+      }))
+      writeLeanText(directory, `${document.id}/apply.json`, JSON.stringify({
+        applied: [{ id: "deletion", pid: "p111111111111", mode: "code", result_pids: [] }],
+        unapplied: [],
+      }))
+    }
+    return { directory, documents: plan.documents }
+  }
+
+  test.each(["finalize", "package-review"] as const)("original deletion wording in each planned body rekeys %s", step => {
+    const fixture = deletionRecords()
+    const prompt = () => step === "finalize" ? stagePrompt(fixture.directory, step) : packageReviewPrompt(fixture.directory)
+    for (const document of fixture.documents) {
+      const key = stageInputSha(fixture.directory, step)
+      const paragraphs = readLeanJson(fixture.directory, `${document.id}/paragraphs.json`) as { pid: string; sha256: string; text: string }[]
+      const original = paragraphs[0]!.text
+      expect(appliedChangeEvidence(fixture.directory, document.id)[0]!.deleted_text).toBe(original)
+      expect(prompt()).toContain(JSON.stringify(original))
+
+      const changed = `Revised ${document.title} wording, preserving the original qualification.`
+      writeLeanText(fixture.directory, `${document.id}/paragraphs.json`, JSON.stringify([{ ...paragraphs[0]!, text: changed }]))
+
+      expect(appliedChangeEvidence(fixture.directory, document.id)[0]!.deleted_text).toBe(changed)
+      expect(prompt()).toContain(JSON.stringify(changed))
+      expect(prompt()).not.toContain(JSON.stringify(original))
+      expect(stageInputSha(fixture.directory, step)).not.toBe(key)
+    }
+  })
+
+  test("notes and package review still exclude their own saved outputs from their resume keys", () => {
+    const fixture = deletionRecords()
+    const notesKey = stageInputSha(fixture.directory, "finalize")
+    const reviewKeyBeforeNotes = stageInputSha(fixture.directory, "package-review")
+    writeLeanText(fixture.directory, "drafting-notes.md", "# Notes\n\nThe deletion remains explained with its qualification.\n")
+    expect(stageInputSha(fixture.directory, "finalize")).toBe(notesKey)
+    expect(stageInputSha(fixture.directory, "package-review")).not.toBe(reviewKeyBeforeNotes)
+    const reviewKey = stageInputSha(fixture.directory, "package-review")
+    writeLeanText(fixture.directory, "package-review.json", JSON.stringify({ status: "pass", findings: [], limitations: [], delivery: [] }))
+    expect(stageInputSha(fixture.directory, "package-review")).toBe(reviewKey)
+    expect(stageInputSha(fixture.directory, "finalize")).toBe(notesKey)
+  })
 })

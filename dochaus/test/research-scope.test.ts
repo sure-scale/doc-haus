@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, test } from "bun:test"
+import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -7,14 +7,21 @@ import { readFirmPreferences } from "../lib/preferences"
 import { allowRedirect, researchScope } from "../lib/research"
 import { LegalPlugin } from "../plugin/legal/policy"
 
-const previous = process.env.WORKSPACE_ROOT
-const workspace = mkdtempSync(path.join(tmpdir(), "research-scope-"))
-const directory = path.join(workspace, "matter")
-const preferences = path.join(workspace, ".preferences")
-const file = path.join(preferences, "preferences.json")
-mkdirSync(directory)
-process.env.WORKSPACE_ROOT = workspace
+let previous: string | undefined
+let workspace = ""
+let directory = ""
+let preferences = ""
+let file = ""
 
+beforeAll(() => {
+  previous = process.env.WORKSPACE_ROOT
+  workspace = mkdtempSync(path.join(tmpdir(), "research-scope-"))
+  directory = path.join(workspace, "matter")
+  preferences = path.join(workspace, ".preferences")
+  file = path.join(preferences, "preferences.json")
+  mkdirSync(directory)
+  process.env.WORKSPACE_ROOT = workspace
+})
 beforeEach(() => rmSync(preferences, { recursive: true, force: true }))
 afterAll(() => {
   if (previous === undefined) delete process.env.WORKSPACE_ROOT

@@ -9,9 +9,10 @@ import { runLean, stageInputSha } from "./runner"
 import { readLeanJson, readLeanState } from "./state"
 import { AGENT, cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
 
-const previous = process.env.WORKSPACE_ROOT
+let previous: string | undefined
 let workspace: string
 beforeEach(() => {
+  previous = process.env.WORKSPACE_ROOT
   workspace = mkdtempSync(path.join(tmpdir(), "lean-drafting-preferences-"))
   process.env.WORKSPACE_ROOT = workspace
 })

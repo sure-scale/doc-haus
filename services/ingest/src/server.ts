@@ -211,8 +211,14 @@ app.use("*", async (c, next) => {
 })
 
 const updateRoot = path.resolve(import.meta.dir, "../../..")
-const updateRuntime = process.env.DOCHAUS_RUNTIME_DIR ?? path.join(updateRoot, ".dochaus-runtime")
-app.route("/", updateRoutes(new RepoUpdater(updateRoot, updateRuntime), async () => {
+const updateRuntime = () => process.env.DOCHAUS_RUNTIME_DIR ?? path.join(updateRoot, ".dochaus-runtime")
+let cachedUpdater: { runtime: string; updater: RepoUpdater } | undefined
+const currentUpdater = () => {
+  const runtime = updateRuntime()
+  if (cachedUpdater?.runtime !== runtime) cachedUpdater = { runtime, updater: new RepoUpdater(updateRoot, runtime) }
+  return cachedUpdater.updater
+}
+app.route("/", updateRoutes(currentUpdater, async () => {
   if (listMatters().some(matter => leanDraftingStatus(matter.dir)?.in_flight)) return true
   const engine = process.env.OPENCODE_URL ?? `http://127.0.0.1:${process.env.DOC_HAUS_ENGINE_PORT ?? "4097"}`
   const response = await fetch(`${engine}/api/session/active`, { signal: AbortSignal.timeout(5000) })
@@ -220,7 +226,7 @@ app.route("/", updateRoutes(new RepoUpdater(updateRoot, updateRuntime), async ()
   const active = await response.json()
   if (typeof active !== "object" || active === null || !("data" in active) || !active.data || typeof active.data !== "object") throw new Error("Could not check ongoing work. Please try again.")
   return Object.keys(active.data).length > 0
-}, () => managedUpdateOwner(updateRoot, updateRuntime)))
+}, () => managedUpdateOwner(updateRoot, updateRuntime())))
 
 app.route("/", documentLabelRoutes(matterDir))
 app.route("/", chronologyRoutes(matterDir))
@@ -233,7 +239,7 @@ app.route("/", answerDraftRoutes(matterDir))
 app.route("/", authReuseRoutes())
 app.route("/", providerSetupRoutes())
 
-app.route("/", setupRoutes({ directory: path.dirname(engineConfigFile()) }))
+app.route("/", setupRoutes({ directory: () => path.dirname(engineConfigFile()) }))
 app.route("/", wordSetupRoutes({ fetch: app.fetch }))
 
 app.get("/engine/config", c => c.json(readEngineSettings()))
@@ -339,8 +345,9 @@ app.delete("/playbooks/:name", (c) => {
 })
 
 app.get("/workflows", (c) => {
-  mkdirSync(WORKFLOWS_DIR, { recursive: true })
-  return c.json({ dir: WORKFLOWS_DIR, workflows: listWorkflows() })
+  const dir = WORKFLOWS_DIR()
+  mkdirSync(dir, { recursive: true })
+  return c.json({ dir, workflows: listWorkflows() })
 })
 
 app.post("/workflows", async (c) => {
@@ -1114,14 +1121,14 @@ app.get("/matters/:id/documents/text", async (c) => {
 // across every matter, stored in WORKSPACE_ROOT/.templates and owned by ingest.
 // The library directory ships alongside the list so the web app can scope its
 // templates chat to it (the engine sessions run in TEMPLATES_DIR, not a matter).
-app.get("/templates", async (c) => c.json({ dir: TEMPLATES_DIR, templates: await listTemplates() }))
+app.get("/templates", async (c) => c.json({ dir: TEMPLATES_DIR(), templates: await listTemplates() }))
 
 app.post("/templates", async (c) => {
   const body = await c.req.parseBody()
   const file = body["file"] as File
   const buffer = Buffer.from(await file.arrayBuffer())
   const name = safeFileName(path.basename(file.name))
-  mkdirSync(TEMPLATES_DIR, { recursive: true })
+  mkdirSync(TEMPLATES_DIR(), { recursive: true })
   writeFileSync(templatePath(name), buffer)
   const description = typeof body["description"] === "string" ? body["description"] : ""
   setTemplateDescription(name, description)

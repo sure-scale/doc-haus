@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import path from "node:path"
-import { WORKSPACE_ROOT } from "./matter"
+import { workspaceRoot } from "./matter"
 // Cycle with agent.ts (which imports listWorkflows for deleteAgent's dependent
 // guard) is safe: both modules only call across the boundary at request time.
 import { listAgents } from "./agent"
@@ -16,7 +16,7 @@ export const DOCHAUS_DIR = () =>
 
 // The workflow-builder chat runs in this directory (engine sessions are directory-scoped,
 // mirroring how template-builder runs in TEMPLATES_DIR).
-export const WORKFLOWS_DIR = path.join(WORKSPACE_ROOT, ".workflows")
+export const WORKFLOWS_DIR = () => path.join(workspaceRoot(), ".workflows")
 
 const REGISTRY_FILE = () => path.join(DOCHAUS_DIR(), "workflows.json")
 const AGENT_DIR = () => path.join(DOCHAUS_DIR(), "agent")

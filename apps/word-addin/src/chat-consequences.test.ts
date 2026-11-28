@@ -19,6 +19,12 @@ function fixture(request?: (action: ChatAction, input: Record<string, unknown>) 
   return { root, composer, scroll, state, ui, calls, captures: () => captures, failNextCapture() { failCapture = true }, navigations: () => navigations, setContext(value: string) { context = { ...context, text: value, paragraphs: [{ id: "p-one", text: value }] } }, async advance(ms = 3_000) { time += ms; for (const job of scheduled.filter(item => !item.cancelled && item.at <= time)) { job.cancelled = true; job.run() }; await Bun.sleep(0) }, dispose() { ui.dispose(); page.happyDOM.abort() } }
 }
 
+type Root = ReturnType<typeof fixture>["root"]
+const hasSummary = (root: Root) => root.querySelector("div.chat-proposal") !== null
+const cardFor = (root: Root, title: string) => [...root.querySelectorAll("section.chat-proposal")].find(node => node.querySelector("h3")?.textContent === title)
+const isArchived = (root: Root, title: string) => Boolean(cardFor(root, title)?.closest("details"))
+const progress = (root: Root) => [...root.children].find(node => node.getAttribute("role") === "status")?.textContent ?? ""
+
 test("progressive review keeps typing and scroll intact, deduplicates findings, and consolidates only after idle", async () => {
   let checked = 0
   const f = fixture((action, input) => action === "assessment" && input.assessmentId ? review({ status: ++checked > 1 ? "complete" : "running", findings: [{ ...finding, id: `regenerated-${checked}` }], coverage: { reviewed: 2, total: 2, candidates: 2, checked: 2 } }) : undefined)
@@ -29,11 +35,11 @@ test("progressive review keeps typing and scroll intact, deduplicates findings, 
     f.ui.interaction(); await f.advance(1_500); f.ui.interaction(); await f.advance(1_500)
     await f.advance(1_500); f.ui.interaction(); await f.advance(1_500)
     expect([...f.root.querySelectorAll(".chat-proposal h3")].filter(node => node.textContent === finding.title)).toHaveLength(1)
-    expect(f.root.textContent).not.toContain("Current assessment")
+    expect(hasSummary(f.root)).toBe(false)
     expect(f.composer.value).toBe("Keep this draft"); expect(f.composer.ownerDocument.activeElement).toBe(f.composer); expect(f.scroll.scrollTop).toBe(123)
     await f.advance(3_000)
     expect(f.composer.ownerDocument.activeElement).toBe(f.composer)
-    expect(f.root.textContent).toContain("Current assessment")
+    expect(hasSummary(f.root)).toBe(true)
     expect(f.calls.filter(call => call.action === "assess")).toHaveLength(1)
   } finally { f.dispose() }
 })
@@ -44,10 +50,10 @@ test("changed wording cancels obsolete work and suppresses old navigation", asyn
     await f.advance(); await f.advance()
     const show = [...f.root.querySelectorAll("button")].find(node => node.textContent === "Show in Word")!
     f.setContext("Payment in 45 days."); show.click(); await Bun.sleep(0)
-    expect(f.navigations()).toBe(0); expect(f.root.textContent).toContain("This wording changed")
+    expect(f.navigations()).toBe(0); expect(show.parentElement!.querySelector('[role="status"]')?.textContent?.trim().length).toBeGreaterThan(0)
     show.blur(); await f.advance()
     expect(f.calls.some(call => call.action === "assessment-cancel")).toBe(true)
-    expect(f.root.textContent).toContain("Superseded")
+    expect(isArchived(f.root, finding.title)).toBe(true)
     await f.advance()
     expect(f.calls.filter(call => call.action === "assess")).toHaveLength(2)
   } finally { f.dispose() }
@@ -69,7 +75,7 @@ test("disabled reload restores previous findings without document capture or mod
   const f = fixture(action => action === "assessment" ? review({ status: "complete" }) : undefined)
   try {
     f.state.enabled = false; await f.advance()
-    expect(f.root.textContent).toContain(finding.title); expect(f.root.textContent).toContain("Consequence review is off")
+    expect(f.root.textContent).toContain(finding.title); expect(isArchived(f.root, finding.title)).toBe(true); expect(progress(f.root).trim().length).toBeGreaterThan(0)
     expect(f.captures()).toBe(0); expect(f.calls.some(call => call.action === "assess")).toBe(false)
   } finally { f.dispose() }
 })
@@ -78,7 +84,7 @@ test("reconnect checks completed persisted assessments against fresh wording bef
   const f = fixture((action, input) => action === "assessment" ? review({ status: input.assessmentId ? "stale" : "complete" }) : undefined)
   try {
     f.setContext("Payment in 45 days."); await f.advance(); await f.advance()
-    expect(f.root.textContent).not.toContain("Current assessment")
+    expect(hasSummary(f.root)).toBe(false)
     expect(f.calls.some(call => call.action === "assessment" && call.input.context)).toBe(true)
     await f.advance(); await f.advance()
     expect(f.calls.some(call => call.action === "assess")).toBe(true)
@@ -91,7 +97,7 @@ test("new material chat instructions recheck unchanged Word wording and retain s
     await f.advance(); await f.advance()
     f.state.revision = "changed instructions"; f.ui.refresh()
     expect(f.calls.some(call => call.action === "assessment-cancel")).toBe(true)
-    expect(f.root.textContent).toContain("Superseded")
+    expect(isArchived(f.root, finding.title)).toBe(true)
     await f.advance(); await f.advance()
     expect(f.calls.filter(call => call.action === "assess")).toHaveLength(2)
   } finally { f.dispose() }
@@ -102,10 +108,10 @@ test("reload restores archived findings and meaning, with prior checks kept dist
   const f = fixture(action => action === "assessment" ? { ...review({ status: "complete" }), meaning: "The proposed wording gives more time to pay.", history: [review({ id: "previous", status: "stale", findings: [old] })] } : undefined)
   try {
     await f.advance(); await f.advance()
-    expect(f.root.textContent).toContain("What changes")
     expect(f.root.textContent).toContain("The proposed wording gives more time to pay.")
     expect(f.root.textContent).toContain("Earlier deadline consequence")
-    expect(f.root.textContent).toContain("Superseded by a later review")
+    expect(isArchived(f.root, "Earlier deadline consequence")).toBe(true)
+    expect(isArchived(f.root, finding.title)).toBe(false)
   } finally { f.dispose() }
 })
 
@@ -144,7 +150,7 @@ test("slow admission cannot publish findings or meaning after Word changes durin
     expect(f.root.textContent).not.toContain(finding.title)
     expect(f.root.textContent).not.toContain("Obsolete proposed meaning")
     expect(f.calls.some(call => call.action === "assessment-cancel")).toBe(true)
-    expect(f.root.textContent).not.toContain("Current assessment")
+    expect(hasSummary(f.root)).toBe(false)
   } finally { f.dispose() }
 })
 
@@ -156,8 +162,8 @@ test("slow polling revalidates Word before replacing existing findings with curr
     f.setContext("Payment in 45 days.")
     finish(review({ status: "complete", findings: [{ ...finding, title: "Obsolete follow-up" }] })); await Bun.sleep(0)
     expect(f.root.textContent).not.toContain("Obsolete follow-up")
-    expect(f.root.textContent).toContain("Superseded")
-    expect(f.root.textContent).not.toContain("Current assessment")
+    expect(isArchived(f.root, finding.title)).toBe(true)
+    expect(hasSummary(f.root)).toBe(false)
   } finally { f.dispose() }
 })
 
@@ -166,13 +172,11 @@ test("discovery keeps persisted findings historical until a fresh-context reconc
   try {
     f.setContext("Payment in 45 days."); await f.advance()
     expect(f.root.textContent).toContain(finding.title)
-    expect(f.root.textContent).toContain("Superseded")
-    expect(f.root.textContent).not.toContain("Possible consequence")
-    expect(f.root.textContent).not.toContain("What changes")
+    expect(isArchived(f.root, finding.title)).toBe(true)
+    expect(f.root.textContent).not.toContain("Old meaning")
     await f.advance()
-    expect(f.root.textContent).not.toContain("Current assessment")
-    expect(f.root.textContent).not.toContain("Possible consequence")
-    expect(f.root.textContent).not.toContain("What changes")
+    expect(hasSummary(f.root)).toBe(false)
+    expect(f.root.textContent).not.toContain("Old meaning")
   } finally { f.dispose() }
 })
 
@@ -180,13 +184,14 @@ test("focused findings relabel on disable without losing the focused source butt
   const f = fixture()
   try {
     await f.advance(); await f.advance()
+    const card = cardFor(f.root, finding.title)!
+    const beforeLabel = card.querySelector(".chat-message-meta")!.textContent
     const show = [...f.root.querySelectorAll("button")].find(node => node.textContent === "Show in Word")!
     show.focus()
     f.state.enabled = false; f.ui.refresh()
-    expect(f.root.textContent).toContain("Earlier finding · review is off")
-    expect(f.root.textContent).not.toContain("Possible consequence")
+    expect(card.querySelector(".chat-message-meta")!.textContent).not.toBe(beforeLabel)
     expect(show.ownerDocument.activeElement).toBe(show)
-    expect(f.root.textContent).not.toContain("Current assessment")
+    expect(hasSummary(f.root)).toBe(false)
     f.state.enabled = true; f.ui.refresh(); await f.advance(); await f.advance()
     expect(f.calls.filter(call => call.action === "assess")).toHaveLength(2)
     expect(show.ownerDocument.activeElement).toBe(show)
@@ -197,10 +202,10 @@ test("a disabled persisted review restarts after enabling instead of remaining d
   const f = fixture((action, input) => action === "assessment" && !input.assessmentId ? review({ status: "disabled" }) : undefined)
   try {
     f.state.enabled = false; await f.advance()
-    expect(f.root.textContent).toContain("Earlier finding · review is off")
+    expect(isArchived(f.root, finding.title)).toBe(true)
     f.state.enabled = true; f.ui.refresh(); await f.advance(); await f.advance()
     expect(f.calls.some(call => call.action === "assess")).toBe(true)
-    expect(f.root.textContent).toContain("Checking consequences")
+    expect(isArchived(f.root, finding.title)).toBe(false)
   } finally { f.dispose() }
 })
 
@@ -210,11 +215,11 @@ test("removing the final amendment target cancels the running review and retains
     await f.advance(); await f.advance()
     f.state.turnId = ""; f.state.revision = "declined"; f.ui.refresh()
     expect(f.calls.some(call => call.action === "assessment-cancel")).toBe(true)
-    expect(f.root.textContent).toContain("Earlier finding · amendment declined or unavailable")
+    expect(isArchived(f.root, finding.title)).toBe(true)
     const count = f.calls.filter(call => call.action === "assess").length
     await f.advance(30_000)
     expect(f.calls.filter(call => call.action === "assess")).toHaveLength(count)
-    expect(f.root.textContent).not.toContain("Current assessment")
+    expect(hasSummary(f.root)).toBe(false)
   } finally { f.dispose() }
 })
 
@@ -369,7 +374,8 @@ test("disabled discovery retries remain silent and still restore saved findings 
     expect(f.calls.filter(call => call.action === "assessment")).toHaveLength(3)
     failing = false; await f.advance(8_000)
     expect(f.root.textContent).toContain(finding.title)
-    expect(f.root.textContent).toContain("Consequence review is off")
+    expect(isArchived(f.root, finding.title)).toBe(true)
+    expect(progress(f.root).trim().length).toBeGreaterThan(0)
     expect(f.root.textContent).not.toContain("unavailable")
     expect(f.captures()).toBe(0)
     expect(f.calls.some(call => call.action === "assess")).toBe(false)
@@ -380,13 +386,13 @@ test("a completed assessment recovers its summary after a temporary Word read fa
   const f = fixture((action, input) => action === "assess" || action === "assessment" && input.assessmentId ? review({ status: "complete" }) : undefined)
   try {
     await f.advance(1_500); await f.advance(3_000)
-    expect(f.root.textContent).toContain("Current assessment")
+    expect(hasSummary(f.root)).toBe(true)
     f.failNextCapture(); await f.advance(3_000)
-    expect(f.root.textContent).not.toContain("Current assessment")
+    expect(hasSummary(f.root)).toBe(false)
     expect(f.root.textContent).not.toContain("unavailable")
     await f.advance(8_000)
     expect(f.calls.some(call => call.action === "assessment" && call.input.assessmentId)).toBe(true)
-    expect(f.root.textContent).toContain("Current assessment")
+    expect(hasSummary(f.root)).toBe(true)
     expect(f.root.textContent).not.toContain("unavailable")
     expect(f.calls.filter(call => call.action === "assess")).toHaveLength(1)
   } finally { f.dispose() }

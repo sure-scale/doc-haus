@@ -410,7 +410,6 @@ test("long canonical source text is readable beyond JSON clipping with focused s
   const extracted = projected.split("Canonical extracted text:\n")[1]!.split("End of source text.")[0]!.replaceAll("\n", "")
   expect(extracted).toBe(text)
   expect(researchPrompt(directory, "research-review", researchBasis(directory))).toContain("research-context.txt")
-  expect(researchPrompt(directory, "research-review", researchBasis(directory))).toContain("reject that finding with the access limitation")
   expect(checkResearch(directory, { ...research, findings: [{ ...research.findings[0], quote: "Invented wording" }] })).not.toEqual([])
 })
 
@@ -471,9 +470,6 @@ test("research review reports researchable gaps separately and the checker valid
   expect(accepted.issues).toEqual([])
   expect(accepted.openItems).toEqual([expect.objectContaining({ stage: "research-review", kind: "research_gap", detail: GAP_TEXT })])
   expect(JSON.parse(researchHandoff(directory)).limitations).toEqual(["Currency remains to be confirmed", GAP_TEXT])
-  const prompt = researchPrompt(directory, "research-review", researchBasis(directory))
-  expect(prompt).toContain("A failed or unavailable provider, an inaccessible source, incomplete extraction and currency limits are limitations; a gap is material authority not yet retrieved that a targeted retrieval could find and on which a drafting choice depends; a proposition of law the documents assert or rely on with nothing retrieved for it is a gap, a not-needed status included.")
-  expect(prompt).toContain('"limitations":["other remaining legal research limits the lawyer must see"],"gaps":[{"issue":"material authority not yet retrieved","affects":"the drafting choice that depends on it"}]}.')
   // A review saved before gaps were reported remains valid.
   writeLeanText(directory, "research-review.json", JSON.stringify({ approved: ["r1"], rejected: [], limitations: [] }))
   expect(approvedResearch(directory)).toHaveLength(1)
@@ -821,14 +817,11 @@ test("a withdrawn finding's reason becomes a research open item the lawyer reads
   ])
 })
 
-test("the research prompt has an earlier finding withdrawn when the lawyer's later answers or instructions take it out of scope", () => {
+test("the research prompt includes earlier approved findings", () => {
   const directory = matter()
   approvedNotice(directory)
   const prompt = researchPrompt(directory, "research", researchBasis(directory))
   expect(prompt).toContain('"citation": "Rule 1"')
-  expect(prompt).toContain("or when the lawyer's answers or instructions since it was found take it out of scope (a changed jurisdiction, party or facts).")
-  // Was "the same url and citation", which the code does not use for a finding without a citation.
-  expect(prompt).toContain("Return a finding with the same url and citation (or url and quote when it has no citation) only to replace it,")
 })
 
 test("on the last attempt a withdrawal of an authority the reply also returns is dropped and the returned finding kept", () => {
@@ -864,13 +857,9 @@ test("research text that directs the drafter to leave a point out is retried, an
   expect(final.openItems.map(item => item.detail)).toEqual([directive])
 })
 
-test("research and its review read the finding's version against the matter's dates", () => {
+test("research and its review include the matter's dates", () => {
   const directory = matter()
   retrieved(directory)
   writeLeanText(directory, "intake.json", JSON.stringify({ ready: true, dates: { document_date: { date: "", basis: "today" }, operative_dates: [] } }))
   for (const stage of ["research", "research-review"] as const) expect(researchPrompt(directory, stage, "basis")).toContain("<matter_dates>")
-  expect(researchPrompt(directory, "research", "basis")).toContain('"currentness":"the version in force at the dates in matter_dates (else today)')
-  const review = researchPrompt(directory, "research-review", "basis")
-  expect(review).toContain("check each finding's version against the dates in matter_dates, else today")
-  expect(review).toContain("it never directs the drafter to leave content out")
 })

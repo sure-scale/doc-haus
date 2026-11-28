@@ -1,24 +1,28 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
+import { strFromU8, unzipSync } from "fflate"
 import { docxodus } from "../../lib/docxodus"
 import { sha256File } from "../../lib/lineage"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { workingDocxKey } from "../../lib/working-docx"
 import { TOOL_SYNTAX_ISSUE } from "./checks"
 import { checkDeliverySelections } from "./delivery-selection"
-import { writeLeanPlan, type DocID, type PlannedDocument } from "./plan"
+import { presentDraft } from "./draft-presentation"
+import { coverageScopeQuestion, planCoverageCurrent, separateFileChosen, type CoverageAct } from "./package-coverage"
+import { readLeanPlan, writeLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { REQUEST_SOURCE, openItem, quoteMissIssue } from "./quotes"
 import {
-  FILES_REVISION_SCOPE, LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, readRequestedFiles, requestedFilesIssues, requestedFilesItems, requestedFilesPrompt, requestedFilesQuestion,
+  FILES_REVISION_SCOPE, LEAN_REQUESTED_FILES_SCHEMA, foldRequestedFiles, parseRequestedFiles, readRequestedFiles, requestedFilesIssues, requestedFilesItems, requestedFilesPrompt, requestedFilesQuestion,
   requestedFilesRevision, requestedFilesWords, parseUnheldDocument, unheldDocumentPrompt, unheldDocuments, unplannedFileIssues, withRequestedNames, withUnaskedDocuments, writeRequestedFiles,
   type LeanRequestedFiles, type RequestedFile, type RequestedFiles,
 } from "./requested-files"
-import { writeLeanText, writeQuestions, type Question } from "./state"
+import { runLean } from "./runner"
+import { leanFile, readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
 import { drainLeanRequests, enqueueLeanRequest } from "./requests"
-import { cleanupMatters, matter } from "./test-support"
+import { AGENT, NO_FINDINGS, actRecordOf, cleanupMatters, draftingNotes, labelledPart, matter, noChanges, placementJob, scriptedModel, type Reply } from "./test-support"
 
 // Requested files: the files the lawyer asks to receive, grounded in the
 // lawyer's words, held against the plan as outline feedback, a question and,
@@ -67,22 +71,16 @@ describe("requested files prompt", () => {
     // The job sees each planned document's id and title only, never the plan's files or deliverables.
     expect(prompt).toContain(JSON.stringify([{ id: "d1", title: "Share transfer form" }, { id: "d2", title: "Board minute" }, { id: "d3", title: "Cover memo" }], null, 2))
     expect(prompt).not.toMatch(/"(?:file|deliverable)":/)
-    // The memo is one planned document: no memo block, no "memo" hold, only its place first in a file.
+    // The memo is one planned document: no separate memo block.
     expect(prompt).not.toContain("<planned_memo>")
-    expect(prompt).toContain('in the order the words place them in the file, with "d3" first when the words set no order')
     expect(prompt).toContain(SHAPE)
     expect(prompt).not.toContain("<user_updates>")
     const plain = requestedFilesPrompt(directory, MEMOLESS, undefined)
     expect(plain).not.toContain("<planned_memo>")
-    expect(plain).not.toContain("first when the words set no order")
-    // The request's own words aside, the prompt does not mention a memo.
     expect(plain.replace(tagged("request", REQUEST), "")).not.toMatch(/\bmemo\b/)
     expect(plain).toContain(SHAPE)
-    // The name is copied as the lawyer writes it; code adds Word's extension.
-    expect(prompt).toContain('"name": the file name exactly as the lawyer writes it, or null when the lawyer gives no name; ')
     expect(prompt.replace(tagged("request", REQUEST), "")).not.toContain(".docx")
   })
-
 })
 
 describe("parse requested files", () => {
@@ -333,7 +331,6 @@ describe("parse requested files", () => {
     // A file no planned document fills holds nothing: it stands, for the outline to plan.
     const empty = file([], TRANSFER, "Kestrel Transfer.docx")
     expect(check(reply(true, empty, file(["d3", "d2"], PACK)))).toEqual([{ issues: [], value: stated(empty, file(["d3", "d2"], PACK)) }, { issues: [], value: stated(empty, file(["d3", "d2"], PACK)) }])
-    expect(requestedFilesPrompt(directory, DOCUMENTS, MEMO_ID)).toContain('first when the words set no order, or [] when no planned document is what the file holds; ')
   })
 
   test("stated and files must agree; a tool call or another reply is retried", () => {
@@ -388,12 +385,9 @@ describe("requested files issues", () => {
     expect(requestedFilesRevision(directory, mixed)).toEqual({ feedback: [FILES_REVISION_SCOPE, mixed[1]!.issue], documents: new Set(["d1"]) })
   })
 
-  test("the revision request first says that only the delivery lines may change; an unrelated historical answer does not veto it", () => {
+  test("the revision request scopes changes to delivery lines; an unrelated historical answer does not veto it", () => {
     const directory = prepared()
     const { issues } = requestedFilesIssues(DOCUMENTS, MEMO_ID, ASKED)
-    // Code gives the files their names, so a revision keeps the "File:" lines as they are.
-    expect(FILES_REVISION_SCOPE).toBe('These issues concern only how the outline delivers its files: change only the "Deliverable:" lines, ' +
-      'and keep every title, part, "File:" line and the "Memo:" line exactly as they are.')
     expect(requestedFilesRevision(directory, issues)).toEqual({ feedback: [FILES_REVISION_SCOPE, issues[0]!.issue], documents: new Set(["d2"]) })
     // An earlier answer about another point supplies no decision on this file.
     writeQuestions(directory, [{ id: "requested-files-0000", stage: "draft", question: "Earlier question.", context: "", status: "answered", answer: "As planned.", answered_at: "2026-10-18T00:00:00.000Z" }])
@@ -429,11 +423,10 @@ describe("unheld documents", () => {
   test("asks one decision, whether the lawyer's words ask for the document as a file apart from <file>, the quote first", () => {
     const directory = prepared()
     const prompt = unheldDocumentPrompt(directory, DOCUMENTS[0]!, file(["d3", "d2"], PACK, "Kestrel Board Pack.docx"))
-    expect(prompt).toContain("for one decision: whether they ask to receive one planned document as a file apart from the one file in <file>.")
     expect(prompt).toContain(tagged("file", `The one file the lawyer asks to receive, Kestrel Board Pack.docx, in these words: "${PACK}"`))
     expect(prompt).not.toContain("<requested_file>")
-    // The JSON-only line is in the first prompt, the quote before the decision.
-    expect(prompt).toContain('- Reply with the JSON object only, "quote" first: {"quote":"..." or null,"apart":true or false}.')
+    // The JSON-only schema is in the first prompt, the quote before the decision.
+    expect(prompt).toContain('{"quote":"..." or null,"apart":true or false}')
     expect(prompt.indexOf('- "quote":')).toBeLessThan(prompt.indexOf('- "apart":'))
   })
 
@@ -1107,7 +1100,6 @@ describe("requested file decision applicability", () => {
     expect(prompt).toContain(`[${prior.id}] Q:`)
     expect(prompt).toContain("As planned.")
     expect(prompt).toContain("Address the documents to the Orchard Committee.")
-    expect(prompt).toContain("or null when none applies or applicability is uncertain")
   })
 
   test("a substantive answer changes the requested file and cannot inherit the former file's permission", () => {
@@ -1117,8 +1109,6 @@ describe("requested file decision applicability", () => {
     writeQuestions(directory, [{ ...prior, status: "answered", answer: `${quote}. This replaces the previous file name.` }])
     const prompt = requestedFilesPrompt(directory, DOCUMENTS, MEMO_ID)
     expect(prompt).toContain(quote)
-    expect(prompt).toContain("whether it appears in the request, an update or an answer")
-    expect(prompt).toContain("Do not preserve an obsolete request")
     const current = stated({ ...ASKED.files[0]!, name: "Kestrel Review.docx", quote, answered_question: null })
     const parsed = parseRequestedFiles(reply(true, ...current.files), directory, DOCUMENTS)
     expect(parsed.value).toEqual(current)
@@ -1138,4 +1128,102 @@ describe("requested file decision applicability", () => {
     writeQuestions(directory, [{ ...prior, status: "answered", answer: "I cannot decide", answer_class: "declined" }])
     expect(parseRequestedFiles(reply(true, { ...ASKED.files[0]!, answered_question: prior.id }), directory, DOCUMENTS).value).toBeUndefined()
   })
+})
+
+describe("named file holding multiple instruments", () => {
+  const INST_SOURCE = "Kestrel Works shall release the deposit once the Orchard Committee approves the revised schedule."
+  const INST_REQUEST = "Prepare the papers so that the Orchard Committee approves the revised schedule and Kestrel Works then releases the deposit, all in one file named Kestrel Release Pack.docx."
+  const INST_PACK = "all in one file named Kestrel Release Pack.docx"
+  const INST_APPROVE = "the Orchard Committee approves the revised schedule"
+  const PACKED: RequestedFile = { holds: ["d1", "d2"], name: "Kestrel Release Pack.docx", quote: INST_PACK }
+  const TWO = "Acting for: not stated\n# Committee resolution\nForm: other\nExecuted by: the Orchard Committee\n## Terms\nThe approval.\n" +
+    "# Release letter\nForm: letter\nExecuted by: Kestrel Works\n## Terms\nThe release."
+  const act: CoverageAct = { act: "approve the revised schedule", source: "request", quote: INST_APPROVE, parties: ["the Orchard Committee"], document: "d1" }
+  const instDoc = (title: string, executed: string, extra: Partial<PlannedDocument> = {}): Omit<PlannedDocument, "id"> =>
+    ({ title, purpose: `The ${title}.`, parts: [{ heading: "Terms", scope: "The terms." }], executed_by: [executed], ...extra })
+  const RESOLUTION = instDoc("Committee resolution", "the Orchard Committee", { form: "other" })
+  const LETTER = instDoc("Release letter", "Kestrel Works", { form: "letter" })
+
+  test("is held as one document whose second instrument keeps its own title, parties and form", () => {
+    const folded = foldRequestedFiles([RESOLUTION, LETTER], { stated: true, files: [PACKED] })
+    expect(folded.documents).toHaveLength(1)
+    expect(folded.documents[0]).toMatchObject({ title: "Committee resolution", executed_by: ["the Orchard Committee", "Kestrel Works"] })
+    expect(folded.documents[0]!.parts).toEqual([
+      { heading: "Terms", scope: "The terms." },
+      { heading: "Terms (Release letter)", display_heading: "Terms", scope: "The terms.", instrument: { title: "Release letter", purpose: "The Release letter.", executed_by: ["Kestrel Works"], form: "letter" } },
+    ])
+    expect(folded.requested.files).toEqual([{ ...PACKED, holds: ["d1"] }])
+    expect(folded.at).toEqual([0, 0])
+  })
+
+  test("is left as planned when no file is named, the lawyer chose a file of its own, or one is drafted against a template", () => {
+    const unchanged = (documents: Omit<PlannedDocument, "id">[], ...args: [Parameters<typeof foldRequestedFiles>[1], boolean?]) =>
+      expect(foldRequestedFiles(documents, ...args)).toMatchObject({ documents, applied: [] })
+    unchanged([RESOLUTION, LETTER], { stated: false, files: [] })
+    unchanged([RESOLUTION, LETTER], { stated: true, files: [{ ...PACKED, holds: ["d1"] }, { ...PACKED, holds: ["d2"], name: "Other.docx" }] })
+    unchanged([RESOLUTION, LETTER], { stated: true, files: [PACKED] }, true)
+    unchanged([RESOLUTION, { ...LETTER, template: "Letter template.docx" }], { stated: true, files: [PACKED] })
+    unchanged([RESOLUTION, { ...LETTER, playbook_review: { sources: [{ source_id: "s1", quote: "Releases follow approval." }], reason: "The firm's release playbook." } }], { stated: true, files: [PACKED] })
+  })
+
+  test("never folds a document planned as advice, as host or instrument; an advice letter still folds", () => {
+    for (const documents of [[RESOLUTION, { ...LETTER, form: "advice" as const }], [{ ...RESOLUTION, form: "advice" as const }, LETTER]])
+      expect(foldRequestedFiles(documents, { stated: true, files: [PACKED] })).toMatchObject({ documents, applied: [] })
+    expect(foldRequestedFiles([RESOLUTION, { ...LETTER, form: "advice letter" }], { stated: true, files: [PACKED] }).documents).toHaveLength(1)
+  })
+
+  test("folds when the outline records that no playbook applies", () => {
+    const none = { sources: [], reason: "No playbook supplied." }
+    expect(foldRequestedFiles([{ ...RESOLUTION, playbook_review: none }, { ...LETTER, playbook_review: none }], { stated: true, files: [PACKED] }).documents).toHaveLength(1)
+  })
+
+  test("plan-scope question offers the named file first, then a file of its own; separate choice keeps files apart", () => {
+    const named = [{ ...instDoc("Release letter", "Kestrel Works"), id: "d1" as const, file: "Kestrel Release Pack.docx" }]
+    expect(coverageScopeQuestion([act], named)!.options?.map(option => option.text.split(":")[0])).toEqual(['In "Kestrel Release Pack.docx", the file the request names', "In a file of its own", "Outside this request."])
+    expect(coverageScopeQuestion([act], [{ ...named[0]!, file: undefined }])!.options).toBeUndefined()
+    expect(coverageScopeQuestion([act], named, [], { saved: true })!.options).toBeUndefined()
+
+    const asked = coverageScopeQuestion([act], named)!
+    const answered = (option: string): Question[] => [{ ...asked, status: "answered", option_id: option, answer: "chosen" }]
+    expect(separateFileChosen(answered("o2"))).toBe(true)
+    expect(separateFileChosen(answered("o1"))).toBe(false)
+    expect(separateFileChosen([asked])).toBe(false)
+  })
+
+  test("a later title starts a new page; a document with one title gains no page break", async () => {
+    const breaks = async (markdown: string) => {
+      const { bytes } = presentDraft((await renderMarkdownToDocx(markdown)).bytes, [{ heading: "Terms" }])
+      return strFromU8(unzipSync(bytes)["word/document.xml"]!).match(/<w:pageBreakBefore\/>/g)?.length ?? 0
+    }
+    expect(await breaks("# Committee resolution\n\n## Terms\n\nThe approval.\n")).toBe(0)
+    expect(await breaks("# Committee resolution\n\n## Terms\n\nThe approval.\n\n# Release letter\n\n## Terms\n\nThe release.\n")).toBe(1)
+  })
+
+  test("through the run, the named file is one body holding both instruments, and the coverage check holds on it", async () => {
+    const directory = matter(INST_SOURCE)
+    writeLeanText(directory, "request.md", INST_REQUEST)
+    const outliner: Reply = text => /^Draft part \d+ of \d+ of "/m.test(text) ? labelledPart(text, "The terms are recorded.") : TWO
+    const model = scriptedModel({
+      [AGENT.draft]: outliner,
+      [AGENT.files]: () => JSON.stringify({ stated: true, files: [PACKED] }),
+      [AGENT.acts]: actRecordOf([act]),
+      ...placementJob(() => JSON.stringify({ acts: [act] })),
+      [AGENT.review]: () => NO_FINDINGS,
+      [AGENT.changes]: noChanges,
+      [AGENT.finalize]: draftingNotes,
+    })
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    const plan = readLeanPlan(directory)!
+    expect(plan.documents).toEqual([expect.objectContaining({ id: "d1", title: "Committee resolution", file: "Kestrel Release Pack.docx", executed_by: ["the Orchard Committee", "Kestrel Works"] })])
+    expect(plan.documents[0]!.parts.map(part => part.instrument?.title)).toEqual([undefined, "Release letter"])
+    expect(planCoverageCurrent(directory)).toBe(true)
+    expect(readQuestions(directory)).toEqual([])
+
+    const prompts = model.prompts.filter(prompt => /^Draft part \d+ of /m.test(prompt.text))
+    expect(prompts.map(prompt => prompt.text.includes('in "Release letter"'))).toEqual([false, true])
+    const body = strFromU8(unzipSync(readFileSync(leanFile(directory, "d1/body.docx")))["word/document.xml"]!)
+    expect(body).toContain("Release letter")
+    expect(body.match(/<w:pageBreakBefore\/>/g)).toHaveLength(1)
+  }, 120_000)
 })

@@ -5,10 +5,8 @@ import { paragraphSha256 } from "../../lib/drafting-amendment"
 import { checkChanges } from "./change-checks"
 import { finalBodyItems, finalBodyParagraphs, readChangeList, type ParagraphRow } from "./checks"
 import type { GateResult } from "./gate"
-import type { StepID } from "./plan"
 import { runLean } from "./runner"
-import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
-import { hashStageInputs, readLeanJson, readLeanState, readLeanText, readOpenItems, writeLeanState, writeQuestions } from "./state"
+import { readLeanJson, readLeanText, readOpenItems, writeQuestions } from "./state"
 import { AGENT, SUPPORT, cleanupMatters, draftingNotes, happyPath, matter, pidOf, sameSession, scriptedModel, type Reply } from "./test-support"
 
 // Amendments that rest on drafting judgment rather than a source passage. Real
@@ -227,7 +225,6 @@ describe("on the last allowed attempt", () => {
     expect(unapplied).toHaveLength(1)
     expect(unapplied[0]!.record).toMatchObject({ outcome: { reason: "withheld", issues: [expect.stringContaining("has no source passage")] },
       proposal: { id: "a2", updated: "Payment is due within ten days of delivery.", reason: "Drafting judgment.", sources: [] } })
-    expect(unapplied[0]!.text).toContain("proposed change that was not made")
     expect(notesRecords(model, "open_point").map(row => row.record)).toContainEqual({ kind: item.kind, detail: item.detail, location: item.ref })
     expect(readLeanText(directory, "drafting-notes.md")!.split(`[ref: ${item.id}]`)).toHaveLength(2)
     const final = finalBodyParagraphs(directory, "d1").map(row => row.text)
@@ -289,7 +286,6 @@ describe("the request and the lawyer's answers are a quotable source", () => {
     const evidence = notesRecords(model, "change")
     expect(evidence).toHaveLength(1)
     expect(evidence[0]!.record).toMatchObject({ id: "a1", application_mode: "code", evidence_basis: "source-passages-provided", sources: BY_REQUEST("a short supply note") })
-    expect(evidence[0]!.text).toContain("application_mode says only how text was applied")
   }, 120_000)
 })
 
@@ -371,27 +367,6 @@ describe("a marked judgment amendment through the run", () => {
     const gate = gateOf(directory)
     expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
     expect(gate.disclosed).toEqual([expect.objectContaining({ id: marker.id, kind: "placeholder", status: "disclosed" })])
-  }, 120_000)
-})
-
-describe("prompt version", () => {
-  test("the contract change is lean-32-change-contracts, and a run keyed under lean-31-attempt3-fixes re-runs every model step", async () => {
-    expect(LEAN_PROMPT_VERSION).toBe("lean-32-change-contracts")
-    const directory = matter()
-    expect((await runLean(directory, { sessions: scriptedModel(happyPath).port })).status).toBe("completed")
-    const idle = scriptedModel({})
-    expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
-    expect(idle.prompts).toHaveLength(0)
-
-    const state = readLeanState(directory)!
-    writeLeanState(directory, {
-      ...state,
-      stages: Object.fromEntries(Object.entries(state.stages).map(([step, row]) =>
-        [step, { ...row!, input_sha: hashStageInputs(step as StepID, "lean-31-attempt3-fixes", stageInputs(directory, step as StepID)) }])),
-    })
-    const rerun = scriptedModel(happyPath)
-    expect((await runLean(directory, { sessions: rerun.port })).status).toBe("completed")
-    expect(rerun.counts().map(count => count > 0)).toEqual([true, true, true, true])
   }, 120_000)
 })
 

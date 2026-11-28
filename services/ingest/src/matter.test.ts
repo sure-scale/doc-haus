@@ -1,18 +1,25 @@
-import { test, expect, afterAll } from "bun:test"
+import { test, expect, beforeAll, afterAll } from "bun:test"
 import { createHash } from "node:crypto"
 import { appendFileSync, mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import * as matter from "./matter"
 import type { Matter } from "./matter"
 
-// Point WORKSPACE_ROOT at a throwaway dir before matter.ts captures it at module
-// eval, so the CRUD tests never touch a real workspace. The import is dynamic for
-// exactly this reason — a static import would hoist above the env assignment.
-const root = mkdtempSync(path.join(tmpdir(), "dochaus-matter-"))
-process.env.WORKSPACE_ROOT = root
-const matter = await import("./matter")
+let root = ""
+let previousWorkspace: string | undefined
 
-afterAll(() => rmSync(root, { recursive: true, force: true }))
+beforeAll(() => {
+  root = mkdtempSync(path.join(tmpdir(), "dochaus-matter-"))
+  previousWorkspace = process.env.WORKSPACE_ROOT
+  process.env.WORKSPACE_ROOT = root
+})
+
+afterAll(() => {
+  if (previousWorkspace === undefined) delete process.env.WORKSPACE_ROOT
+  else process.env.WORKSPACE_ROOT = previousWorkspace
+  if (root) rmSync(root, { recursive: true, force: true })
+})
 
 test("matterDir rejects path traversal and escaping ids", () => {
   // The fix for the traversal hole: ids arrive from a URL param, so anything that

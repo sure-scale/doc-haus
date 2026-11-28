@@ -2,8 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import webSearch from "../tool/web-search"
-import { parseResponse } from "../tool/web-search"
+import webSearch, { callExa, EXA_TIMEOUT_MS, parseResponse } from "../tool/web-search"
 
 describe("Exa MCP response parsing", () => {
   test("treats an embedded MCP tool error as an error", () => {
@@ -126,15 +125,16 @@ test("oversized streamed body aborts without publishing partial search results",
   })
 })
 
-test("the existing 25 second deadline covers a stalled body after headers", async () => {
+test("the deadline covers a stalled body after headers and defaults to 25 seconds", async () => {
+  expect(EXA_TIMEOUT_MS).toBe(25_000)
   await localSearch(() => new Response(new ReadableStream({
     start(controller) { controller.enqueue(new TextEncoder().encode("event: message\n")) },
   }), { headers: { "content-type": "text/event-stream" } }), async (_directory, requests, signals) => {
     const started = Date.now()
-    await expect(webSearch.execute({ query: "public record" }, context)).rejects.toThrow()
-    expect(Date.now() - started).toBeGreaterThanOrEqual(24_000)
-    expect(Date.now() - started).toBeLessThan(29_000)
+    await expect(callExa(undefined, { query: "public record" }, 150)).rejects.toThrow()
+    expect(Date.now() - started).toBeGreaterThanOrEqual(100)
+    expect(Date.now() - started).toBeLessThan(2_000)
     expect(requests).toHaveLength(1)
     expect(signals[0].aborted).toBe(true)
   })
-}, 35_000)
+})

@@ -1,14 +1,20 @@
 // Unit tests for the shared amendment-chain helper on a synthetic legal.db.
 // Run from dochaus/: bun test lib/amendment-chain.test.ts
 import { Database } from "bun:sqlite"
-import { expect, test } from "bun:test"
-import { mkdtempSync } from "node:fs"
+import { afterEach, expect, test } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { buildChains, operativePassage, resolveCurrentSection, supersededSections, verbatimSpan, type SectionOpRow } from "./amendment-chain"
 
+const tempDirs: string[] = []
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
 function syntheticDb() {
   const dir = mkdtempSync(path.join(tmpdir(), "amend-helper-"))
+  tempDirs.push(dir)
   const db = new Database(path.join(dir, "legal.db"))
   db.run("PRAGMA journal_mode = WAL")
   for (const sql of [

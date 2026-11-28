@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { strToU8, zipSync } from "fflate"
 import { documentFingerprint } from "./fingerprint"
+import { WORD_ADDIN_ID } from "../../../dochaus/lib/word-addin-contract"
 
 const word = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const format =
@@ -507,4 +508,205 @@ test("style session ID normalization preserves malformed, nested, duplicate, for
   ]) expect(await hash("word/styles.xml", transform(stylePart("00112233")))).not.toBe(await hash("word/styles.xml", transform(stylePart("00445566"))))
   for (const part of ["customXml/item1.xml", "word/custom.xml"])
     expect(await hash(part, stylePart("00112233"))).not.toBe(await hash(part, stylePart("00445566")))
+})
+
+test("DOCX fingerprint ignores ZIP timestamps, compression and entry order but detects changed content", async () => {
+  const a = strToU8("<document>one</document>")
+  const b = strToU8("<styles/>")
+  const first = zipSync({ "word/document.xml": a, "word/styles.xml": b }, { mtime: new Date(2020, 0, 1), level: 0 })
+  const second = zipSync({ "word/styles.xml": b, "word/document.xml": a }, { mtime: new Date(2025, 0, 1), level: 6 })
+  const changed = zipSync({ "word/document.xml": strToU8("<document>two</document>"), "word/styles.xml": b })
+  expect(await documentFingerprint(first)).toBe(await documentFingerprint(second))
+  expect(await documentFingerprint(changed)).not.toBe(await documentFingerprint(first))
+})
+
+test("fingerprint excludes only an acknowledged link base while preserving other settings and markup", async () => {
+  const ns = "http://schemas.microsoft.com/office/webextensions/webextension/2010/11"
+  const fixture = (base: string, token = "capability", extra = "keep", marker = "one") => {
+    const link = JSON.stringify({ version: 1, origin: "https://example.invalid", apiOrigin: "https://localhost:4612", matter: "matter", document: "draft", baseVersion: base, token, extra }).replaceAll("&", "&amp;").replaceAll('"', "&quot;")
+    return zipSync({ "word/webextensions/webextension1.xml": strToU8(`<we:webextension xmlns:we="${ns}" marker="${marker}"><we:reference id="${WORD_ADDIN_ID}"/><we:properties><we:property name="dochaus.link" value="${link}"/></we:properties></we:webextension>`) })
+  }
+  const before = await documentFingerprint(fixture("v1"))
+  expect(await documentFingerprint(fixture("v2"))).toBe(before)
+  expect(await documentFingerprint(fixture("v2", "different"))).not.toBe(before)
+  expect(await documentFingerprint(fixture("v2", "capability", "changed"))).not.toBe(before)
+  expect(await documentFingerprint(fixture("v2", "capability", "keep", "two"))).not.toBe(before)
+})
+
+test("fingerprint refuses excessive parts and inflated sizes before unpacking", async () => {
+  const tooMany = Object.fromEntries(Array.from({ length: 1001 }, (_, index) => [`part${index}.xml`, strToU8("<p/>")]))
+  await expect(documentFingerprint(zipSync(tooMany))).rejects.toThrow("package size limit")
+  const bytes = zipSync({ "word/document.xml": strToU8("<document/>") })
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  for (let at = 0; at < bytes.length - 46; at++) {
+    if (view.getUint32(at, true) === 0x02014b50) {
+      view.setUint32(at + 24, 257 * 1024 * 1024, true)
+      break
+    }
+  }
+  await expect(documentFingerprint(bytes)).rejects.toThrow("package size limit")
+})
+
+test("Word session metadata may rotate without hiding text, formatting, comments or tracked edits", async () => {
+  const fixture = (
+    options: {
+      session?: string
+      text?: string
+      bold?: boolean
+      inserted?: string
+      deleted?: string
+      comment?: string
+      changeId?: string
+      author?: string
+      foreign?: string
+      unknown?: string
+    } = {},
+  ) => {
+    const session = options.session ?? "00AAAA01"
+    return zipSync({
+      "word/document.xml": strToU8(
+        `<m:document xmlns:m="${word}" xmlns:other="urn:synthetic:other"><m:body><m:p m:rsidR="${session}" m:rsidRDefault="${session}" m:rsidP="${session}" other:rsidRDefault="${options.foreign ?? "preserved"}" m:rsidUnknown="${options.unknown ?? "preserved"}"><m:pPr><m:jc m:val="left"/></m:pPr><m:r m:rsidRPr="${session}"><m:rPr>${options.bold ? "<m:b/>" : ""}</m:rPr><m:t>${options.text ?? "Neutral text."}</m:t></m:r><m:ins m:id="${options.changeId ?? "1"}" m:author="${options.author ?? "Synthetic reviewer"}" m:date="2026-10-26T10:00:00Z"><m:r><m:t>${options.inserted ?? "Inserted text."}</m:t></m:r></m:ins><m:del m:id="2" m:author="Synthetic reviewer" m:date="2026-10-26T10:00:00Z" m:rsidDel="${session}"><m:r><m:delText>${options.deleted ?? "Deleted text."}</m:delText></m:r></m:del></m:p><m:tbl><m:tr m:rsidTr="${session}"><m:tc><m:p/></m:tc></m:tr></m:tbl><m:sectPr m:rsidSect="${session}"/></m:body></m:document>`,
+      ),
+      "word/settings.xml": strToU8(
+        `<m:settings xmlns:m="${word}"><m:zoom m:percent="100"/><m:rsids><m:rsidRoot m:val="00BBBB02"/><m:rsid m:val="${session}"/>${session === "00AAAA01" ? "" : '<m:rsid m:val="00CCCC03"/>'}</m:rsids></m:settings>`,
+      ),
+      "word/comments.xml": strToU8(
+        `<m:comments xmlns:m="${word}"><m:comment m:id="0" m:author="Synthetic reviewer"><m:p><m:r><m:t>${options.comment ?? "A neutral comment."}</m:t></m:r></m:p></m:comment></m:comments>`,
+      ),
+    })
+  }
+  const baseline = fixture()
+  const original = baseline.slice()
+  const expected = await documentFingerprint(baseline)
+  expect(await documentFingerprint(fixture({ session: "00DDDD04" }))).toBe(expected)
+  for (const edit of [
+    { text: "Changed text." },
+    { bold: true },
+    { inserted: "Different insertion." },
+    { deleted: "Different deletion." },
+    { comment: "A changed comment." },
+    { changeId: "3" },
+    { author: "Another synthetic reviewer" },
+    { foreign: "different" },
+    { unknown: "different" },
+  ])
+    expect(await documentFingerprint(fixture({ ...edit, session: "00DDDD04" }))).not.toBe(expected)
+  expect(baseline).toEqual(original)
+})
+
+test("metadata normalization preserves opaque XML and is restricted to a direct Word settings list", async () => {
+  const cases: [string, (value: string) => string][] = [
+    ["word/settings.xml", (value) => `<w:settings xmlns:w="${word}" xmlns:c="urn:synthetic"><c:rsids c:value="${value}"/></w:settings>`],
+    ["word/settings.xml", (value) => `<w:settings xmlns:w="${word}"><w:compat><w:rsids w:val="${value}"/></w:compat></w:settings>`],
+    ["word/document.xml", (value) => `<w:document xmlns:w="${word}"><w:rsids w:val="${value}"/><w:body/></w:document>`],
+    ["customXml/item1.xml", (value) => `<w:document xmlns:w="${word}" w:rsidR="${value}"/>`],
+    ["customXml/item1.xml", (value) => `<c:data xmlns:c="urn:synthetic" xmlns:w="${word}" w:rsidR="${value}"/>`],
+    ["word/custom.xml", (value) => `<c:data xmlns:c="urn:synthetic" xmlns:w="${word}"><w:p w:rsidR="${value}"/></c:data>`],
+    ["word/document.xml", (value) => `<w:document xmlns:w="${word}" xmlns:c="urn:synthetic"><c:data w:rsidR="${value}"/></w:document>`],
+  ]
+  for (const [name, xml] of cases) {
+    const hash = (value: string) => documentFingerprint(zipSync({ [name]: strToU8(xml(value)) }))
+    expect(await hash("one")).not.toBe(await hash("two"))
+  }
+})
+
+test("tracked formatting payload stays significant while strict Word session attributes do not", async () => {
+  const strictWord = "http://purl.oclc.org/ooxml/wordprocessingml/main"
+  const fixture = (session: string, color = "000000") =>
+    zipSync({
+      "word/document.xml": strToU8(
+        `<w:document xmlns:w="${strictWord}"><w:body><w:p w:rsidR="${session}"><w:r><w:rPr><w:rPrChange w:id="1" w:author="Synthetic reviewer" w:date="2026-10-26T10:00:00Z"><w:rPr><w:color w:val="${color}"/></w:rPr></w:rPrChange></w:rPr><w:t>Neutral text.</w:t></w:r></w:p></w:body></w:document>`,
+      ),
+    })
+  const baseline = await documentFingerprint(fixture("00AAAA01"))
+  expect(await documentFingerprint(fixture("00BBBB02"))).toBe(baseline)
+  expect(await documentFingerprint(fixture("00BBBB02", "FFFFFF"))).not.toBe(baseline)
+})
+
+test("editing-duration-only changes are ignored while other properties and document text remain significant", async () => {
+  const extended = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+  const fixture = (time: number, manager = "Synthetic manager", text = "Neutral text.", attribute = "preserved") =>
+    zipSync({
+      "docProps/app.xml": strToU8(
+        `<ep:Properties xmlns:ep="${extended}" xmlns:c="urn:synthetic"><ep:TotalTime c:metadata="${attribute}">${time}</ep:TotalTime><ep:Manager>${manager}</ep:Manager><ep:Pages>1</ep:Pages></ep:Properties>`,
+      ),
+      "word/document.xml": strToU8(
+        `<w:document xmlns:w="${word}"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`,
+      ),
+    })
+  const bytes = fixture(3)
+  const original = bytes.slice()
+  const baseline = await documentFingerprint(bytes)
+  expect(await documentFingerprint(fixture(4))).toBe(baseline)
+  expect(await documentFingerprint(fixture(4, "Different manager"))).not.toBe(baseline)
+  expect(await documentFingerprint(fixture(4, "Synthetic manager", "Changed text."))).not.toBe(baseline)
+  expect(await documentFingerprint(fixture(4, "Synthetic manager", "Neutral text.", "changed"))).not.toBe(baseline)
+  expect(bytes).toEqual(original)
+})
+
+test("TotalTime normalization does not hide custom XML, foreign namespaces, nested or nonnumeric data", async () => {
+  const extended = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+  const cases: [string, (value: string) => string][] = [
+    ["customXml/item1.xml", (value) => `<Properties xmlns="${extended}"><TotalTime>${value}</TotalTime></Properties>`],
+    ["docProps/custom.xml", (value) => `<Properties xmlns="${extended}"><TotalTime>${value}</TotalTime></Properties>`],
+    ["docProps/app.xml", (value) => `<Properties xmlns="urn:synthetic"><TotalTime>${value}</TotalTime></Properties>`],
+    ["docProps/app.xml", (value) => `<Properties xmlns="${extended}" xmlns:c="urn:synthetic"><c:TotalTime>${value}</c:TotalTime></Properties>`],
+    ["docProps/app.xml", (value) => `<Properties xmlns="${extended}"><Other><TotalTime>${value}</TotalTime></Other></Properties>`],
+    ["docProps/app.xml", (value) => `<Properties xmlns="${extended}"><TotalTime><Other>${value}</Other></TotalTime></Properties>`],
+  ]
+  for (const [name, xml] of cases) {
+    const hash = (value: string) => documentFingerprint(zipSync({ [name]: strToU8(xml(value)) }))
+    expect(await hash("3")).not.toBe(await hash("4"))
+  }
+  const invalid = (value: string) =>
+    documentFingerprint(zipSync({ "docProps/app.xml": strToU8(`<Properties xmlns="${extended}"><TotalTime>${value}</TotalTime></Properties>`) }))
+  expect(await invalid("custom-one")).not.toBe(await invalid("custom-two"))
+})
+
+test("proofing completion cache may appear or change without hiding edits or proofing preferences", async () => {
+  const fixture = (proofState = "", text = "Neutral text.", language = "en-GB", proofError = "spellStart") =>
+    zipSync({
+      "word/settings.xml": strToU8(`<m:settings xmlns:m="${word}"><m:zoom m:percent="100"/>${proofState}</m:settings>`),
+      "word/document.xml": strToU8(
+        `<m:document xmlns:m="${word}"><m:body><m:p><m:proofErr m:type="${proofError}"/><m:r><m:rPr><m:lang m:val="${language}"/></m:rPr><m:t>${text}</m:t></m:r></m:p></m:body></m:document>`,
+      ),
+    })
+  const bytes = fixture()
+  const original = bytes.slice()
+  const baseline = await documentFingerprint(bytes)
+  for (const cache of [
+    '<m:proofState m:spelling="clean" m:grammar="clean"/>',
+    '<m:proofState m:spelling="dirty" m:grammar="dirty"/>',
+    '<m:proofState m:grammar="clean"/>',
+    "<m:proofState/>",
+    '<m:proofState m:spelling="clean"> \n </m:proofState>',
+  ])
+    expect(await documentFingerprint(fixture(cache))).toBe(baseline)
+  const cache = '<m:proofState m:spelling="clean" m:grammar="clean"/>'
+  expect(await documentFingerprint(fixture(cache, "Changed text."))).not.toBe(baseline)
+  expect(await documentFingerprint(fixture(cache, "Neutral text.", "en-US"))).not.toBe(baseline)
+  expect(await documentFingerprint(fixture(cache, "Neutral text.", "en-GB", "futureProofingType"))).not.toBe(baseline)
+  expect(bytes).toEqual(original)
+})
+
+test("proofState normalization preserves unknown attributes, nested data and opaque XML", async () => {
+  const settings = (child: string) => `<w:settings xmlns:w="${word}" xmlns:c="urn:synthetic">${child}</w:settings>`
+  const cases: [string, (value: string) => string][] = [
+    ["word/settings.xml", (value) => settings(`<w:proofState w:spelling="clean" w:unknown="${value}"/>`)],
+    ["word/settings.xml", (value) => settings(`<w:proofState w:spelling="clean" c:value="${value}"/>`)],
+    ["word/settings.xml", (value) => settings(`<w:proofState w:spelling="clean"><c:data>${value}</c:data></w:proofState>`)],
+    ["word/settings.xml", (value) => settings(`<w:proofState w:spelling="clean">${value}</w:proofState>`)],
+    ["word/settings.xml", (value) => settings(`<c:proofState w:spelling="${value}"/>`)],
+    ["word/settings.xml", (value) => settings(`<w:compat><w:proofState w:spelling="${value}"/></w:compat>`)],
+    ["word/document.xml", (value) => `<w:document xmlns:w="${word}"><w:proofState w:spelling="${value}"/></w:document>`],
+    ["customXml/item1.xml", (value) => settings(`<w:proofState w:spelling="${value}"/>`)],
+    ["word/settings.xml", (value) => `<c:settings xmlns:c="urn:synthetic" xmlns:w="${word}"><w:proofState w:spelling="${value}"/></c:settings>`],
+  ]
+  for (const [name, xml] of cases) {
+    const hash = (value: string) => documentFingerprint(zipSync({ [name]: strToU8(xml(value)) }))
+    expect(await hash("clean")).not.toBe(await hash("dirty"))
+  }
+  const invalid = (value: string) =>
+    documentFingerprint(zipSync({ "word/settings.xml": strToU8(settings(`<w:proofState w:spelling="${value}"/>`)) }))
+  expect(await invalid("future-one")).not.toBe(await invalid("future-two"))
 })

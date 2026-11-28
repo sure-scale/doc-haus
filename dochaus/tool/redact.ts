@@ -28,7 +28,7 @@ import { readLeanState } from "../workflows/lean/state"
 // matter's redaction log after the existing revision writer confirms the save
 // and re-index. A later log failure is reported without hiding that save.
 
-const ingestUrl = process.env.INGEST_URL ?? "http://127.0.0.1:4500"
+const ingestUrl = () => process.env.INGEST_URL ?? "http://127.0.0.1:4500"
 
 export default tool({
   description:
@@ -254,7 +254,7 @@ type RedactionSave = { confirmed: true; purge_failed?: unknown } | { confirmed: 
 async function saveRedaction(file: string, bytes: Uint8Array<ArrayBuffer>, priorSha256: string, ctx: LegalToolContext): Promise<RedactionSave> {
   let error = "doc.haus could not be reached."
   for (let send = 0; send < 2; send++) {
-    const response = await fetch(`${ingestUrl}/matters/${path.basename(ctx.directory)}/documents/revisions`, {
+    const response = await fetch(`${ingestUrl()}/matters/${path.basename(ctx.directory)}/documents/revisions`, {
       method: "POST",
       headers: { "x-dochaus-origin": "redaction", "x-dochaus-actor": `agent:${ctx.agent}`, "x-dochaus-run": ctx.sessionID,
         "x-document-prior-sha256": priorSha256 },

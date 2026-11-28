@@ -3,6 +3,7 @@ import { strFromU8, unzipSync } from "fflate"
 import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
 import { docxodus } from "./docxodus"
 import { bake, binding, buildRedlined, redlineStaleReason, redlineState } from "./redline"
+import { docxProtectionMessage } from "./docx-protection-message"
 import { createDocxLocalization, createDocxRevision } from "../../../dochaus/lib/docx-amendments"
 import { paragraphTargets, withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import type { RedlineRow } from "./db"
@@ -174,4 +175,19 @@ test("source-bound clause selects one duplicate and goes stale when source chang
   const changed = (await renderMarkdownToDocx("New.\n\nAlpha term applies.")).bytes
   await expect(bake(changed, [bound], state)).rejects.toThrow("earlier Word revision")
   await expect(bake(source, [bound, { ...bound, id: 2 }], state)).rejects.toThrow()
+})
+
+test("protected Word content failures map known codes without leaking internal identifiers", () => {
+  for (const code of ["docx_protected_inline_content:private-proposal-id", "docx_protected_inline_content_changed", "docx_field_replacement:private-proposal-id", "docx_protected_association:private-proposal-id", "docx_protected_association", "docx_protected_association_changed"]) {
+    const message = docxProtectionMessage(new Error(code))!
+    expect(message).toBeTruthy()
+    expect(message).not.toContain("docx_")
+    expect(message).not.toContain("private-proposal-id")
+  }
+  expect(docxProtectionMessage(new Error("docx_protected_inline_content_changed_extra"))).toBeUndefined()
+  expect(docxProtectionMessage(new Error("docx_protected_association_changed_extra"))).toBeUndefined()
+  const mixed = docxProtectionMessage(new Error("docx_mixed_format_replacement:private-proposal-id"))!
+  expect(mixed).toBeTruthy()
+  expect(mixed).not.toContain("private-proposal-id")
+  expect(docxProtectionMessage(new Error("unrelated"))).toBeUndefined()
 })

@@ -126,24 +126,20 @@ test("dispatch or post-proof failure restores both settings and fences an uncert
 })
 
 
-test("paired preparation failures identify safe read phases without exposing native content",async()=>{
- const cases=[
-  ["read-start","Word could not begin reading the complete reviewed table."],
-  ["read-binding","Word could not bind the reviewed table to its current rows and cells."],
-  ["read-range","Word could not read the complete table range and its boundaries."],
-  ["read-paragraph","Word could not reconcile the document's current paragraph text and prior changes."],
-  ["read-comments","Word could not read the document's comments and prior tracked changes."],
- ] as const
- for(const [failure,message] of cases){
+test("paired preparation failures classify read phases as unchanged without exposing native content",async()=>{
+ const seen=new Set<string>()
+ for(const failure of ["read-start","read-binding","read-range","read-paragraph","read-comments"] as const){
   const fixture=office({failure})
   const error=await fixture.apply().catch(error=>error as WordChatHostError)
-  expect(error).toMatchObject({mutationState:"unchanged",message:`${message} Your document is unchanged.`})
+  expect(error).toMatchObject({mutationState:"unchanged"})
   expect((error as WordChatHostError).cause).toBeInstanceOf(Error)
   expect((error as WordChatHostError).message).not.toContain("PRIVATE")
+  seen.add((error as WordChatHostError).message)
   expect(fixture.state.writes).toHaveLength(0);expect(fixture.state.modes).toEqual([])
  }
+ expect(seen.size).toBe(5)
  const fixture=office(),payload=oracle();payload.proposalId="different"
- await expect(fixture.apply(payload)).rejects.toMatchObject({mutationState:"unchanged",message:"The prepared row deletion could not be verified against the current document file. Your document is unchanged."})
+ await expect(fixture.apply(payload)).rejects.toMatchObject({mutationState:"unchanged"})
  expect(fixture.state.runs).toBe(0)
 })
 

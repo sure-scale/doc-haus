@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -10,7 +10,8 @@ import { readLeanPlan } from "./plan"
 import { writePlacement } from "./spine-placement"
 
 const directories: string[] = []
-const workspace = process.env.WORKSPACE_ROOT
+let workspace: string | undefined
+beforeEach(() => { workspace = process.env.WORKSPACE_ROOT })
 afterEach(() => {
   directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true }))
   if (workspace === undefined) delete process.env.WORKSPACE_ROOT

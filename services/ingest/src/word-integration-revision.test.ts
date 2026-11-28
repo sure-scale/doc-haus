@@ -29,9 +29,10 @@ let temporary = ""
 let ingest: ReturnType<typeof Bun.spawn>
 let engine: ReturnType<typeof Bun.serve>
 let base = ""
-const priorIngestUrl = process.env.INGEST_URL
+let priorIngestUrl: string | undefined
 
 beforeAll(async () => {
+  priorIngestUrl = process.env.INGEST_URL
   temporary = mkdtempSync(path.join(tmpdir(), "dochaus-word-integration-"))
   const workspace = path.join(temporary, "workspace")
   const config = path.join(temporary, "config")

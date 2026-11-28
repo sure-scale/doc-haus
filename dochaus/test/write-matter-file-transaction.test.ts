@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { afterEach, describe, expect, test } from "bun:test"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import {
@@ -19,13 +19,26 @@ const identity: ArtifactWriteIdentity = {
   contract_hash: "contract-v1",
 }
 
+const tempDirs: string[] = []
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
 function matter() {
-  return mkdtempSync(path.join(tmpdir(), "artifact-write-transaction-"))
+  const dir = mkdtempSync(path.join(tmpdir(), "artifact-write-transaction-"))
+  tempDirs.push(dir)
+  return dir
 }
 
 describe("transactional matter artifact writes", () => {
-  test("does not register the obsolete content-bearing drafting tool", () => {
-    expect(existsSync(path.join(import.meta.dir, "../tool/write-drafting-artifact.ts"))).toBe(false)
+  test("rejects a tool name as the target artifact while accepting ordinary markdown basenames", async () => {
+    const dir = matter()
+    const rejected = await writeMatterFile.execute({ name: "write-matter-file", content: "body" }, { directory: dir } as never)
+    expect(String(rejected)).toContain("Refusing tool-name file")
+    expect(existsSync(path.join(dir, "write-matter-file.md"))).toBe(false)
+
+    await writeMatterFile.execute({ name: "drafting-strategy.md", content: "body" }, { directory: dir } as never)
+    expect(existsSync(path.join(dir, "drafting-strategy.md"))).toBe(true)
   })
 
   test("assembles a large artifact as exact bytes and publishes only at commit", () => {
